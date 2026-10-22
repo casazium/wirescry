@@ -567,3 +567,25 @@ button.danger {
   gap: 8px;
   flex-wrap: wrap;
 }
+
+.failure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  color: var(--fg);
+}
+
+.failure strong {
+  color: var(--error);
+  font-weight: 600;
+}
+
+.failure code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-word;
+}

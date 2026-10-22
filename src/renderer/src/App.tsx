@@ -158,7 +158,7 @@ export function App(): React.JSX.Element {
             <span className="muted count" data-testid="row-count">
               {filtered
                 ? `${rows.length.toLocaleString()} of ${exchanges.length.toLocaleString()}`
-                : `${exchanges.length.toLocaleString()} requests`}
+                : `${exchanges.length.toLocaleString()} ${exchanges.length === 1 ? 'request' : 'requests'}`}
             </span>
             <button
               type="button"

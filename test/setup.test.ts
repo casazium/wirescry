@@ -1,5 +1,4 @@
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
-import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,24 +9,7 @@ import { FIREFOX_PROFILE_DIR, firefoxPrefs } from '../src/backend/firefox';
 import { isLoopback } from '../src/backend/proxy';
 import { loadSettings } from '../src/backend/settings';
 import type { ProxyStatus } from '../src/shared/api';
-import { apiClient, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
-
-/** Plain HTTP request through the proxy. */
-function httpViaProxy(
-  proxyPort: number,
-  url: string,
-): Promise<{ status: number; type?: string; body: string }> {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port: proxyPort, path: url }, (res) => {
-      let body = '';
-      res.setEncoding('utf8');
-      res.on('data', (chunk: string) => (body += chunk));
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, type: res.headers['content-type'], body }));
-    });
-    req.once('error', reject);
-    req.end();
-  });
-}
+import { apiClient, httpViaProxy, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();

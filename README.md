@@ -44,6 +44,22 @@ The **Setup** view also lets you fix the proxy port (it's otherwise picked autom
 
 `npm start` runs the production build without packaging it.
 
+### When requests fail
+
+If the real server can't be reached, the request's Status shows why: **DNS**, **Refused**, **TLS**, **Timeout**, **Reset**, **No route**, or **Closed** (the client gave up first). The detail pane explains the problem in plain language, with the original error. The client receives a 502 from Leverframe in these cases. Leverframe doesn't impose its own response timeout, so long-polling and other slow responses keep working; a request still waiting just shows `…`.
+
+WebSocket connections pass through and show in the list with status 101 and type `websocket`. Viewing their messages comes later.
+
+### Logs
+
+Errors and warnings from the window, the backend and the UI are written to `leverframe.log` (**Help → Show Log File**):
+
+- macOS: `~/Library/Logs/Leverframe/`
+- Windows: `%APPDATA%\Leverframe\logs\`
+- Linux: `~/.config/Leverframe/logs/`
+
+The file is readable only by you, starts over past 5 MB (keeping one previous file), and never contains the API token. It does include hostnames of requests that failed.
+
 ## Test and check
 
 ```bash

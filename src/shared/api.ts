@@ -2,6 +2,7 @@
  * Types shared by the backend's local API and the UI that talks to it.
  * Keep this file free of Node or DOM imports so both sides can use it.
  */
+import type { ExchangeFailure } from './failure';
 
 /** One row in the traffic list. Bodies are deliberately not part of this. */
 export interface ExchangeSummary {
@@ -22,8 +23,12 @@ export interface ExchangeSummary {
   contentType?: string;
   /** Response body size on the wire, in bytes. */
   responseSize?: number;
-  /** Set if the exchange failed before a response arrived. */
-  error?: string;
+  /** Set if the real server couldn't be reached, or the client gave up. */
+  failure?: ExchangeFailure;
+  /** True for a WebSocket connection. */
+  websocket?: boolean;
+  /** WebSocket close code, once the connection has closed. */
+  closeCode?: number;
 }
 
 /** A header as sent on the wire. HTTP/2 pseudo-headers (`:method` etc.) are included. */
