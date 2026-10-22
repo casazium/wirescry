@@ -1,11 +1,19 @@
 import path from 'node:path';
-import type { BodyContent, ClientCommand, ExchangeDetail, ServerMessage } from '../shared/api';
+import type { BodyContent, ClientCommand, ExchangeDetail, ProxyStatus, ServerMessage } from '../shared/api';
 import { startApiServer } from './api';
 import { toBodyContent } from './body-content';
 import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
-import { loadOrCreateCA } from './ca';
-import { startProxy } from './proxy';
+import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
+import {
+  deleteFirefoxProfile,
+  FIREFOX_PROFILE_DIR,
+  isProfileTrusted,
+  launchFirefox,
+  markProfileTrusted,
+} from './firefox';
+import { startProxy, type RunningProxy } from './proxy';
+import { isValidPort, loadSettings, saveSettings, type Settings } from './settings';
 import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
 
@@ -15,6 +23,7 @@ export interface BackendOptions {
   /** Per-launch secret the UI must present. */
   token: string;
   allowedOrigins: string[];
+  /** Fixed port, overriding the saved setting. Used by tests. */
   proxyPort?: number;
   /** Extra CAs to trust for upstream servers (PEM). Used by tests. */
   upstreamCAs?: string[];
@@ -24,18 +33,22 @@ export interface BackendOptions {
 
 export interface RunningBackend {
   apiPort: number;
-  proxyPort: number;
+  readonly proxyPort: number;
   caCertPath: string;
   stop(): Promise<void>;
 }
 
 /** Starts the proxy and the local API. Runs without Electron, so tests can use it directly. */
 export async function startBackend(options: BackendOptions): Promise<RunningBackend> {
-  const ca = await loadOrCreateCA(options.dataDir);
-  const bodies = await HybridBodyStore.open(path.join(options.dataDir, 'bodies'), {
+  const { dataDir } = options;
+  let ca: CertificateAuthority = await loadOrCreateCA(dataDir);
+  let settings: Settings = await loadSettings(dataDir);
+  const firefoxProfile = path.join(dataDir, FIREFOX_PROFILE_DIR);
+  const bodies = await HybridBodyStore.open(path.join(dataDir, 'bodies'), {
     memoryLimit: options.bodyMemoryLimit,
   });
   const browsers = await detectBrowsers();
+  let firefoxTrusted = await isProfileTrusted(firefoxProfile, ca.spkiFingerprint);
 
   // The API needs the proxy port and the proxy needs somewhere to send events,
   // so events go through this indirection until the API is up.
@@ -48,22 +61,78 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     void bodies.delete(id).catch(() => undefined);
   });
 
-  const proxy = await startProxy({
-    ca,
-    store,
-    bodies,
-    port: options.proxyPort,
-    upstreamCAs: options.upstreamCAs,
-    onExchange: (exchange) => updates.change(exchange.summary),
-    isPaused: () => paused,
+  const status = (): ProxyStatus => ({
+    proxyPort: proxy.port,
+    proxyPortSetting: settings.proxyPort ?? null,
+    certificate: {
+      commonName: ca.commonName,
+      spkiFingerprint: ca.spkiFingerprint,
+      validTo: ca.validTo,
+      path: ca.certPath,
+    },
+    browsers: browsers.map(({ id, name, kind }) => ({ id, name, kind })),
+    firefoxTrusted,
   });
+
+  const openProxy = (port: number | undefined): Promise<RunningProxy> =>
+    startProxy({
+      ca,
+      store,
+      bodies,
+      port,
+      upstreamCAs: options.upstreamCAs,
+      onExchange: (exchange) => updates.change(exchange.summary),
+      isPaused: () => paused,
+      onCATrusted: (userAgent) => {
+        if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;
+        firefoxTrusted = true;
+        // Save before telling the UI, so the state on disk is never behind what's shown.
+        markProfileTrusted(firefoxProfile, ca.spkiFingerprint).then(
+          () => broadcast({ type: 'status', status: status() }),
+          (error: unknown) => {
+            firefoxTrusted = false;
+            console.error('[leverframe] could not record Firefox trust:', error);
+          },
+        );
+      },
+    });
+
+  let proxy = await openProxy(options.proxyPort ?? settings.proxyPort);
+
+  /** Restarts the proxy, going back to the old port if the new one can't be used. */
+  const restartProxy = async (port: number | undefined): Promise<void> => {
+    const previousPort = proxy.port;
+    await proxy.stop();
+    try {
+      proxy = await openProxy(port);
+    } catch (error) {
+      proxy = await openProxy(previousPort);
+      throw error;
+    }
+  };
+
+  // Commands that restart the proxy run one at a time.
+  let queue: Promise<unknown> = Promise.resolve();
+  const exclusive = <T>(task: () => Promise<T>): Promise<T> => {
+    const result = queue.then(task, task);
+    queue = result.catch(() => undefined);
+    return result;
+  };
 
   const handleCommand = async (command: ClientCommand): Promise<unknown> => {
     switch (command.command) {
       case 'launchBrowser': {
         const browser = browsers.find((b) => b.id === command.browserId);
         if (!browser) throw new Error(`Browser not found: ${command.browserId}`);
-        await launchChromium(browser, { proxyPort: proxy.port, spkiFingerprint: ca.spkiFingerprint });
+        if (browser.kind === 'firefox') {
+          await launchFirefox(browser, {
+            profileDir: firefoxProfile,
+            proxyPort: proxy.port,
+            spkiFingerprint: ca.spkiFingerprint,
+          });
+        } else {
+          await launchChromium(browser, { proxyPort: proxy.port, spkiFingerprint: ca.spkiFingerprint });
+        }
         return undefined;
       }
       case 'clear':
@@ -76,6 +145,38 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         paused = command.paused;
         broadcast({ type: 'paused', paused });
         return undefined;
+      case 'setProxyPort':
+        return exclusive(async () => {
+          if (command.port !== null && !isValidPort(command.port)) {
+            throw new Error('Choose a port from 1024 to 65535.');
+          }
+          const port = command.port ?? undefined;
+          if (port === undefined || port !== proxy.port) {
+            try {
+              await restartProxy(port);
+            } catch (error) {
+              const code = (error as NodeJS.ErrnoException).code;
+              throw new Error(
+                code === 'EADDRINUSE' ? `Port ${port} is already in use.` : (error as Error).message,
+                { cause: error },
+              );
+            }
+          }
+          settings = { ...settings, proxyPort: port };
+          await saveSettings(dataDir, settings);
+          broadcast({ type: 'status', status: status() });
+          return undefined;
+        });
+      case 'resetCertificate':
+        return exclusive(async () => {
+          ca = await resetCA(dataDir);
+          // The old Firefox profile trusts the old CA; start it over.
+          await deleteFirefoxProfile(firefoxProfile);
+          firefoxTrusted = false;
+          await restartProxy(proxy.port);
+          broadcast({ type: 'status', status: status() });
+          return undefined;
+        });
       case 'getExchange': {
         const exchange: ExchangeDetail | undefined = store.get(command.exchangeId);
         if (!exchange) throw new Error('Exchange not found');
@@ -99,16 +200,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     token: options.token,
     allowedOrigins: options.allowedOrigins,
     handlers: {
-      hello: () => ({
-        type: 'hello',
-        status: {
-          proxyPort: proxy.port,
-          caFingerprint: ca.spkiFingerprint,
-          browsers: browsers.map(({ id, name }) => ({ id, name })),
-        },
-        exchanges: store.list(),
-        paused,
-      }),
+      hello: () => ({ type: 'hello', status: status(), exchanges: store.list(), paused }),
       command: handleCommand,
     },
   });
@@ -116,7 +208,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
 
   return {
     apiPort: api.port,
-    proxyPort: proxy.port,
+    get proxyPort() {
+      return proxy.port;
+    },
     caCertPath: ca.certPath,
     async stop() {
       updates.reset();

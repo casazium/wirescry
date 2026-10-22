@@ -29,7 +29,9 @@ The list stays fast with thousands of requests and keeps the most recent 10,000.
 
 To send traffic through it:
 
-- **Browser:** click **Launch** to open Chrome, Chromium, Edge or Brave with a fresh temporary profile that uses the proxy and trusts Leverframe's certificate. The profile is deleted when the browser closes.
+- **Chrome, Chromium, Edge or Brave:** click **Launch** to open the browser with a fresh temporary profile that uses the proxy and trusts Leverframe's certificate. The profile is deleted when the browser closes.
+- **Firefox:** Firefox can't be told to trust a certificate from the command line, so Leverframe keeps its own Firefox profile in the user data folder. The first launch opens a setup page at `http://leverframe.internal/` (answered by the proxy itself) where you trust the certificate once. Later launches go straight to browsing.
+- **Anything else:** the **Setup** view shows the proxy address, a **Save certificate…** button, and shell variables for curl, Node.js and Python.
 - **curl:**
 
   ```bash
@@ -37,6 +39,8 @@ To send traffic through it:
   ```
 
   On Linux the certificate is in `~/.config/Leverframe/ca.pem`, and on Windows in `%APPDATA%\Leverframe\ca.pem`.
+
+The **Setup** view also lets you fix the proxy port (it's otherwise picked automatically, starting at 8000) and reset the certificate, which creates a new one and removes the Firefox profile.
 
 `npm start` runs the production build without packaging it.
 
@@ -81,6 +85,7 @@ Builds installers for the current platform into `release/`. Use `package:mac`, `
 Security basics:
 
 - **Certificate authority:** each install creates its own CA on first run, stored in the app's user data folder (`ca.key` is readable only by the user). No CA ships with the app.
+- **Proxy:** only accepts connections from this computer. Mockttp listens on every network interface and has no setting to change that, so Leverframe drops connections from other machines as they arrive. A fixed port is checked on `127.0.0.1` first, so another program already listening there can't silently receive the traffic.
 - **Local API:** listens on `127.0.0.1` only. Each connection needs the secret token generated at launch, an allowed `Origin`, and a loopback `Host` header (which blocks DNS rebinding).
 - **Renderer:** `contextIsolation` and `sandbox` on, `nodeIntegration` off, a strict Content Security Policy, and no navigation, new windows or permission requests. Packaged builds serve the UI from `leverframe://app`.
 

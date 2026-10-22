@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { BrowserInfo } from '../shared/api';
 
-/** A Chrome-family browser found on this machine. */
+/** A browser found on this machine. */
 export interface DetectedBrowser extends BrowserInfo {
   executable: string;
 }
@@ -13,6 +13,7 @@ export interface DetectedBrowser extends BrowserInfo {
 interface Candidate {
   id: string;
   name: string;
+  kind: BrowserInfo['kind'];
   mac: string[];
   windows: string[];
   linux: string[];
@@ -22,6 +23,7 @@ const CHROMIUM_BROWSERS: Candidate[] = [
   {
     id: 'chrome',
     name: 'Google Chrome',
+    kind: 'chromium',
     mac: ['Google Chrome.app/Contents/MacOS/Google Chrome'],
     windows: ['Google/Chrome/Application/chrome.exe'],
     linux: ['google-chrome', 'google-chrome-stable'],
@@ -29,6 +31,7 @@ const CHROMIUM_BROWSERS: Candidate[] = [
   {
     id: 'chromium',
     name: 'Chromium',
+    kind: 'chromium',
     mac: ['Chromium.app/Contents/MacOS/Chromium'],
     windows: ['Chromium/Application/chrome.exe'],
     linux: ['chromium', 'chromium-browser'],
@@ -36,6 +39,7 @@ const CHROMIUM_BROWSERS: Candidate[] = [
   {
     id: 'edge',
     name: 'Microsoft Edge',
+    kind: 'chromium',
     mac: ['Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
     windows: ['Microsoft/Edge/Application/msedge.exe'],
     linux: ['microsoft-edge', 'microsoft-edge-stable'],
@@ -43,9 +47,22 @@ const CHROMIUM_BROWSERS: Candidate[] = [
   {
     id: 'brave',
     name: 'Brave',
+    kind: 'chromium',
     mac: ['Brave Browser.app/Contents/MacOS/Brave Browser'],
     windows: ['BraveSoftware/Brave-Browser/Application/brave.exe'],
     linux: ['brave-browser', 'brave'],
+  },
+  {
+    id: 'firefox',
+    name: 'Firefox',
+    kind: 'firefox',
+    mac: [
+      'Firefox.app/Contents/MacOS/firefox',
+      'Firefox Developer Edition.app/Contents/MacOS/firefox',
+      'Firefox Nightly.app/Contents/MacOS/firefox',
+    ],
+    windows: ['Mozilla Firefox/firefox.exe', 'Firefox Developer Edition/firefox.exe'],
+    linux: ['firefox', 'firefox-esr', 'firefox-developer-edition'],
   },
 ];
 
@@ -71,7 +88,7 @@ function searchDirs(platform: NodeJS.Platform): string[] {
   return (env.PATH ?? '').split(path.delimiter).filter(Boolean);
 }
 
-/** Finds installed Chrome-family browsers. */
+/** Finds installed Chrome-family browsers and Firefox. */
 export async function detectBrowsers(platform = process.platform): Promise<DetectedBrowser[]> {
   const dirs = searchDirs(platform);
   const found: DetectedBrowser[] = [];
@@ -82,7 +99,7 @@ export async function detectBrowsers(platform = process.platform): Promise<Detec
       for (const relative of relativePaths) {
         const executable = path.join(dir, relative);
         if (await isExecutable(executable)) {
-          found.push({ id: candidate.id, name: candidate.name, executable });
+          found.push({ id: candidate.id, name: candidate.name, kind: candidate.kind, executable });
           break search;
         }
       }

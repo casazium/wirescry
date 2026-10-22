@@ -1,6 +1,7 @@
 import path from 'node:path';
-import { app, BrowserWindow, ipcMain, Menu, session, shell } from 'electron';
-import { IPC, type BackendState } from '../shared/ipc';
+import { copyFile } from 'node:fs/promises';
+import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } from 'electron';
+import { IPC, type BackendState, type ExportResult } from '../shared/ipc';
 import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './app-protocol';
 import { BackendSupervisor } from './backend-supervisor';
 import { buildMenu } from './menu';
@@ -105,6 +106,21 @@ app.whenReady().then(() => {
   ipcMain.handle(IPC.getBackendState, (event): BackendState => {
     if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
     return backend.state;
+  });
+  ipcMain.handle(IPC.exportCertificate, async (event): Promise<ExportResult> => {
+    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+    const options = {
+      title: 'Save Leverframe certificate',
+      defaultPath: path.join(app.getPath('downloads'), 'Leverframe CA.pem'),
+      filters: [{ name: 'Certificate', extensions: ['pem', 'crt'] }],
+    };
+    const result = mainWindow
+      ? await dialog.showSaveDialog(mainWindow, options)
+      : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) return {};
+    // Only the public certificate. The private key never leaves the data folder.
+    await copyFile(path.join(app.getPath('userData'), 'ca.pem'), result.filePath);
+    return { path: result.filePath };
   });
   backend.on('state', (state) => mainWindow?.webContents.send(IPC.backendStateChanged, state));
   backend.start();

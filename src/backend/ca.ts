@@ -1,5 +1,5 @@
-import { randomBytes } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomBytes, X509Certificate } from 'node:crypto';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { generateCACertificate, generateSPKIFingerprint } from 'mockttp';
 
@@ -9,6 +9,9 @@ export interface CertificateAuthority {
   certPath: string;
   /** Base64 SHA-256 of the certificate's public key, as Chrome's SPKI flags expect. */
   spkiFingerprint: string;
+  commonName: string;
+  /** ISO date the certificate expires. */
+  validTo: string;
 }
 
 const KEY_FILE = 'ca.key';
@@ -41,5 +44,20 @@ export async function loadOrCreateCA(dir: string): Promise<CertificateAuthority>
     await writeFile(certPath, cert, { mode: 0o644 });
   }
 
-  return { key, cert, certPath, spkiFingerprint: await generateSPKIFingerprint(cert) };
+  const x509 = new X509Certificate(cert);
+  return {
+    key,
+    cert,
+    certPath,
+    spkiFingerprint: await generateSPKIFingerprint(cert),
+    commonName: /CN=([^\n]+)/.exec(x509.subject)?.[1] ?? x509.subject,
+    validTo: new Date(x509.validTo).toISOString(),
+  };
+}
+
+/** Throws away this install's CA and creates a new one. */
+export async function resetCA(dir: string): Promise<CertificateAuthority> {
+  await rm(path.join(dir, KEY_FILE), { force: true });
+  await rm(path.join(dir, CERT_FILE), { force: true });
+  return loadOrCreateCA(dir);
 }

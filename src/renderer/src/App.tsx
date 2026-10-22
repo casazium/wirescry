@@ -1,6 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { matchesFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
 import { DetailPane } from './DetailPane';
+import { SetupPage } from './SetupPage';
 import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
 
@@ -11,6 +12,7 @@ export function App(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string>();
   const [search, setSearch] = useState('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
+  const [view, setView] = useState<'traffic' | 'setup'>('traffic');
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Typing stays responsive while a large list is re-filtered.
@@ -74,6 +76,24 @@ export function App(): React.JSX.Element {
           {stateLabel}
         </span>
         {paused && <span className="pill paused">Recording paused</span>}
+        <nav className="views" aria-label="View">
+          <button
+            type="button"
+            className={`tab ${view === 'traffic' ? 'active' : ''}`}
+            aria-current={view === 'traffic' ? 'page' : undefined}
+            onClick={() => setView('traffic')}
+          >
+            Traffic
+          </button>
+          <button
+            type="button"
+            className={`tab ${view === 'setup' ? 'active' : ''}`}
+            aria-current={view === 'setup' ? 'page' : undefined}
+            onClick={() => setView('setup')}
+          >
+            Setup
+          </button>
+        </nav>
         <div className="spacer" />
         {browsers.length > 0 ? (
           <>
@@ -95,84 +115,102 @@ export function App(): React.JSX.Element {
             </button>
           </>
         ) : (
-          <span className="muted">No Chrome-family browser found</span>
+          <button type="button" className="secondary" onClick={() => setView('setup')}>
+            Set up traffic
+          </button>
         )}
       </header>
 
-      <div className="filterbar">
-        <input
-          ref={searchRef}
-          type="search"
-          className="search"
-          placeholder="Search URL, method, status…"
-          aria-label="Search traffic"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Escape') setSearch('');
-          }}
-        />
-        <div className="chips" role="radiogroup" aria-label="Quick filter">
-          {QUICK_FILTERS.map((f) => (
+      {view === 'setup' && status && (
+        <SetupPage status={status} connected={connected} send={send} onLaunched={() => setView('traffic')} />
+      )}
+
+      {view === 'traffic' && (
+        <>
+          <div className="filterbar">
+            <input
+              ref={searchRef}
+              type="search"
+              className="search"
+              placeholder="Search URL, method, status…"
+              aria-label="Search traffic"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setSearch('');
+              }}
+            />
+            <div className="chips" role="radiogroup" aria-label="Quick filter">
+              {QUICK_FILTERS.map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={quickFilter === f.id}
+                  className={`chip ${quickFilter === f.id ? 'active' : ''}`}
+                  onClick={() => setQuickFilter(f.id)}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+            <div className="spacer" />
+            <span className="muted count" data-testid="row-count">
+              {filtered
+                ? `${rows.length.toLocaleString()} of ${exchanges.length.toLocaleString()}`
+                : `${exchanges.length.toLocaleString()} requests`}
+            </span>
             <button
-              key={f.id}
               type="button"
-              role="radio"
-              aria-checked={quickFilter === f.id}
-              className={`chip ${quickFilter === f.id ? 'active' : ''}`}
-              onClick={() => setQuickFilter(f.id)}
+              className="secondary"
+              aria-pressed={paused}
+              onClick={() => void send({ command: 'setPaused', paused: !paused })}
+              disabled={!connected}
             >
-              {f.label}
+              {paused ? 'Resume' : 'Pause'}
             </button>
-          ))}
-        </div>
-        <div className="spacer" />
-        <span className="muted count" data-testid="row-count">
-          {filtered
-            ? `${rows.length.toLocaleString()} of ${exchanges.length.toLocaleString()}`
-            : `${exchanges.length.toLocaleString()} requests`}
-        </span>
-        <button
-          type="button"
-          className="secondary"
-          aria-pressed={paused}
-          onClick={() => void send({ command: 'setPaused', paused: !paused })}
-          disabled={!connected}
-        >
-          {paused ? 'Resume' : 'Pause'}
-        </button>
-        <button
-          type="button"
-          className="secondary"
-          onClick={() => {
-            setSelectedId(undefined);
-            void send({ command: 'clear' });
-          }}
-          disabled={!connected}
-        >
-          Clear
-        </button>
-      </div>
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                setSelectedId(undefined);
+                void send({ command: 'clear' });
+              }}
+              disabled={!connected}
+            >
+              Clear
+            </button>
+          </div>
+        </>
+      )}
 
       {backendState.state === 'failed' && <div className="banner error">{backendState.message}</div>}
       {message && <div className="banner error">{message}</div>}
 
-      <div className="main">
-        <TrafficList
-          rows={rows}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          onKeyDown={onListKey}
-          empty={
-            !connected ? null : exchanges.length === 0 ? (
-              <>No traffic yet. Launch a browser, or send requests through 127.0.0.1:{status?.proxyPort}.</>
-            ) : (
-              <>No requests match the current search or filter.</>
-            )
-          }
-        />
-        {selected && <DetailPane summary={selected} send={send} onClose={() => setSelectedId(undefined)} />}
-      </div>
+      {view === 'traffic' && (
+        <div className="main">
+          <TrafficList
+            rows={rows}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            onKeyDown={onListKey}
+            empty={
+              !connected ? null : exchanges.length === 0 ? (
+                <>
+                  No traffic yet. Launch a browser, or see{' '}
+                  <button type="button" className="link" onClick={() => setView('setup')}>
+                    Setup
+                  </button>{' '}
+                  for other ways to send traffic through 127.0.0.1:{status?.proxyPort}.
+                </>
+              ) : (
+                <>No requests match the current search or filter.</>
+              )
+            }
+          />
+          {selected && <DetailPane summary={selected} send={send} onClose={() => setSelectedId(undefined)} />}
+        </div>
+      )}
     </div>
   );
 }
