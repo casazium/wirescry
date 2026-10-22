@@ -13,13 +13,35 @@ export interface TerminalEnvPaths {
   phpIniDir: string;
   /** Folder holding a curl config file, used on Windows only (see curlrcContent). */
   curlHome: string;
+  /** JKS trust store with the same certificates as the bundle, for Java. */
+  javaTrustStore: string;
+}
+
+/** Password for the Java trust store. It only protects the file's checksum; the file holds no secrets. */
+export const JAVA_TRUST_STORE_PASSWORD = 'changeit';
+
+/**
+ * Options every JVM reads from JAVA_TOOL_OPTIONS: send HTTP and HTTPS through the proxy,
+ * and trust the Leverframe trust store. The path is quoted because it may contain spaces
+ * (macOS's "Application Support"), which the JVM otherwise splits on.
+ */
+export function javaToolOptions(proxyPort: number, trustStore: string): string {
+  return [
+    '-Dhttp.proxyHost=127.0.0.1',
+    `-Dhttp.proxyPort=${proxyPort}`,
+    '-Dhttps.proxyHost=127.0.0.1',
+    `-Dhttps.proxyPort=${proxyPort}`,
+    `-Djavax.net.ssl.trustStore="${trustStore}"`,
+    `-Djavax.net.ssl.trustStorePassword=${JAVA_TRUST_STORE_PASSWORD}`,
+    '-Djavax.net.ssl.trustStoreType=JKS',
+  ].join(' ');
 }
 
 export type TerminalPlatform = 'darwin' | 'win32' | 'linux' | 'other';
 
 export function terminalEnv(
   proxyPort: number,
-  { caPath, bundlePath, phpIniDir, curlHome }: TerminalEnvPaths,
+  { caPath, bundlePath, phpIniDir, curlHome, javaTrustStore }: TerminalEnvPaths,
   platform: TerminalPlatform,
 ): Record<string, string> {
   const proxy = `http://127.0.0.1:${proxyPort}`;
@@ -44,6 +66,8 @@ export function terminalEnv(
     PHP_INI_SCAN_DIR: `${windows ? ';' : ':'}${phpIniDir}`,
     // curl.exe on Windows ignores CURL_CA_BUNDLE and reads its CA from a config file instead.
     ...(windows ? { CURL_HOME: curlHome } : {}),
+    // Java ignores the proxy variables; JVMs read these options at startup.
+    JAVA_TOOL_OPTIONS: javaToolOptions(proxyPort, javaTrustStore),
     LEVERFRAME_PROXY: proxy,
   };
 }
