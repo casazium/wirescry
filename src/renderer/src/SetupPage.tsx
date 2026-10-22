@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ProxyStatus } from '../../shared/api';
 import type { Command } from './api-client';
+import { TerminalSection } from './TerminalSection';
 
 interface Props {
   status: ProxyStatus;
@@ -80,12 +81,6 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
       onLaunched();
     });
 
-  // Per-tool variables rather than SSL_CERT_FILE, which makes Node's fetch reject the certificate.
-  const shellSetup = [
-    `export HTTP_PROXY=${proxyUrl} HTTPS_PROXY=${proxyUrl} NODE_USE_ENV_PROXY=1`,
-    `export CURL_CA_BUNDLE=${quote(certPath)} NODE_EXTRA_CA_CERTS=${quote(certPath)} REQUESTS_CA_BUNDLE=${quote(certPath)}`,
-  ].join('\n');
-  const pythonStdlib = `SSL_CERT_FILE=${quote(certPath)} python3 your_script.py`;
   const curlOnce = `curl --proxy ${proxyUrl} --cacert ${quote(certPath)} https://example.com/`;
 
   return (
@@ -130,6 +125,14 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
         {launchError && <p className="note error">{launchError}</p>}
       </section>
 
+      <TerminalSection
+        status={status}
+        connected={connected}
+        send={send}
+        onLaunched={onLaunched}
+        CopyButton={CopyButton}
+      />
+
       <section>
         <h2>Manual setup</h2>
         <p className="muted">
@@ -163,22 +166,6 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
         </dl>
         {exportError && <p className="note error">{exportError}</p>}
         {exportNote && <p className="note">{exportNote}</p>}
-        <h3>Terminal (macOS and Linux)</h3>
-        <p className="muted">
-          Run in a shell to send curl, Node.js (24 and later) and Python requests through Leverframe.
-        </p>
-        <div className="snippet">
-          <pre className="code">{shellSetup}</pre>
-          <CopyButton text={shellSetup} />
-        </div>
-        <p className="muted">
-          Python's standard library (urllib) also needs <code>SSL_CERT_FILE</code>. Set it for Python only:
-          Node's fetch rejects the certificate when it's set.
-        </p>
-        <div className="snippet">
-          <pre className="code">{pythonStdlib}</pre>
-          <CopyButton text={pythonStdlib} />
-        </div>
         <h3>curl, one request</h3>
         <div className="snippet">
           <pre className="code">{curlOnce}</pre>

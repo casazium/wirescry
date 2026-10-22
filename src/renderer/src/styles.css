@@ -589,3 +589,21 @@ button.danger {
   font-size: 12px;
   word-break: break-word;
 }
+
+.coverage {
+  margin-top: 12px;
+}
+
+.coverage summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.coverage ul {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.coverage li {
+  margin: 4px 0;
+}
