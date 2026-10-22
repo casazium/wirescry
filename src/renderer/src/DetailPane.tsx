@@ -1,5 +1,13 @@
 import { useEffect, useState } from 'react';
-import type { BodyContent, BodySide, ExchangeDetail, ExchangeSummary, Header } from '../../shared/api';
+import type {
+  BodyContent,
+  BodyInfo,
+  BodySide,
+  ExchangeDetail,
+  ExchangeSummary,
+  FormattedBody,
+  Header,
+} from '../../shared/api';
 import { toCurl } from '../../shared/curl';
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
@@ -28,12 +36,34 @@ function HeaderTable({ headers }: { headers: Header[] }): React.JSX.Element {
   );
 }
 
-function Body({ state, dropped }: { state: BodyState | undefined; dropped?: boolean }): React.JSX.Element {
-  if (dropped) return <p className="muted">Body too large to capture.</p>;
+function Body({
+  state,
+  info,
+  format,
+}: {
+  state: BodyState | undefined;
+  info: BodyInfo | undefined;
+  format: () => Promise<FormattedBody>;
+}): React.JSX.Element {
+  const notes = (
+    <>
+      {info?.incomplete && <p className="note">The connection closed before the whole body arrived.</p>}
+      {info && info.stored < info.size && (
+        <p className="note">
+          Leverframe kept the first {formatBytes(info.stored)} of this {formatBytes(info.size)} body.
+        </p>
+      )}
+    </>
+  );
   if (!state) return <p className="muted">Loading…</p>;
   if ('error' in state) return <p className="note error">{state.error}</p>;
   if (!state.content) return <p className="muted">No body</p>;
-  return <BodyView content={state.content} />;
+  return (
+    <>
+      {notes}
+      <BodyView content={state.content} format={format} />
+    </>
+  );
 }
 
 function ms(from: number | undefined, to: number | undefined): string {
@@ -140,10 +170,17 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
           <div className="failure" role="alert">
             <strong>{summary.failure.message}</strong>
             {summary.failure.detail && <code>{summary.failure.detail}</code>}
-            {summary.failure.kind !== 'client-closed' && summary.status !== undefined && (
+            {summary.failure.partial ? (
               <span className="muted">
-                The server never answered, so Leverframe replied to the client with {summary.status}.
+                The server had started responding. The body below is what arrived before the connection broke.
               </span>
+            ) : (
+              summary.failure.kind !== 'client-closed' &&
+              summary.status !== undefined && (
+                <span className="muted">
+                  The server never answered, so Leverframe replied to the client with {summary.status}.
+                </span>
+              )
             )}
           </div>
         )}
@@ -195,10 +232,20 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
           <summary>Request headers</summary>
           {detail ? <HeaderTable headers={detail.requestHeaders} /> : <p className="muted">Loading…</p>}
         </details>
-        {(!!requestSize || detail?.requestBody?.dropped) && (
+        {!!requestSize && (
           <details open>
             <summary>Request body</summary>
-            <Body state={requestBody} dropped={detail?.requestBody?.dropped} />
+            <Body
+              state={requestBody}
+              info={detail?.requestBody}
+              format={() =>
+                send({
+                  command: 'formatBody',
+                  exchangeId: summary.id,
+                  side: 'request',
+                }) as Promise<FormattedBody>
+              }
+            />
           </details>
         )}
         {detail?.responseHeaders && (
@@ -207,10 +254,20 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
             <HeaderTable headers={detail.responseHeaders} />
           </details>
         )}
-        {(!!responseSize || detail?.responseBody?.dropped) && (
+        {!!responseSize && (
           <details open>
             <summary>Response body</summary>
-            <Body state={responseBody} dropped={detail?.responseBody?.dropped} />
+            <Body
+              state={responseBody}
+              info={detail?.responseBody}
+              format={() =>
+                send({
+                  command: 'formatBody',
+                  exchangeId: summary.id,
+                  side: 'response',
+                }) as Promise<FormattedBody>
+              }
+            />
           </details>
         )}
       </div>
