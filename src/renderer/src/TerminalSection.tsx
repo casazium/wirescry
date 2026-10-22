@@ -105,6 +105,8 @@ export function TerminalSection({
           </li>
           <li>
             <strong>curl</strong> and <strong>git</strong>.
+            {status.platform === 'win32' &&
+              " curl.exe gets Leverframe's own config in these terminals, so your _curlrc isn't read there and certificate revocation checks are off."}
           </li>
         </ul>
         <p className="muted">
