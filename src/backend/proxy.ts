@@ -1,6 +1,7 @@
 import net from 'node:net';
 import * as mockttp from 'mockttp';
 import type { BodyInfo, BodySide, ExchangeDetail, ExchangeTiming } from '../shared/api';
+import { describeFailure, upstreamErrorCode } from '../shared/failure';
 import type { BodyStore } from './body-store';
 import type { CertificateAuthority } from './ca';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
@@ -54,6 +55,12 @@ function bodyInfo(buffer: Buffer, headers: mockttp.Headers): BodyInfo {
   const declared = Number(headers['content-length']);
   if (buffer.length === 0 && declared > 0) return { size: declared, dropped: true };
   return { size: buffer.length };
+}
+
+/** The message from the body of a 502 that Mockttp generated, e.g. "Error: connect ECONNREFUSED ...". */
+function errorBodyMessage(body: Buffer): string | undefined {
+  const text = body.subarray(0, 1000).toString('utf8').trim();
+  return text ? text.replace(/^Error:\s*/, '') : undefined;
 }
 
 export function isLoopback(address: string | undefined): boolean {
@@ -151,10 +158,22 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   await server.on('response', (res) => {
     storeBody(res.id, 'response', res.body.buffer);
     const { startTimestamp, responseSentTimestamp } = res.timingEvents;
+    // A 502 that Mockttp made up because the real server couldn't be reached.
+    const errorCode = upstreamErrorCode(res.tags);
+    const upstream = upstreamErrors.get(res.id);
+    upstreamErrors.delete(res.id);
     update(res.id, (existing) => ({
       ...existing,
       summary: {
         ...existing.summary,
+        failure: errorCode
+          ? describeFailure(
+              upstream?.code ?? errorCode,
+              existing.summary.host,
+              // Over HTTP/2 Mockttp skips the rule event; its 502 body holds the same message.
+              upstream?.message ?? errorBodyMessage(res.body.buffer),
+            )
+          : undefined,
         status: res.statusCode,
         statusMessage: res.statusMessage,
         durationMs:
@@ -170,12 +189,74 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     }));
   });
 
+  // Mockttp reports the upstream error's message only in a rule event, just before
+  // its 502 'response'. Keep it until then.
+  const upstreamErrors = new Map<string, { code?: string; message?: string }>();
+  await server.on(
+    'rule-event',
+    (event: mockttp.RuleEvent<{ error?: { code?: string; message?: string } }>) => {
+      if (event.eventType !== 'passthrough-abort' || !store.get(event.requestId)) return;
+      upstreamErrors.set(event.requestId, event.eventData.error ?? {});
+    },
+  );
+
   await server.on('abort', (req) => {
+    const upstream = upstreamErrors.get(req.id);
+    upstreamErrors.delete(req.id);
     update(req.id, (existing) => ({
       ...existing,
-      summary: { ...existing.summary, error: req.error?.code ?? req.error?.message ?? 'aborted' },
+      summary: {
+        ...existing.summary,
+        failure: upstream?.code
+          ? describeFailure(upstream.code, existing.summary.host, upstream.message)
+          : describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message),
+      },
       timing: timingOf(req.timingEvents),
     }));
+  });
+
+  await server.on('websocket-request', (req) => {
+    if (options.isPaused?.()) return;
+    save({
+      summary: {
+        id: req.id,
+        method: req.method,
+        protocol: req.protocol,
+        httpVersion: req.httpVersion,
+        host: hostOf(req),
+        path: req.path,
+        url: req.url,
+        startedAt: req.timingEvents.startTime,
+        websocket: true,
+      },
+      requestHeaders: req.rawHeaders,
+      timing: timingOf(req.timingEvents),
+    });
+  });
+
+  await server.on('websocket-accepted', (res) => {
+    update(res.id, (existing) => ({
+      ...existing,
+      summary: { ...existing.summary, status: res.statusCode, statusMessage: res.statusMessage },
+      responseHeaders: res.rawHeaders,
+      timing: timingOf(res.timingEvents),
+    }));
+  });
+
+  await server.on('websocket-close', (close) => {
+    update(close.streamId, (existing) => {
+      const { startTimestamp, wsClosedTimestamp } = close.timingEvents;
+      return {
+        ...existing,
+        summary: {
+          ...existing.summary,
+          closeCode: close.closeCode,
+          durationMs:
+            wsClosedTimestamp !== undefined ? Math.round(wsClosedTimestamp - startTimestamp) : undefined,
+        },
+        timing: timingOf(close.timingEvents),
+      };
+    });
   });
 
   // Requests to the setup host are answered by the proxy itself. Rules are marked

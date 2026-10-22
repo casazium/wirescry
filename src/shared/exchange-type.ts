@@ -1,7 +1,7 @@
 import type { ExchangeSummary } from './api';
 
 export type ExchangeType =
-  'json' | 'html' | 'js' | 'css' | 'image' | 'font' | 'media' | 'xml' | 'text' | 'other';
+  'json' | 'html' | 'js' | 'css' | 'image' | 'font' | 'media' | 'xml' | 'text' | 'websocket' | 'other';
 
 const BY_EXTENSION: Record<string, ExchangeType> = {
   json: 'json',
@@ -44,7 +44,10 @@ function fromMediaType(type: string): ExchangeType | undefined {
 }
 
 /** A broad type for the list's Type column and quick filters, from the response type or the URL. */
-export function exchangeType(exchange: Pick<ExchangeSummary, 'contentType' | 'path'>): ExchangeType {
+export function exchangeType(
+  exchange: Pick<ExchangeSummary, 'contentType' | 'path' | 'websocket'>,
+): ExchangeType {
+  if (exchange.websocket) return 'websocket';
   const fromHeader = exchange.contentType ? fromMediaType(exchange.contentType) : undefined;
   if (fromHeader) return fromHeader;
   const extension = /\.([a-z0-9]+)$/i.exec(exchange.path.split(/[?#]/)[0] ?? '')?.[1]?.toLowerCase();

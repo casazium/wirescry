@@ -136,17 +136,34 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
         {copied && <span className="muted">{copied === 'Copy failed' ? copied : `Copied ${copied}`}</span>}
       </div>
       <div className="detail-body">
+        {summary.failure && (
+          <div className="failure" role="alert">
+            <strong>{summary.failure.message}</strong>
+            {summary.failure.detail && <code>{summary.failure.detail}</code>}
+            {summary.failure.kind !== 'client-closed' && summary.status !== undefined && (
+              <span className="muted">
+                The server never answered, so Leverframe replied to the client with {summary.status}.
+              </span>
+            )}
+          </div>
+        )}
         <section>
           <h2>Overview</h2>
           <dl className="facts">
             <dt>Status</dt>
             <dd>
-              {summary.error
-                ? `Failed: ${summary.error}`
+              {summary.failure
+                ? `Failed (${summary.failure.code})`
                 : summary.status !== undefined
                   ? `${summary.status} ${summary.statusMessage ?? ''}`
                   : 'Waiting for response'}
             </dd>
+            {summary.closeCode !== undefined && (
+              <>
+                <dt>Closed</dt>
+                <dd>WebSocket close code {summary.closeCode}</dd>
+              </>
+            )}
             <dt>Protocol</dt>
             <dd>
               {summary.protocol.toUpperCase()}, HTTP/{summary.httpVersion}

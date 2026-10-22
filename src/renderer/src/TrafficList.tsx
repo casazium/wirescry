@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ExchangeSummary } from '../../shared/api';
 import { exchangeType } from '../../shared/exchange-type';
+import { FAILURE_LABELS } from '../../shared/failure';
 import { formatBytes } from './bytes';
 
 const ROW_HEIGHT = 24;
@@ -8,7 +9,7 @@ const ROW_HEIGHT = 24;
 const OVERSCAN = 10;
 
 function statusClass(exchange: ExchangeSummary): string {
-  if (exchange.error) return 'status error';
+  if (exchange.failure) return 'status error';
   if (exchange.status === undefined) return 'status pending';
   if (exchange.status >= 500) return 'status error';
   if (exchange.status >= 400) return 'status warn';
@@ -108,11 +109,11 @@ export function TrafficList({ rows, selectedId, onSelect, onKeyDown, empty }: Pr
                 <span role="cell" className="method">
                   {e.method}
                 </span>
-                <span role="cell" className={statusClass(e)} title={e.error ?? e.statusMessage}>
-                  {e.error ? 'Failed' : (e.status ?? '…')}
+                <span role="cell" className={statusClass(e)} title={e.failure?.message ?? e.statusMessage}>
+                  {e.failure ? FAILURE_LABELS[e.failure.kind] : (e.status ?? '…')}
                 </span>
                 <span role="cell" className="muted" title={e.contentType}>
-                  {e.status !== undefined ? exchangeType(e) : ''}
+                  {e.status !== undefined && !e.failure ? exchangeType(e) : ''}
                 </span>
                 <span role="cell" title={e.host}>
                   {e.host}
