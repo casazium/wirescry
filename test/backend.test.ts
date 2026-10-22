@@ -78,6 +78,11 @@ function connectApi(port: number, opts: { token?: string; origin?: string; host?
   });
 }
 
+/** All exchange updates pushed so far, oldest first. */
+function exchangesIn(messages: ServerMessage[]): ExchangeSummary[] {
+  return messages.flatMap((m) => (m.type === 'exchanges' ? m.exchanges : []));
+}
+
 type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
 
 /** Opens an authorised API connection that can send commands and collects pushed messages. */
@@ -112,10 +117,7 @@ async function apiClient(port: number) {
       let found: ExchangeSummary | undefined;
       await expect
         .poll(() => {
-          found = messages
-            .filter((m): m is Extract<ServerMessage, { type: 'exchange' }> => m.type === 'exchange')
-            .map((m) => m.exchange)
-            .find((e) => e.path === pathAndQuery && e.status !== undefined);
+          found = exchangesIn(messages).find((e) => e.path === pathAndQuery && e.status !== undefined);
           return found;
         })
         .toBeTruthy();
@@ -201,29 +203,20 @@ describe('backend', () => {
     const response = await requestViaProxy(backend.proxyPort, url, ca);
     expect(response).toEqual({ status: 200, body: 'hello from upstream' });
 
-    await expect
-      .poll(() =>
-        messages.find(
-          (m): m is Extract<ServerMessage, { type: 'exchange' }> =>
-            m.type === 'exchange' && m.exchange.status !== undefined,
-        ),
-      )
-      .toBeTruthy();
+    await expect.poll(() => exchangesIn(messages).find((e) => e.status !== undefined)).toBeTruthy();
 
     const hello = messages[0];
     expect(hello?.type).toBe('hello');
     if (hello?.type === 'hello') expect(hello.status.proxyPort).toBe(backend.proxyPort);
 
-    const completed = messages
-      .filter((m) => m.type === 'exchange')
-      .map((m) => (m as { exchange: ExchangeSummary }).exchange)
-      .find((e) => e.status !== undefined);
+    const completed = exchangesIn(messages).find((e) => e.status !== undefined);
     expect(completed).toMatchObject({
       method: 'GET',
       status: 200,
       host: `localhost:${upstream.port}`,
       path: '/hello?x=1',
       protocol: 'https',
+      responseSize: 'hello from upstream'.length,
     });
     ws.close();
   });
@@ -277,6 +270,53 @@ describe('backend', () => {
     await api.send({ command: 'clear' });
     expect(await readdir(bodiesDir)).toEqual([]);
     await expect(api.send({ command: 'getExchange', exchangeId: id })).rejects.toThrow('Exchange not found');
+    api.close();
+  });
+
+  it('sends a burst of requests in a few batched messages', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await Promise.all(
+      Array.from({ length: 40 }, (_, i) =>
+        requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/hello?burst=${i}`, ca),
+      ),
+    );
+    await expect
+      .poll(() => exchangesIn(api.messages).filter((e) => e.path.includes('burst=') && e.status).length)
+      .toBe(40);
+    // 40 requests each start and finish, which would be 80 messages without batching.
+    expect(api.messages.filter((m) => m.type === 'exchanges').length).toBeLessThan(20);
+    api.close();
+  });
+
+  it('records type and size for each response', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/gzip`, ca);
+    await api.completed('/gzip');
+    const summary = exchangesIn(api.messages).find((e) => e.path === '/gzip' && e.status);
+    expect(summary?.contentType).toBe('application/json');
+    expect(summary?.responseSize).toBeGreaterThan(0);
+    api.close();
+  });
+
+  it('passes traffic through without recording it while paused', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await api.send({ command: 'setPaused', paused: true });
+    expect(api.messages).toContainEqual({ type: 'paused', paused: true });
+
+    const response = await requestViaProxy(
+      backend.proxyPort,
+      `https://localhost:${upstream.port}/hello?while=paused`,
+      ca,
+    );
+    expect(response.status).toBe(200);
+
+    await api.send({ command: 'setPaused', paused: false });
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/hello?while=resumed`, ca);
+    await api.completed('/hello?while=resumed');
+    expect(exchangesIn(api.messages).some((e) => e.path === '/hello?while=paused')).toBe(false);
     api.close();
   });
 
