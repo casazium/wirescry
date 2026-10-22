@@ -1,14 +1,18 @@
 import net from 'node:net';
 import * as mockttp from 'mockttp';
-import type { BodyInfo, BodySide, ExchangeDetail, ExchangeTiming } from '../shared/api';
-import { describeFailure, upstreamErrorCode } from '../shared/failure';
-import type { BodyStore } from './body-store';
+import type { BodySide, ExchangeDetail, ExchangeTiming } from '../shared/api';
+import { describeFailure, describePartialFailure, upstreamErrorCode } from '../shared/failure';
+import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
 import type { RequestStore } from './store';
 
-/** Bodies larger than this aren't captured (traffic still flows). Keeps memory bounded. */
-export const MAX_CAPTURED_BODY = 100 * 1024 * 1024;
+/**
+ * How much of each body Mockttp itself buffers. Bodies are captured by streaming
+ * their chunks into the BodyStore instead, so this only needs to cover small
+ * things like the 502 bodies Mockttp writes for upstream errors.
+ */
+const MOCKTTP_BUFFER_LIMIT = 64 * 1024;
 
 export interface ProxyOptions {
   ca: CertificateAuthority;
@@ -22,7 +26,6 @@ export interface ProxyOptions {
   port?: number;
   /** Extra CAs to trust for upstream servers (PEM). */
   upstreamCAs?: string[];
-  maxBodySize?: number;
   /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
   onCATrusted?: (userAgent: string) => void;
 }
@@ -48,13 +51,6 @@ function timingOf(events: mockttp.TimingEvents): ExchangeTiming {
     responseSentTimestamp: events.responseSentTimestamp,
     abortedTimestamp: events.abortedTimestamp,
   };
-}
-
-/** Mockttp empties bodies over maxBodySize. Spot that from the declared length. */
-function bodyInfo(buffer: Buffer, headers: mockttp.Headers): BodyInfo {
-  const declared = Number(headers['content-length']);
-  if (buffer.length === 0 && declared > 0) return { size: declared, dropped: true };
-  return { size: buffer.length };
 }
 
 /** The message from the body of a 502 that Mockttp generated, e.g. "Error: connect ECONNREFUSED ...". */
@@ -106,7 +102,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     https: { key: ca.key, cert: ca.cert },
     http2: true,
     recordTraffic: false,
-    maxBodySize: options.maxBodySize ?? MAX_CAPTURED_BODY,
+    maxBodySize: MOCKTTP_BUFFER_LIMIT,
   });
 
   const save = (exchange: ExchangeDetail): void => {
@@ -119,13 +115,92 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     if (existing) save(change(existing));
   };
 
-  const storeBody = (id: string, side: BodySide, buffer: Buffer): void => {
-    // Skip empty bodies, and bodies of exchanges that weren't recorded (e.g. while paused).
-    if (buffer.length === 0 || !store.get(id)) return;
-    bodies.put(id, side, buffer).catch((error: unknown) => {
-      console.error(`[leverframe] could not store ${side} body for ${id}:`, error);
-    });
+  // Mockttp reports an upstream error's message in a rule event, over HTTP/1.1 only.
+  const upstreamErrors = new Map<string, { code?: string; message?: string }>();
+  // Exchanges whose server had sent response headers (HTTP/1.1 rule event).
+  const answered = new Set<string>();
+  // Responses that broke part way through. Mockttp then writes its error text
+  // after the real bytes; the value is that text, when known, so it can be removed.
+  const brokenMidBody = new Map<string, string | undefined>();
+
+  await server.on(
+    'rule-event',
+    (event: mockttp.RuleEvent<{ error?: { code?: string; message?: string } }>) => {
+      const id = event.requestId;
+      if (!store.get(id)) return;
+      if (event.eventType === 'passthrough-response-head') answered.add(id);
+      if (event.eventType !== 'passthrough-abort') return;
+      const error = event.eventData.error ?? {};
+      upstreamErrors.set(id, error);
+      if (answered.has(id)) {
+        brokenMidBody.set(id, error.message ? `Error: ${error.message}` : undefined);
+      }
+    },
+  );
+
+  // Bodies stream into the store chunk by chunk, so large ones never sit in memory whole.
+  const writers = new Map<string, BodyWriter>();
+
+  const finishBody = (id: string, side: BodySide, complete: boolean): void => {
+    const key = `${id}:${side}`;
+    const writer = writers.get(key);
+    if (!writer) return;
+    writers.delete(key);
+    writer.end(complete).then(
+      (info) =>
+        recordBody(id, side, {
+          size: info.size,
+          stored: info.stored,
+          incomplete: info.incomplete || undefined,
+        }),
+      (error: unknown) => console.error(`[leverframe] could not store ${side} body for ${id}:`, error),
+    );
   };
+
+  const recordBody = (id: string, side: BodySide, info: ExchangeDetail['requestBody']): void => {
+    if (info && side === 'response' && brokenMidBody.has(id)) info = { ...info, incomplete: true };
+    update(id, (existing) =>
+      side === 'request'
+        ? { ...existing, requestBody: info }
+        : { ...existing, responseBody: info, summary: { ...existing.summary, responseSize: info?.size } },
+    );
+  };
+
+  const onBodyData = (side: BodySide, data: mockttp.BodyData): void => {
+    // Skip exchanges that weren't recorded, e.g. while paused.
+    if (!store.get(data.id)) return;
+    const key = `${data.id}:${side}`;
+    let writer = writers.get(key);
+    let content = data.content;
+    if (side === 'response' && brokenMidBody.has(data.id)) {
+      // The server broke off. Keep what it sent, minus Mockttp's error text, and ignore the rest.
+      if (!writer) return;
+      const appended = brokenMidBody.get(data.id);
+      const tail = appended ? Buffer.from(appended) : undefined;
+      if (
+        tail &&
+        Buffer.from(content.buffer, content.byteOffset, content.length).subarray(-tail.length).equals(tail)
+      ) {
+        content = content.subarray(0, content.length - tail.length);
+      }
+      writer.write(content);
+      finishBody(data.id, side, false);
+      return;
+    }
+    if (!writer) {
+      if (data.isEnded && data.content.length === 0) {
+        recordBody(data.id, side, { size: 0, stored: 0 });
+        return;
+      }
+      writer = bodies.open(data.id, side);
+      writers.set(key, writer);
+    }
+    writer.write(content);
+    if (data.isEnded) finishBody(data.id, side, true);
+  };
+
+  await server.on('request-body-data', (data) => onBodyData('request', data));
+  await server.on('response-body-data', (data) => onBodyData('response', data));
 
   await server.on('request-initiated', (req) => {
     if (options.isPaused?.()) return;
@@ -146,34 +221,51 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   });
 
   await server.on('request', (req) => {
-    storeBody(req.id, 'request', req.body.buffer);
     update(req.id, (existing) => ({
       ...existing,
       requestHeaders: req.rawHeaders,
       timing: timingOf(req.timingEvents),
-      requestBody: bodyInfo(req.body.buffer, req.headers),
     }));
   });
 
   await server.on('response', (res) => {
-    storeBody(res.id, 'response', res.body.buffer);
     const { startTimestamp, responseSentTimestamp } = res.timingEvents;
-    // A 502 that Mockttp made up because the real server couldn't be reached.
     const errorCode = upstreamErrorCode(res.tags);
     const upstream = upstreamErrors.get(res.id);
     upstreamErrors.delete(res.id);
+    // Either the server never answered and Mockttp sent a 502 of its own, or the server
+    // answered and then broke off. HTTP/1.1 says which through a rule event; over
+    // HTTP/2 there are none, but a status other than 502 must have come from the server.
+    const partial = errorCode !== undefined && (answered.has(res.id) || res.statusCode !== 502);
+    answered.delete(res.id);
+    if (partial && !brokenMidBody.has(res.id)) {
+      // HTTP/2: the body may already be recorded as complete.
+      brokenMidBody.set(res.id, undefined);
+      update(res.id, (existing) =>
+        existing.responseBody
+          ? { ...existing, responseBody: { ...existing.responseBody, incomplete: true } }
+          : existing,
+      );
+    }
+    if (brokenMidBody.has(res.id)) {
+      // Late chunks for this response are still ignored for a moment, then forget it.
+      setTimeout(() => brokenMidBody.delete(res.id), 5000).unref();
+    }
+    const code = upstream?.code ?? errorCode;
     update(res.id, (existing) => ({
       ...existing,
       summary: {
         ...existing.summary,
-        failure: errorCode
-          ? describeFailure(
-              upstream?.code ?? errorCode,
-              existing.summary.host,
-              // Over HTTP/2 Mockttp skips the rule event; its 502 body holds the same message.
-              upstream?.message ?? errorBodyMessage(res.body.buffer),
-            )
-          : undefined,
+        failure: !code
+          ? undefined
+          : partial
+            ? describePartialFailure(code, existing.summary.host, upstream?.message)
+            : describeFailure(
+                code,
+                existing.summary.host,
+                // Over HTTP/2 Mockttp skips the rule event; its 502 body holds the same message.
+                upstream?.message ?? errorBodyMessage(res.body.buffer),
+              ),
         status: res.statusCode,
         statusMessage: res.statusMessage,
         durationMs:
@@ -181,35 +273,29 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
             ? Math.round(responseSentTimestamp - startTimestamp)
             : undefined,
         contentType: mediaType(res.headers['content-type']),
-        responseSize: res.body.buffer.length || Number(res.headers['content-length']) || 0,
       },
       responseHeaders: res.rawHeaders,
       timing: timingOf(res.timingEvents),
-      responseBody: bodyInfo(res.body.buffer, res.headers),
     }));
   });
 
-  // Mockttp reports the upstream error's message only in a rule event, just before
-  // its 502 'response'. Keep it until then.
-  const upstreamErrors = new Map<string, { code?: string; message?: string }>();
-  await server.on(
-    'rule-event',
-    (event: mockttp.RuleEvent<{ error?: { code?: string; message?: string } }>) => {
-      if (event.eventType !== 'passthrough-abort' || !store.get(event.requestId)) return;
-      upstreamErrors.set(event.requestId, event.eventData.error ?? {});
-    },
-  );
-
   await server.on('abort', (req) => {
+    finishBody(req.id, 'request', false);
+    finishBody(req.id, 'response', false);
     const upstream = upstreamErrors.get(req.id);
     upstreamErrors.delete(req.id);
+    const partial = answered.has(req.id);
+    answered.delete(req.id);
+    brokenMidBody.delete(req.id);
     update(req.id, (existing) => ({
       ...existing,
       summary: {
         ...existing.summary,
-        failure: upstream?.code
-          ? describeFailure(upstream.code, existing.summary.host, upstream.message)
-          : describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message),
+        failure: !upstream?.code
+          ? describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
+          : partial
+            ? describePartialFailure(upstream.code, existing.summary.host, upstream.message)
+            : describeFailure(upstream.code, existing.summary.host, upstream.message),
       },
       timing: timingOf(req.timingEvents),
     }));

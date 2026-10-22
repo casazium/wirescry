@@ -10,6 +10,8 @@ export interface ExchangeFailure {
   message: string;
   /** The original error message, if there was one. */
   detail?: string;
+  /** True if the server had started responding before the connection broke. */
+  partial?: boolean;
 }
 
 export const FAILURE_LABELS: Record<FailureKind, string> = {
@@ -69,6 +71,15 @@ export function describeFailure(code: string, target: string, detail?: string): 
     return make('tls', `TLS failed with ${target}.`);
   }
   return make('other', `The request to ${target} failed (${code}).`);
+}
+
+/** For a response that started arriving and then broke off. */
+export function describePartialFailure(code: string, target: string, detail?: string): ExchangeFailure {
+  return {
+    ...describeFailure(code, target, detail),
+    message: `The connection to ${target} broke part way through the response (${code}).`,
+    partial: true,
+  };
 }
 
 /** Reads the error code from Mockttp's `passthrough-error:CODE` tag, if present. */
