@@ -15,6 +15,8 @@ This is an early Stage 1 skeleton. See [FEATURES.md](FEATURES.md) for the full p
 npm install
 ```
 
+Electron downloads its binary the first time it runs, so the first `npm run dev` takes a little longer.
+
 ## Run
 
 ```bash
