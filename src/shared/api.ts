@@ -102,6 +102,11 @@ export interface CertificateInfo {
   path: string;
 }
 
+export interface TerminalInfo {
+  id: string;
+  name: string;
+}
+
 export interface ProxyStatus {
   proxyPort: number;
   /** The port the user chose, or null to pick one automatically. */
@@ -110,6 +115,12 @@ export interface ProxyStatus {
   browsers: BrowserInfo[];
   /** Whether Leverframe's Firefox profile trusts the current certificate. */
   firefoxTrusted: boolean;
+  /** The operating system the backend runs on. */
+  platform: 'darwin' | 'win32' | 'linux' | 'other';
+  /** Terminals Leverframe can open with interception set up. */
+  terminals: TerminalInfo[];
+  /** The variables those terminals get, for setting up an existing terminal by hand. */
+  terminalEnv: Record<string, string>;
 }
 
 /** Messages the backend pushes to the UI. */
@@ -132,6 +143,7 @@ export type ClientCommand =
   /** A port from 1024 to 65535, or null to pick one automatically. */
   | { id: number; command: 'setProxyPort'; port: number | null }
   | { id: number; command: 'resetCertificate' }
+  | { id: number; command: 'launchTerminal'; terminalId: string }
   | { id: number; command: 'getExchange'; exchangeId: string }
   | { id: number; command: 'getBody'; exchangeId: string; side: BodySide }
   | { id: number; command: 'formatBody'; exchangeId: string; side: BodySide };

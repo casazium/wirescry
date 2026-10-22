@@ -15,6 +15,9 @@ import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
 import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
+import { writeCABundle } from './ca-bundle';
+import { detectTerminals, launchTerminal } from './terminals';
+import { terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
 import {
   deleteFirefoxProfile,
@@ -62,6 +65,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     maxBodySize: options.maxBodySize,
   });
   const browsers = await detectBrowsers();
+  const terminals = await detectTerminals();
+  let bundlePath = await writeCABundle(dataDir, ca.cert);
   const formatter = new Formatter();
   let firefoxTrusted = await isProfileTrusted(firefoxProfile, ca.spkiFingerprint);
 
@@ -87,7 +92,16 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
     browsers: browsers.map(({ id, name, kind }) => ({ id, name, kind })),
     firefoxTrusted,
+    platform:
+      process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux'
+        ? process.platform
+        : 'other',
+    terminals: terminals.map(({ id, name }) => ({ id, name })),
+    terminalEnv: currentTerminalEnv(),
   });
+
+  const currentTerminalEnv = (): Record<string, string> =>
+    terminalEnv(proxy.port, { caPath: ca.certPath, bundlePath });
 
   const openProxy = (port: number | undefined): Promise<RunningProxy> =>
     startProxy({
@@ -150,6 +164,15 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         }
         return undefined;
       }
+      case 'launchTerminal': {
+        const terminal = terminals.find((t) => t.id === command.terminalId);
+        if (!terminal) throw new Error(`Terminal not found: ${command.terminalId}`);
+        await launchTerminal(terminal, currentTerminalEnv(), {
+          scriptDir: path.join(dataDir, 'terminal'),
+          proxyAddress: `127.0.0.1:${proxy.port}`,
+        });
+        return undefined;
+      }
       case 'clear':
         updates.reset();
         store.clear();
@@ -185,6 +208,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'resetCertificate':
         return exclusive(async () => {
           ca = await resetCA(dataDir);
+          bundlePath = await writeCABundle(dataDir, ca.cert);
           // The old Firefox profile trusts the old CA; start it over.
           await deleteFirefoxProfile(firefoxProfile);
           firefoxTrusted = false;
