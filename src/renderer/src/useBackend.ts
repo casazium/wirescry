@@ -67,6 +67,9 @@ export function useBackend(): BackendView {
         case 'paused':
           setPaused(message.paused);
           break;
+        case 'status':
+          setStatus(message.status);
+          break;
       }
     };
 

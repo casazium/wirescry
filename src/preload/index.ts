@@ -7,6 +7,7 @@ import { IPC, type BackendState, type LeverframeBridge } from '../shared/ipc';
  */
 const api: LeverframeBridge = {
   getBackendState: () => ipcRenderer.invoke(IPC.getBackendState),
+  exportCertificate: () => ipcRenderer.invoke(IPC.exportCertificate),
   onBackendStateChanged(callback) {
     const listener = (_event: IpcRendererEvent, state: BackendState): void => callback(state);
     ipcRenderer.on(IPC.backendStateChanged, listener);

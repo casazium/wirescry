@@ -24,11 +24,19 @@ export type BackendState =
 export const IPC = {
   getBackendState: 'leverframe:get-backend-state',
   backendStateChanged: 'leverframe:backend-state-changed',
+  exportCertificate: 'leverframe:export-certificate',
 } as const;
+
+/** Where the certificate was saved, or undefined if the user cancelled. */
+export interface ExportResult {
+  path?: string;
+}
 
 /** The API the preload script exposes to the UI as `window.leverframe`. */
 export interface LeverframeBridge {
   getBackendState(): Promise<BackendState>;
   /** Returns a function that unsubscribes. */
   onBackendStateChanged(callback: (state: BackendState) => void): () => void;
+  /** Asks where to save the CA certificate, then saves it. */
+  exportCertificate(): Promise<ExportResult>;
 }
