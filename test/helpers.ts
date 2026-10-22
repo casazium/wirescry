@@ -126,3 +126,20 @@ export function rejectedStatus(ws: WebSocket): Promise<number> {
     ws.once('error', () => undefined);
   });
 }
+
+/** Plain HTTP request through the proxy. */
+export function httpViaProxy(
+  proxyPort: number,
+  url: string,
+): Promise<{ status: number; type?: string; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: proxyPort, path: url }, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => (body += chunk));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, type: res.headers['content-type'], body }));
+    });
+    req.once('error', reject);
+    req.end();
+  });
+}

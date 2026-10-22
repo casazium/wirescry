@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ExchangeSummary } from '../src/shared/api';
 import { exchangeType } from '../src/shared/exchange-type';
+import { describeFailure } from '../src/shared/failure';
 import { matchesFilter } from '../src/shared/filter';
 import { ExchangeList } from '../src/renderer/src/exchange-list';
 
@@ -53,7 +54,13 @@ describe('matchesFilter', () => {
     expect(matchesFilter(exchange(), '', 'image')).toBe(false);
     expect(matchesFilter(exchange({ contentType: 'application/xml' }), '', 'other')).toBe(true);
     expect(matchesFilter(exchange({ status: 503 }), '', 'errors')).toBe(true);
-    expect(matchesFilter(exchange({ status: undefined, error: 'ECONNREFUSED' }), '', 'errors')).toBe(true);
+    expect(
+      matchesFilter(
+        exchange({ status: undefined, failure: describeFailure('ECONNREFUSED', 'api.example.com') }),
+        '',
+        'errors',
+      ),
+    ).toBe(true);
     expect(matchesFilter(exchange({ status: 304 }), '', 'errors')).toBe(false);
   });
 });
