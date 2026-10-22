@@ -3,6 +3,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { utilityProcess, type UtilityProcess } from 'electron';
 import type { BackendMessage, BackendStartMessage, BackendState } from '../shared/ipc';
+import { lineSplitter, type FileLogger } from './logger';
 
 const MAX_RESTARTS = 5;
 const RESTART_WINDOW_MS = 60_000;
@@ -19,7 +20,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private restarts: number[] = [];
   private current: BackendState = { state: 'starting' };
 
-  constructor(private readonly options: { dataDir: string; allowedOrigins: string[] }) {
+  constructor(private readonly options: { dataDir: string; allowedOrigins: string[]; logger?: FileLogger }) {
     super();
   }
 
@@ -31,9 +32,25 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     this.setState({ state: 'starting' });
     const child = utilityProcess.fork(path.join(__dirname, 'backend.js'), [], {
       serviceName: 'Leverframe Backend',
-      stdio: 'inherit',
+      stdio: 'pipe',
     });
     this.child = child;
+    // Send the backend's output to the log file, and to the terminal during development.
+    const logger = this.options.logger;
+    child.stdout?.on(
+      'data',
+      lineSplitter((line) => {
+        logger?.write('backend', 'info', line);
+        process.stdout.write(line + '\n');
+      }),
+    );
+    child.stderr?.on(
+      'data',
+      lineSplitter((line) => {
+        logger?.write('backend', 'error', line);
+        process.stderr.write(line + '\n');
+      }),
+    );
 
     child.on('message', (message: BackendMessage) => {
       if (message.type === 'ready') {

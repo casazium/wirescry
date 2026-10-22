@@ -1,6 +1,6 @@
 import { app, Menu, type MenuItemConstructorOptions } from 'electron';
 
-export function buildMenu(): Menu {
+export function buildMenu(actions: { showLogFile(): void }): Menu {
   const isMac = process.platform === 'darwin';
   const template: MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: 'appMenu' as const }] : []),
@@ -21,6 +21,10 @@ export function buildMenu(): Menu {
       ],
     },
     { role: 'windowMenu' },
+    {
+      role: 'help',
+      submenu: [{ label: 'Show Log File', click: () => actions.showLogFile() }],
+    },
   ];
   return Menu.buildFromTemplate(template);
 }

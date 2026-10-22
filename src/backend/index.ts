@@ -25,6 +25,16 @@ parentPort.on('message', async ({ data }: { data: BackendStartMessage }) => {
   }
 });
 
+// Report crashes on stderr, which the main process writes to the log, then exit so the
+// supervisor restarts the backend.
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error.stack ?? error);
+  process.exit(1);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled rejection:', (reason as Error)?.stack ?? reason);
+});
+
 const shutdown = async (): Promise<void> => {
   await backend?.stop().catch(() => undefined);
   process.exit(0);

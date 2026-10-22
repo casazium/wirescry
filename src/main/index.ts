@@ -1,10 +1,33 @@
-import path from 'node:path';
 import { copyFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { format } from 'node:util';
 import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } from 'electron';
 import { IPC, type BackendState, type ExportResult } from '../shared/ipc';
 import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './app-protocol';
 import { BackendSupervisor } from './backend-supervisor';
+import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
+
+// Errors and warnings from every part of the app go to one local file, for support and debugging.
+const logger = new FileLogger(app.getPath('logs'));
+for (const [method, level] of [
+  ['log', 'info'],
+  ['info', 'info'],
+  ['warn', 'warn'],
+  ['error', 'error'],
+] as const) {
+  const original = console[method].bind(console);
+  console[method] = (...args: unknown[]) => {
+    original(...args);
+    logger.write('main', level, format(...args));
+  };
+}
+process.on('uncaughtException', (error) => console.error('Uncaught exception:', error));
+process.on('unhandledRejection', (reason) => console.error('Unhandled rejection:', reason));
+console.log(
+  `Leverframe ${app.getVersion()} starting (Electron ${process.versions.electron}, ${process.platform} ${os.release()} ${process.arch})`,
+);
 
 // Set by electron-vite while running `npm run dev`.
 const devServerUrl = app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL;
@@ -33,7 +56,9 @@ let mainWindow: BrowserWindow | undefined;
 const backend = new BackendSupervisor({
   dataDir: app.getPath('userData'),
   allowedOrigins: [uiOrigin],
+  logger,
 });
+logger.addSecret(backend.token);
 
 function isFromOurUi(url: string): boolean {
   try {
@@ -65,6 +90,22 @@ function createWindow(): void {
   mainWindow = window;
 
   window.once('ready-to-show', () => window.show());
+
+  // Renderer errors and warnings, including uncaught exceptions, go to the log too.
+  window.webContents.on('console-message', (details) => {
+    const level: LogLevel | undefined =
+      details.level === 'error' ? 'error' : details.level === 'warning' ? 'warn' : undefined;
+    if (level)
+      logger.write('renderer', level, `${details.message} (${details.sourceId}:${details.lineNumber})`);
+  });
+  window.webContents.on('render-process-gone', (_event, details) => {
+    logger.write(
+      'renderer',
+      'error',
+      `Renderer process gone: ${details.reason} (exit code ${details.exitCode})`,
+    );
+  });
+  window.on('unresponsive', () => logger.write('renderer', 'warn', 'Window stopped responding'));
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined;
   });
@@ -86,7 +127,14 @@ app.on('web-contents-created', (_event, contents) => {
 });
 
 app.whenReady().then(() => {
-  Menu.setApplicationMenu(buildMenu());
+  Menu.setApplicationMenu(
+    buildMenu({
+      showLogFile: () => {
+        logger.flush();
+        shell.showItemInFolder(logger.file);
+      },
+    }),
+  );
 
   // The UI may write to the clipboard (copy URL, copy as curl) and nothing else: no camera, notifications, etc.
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
@@ -142,3 +190,4 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => backend.stop());
+app.on('will-quit', () => logger.close());
