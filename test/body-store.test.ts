@@ -24,7 +24,10 @@ describe('HybridBodyStore', () => {
     await store.put('small', 'request', Buffer.from('tiny'));
     await store.put('large', 'response', Buffer.from('this is more than ten bytes'));
     expect(await readdir(dir)).toEqual(['large.response']);
-    expect((await stat(path.join(dir, 'large.response'))).mode & 0o077).toBe(0);
+    // Windows doesn't use Unix permission bits.
+    if (process.platform !== 'win32') {
+      expect((await stat(path.join(dir, 'large.response'))).mode & 0o077).toBe(0);
+    }
     expect((await store.get('small', 'request'))?.toString()).toBe('tiny');
     expect((await store.get('large', 'response'))?.toString()).toBe('this is more than ten bytes');
     expect(await store.get('large', 'request')).toBeUndefined();

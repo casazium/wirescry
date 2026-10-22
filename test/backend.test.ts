@@ -174,7 +174,8 @@ describe('backend', () => {
 
   it('creates a CA in the data folder with a private key only the user can read', async () => {
     const keyStat = await stat(path.join(dataDir, 'ca.key'));
-    expect(keyStat.mode & 0o077).toBe(0);
+    // Windows doesn't use Unix permission bits.
+    if (process.platform !== 'win32') expect(keyStat.mode & 0o077).toBe(0);
     const cert = await readFile(backend.caCertPath, 'utf8');
     expect(cert).toContain('BEGIN CERTIFICATE');
   });
