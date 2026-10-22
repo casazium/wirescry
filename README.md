@@ -82,7 +82,12 @@ Security basics:
 - **Local API:** listens on `127.0.0.1` only. Each connection needs the secret token generated at launch, an allowed `Origin`, and a loopback `Host` header (which blocks DNS rebinding).
 - **Renderer:** `contextIsolation` and `sandbox` on, `nodeIntegration` off, a strict Content Security Policy, and no navigation, new windows or permission requests. Packaged builds serve the UI from `leverframe://app`.
 
-Captured traffic sits behind the `RequestStore` interface in `src/backend/store.ts`, so large bodies can move to disk later.
+Captured traffic is split in two:
+
+- `RequestStore` (`src/backend/store.ts`) holds each exchange's summary, headers and timing, in memory.
+- `BodyStore` (`src/backend/body-store.ts`) holds bodies. Bodies up to 64 KB stay in memory; larger ones are written to `bodies/` in the user data folder, which is emptied on every start and on Clear. Bodies over 100 MB aren't captured, though the traffic still passes through.
+
+The UI fetches headers and bodies only for the exchange you select. Bodies are decoded (gzip, deflate, brotli, zstd) in the backend, and the UI gets at most the first 5 MB.
 
 ## Notes
 
