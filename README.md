@@ -25,6 +25,8 @@ npm run dev
 
 This opens the Leverframe window with hot reload. The toolbar shows the proxy port (usually `8000`), and requests appear in the list as they pass through.
 
+The list stays fast with thousands of requests and keeps the most recent 10,000. Search with Cmd/Ctrl+F, narrow it with the quick filters (JSON, HTML, Errors and so on), and use **Pause** to let traffic through without recording it. Click a request, or use the arrow keys, to see its headers and bodies.
+
 To send traffic through it:
 
 - **Browser:** click **Launch** to open Chrome, Chromium, Edge or Brave with a fresh temporary profile that uses the proxy and trusts Leverframe's certificate. The profile is deleted when the browser closes.

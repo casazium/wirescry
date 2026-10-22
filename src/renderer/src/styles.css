@@ -123,77 +123,11 @@ button:disabled {
   border-bottom: 1px solid var(--border);
 }
 
-.list {
-  flex: 1;
-  overflow: auto;
-}
-
-table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 4px 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-th {
-  position: sticky;
-  top: 0;
-  background: var(--bg);
-  border-bottom: 1px solid var(--border);
-  font-weight: 600;
-  color: var(--muted);
-}
-
-tbody tr:nth-child(even) {
-  background: var(--bg-alt);
-}
-
-.col-method {
-  width: 80px;
-  font-weight: 600;
-}
-
-.col-status {
-  width: 70px;
-  font-variant-numeric: tabular-nums;
-}
-
-.col-host {
-  width: 28%;
-}
-
-.col-path {
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-}
-
-.status.ok {
-  color: var(--ok);
-}
-.status.warn {
-  color: var(--warn);
-}
-.status.error {
-  color: var(--error);
-}
-.status.redirect {
-  color: var(--redirect);
-}
-.status.pending {
-  color: var(--muted);
-}
-
 .empty {
+  position: absolute;
+  inset: 48px 0 auto;
   color: var(--muted);
   text-align: center;
-  margin-top: 48px;
 }
 
 .main {
@@ -202,17 +136,132 @@ tbody tr:nth-child(even) {
   min-height: 0;
 }
 
-.list:focus {
+.filterbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+input.search {
+  font: inherit;
+  width: 260px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+input.search:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.chips {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+button.chip {
+  background: transparent;
+  color: var(--muted);
+  border-color: transparent;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+button.chip:hover {
+  color: var(--fg);
+}
+
+button.chip.active {
+  color: var(--fg);
+  background: var(--selected);
+}
+
+.count {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pill.paused {
+  color: var(--warn);
+  border-color: currentColor;
+}
+
+/* Traffic list: a grid of fixed-height rows; only visible rows are rendered. */
+.traffic {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.traffic-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  position: relative;
+  scrollbar-gutter: stable;
+}
+
+.traffic-scroll:focus {
   outline: none;
 }
 
-tbody tr {
+.traffic .row {
+  display: grid;
+  grid-template-columns: 56px 48px 48px minmax(60px, 0.6fr) minmax(80px, 1.4fr) 64px 64px;
+  align-items: center;
+  height: 24px;
+  padding: 0 12px;
+  gap: 12px;
+}
+
+.traffic .row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.traffic .row.header {
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  scrollbar-gutter: stable;
+  overflow: hidden;
+}
+
+.traffic-scroll .row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   cursor: default;
 }
 
-tbody tr.selected,
-tbody tr.selected:nth-child(even) {
+.traffic-scroll .row.odd {
+  background: var(--bg-alt);
+}
+
+.traffic-scroll .row.selected {
   background: var(--selected);
+}
+
+.traffic .method {
+  font-weight: 600;
+}
+
+.traffic .path {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.traffic .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 .detail {
@@ -291,6 +340,8 @@ button.icon {
 }
 
 table.headers {
+  width: 100%;
+  border-collapse: collapse;
   table-layout: auto;
 }
 
@@ -305,8 +356,7 @@ table.headers td {
 }
 
 table.headers th {
-  position: static;
-  border: none;
+  text-align: left;
   color: var(--muted);
   font-weight: 500;
   width: 1%;
@@ -366,4 +416,20 @@ pre.code.hex {
 
 .note.error {
   color: var(--error);
+}
+
+.status.ok {
+  color: var(--ok);
+}
+.status.warn {
+  color: var(--warn);
+}
+.status.error {
+  color: var(--error);
+}
+.status.redirect {
+  color: var(--redirect);
+}
+.status.pending {
+  color: var(--muted);
 }

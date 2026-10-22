@@ -18,6 +18,10 @@ export interface ExchangeSummary {
   statusMessage?: string;
   /** Milliseconds from request start to response complete. */
   durationMs?: number;
+  /** The response's media type without parameters, e.g. `application/json`. */
+  contentType?: string;
+  /** Response body size on the wire, in bytes. */
+  responseSize?: number;
   /** Set if the exchange failed before a response arrived. */
   error?: string;
 }
@@ -80,9 +84,11 @@ export interface ProxyStatus {
 
 /** Messages the backend pushes to the UI. */
 export type ServerMessage =
-  | { type: 'hello'; status: ProxyStatus; exchanges: ExchangeSummary[] }
-  | { type: 'exchange'; exchange: ExchangeSummary }
+  | { type: 'hello'; status: ProxyStatus; exchanges: ExchangeSummary[]; paused: boolean }
+  /** New or changed exchanges, batched. `removed` lists ids dropped to stay under the store's limit. */
+  | { type: 'exchanges'; exchanges: ExchangeSummary[]; removed: string[] }
   | { type: 'cleared' }
+  | { type: 'paused'; paused: boolean }
   | { type: 'result'; id: number; ok: true; value?: unknown }
   | { type: 'result'; id: number; ok: false; error: string };
 
@@ -90,6 +96,7 @@ export type ServerMessage =
 export type ClientCommand =
   | { id: number; command: 'launchBrowser'; browserId: string }
   | { id: number; command: 'clear' }
+  | { id: number; command: 'setPaused'; paused: boolean }
   | { id: number; command: 'getExchange'; exchangeId: string }
   | { id: number; command: 'getBody'; exchangeId: string; side: BodySide };
 

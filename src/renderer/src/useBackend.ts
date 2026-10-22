@@ -2,21 +2,24 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExchangeSummary, ProxyStatus, ServerMessage } from '../../shared/api';
 import type { BackendState } from '../../shared/ipc';
 import { ApiClient, type Command } from './api-client';
+import { ExchangeList } from './exchange-list';
 
 export interface BackendView {
   backendState: BackendState;
   connected: boolean;
   status?: ProxyStatus;
   exchanges: ExchangeSummary[];
+  paused: boolean;
   send(command: Command): Promise<unknown>;
 }
 
-/** Connects to the backend and keeps a live list of exchanges. */
+/** Connects to the backend and keeps a live list of exchanges, re-rendering at most once per frame. */
 export function useBackend(): BackendView {
   const [backendState, setBackendState] = useState<BackendState>({ state: 'starting' });
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState<ProxyStatus>();
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
+  const [paused, setPaused] = useState(false);
   const clientRef = useRef<ApiClient | undefined>(undefined);
 
   useEffect(() => {
@@ -35,33 +38,34 @@ export function useBackend(): BackendView {
 
   useEffect(() => {
     if (!connection) return;
-    // Index of each exchange in the list, so updates replace rows in place.
-    let positions = new Map<string, number>();
+    const list = new ExchangeList();
+    let frame: number | undefined;
+    const render = (): void => {
+      frame ??= requestAnimationFrame(() => {
+        frame = undefined;
+        setExchanges(list.snapshot());
+      });
+    };
 
     const onMessage = (message: ServerMessage): void => {
       switch (message.type) {
         case 'hello':
           setStatus(message.status);
-          positions = new Map(message.exchanges.map((e, i) => [e.id, i]));
-          setExchanges(message.exchanges);
+          setPaused(message.paused);
+          list.reset(message.exchanges);
+          render();
           setConnected(true);
           break;
-        case 'exchange':
-          setExchanges((list) => {
-            const index = positions.get(message.exchange.id);
-            const next = [...list];
-            if (index === undefined) {
-              positions.set(message.exchange.id, next.length);
-              next.push(message.exchange);
-            } else {
-              next[index] = message.exchange;
-            }
-            return next;
-          });
+        case 'exchanges':
+          list.apply(message.exchanges, message.removed);
+          render();
           break;
         case 'cleared':
-          positions = new Map();
-          setExchanges([]);
+          list.reset([]);
+          render();
+          break;
+        case 'paused':
+          setPaused(message.paused);
           break;
       }
     };
@@ -69,6 +73,7 @@ export function useBackend(): BackendView {
     const client = new ApiClient(connection, onMessage, () => setConnected(false));
     clientRef.current = client;
     return () => {
+      if (frame !== undefined) cancelAnimationFrame(frame);
       client.close();
       clientRef.current = undefined;
     };
@@ -79,5 +84,5 @@ export function useBackend(): BackendView {
     return client ? client.send(command) : Promise.reject(new Error('Not connected'));
   }, []);
 
-  return { backendState, connected, status, exchanges, send };
+  return { backendState, connected, status, exchanges, paused, send };
 }

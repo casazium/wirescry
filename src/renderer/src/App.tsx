@@ -1,34 +1,41 @@
-import { useEffect, useRef, useState } from 'react';
-import type { ExchangeSummary } from '../../shared/api';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { matchesFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
 import { DetailPane } from './DetailPane';
+import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
 
-function statusClass(exchange: ExchangeSummary): string {
-  if (exchange.error) return 'status error';
-  if (exchange.status === undefined) return 'status pending';
-  if (exchange.status >= 500) return 'status error';
-  if (exchange.status >= 400) return 'status warn';
-  if (exchange.status >= 300) return 'status redirect';
-  return 'status ok';
-}
-
 export function App(): React.JSX.Element {
-  const { backendState, connected, status, exchanges, send } = useBackend();
+  const { backendState, connected, status, exchanges, paused, send } = useBackend();
   const [message, setMessage] = useState<string>();
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string>();
-  const selectedIndex = selectedId ? exchanges.findIndex((e) => e.id === selectedId) : -1;
-  const selected = selectedIndex >= 0 ? exchanges[selectedIndex] : undefined;
-  const listRef = useRef<HTMLDivElement>(null);
-  const stickToBottom = useRef(true);
+  const [search, setSearch] = useState('');
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
+  const searchRef = useRef<HTMLInputElement>(null);
+
+  // Typing stays responsive while a large list is re-filtered.
+  const deferredSearch = useDeferredValue(search);
+  const rows = useMemo(
+    () => exchanges.filter((e) => matchesFilter(e, deferredSearch, quickFilter)),
+    [exchanges, deferredSearch, quickFilter],
+  );
+  const selected = selectedId ? exchanges.find((e) => e.id === selectedId) : undefined;
 
   const browsers = status?.browsers ?? [];
   const browserId = selectedBrowser || browsers[0]?.id || '';
 
+  // Cmd/Ctrl+F focuses the search box.
   useEffect(() => {
-    const list = listRef.current;
-    if (list && stickToBottom.current && !selectedId) list.scrollTop = list.scrollHeight;
-  }, [exchanges, selectedId]);
+    const onKey = (event: KeyboardEvent): void => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault();
+        searchRef.current?.focus();
+        searchRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const onListKey = (event: React.KeyboardEvent): void => {
     if (event.key === 'Escape') {
@@ -37,14 +44,10 @@ export function App(): React.JSX.Element {
     }
     if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
     event.preventDefault();
+    const current = selectedId ? rows.findIndex((e) => e.id === selectedId) : -1;
     const step = event.key === 'ArrowDown' ? 1 : -1;
-    const next = exchanges[Math.min(exchanges.length - 1, Math.max(0, selectedIndex + step))];
-    if (next) {
-      setSelectedId(next.id);
-      listRef.current
-        ?.querySelector(`[data-id="${CSS.escape(next.id)}"]`)
-        ?.scrollIntoView({ block: 'nearest' });
-    }
+    const next = rows[Math.min(rows.length - 1, Math.max(0, current + step))];
+    if (next) setSelectedId(next.id);
   };
 
   const launch = async (): Promise<void> => {
@@ -61,6 +64,8 @@ export function App(): React.JSX.Element {
   else if (!connected) stateLabel = 'Connecting…';
   else stateLabel = `Proxy on 127.0.0.1:${status?.proxyPort}`;
 
+  const filtered = search.trim() !== '' || quickFilter !== 'all';
+
   return (
     <div className="app">
       <header className="toolbar">
@@ -68,6 +73,7 @@ export function App(): React.JSX.Element {
         <span className={`pill ${connected ? 'live' : ''}`} data-testid="proxy-status">
           {stateLabel}
         </span>
+        {paused && <span className="pill paused">Recording paused</span>}
         <div className="spacer" />
         {browsers.length > 0 ? (
           <>
@@ -91,66 +97,80 @@ export function App(): React.JSX.Element {
         ) : (
           <span className="muted">No Chrome-family browser found</span>
         )}
+      </header>
+
+      <div className="filterbar">
+        <input
+          ref={searchRef}
+          type="search"
+          className="search"
+          placeholder="Search URL, method, status…"
+          aria-label="Search traffic"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') setSearch('');
+          }}
+        />
+        <div className="chips" role="radiogroup" aria-label="Quick filter">
+          {QUICK_FILTERS.map((f) => (
+            <button
+              key={f.id}
+              type="button"
+              role="radio"
+              aria-checked={quickFilter === f.id}
+              className={`chip ${quickFilter === f.id ? 'active' : ''}`}
+              onClick={() => setQuickFilter(f.id)}
+            >
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <div className="spacer" />
+        <span className="muted count" data-testid="row-count">
+          {filtered
+            ? `${rows.length.toLocaleString()} of ${exchanges.length.toLocaleString()}`
+            : `${exchanges.length.toLocaleString()} requests`}
+        </span>
         <button
           type="button"
           className="secondary"
-          onClick={() => void send({ command: 'clear' })}
+          aria-pressed={paused}
+          onClick={() => void send({ command: 'setPaused', paused: !paused })}
+          disabled={!connected}
+        >
+          {paused ? 'Resume' : 'Pause'}
+        </button>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => {
+            setSelectedId(undefined);
+            void send({ command: 'clear' });
+          }}
           disabled={!connected}
         >
           Clear
         </button>
-      </header>
+      </div>
 
       {backendState.state === 'failed' && <div className="banner error">{backendState.message}</div>}
       {message && <div className="banner error">{message}</div>}
 
       <div className="main">
-        <div
-          className="list"
-          ref={listRef}
-          tabIndex={0}
+        <TrafficList
+          rows={rows}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
           onKeyDown={onListKey}
-          onScroll={(e) => {
-            const el = e.currentTarget;
-            stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-          }}
-        >
-          <table>
-            <thead>
-              <tr>
-                <th className="col-method">Method</th>
-                <th className="col-status">Status</th>
-                <th className="col-host">Host</th>
-                <th>Path</th>
-              </tr>
-            </thead>
-            <tbody>
-              {exchanges.map((e) => (
-                <tr
-                  key={e.id}
-                  data-id={e.id}
-                  data-testid="exchange-row"
-                  className={e.id === selectedId ? 'selected' : undefined}
-                  onClick={() => setSelectedId(e.id === selectedId ? undefined : e.id)}
-                >
-                  <td className="col-method">{e.method}</td>
-                  <td className={`col-status ${statusClass(e)}`} title={e.error ?? e.statusMessage}>
-                    {e.error ? 'Failed' : (e.status ?? '…')}
-                  </td>
-                  <td className="col-host">{e.host}</td>
-                  <td className="col-path" title={e.url}>
-                    {e.path}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {connected && exchanges.length === 0 && (
-            <p className="empty">
-              No traffic yet. Launch a browser, or send requests through 127.0.0.1:{status?.proxyPort}.
-            </p>
-          )}
-        </div>
+          empty={
+            !connected ? null : exchanges.length === 0 ? (
+              <>No traffic yet. Launch a browser, or send requests through 127.0.0.1:{status?.proxyPort}.</>
+            ) : (
+              <>No requests match the current search or filter.</>
+            )
+          }
+        />
         {selected && <DetailPane summary={selected} send={send} onClose={() => setSelectedId(undefined)} />}
       </div>
     </div>
