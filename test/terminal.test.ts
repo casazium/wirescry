@@ -148,9 +148,14 @@ describe('terminal interception', () => {
   });
 
   // Go on Windows reads only the Windows certificate store, so it needs the CA installed there.
-  it.skipIf(!go || process.platform === 'win32')('Go net/http', async () => {
-    await expectIntercepted(go!, ['run', goFile, `${URL}?from=go`], 'go');
-  });
+  // The first `go run` compiles, which can take a while on a fresh machine.
+  it.skipIf(!go || process.platform === 'win32')(
+    'Go net/http',
+    async () => {
+      await expectIntercepted(go!, ['run', goFile, `${URL}?from=go`], 'go');
+    },
+    180_000,
+  );
 
   it.skipIf(!hasPhpCurl)('PHP curl', async () => {
     await expectIntercepted(
@@ -163,6 +168,64 @@ describe('terminal interception', () => {
       'php',
     );
   });
+});
+
+// TEMPORARY: prints how PHP and curl see the setup in CI. Remove once the fixes are in.
+describe('DIAGNOSTIC', () => {
+  it('prints tool details', async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-diag-'));
+    const backend = await startBackend({ dataDir, token: TOKEN, allowedOrigins: [UI_ORIGIN] });
+    const api = await apiClient(backend.apiPort);
+    const status = (api.messages[0] as { status: ProxyStatus }).status;
+    const env = childEnv(process.env, status.terminalEnv);
+    const run = async (label: string, command: string | undefined, args: string[]): Promise<void> => {
+      if (!command) return console.log(`DIAG ${label}: not installed`);
+      try {
+        const { stdout, stderr } = await exec(command, args, { env, timeout: 60_000 });
+        console.log(`DIAG ${label}: OK\n${stdout.slice(0, 1500)}\n${stderr.slice(0, 1500)}`);
+      } catch (e) {
+        const err = e as { stdout?: string; stderr?: string; message: string };
+        console.log(
+          `DIAG ${label}: FAILED ${err.message.slice(0, 300)}\n${(err.stdout ?? '').slice(0, 1500)}\n${(err.stderr ?? '').slice(0, 2500)}`,
+        );
+      }
+    };
+    await run('curl -V', curl, ['-V']);
+    await run('curl env -v', curl, ['-sS', '-v', '-o', os.devNull, URL]);
+    await run('curl --cacert bundle', curl, [
+      '-sS',
+      '-o',
+      os.devNull,
+      '-w',
+      '%{http_code}',
+      '--cacert',
+      status.terminalEnv.SSL_CERT_FILE!,
+      URL,
+    ]);
+    await run('curl --cacert ca', curl, [
+      '-sS',
+      '-o',
+      os.devNull,
+      '-w',
+      '%{http_code}',
+      '--cacert',
+      status.terminalEnv.NODE_EXTRA_CA_CERTS!,
+      URL,
+    ]);
+    await run('php curl error', php, [
+      '-r',
+      '$c = curl_init($argv[1]); curl_setopt($c, CURLOPT_RETURNTRANSFER, true); $r = curl_exec($c); echo curl_getinfo($c, CURLINFO_HTTP_CODE), " | ", curl_error($c), " | ", json_encode(curl_version());',
+      URL,
+    ]);
+    await run('php ini', php, [
+      '-r',
+      'echo php_ini_loaded_file(), " | scanned: ", php_ini_scanned_files(), " | curl.cainfo=", ini_get("curl.cainfo"), " | openssl.cafile=", ini_get("openssl.cafile"), " | ", json_encode(openssl_get_cert_locations());',
+    ]);
+    await run('php --ini', php, ['--ini']);
+    api.close();
+    await backend.stop();
+    await rm(dataDir, { recursive: true, force: true });
+  }, 120_000);
 });
 
 describe('terminal setup', () => {
