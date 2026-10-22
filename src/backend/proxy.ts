@@ -13,6 +13,8 @@ export interface ProxyOptions {
   bodies: BodyStore;
   /** Called whenever an exchange is added or updated. */
   onExchange: (exchange: ExchangeDetail) => void;
+  /** While this returns true, new exchanges pass through but aren't recorded. */
+  isPaused?: () => boolean;
   /** Fixed port. Picks a free one if omitted. */
   port?: number;
   /** Extra CAs to trust for upstream servers (PEM). */
@@ -50,6 +52,11 @@ function bodyInfo(buffer: Buffer, headers: mockttp.Headers): BodyInfo {
   return { size: buffer.length };
 }
 
+function mediaType(header: string | string[] | undefined): string | undefined {
+  const value = Array.isArray(header) ? header[0] : header;
+  return value?.split(';')[0]?.trim().toLowerCase() || undefined;
+}
+
 export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   const { ca, store, bodies, onExchange } = options;
   const server = mockttp.getLocal({
@@ -70,13 +77,15 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   };
 
   const storeBody = (id: string, side: BodySide, buffer: Buffer): void => {
-    if (buffer.length === 0) return;
+    // Skip empty bodies, and bodies of exchanges that weren't recorded (e.g. while paused).
+    if (buffer.length === 0 || !store.get(id)) return;
     bodies.put(id, side, buffer).catch((error: unknown) => {
       console.error(`[leverframe] could not store ${side} body for ${id}:`, error);
     });
   };
 
   await server.on('request-initiated', (req) => {
+    if (options.isPaused?.()) return;
     save({
       summary: {
         id: req.id,
@@ -116,6 +125,8 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
           responseSentTimestamp !== undefined
             ? Math.round(responseSentTimestamp - startTimestamp)
             : undefined,
+        contentType: mediaType(res.headers['content-type']),
+        responseSize: res.body.buffer.length || Number(res.headers['content-length']) || 0,
       },
       responseHeaders: res.rawHeaders,
       timing: timingOf(res.timingEvents),

@@ -7,6 +7,7 @@ import { detectBrowsers, launchChromium } from './browsers';
 import { loadOrCreateCA } from './ca';
 import { startProxy } from './proxy';
 import { InMemoryRequestStore } from './store';
+import { UpdateBatcher } from './update-batcher';
 
 export interface BackendOptions {
   /** Folder for this install's data, e.g. the CA. */
@@ -34,12 +35,18 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   const bodies = await HybridBodyStore.open(path.join(options.dataDir, 'bodies'), {
     memoryLimit: options.bodyMemoryLimit,
   });
-  const store = new InMemoryRequestStore(10_000, (id) => void bodies.delete(id).catch(() => undefined));
   const browsers = await detectBrowsers();
 
   // The API needs the proxy port and the proxy needs somewhere to send events,
   // so events go through this indirection until the API is up.
   let broadcast: (message: ServerMessage) => void = () => undefined;
+  const updates = new UpdateBatcher((message) => broadcast(message));
+  let paused = false;
+
+  const store = new InMemoryRequestStore(10_000, (id) => {
+    updates.remove(id);
+    void bodies.delete(id).catch(() => undefined);
+  });
 
   const proxy = await startProxy({
     ca,
@@ -47,7 +54,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     bodies,
     port: options.proxyPort,
     upstreamCAs: options.upstreamCAs,
-    onExchange: (exchange) => broadcast({ type: 'exchange', exchange: exchange.summary }),
+    onExchange: (exchange) => updates.change(exchange.summary),
+    isPaused: () => paused,
   });
 
   const handleCommand = async (command: ClientCommand): Promise<unknown> => {
@@ -59,9 +67,14 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         return undefined;
       }
       case 'clear':
+        updates.reset();
         store.clear();
         await bodies.clear();
         broadcast({ type: 'cleared' });
+        return undefined;
+      case 'setPaused':
+        paused = command.paused;
+        broadcast({ type: 'paused', paused });
         return undefined;
       case 'getExchange': {
         const exchange: ExchangeDetail | undefined = store.get(command.exchangeId);
@@ -94,6 +107,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           browsers: browsers.map(({ id, name }) => ({ id, name })),
         },
         exchanges: store.list(),
+        paused,
       }),
       command: handleCommand,
     },
@@ -105,6 +119,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     proxyPort: proxy.port,
     caCertPath: ca.certPath,
     async stop() {
+      updates.reset();
       await Promise.all([api.stop(), proxy.stop()]);
       await bodies.close();
     },
