@@ -9,13 +9,21 @@ export interface TerminalEnvPaths {
   caPath: string;
   /** Leverframe's CA plus the usual public and system roots, for tools that replace their trust store. */
   bundlePath: string;
+  /** Folder holding a PHP .ini file (see phpIniContent). */
+  phpIniDir: string;
+  /** Folder holding a curl config file, used on Windows only (see curlrcContent). */
+  curlHome: string;
 }
+
+export type TerminalPlatform = 'darwin' | 'win32' | 'linux' | 'other';
 
 export function terminalEnv(
   proxyPort: number,
-  { caPath, bundlePath }: TerminalEnvPaths,
+  { caPath, bundlePath, phpIniDir, curlHome }: TerminalEnvPaths,
+  platform: TerminalPlatform,
 ): Record<string, string> {
   const proxy = `http://127.0.0.1:${proxyPort}`;
+  const windows = platform === 'win32';
   return {
     // Most tools read one case or the other (curl reads only lowercase http_proxy).
     HTTP_PROXY: proxy,
@@ -25,14 +33,46 @@ export function terminalEnv(
     // Node.js 24+ (and 22.21+) uses the variables above only when asked.
     NODE_USE_ENV_PROXY: '1',
     NODE_EXTRA_CA_CERTS: caPath,
-    // OpenSSL users: Python, Ruby, PHP, Go on Linux and macOS.
+    // OpenSSL users: Python, Ruby, Go on Linux and macOS.
     SSL_CERT_FILE: bundlePath,
     // Python requests, curl and git each have their own variable.
     REQUESTS_CA_BUNDLE: bundlePath,
     CURL_CA_BUNDLE: bundlePath,
     GIT_SSL_CAINFO: bundlePath,
+    // PHP builds hardcode a CA file that wins over SSL_CERT_FILE, so PHP also reads an
+    // .ini from this folder. The leading separator keeps PHP's usual folder as well.
+    PHP_INI_SCAN_DIR: `${windows ? ';' : ':'}${phpIniDir}`,
+    // curl.exe on Windows ignores CURL_CA_BUNDLE and reads its CA from a config file instead.
+    ...(windows ? { CURL_HOME: curlHome } : {}),
     LEVERFRAME_PROXY: proxy,
   };
+}
+
+/** PHP settings that make the curl extension and stream wrappers trust the bundle. */
+export function phpIniContent(bundlePath: string): string {
+  return [
+    '; Written by Leverframe for terminals it sets up.',
+    `curl.cainfo = "${bundlePath}"`,
+    `openssl.cafile = "${bundlePath}"`,
+    '',
+  ].join('\n');
+}
+
+/**
+ * curl config for Windows terminals. curl.exe there uses Schannel, which ignores
+ * CURL_CA_BUNDLE, and can't check revocation for a local CA that has nowhere to publish
+ * revocation lists, so that check is turned off. Only used inside terminals Leverframe
+ * sets up; the user's own _curlrc isn't read there.
+ */
+export function curlrcContent(bundlePath: string): string {
+  // curl config strings use backslash escapes, so double Windows path separators.
+  const quoted = bundlePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return [
+    '# Written by Leverframe for terminals it sets up.',
+    `cacert = "${quoted}"`,
+    'ssl-no-revoke',
+    '',
+  ].join('\n');
 }
 
 export type ShellKind = 'posix' | 'fish' | 'powershell' | 'cmd';

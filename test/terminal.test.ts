@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { childEnv, detectTerminals, posixStartScript } from '../src/backend/terminals';
 import type { ProxyStatus } from '../src/shared/api';
-import { shellSnippet, terminalEnv } from '../src/shared/terminal-env';
+import { curlrcContent, phpIniContent, shellSnippet, terminalEnv } from '../src/shared/terminal-env';
 import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
 
 const exec = promisify(execFile);
@@ -170,66 +170,14 @@ describe('terminal interception', () => {
   });
 });
 
-// TEMPORARY: prints how PHP and curl see the setup in CI. Remove once the fixes are in.
-describe('DIAGNOSTIC', () => {
-  it('prints tool details', async () => {
-    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-diag-'));
-    const backend = await startBackend({ dataDir, token: TOKEN, allowedOrigins: [UI_ORIGIN] });
-    const api = await apiClient(backend.apiPort);
-    const status = (api.messages[0] as { status: ProxyStatus }).status;
-    const env = childEnv(process.env, status.terminalEnv);
-    const run = async (label: string, command: string | undefined, args: string[]): Promise<void> => {
-      if (!command) return console.log(`DIAG ${label}: not installed`);
-      try {
-        const { stdout, stderr } = await exec(command, args, { env, timeout: 60_000 });
-        console.log(`DIAG ${label}: OK\n${stdout.slice(0, 1500)}\n${stderr.slice(0, 1500)}`);
-      } catch (e) {
-        const err = e as { stdout?: string; stderr?: string; message: string };
-        console.log(
-          `DIAG ${label}: FAILED ${err.message.slice(0, 300)}\n${(err.stdout ?? '').slice(0, 1500)}\n${(err.stderr ?? '').slice(0, 2500)}`,
-        );
-      }
-    };
-    await run('curl -V', curl, ['-V']);
-    await run('curl env -v', curl, ['-sS', '-v', '-o', os.devNull, URL]);
-    await run('curl --cacert bundle', curl, [
-      '-sS',
-      '-o',
-      os.devNull,
-      '-w',
-      '%{http_code}',
-      '--cacert',
-      status.terminalEnv.SSL_CERT_FILE!,
-      URL,
-    ]);
-    await run('curl --cacert ca', curl, [
-      '-sS',
-      '-o',
-      os.devNull,
-      '-w',
-      '%{http_code}',
-      '--cacert',
-      status.terminalEnv.NODE_EXTRA_CA_CERTS!,
-      URL,
-    ]);
-    await run('php curl error', php, [
-      '-r',
-      '$c = curl_init($argv[1]); curl_setopt($c, CURLOPT_RETURNTRANSFER, true); $r = curl_exec($c); echo curl_getinfo($c, CURLINFO_HTTP_CODE), " | ", curl_error($c), " | ", json_encode(curl_version());',
-      URL,
-    ]);
-    await run('php ini', php, [
-      '-r',
-      'echo php_ini_loaded_file(), " | scanned: ", php_ini_scanned_files(), " | curl.cainfo=", ini_get("curl.cainfo"), " | openssl.cafile=", ini_get("openssl.cafile"), " | ", json_encode(openssl_get_cert_locations());',
-    ]);
-    await run('php --ini', php, ['--ini']);
-    api.close();
-    await backend.stop();
-    await rm(dataDir, { recursive: true, force: true });
-  }, 120_000);
-});
-
 describe('terminal setup', () => {
-  const env = terminalEnv(8123, { caPath: "/tmp/it's/ca.pem", bundlePath: '/tmp/bundle.pem' });
+  const paths = {
+    caPath: "/tmp/it's/ca.pem",
+    bundlePath: '/tmp/bundle.pem',
+    phpIniDir: '/tmp/php',
+    curlHome: '/tmp/curl',
+  };
+  const env = terminalEnv(8123, paths, 'linux');
 
   it('points every proxy variable at Leverframe', () => {
     for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
@@ -237,6 +185,26 @@ describe('terminal setup', () => {
     }
     expect(env.NODE_USE_ENV_PROXY).toBe('1');
     expect(env.NODE_EXTRA_CA_CERTS).toBe("/tmp/it's/ca.pem");
+  });
+
+  it('adds the PHP settings folder after the usual one, and curl config only on Windows', () => {
+    expect(env.PHP_INI_SCAN_DIR).toBe(':/tmp/php');
+    expect(env.CURL_HOME).toBeUndefined();
+    const windows = terminalEnv(
+      8123,
+      { ...paths, phpIniDir: 'C:\\lf\\php', curlHome: 'C:\\lf\\curl' },
+      'win32',
+    );
+    expect(windows.PHP_INI_SCAN_DIR).toBe(';C:\\lf\\php');
+    expect(windows.CURL_HOME).toBe('C:\\lf\\curl');
+  });
+
+  it('writes PHP and curl config that point at the bundle', () => {
+    expect(phpIniContent('/x/ca-bundle.pem')).toContain('curl.cainfo = "/x/ca-bundle.pem"');
+    expect(phpIniContent('/x/ca-bundle.pem')).toContain('openssl.cafile = "/x/ca-bundle.pem"');
+    const curlrc = curlrcContent('C:\\Users\\me\\ca-bundle.pem');
+    expect(curlrc).toContain('cacert = "C:\\\\Users\\\\me\\\\ca-bundle.pem"');
+    expect(curlrc).toContain('ssl-no-revoke');
   });
 
   it('quotes values for each shell', () => {

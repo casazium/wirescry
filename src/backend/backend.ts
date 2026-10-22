@@ -15,7 +15,7 @@ import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
 import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
-import { writeCABundle } from './ca-bundle';
+import { writeTerminalConfig, type TerminalConfig } from './ca-bundle';
 import { detectTerminals, launchTerminal } from './terminals';
 import { terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
@@ -66,7 +66,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   });
   const browsers = await detectBrowsers();
   const terminals = await detectTerminals();
-  let bundlePath = await writeCABundle(dataDir, ca.cert);
+  const platform: ProxyStatus['platform'] =
+    process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux'
+      ? process.platform
+      : 'other';
+  let terminalConfig: TerminalConfig = await writeTerminalConfig(dataDir, ca.cert);
   const formatter = new Formatter();
   let firefoxTrusted = await isProfileTrusted(firefoxProfile, ca.spkiFingerprint);
 
@@ -92,16 +96,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
     browsers: browsers.map(({ id, name, kind }) => ({ id, name, kind })),
     firefoxTrusted,
-    platform:
-      process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux'
-        ? process.platform
-        : 'other',
+    platform,
     terminals: terminals.map(({ id, name }) => ({ id, name })),
     terminalEnv: currentTerminalEnv(),
   });
 
   const currentTerminalEnv = (): Record<string, string> =>
-    terminalEnv(proxy.port, { caPath: ca.certPath, bundlePath });
+    terminalEnv(proxy.port, { caPath: ca.certPath, ...terminalConfig }, platform);
 
   const openProxy = (port: number | undefined): Promise<RunningProxy> =>
     startProxy({
@@ -208,7 +209,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'resetCertificate':
         return exclusive(async () => {
           ca = await resetCA(dataDir);
-          bundlePath = await writeCABundle(dataDir, ca.cert);
+          terminalConfig = await writeTerminalConfig(dataDir, ca.cert);
           // The old Firefox profile trusts the old CA; start it over.
           await deleteFirefoxProfile(firefoxProfile);
           firefoxTrusted = false;
