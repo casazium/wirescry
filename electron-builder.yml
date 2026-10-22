@@ -8,6 +8,11 @@ files:
   - out/**
   - package.json
   - '!**/*.map'
+  # Optional Mockttp module for TLS fingerprint mirroring, which we don't use. It needs
+  # OpenSSL and can't be built against Electron's BoringSSL; Mockttp works without it.
+  - '!node_modules/tls-impersonate/**'
+# No native modules are shipped, so skip rebuilding dependencies for Electron.
+npmRebuild: false
 # Never ship a CA: each install generates its own at first run, in the user data folder.
 asar: true
 
