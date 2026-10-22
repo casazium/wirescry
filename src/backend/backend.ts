@@ -1,7 +1,18 @@
 import path from 'node:path';
-import type { BodyContent, ClientCommand, ExchangeDetail, ProxyStatus, ServerMessage } from '../shared/api';
+import { Readable } from 'node:stream';
+import type {
+  BodyContent,
+  ClientCommand,
+  ExchangeDetail,
+  FormatLanguage,
+  FormattedBody,
+  ProxyStatus,
+  ServerMessage,
+} from '../shared/api';
 import { startApiServer } from './api';
-import { toBodyContent } from './body-content';
+import { headerValue, toBodyContent } from './body-content';
+import { exchangeType } from '../shared/exchange-type';
+import { Formatter, MAX_FORMAT_INPUT } from './formatter';
 import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
@@ -29,6 +40,8 @@ export interface BackendOptions {
   upstreamCAs?: string[];
   /** Bodies up to this size stay in memory; larger ones go to disk. */
   bodyMemoryLimit?: number;
+  /** Bytes kept per body. Used by tests. */
+  maxBodySize?: number;
 }
 
 export interface RunningBackend {
@@ -46,8 +59,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   const firefoxProfile = path.join(dataDir, FIREFOX_PROFILE_DIR);
   const bodies = await HybridBodyStore.open(path.join(dataDir, 'bodies'), {
     memoryLimit: options.bodyMemoryLimit,
+    maxBodySize: options.maxBodySize,
   });
   const browsers = await detectBrowsers();
+  const formatter = new Formatter();
   let firefoxTrusted = await isProfileTrusted(firefoxProfile, ca.spkiFingerprint);
 
   // The API needs the proxy port and the proxy needs somewhere to send events,
@@ -185,11 +200,49 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'getBody': {
         const exchange = store.get(command.exchangeId);
         if (!exchange) throw new Error('Exchange not found');
-        const raw = await bodies.get(command.exchangeId, command.side);
-        if (!raw) return null;
-        const headers = command.side === 'request' ? exchange.requestHeaders : exchange.responseHeaders;
-        const content: BodyContent = await toBodyContent(raw, headers);
+        const { exchangeId, side } = command;
+        const info = side === 'request' ? exchange.requestBody : exchange.responseBody;
+        if (!info || !bodies.read(exchangeId, side)) return null;
+        const headers = side === 'request' ? exchange.requestHeaders : exchange.responseHeaders;
+        const content: BodyContent = await toBodyContent(
+          () => bodies.read(exchangeId, side) ?? Readable.from([]),
+          info.size,
+          headers,
+        );
         return content;
+      }
+      case 'formatBody': {
+        const { exchangeId, side } = command;
+        const exchange = store.get(exchangeId);
+        if (!exchange) throw new Error('Exchange not found');
+        const info = side === 'request' ? exchange.requestBody : exchange.responseBody;
+        const headers = side === 'request' ? exchange.requestHeaders : exchange.responseHeaders;
+        const result = (r: FormattedBody): FormattedBody => r;
+        const type = exchangeType({
+          contentType: headerValue(headers, 'content-type')?.split(';')[0]?.trim().toLowerCase(),
+          path: side === 'response' ? exchange.summary.path : '',
+        });
+        if (type !== 'html' && type !== 'xml' && type !== 'js' && type !== 'css') {
+          return result({ ok: false, reason: 'only HTML, XML, JavaScript and CSS are formatted' });
+        }
+        if (!info || !bodies.read(exchangeId, side)) return result({ ok: false, reason: 'no body' });
+        const content = await toBodyContent(
+          () => bodies.read(exchangeId, side) ?? Readable.from([]),
+          info.size,
+          headers,
+          MAX_FORMAT_INPUT,
+        );
+        if (content.truncated) return result({ ok: false, reason: 'too large to format (over 2 MB)' });
+        const text = Buffer.from(content.base64, 'base64').toString('utf8');
+        try {
+          return result({
+            ok: true,
+            language: type satisfies FormatLanguage,
+            text: await formatter.format(type, text),
+          });
+        } catch (error) {
+          return result({ ok: false, reason: (error as Error).message });
+        }
       }
       default:
         throw new Error('Unknown command');
@@ -214,7 +267,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     caCertPath: ca.certPath,
     async stop() {
       updates.reset();
-      await Promise.all([api.stop(), proxy.stop()]);
+      await Promise.all([api.stop(), proxy.stop(), formatter.close()]);
       await bodies.close();
     },
   };

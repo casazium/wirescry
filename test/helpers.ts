@@ -105,12 +105,14 @@ export async function apiClient(port: number) {
       if (!result.ok) throw new Error(result.error);
       return result.value as T;
     },
-    /** Waits for the exchange at `pathAndQuery` to finish and returns its id. */
+    /** Waits for the exchange at `pathAndQuery` to finish, body included, and returns its id. */
     async completed(pathAndQuery: string): Promise<string> {
       let found: ExchangeSummary | undefined;
       await expect
         .poll(() => {
-          found = exchangesIn(messages).find((e) => e.path === pathAndQuery && e.status !== undefined);
+          found = exchangesIn(messages).find(
+            (e) => e.path === pathAndQuery && e.status !== undefined && e.responseSize !== undefined,
+          );
           return found;
         })
         .toBeTruthy();
@@ -138,6 +140,11 @@ export function httpViaProxy(
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => (body += chunk));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, type: res.headers['content-type'], body }));
+      // A connection reset mid-body ends with 'error' or 'close', never 'end'.
+      res.on('error', reject);
+      res.on('close', () => {
+        if (!res.complete) reject(new Error('Response cut off'));
+      });
     });
     req.once('error', reject);
     req.end();

@@ -1,4 +1,5 @@
-import { decodeBuffer } from 'http-encoding';
+import { Readable } from 'node:stream';
+import { createDecodeStream } from 'http-encoding';
 import type { BodyContent, Header } from '../shared/api';
 
 /** Bodies sent to the UI are cut to this size; the full body stays in the store. */
@@ -9,31 +10,68 @@ export function headerValue(headers: Header[] | undefined, name: string): string
   return headers?.find(([key]) => key.toLowerCase() === lower)?.[1];
 }
 
-/** Decodes a stored body (gzip, deflate, br, zstd) and prepares it for the UI. */
-export async function toBodyContent(raw: Buffer, headers: Header[] | undefined): Promise<BodyContent> {
+/** Reads up to `limit` bytes from a web stream, then stops it. */
+async function readUpTo(
+  stream: ReadableStream<Uint8Array>,
+  limit: number,
+): Promise<{ data: Buffer; truncated: boolean }> {
+  const reader = stream.getReader();
+  const chunks: Buffer[] = [];
+  let length = 0;
+  try {
+    while (length <= limit) {
+      const { done, value } = await reader.read();
+      if (done) return { data: Buffer.concat(chunks), truncated: false };
+      chunks.push(Buffer.from(value));
+      length += value.length;
+    }
+  } finally {
+    // Stops reading the file and decoding; harmless if the stream already finished.
+    void reader.cancel().catch(() => undefined);
+  }
+  return { data: Buffer.concat(chunks).subarray(0, limit), truncated: true };
+}
+
+/**
+ * Decodes a stored body (gzip, deflate, br, zstd) as a stream and keeps at most
+ * `limit` decoded bytes, so a large body is never read into memory whole.
+ * `open` returns a fresh stream of the stored bytes; it's called again to show
+ * the raw bytes if decoding fails.
+ */
+export async function toBodyContent(
+  open: () => Readable,
+  size: number,
+  headers: Header[] | undefined,
+  limit = MAX_BODY_TO_UI,
+): Promise<BodyContent> {
   const encoding = headerValue(headers, 'content-encoding');
   const contentType = headerValue(headers, 'content-type');
+  const webStream = (): ReadableStream<Uint8Array> => Readable.toWeb(open()) as ReadableStream<Uint8Array>;
 
-  let data = raw;
-  let decodedSize: number | undefined;
   let decodeError: string | undefined;
-  if (encoding && encoding.toLowerCase() !== 'identity') {
+  let decoder: ReturnType<typeof createDecodeStream> = null;
+  try {
+    decoder = createDecodeStream(encoding);
+  } catch {
+    decodeError = `Unsupported encoding: ${encoding}`;
+  }
+
+  if (decoder) {
     try {
-      data = await decodeBuffer(raw, encoding);
-      decodedSize = data.length;
+      const { data, truncated } = await readUpTo(webStream().pipeThrough(decoder), limit);
+      return {
+        base64: data.toString('base64'),
+        size,
+        decodedSize: truncated ? undefined : data.length,
+        contentType,
+        encoding,
+        truncated,
+      };
     } catch (error) {
       decodeError = `Couldn't decode ${encoding} body: ${(error as Error).message}`;
     }
   }
 
-  const truncated = data.length > MAX_BODY_TO_UI;
-  return {
-    base64: (truncated ? data.subarray(0, MAX_BODY_TO_UI) : data).toString('base64'),
-    size: raw.length,
-    decodedSize,
-    contentType,
-    encoding,
-    decodeError,
-    truncated,
-  };
+  const { data, truncated } = await readUpTo(webStream(), limit);
+  return { base64: data.toString('base64'), size, contentType, encoding, decodeError, truncated };
 }

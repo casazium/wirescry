@@ -10,6 +10,8 @@ export default defineConfig({
           index: resolve(__dirname, 'src/main/index.ts'),
           // The backend runs in its own utility process; see src/main/backend-supervisor.ts.
           backend: resolve(__dirname, 'src/backend/index.ts'),
+          // Formats bodies in a worker thread of the backend; see src/backend/formatter.ts.
+          'format-worker': resolve(__dirname, 'src/backend/format-worker.mts'),
         },
       },
     },

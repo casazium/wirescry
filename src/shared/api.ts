@@ -48,8 +48,10 @@ export type BodySide = 'request' | 'response';
 export interface BodyInfo {
   /** Bytes as sent on the wire, before decoding. */
   size: number;
-  /** True if the body was too large to capture. */
-  dropped?: boolean;
+  /** Bytes kept. Less than `size` if the body was larger than Leverframe stores. */
+  stored: number;
+  /** True if the connection closed before the whole body arrived. */
+  incomplete?: boolean;
 }
 
 /** Everything about one exchange except the bodies, which are fetched separately. */
@@ -75,6 +77,14 @@ export interface BodyContent {
   decodeError?: string;
   truncated: boolean;
 }
+
+export type FormatLanguage = 'html' | 'xml' | 'js' | 'css';
+
+/** A body pretty-printed by the backend. */
+export type FormattedBody =
+  | { ok: true; language: FormatLanguage; text: string }
+  /** Not formatted, e.g. too large, not a supported type, or it took too long. */
+  | { ok: false; reason: string };
 
 export interface BrowserInfo {
   id: string;
@@ -123,7 +133,8 @@ export type ClientCommand =
   | { id: number; command: 'setProxyPort'; port: number | null }
   | { id: number; command: 'resetCertificate' }
   | { id: number; command: 'getExchange'; exchangeId: string }
-  | { id: number; command: 'getBody'; exchangeId: string; side: BodySide };
+  | { id: number; command: 'getBody'; exchangeId: string; side: BodySide }
+  | { id: number; command: 'formatBody'; exchangeId: string; side: BodySide };
 
 /** WebSocket subprotocol prefix used to carry the API token. Browsers can't set headers on WebSockets. */
 export const TOKEN_PROTOCOL_PREFIX = 'leverframe.token.';

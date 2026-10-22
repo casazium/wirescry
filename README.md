@@ -108,9 +108,9 @@ Security basics:
 Captured traffic is split in two:
 
 - `RequestStore` (`src/backend/store.ts`) holds each exchange's summary, headers and timing, in memory.
-- `BodyStore` (`src/backend/body-store.ts`) holds bodies. Bodies up to 64 KB stay in memory; larger ones are written to `bodies/` in the user data folder, which is emptied on every start and on Clear. Bodies over 100 MB aren't captured, though the traffic still passes through.
+- `BodyStore` (`src/backend/body-store.ts`) holds bodies. They stream in chunk by chunk as they pass through the proxy: up to 64 KB stays in memory, and anything larger goes straight to a file in `bodies/` in the user data folder, so a large body is never held in memory whole. The folder is emptied on every start and on Clear. Each body keeps up to 512 MB; past that the size is still counted and the traffic still passes through.
 
-The UI fetches headers and bodies only for the exchange you select. Bodies are decoded (gzip, deflate, brotli, zstd) in the backend, and the UI gets at most the first 5 MB.
+The UI fetches headers and bodies only for the exchange you select. Bodies are decoded (gzip, deflate, brotli, zstd) as a stream in the backend, which stops once it has the first 5 MB the UI shows. HTML, XML, JavaScript and CSS bodies up to 2 MB are pretty-printed by js-beautify and xml-formatter in a worker thread, so formatting a large file never stalls the proxy.
 
 ## Notes
 
