@@ -1,0 +1,46 @@
+appId: com.casazium.leverframe
+productName: Leverframe
+copyright: Copyright © 2026 casazium
+directories:
+  output: release/${version}
+  buildResources: build
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+# Never ship a CA: each install generates its own at first run, in the user data folder.
+asar: true
+
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  hardenedRuntime: true
+  # TODO(signing): set CSC_LINK / CSC_KEY_PASSWORD (Developer ID Application certificate) in CI.
+  # TODO(notarization): set APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER, then enable:
+  # notarize: true
+  notarize: false
+
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  # TODO(signing): configure Azure Trusted Signing or an EV certificate via `win.azureSignOptions` / CSC_LINK.
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+
+linux:
+  category: Development
+  target:
+    - AppImage
+    - deb
+  maintainer: casazium
+
+# TODO(auto-update): add a `publish` provider (e.g. GitHub releases on casazium/leverframe) with electron-updater.
+publish: null
