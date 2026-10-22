@@ -8,6 +8,7 @@ import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './
 import { BackendSupervisor } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
+import { Updater } from './updater';
 
 // Errors and warnings from every part of the app go to one local file, for support and debugging.
 const logger = new FileLogger(app.getPath('logs'));
@@ -59,6 +60,7 @@ const backend = new BackendSupervisor({
   logger,
 });
 logger.addSecret(backend.token);
+const updater = new Updater(logger, () => mainWindow);
 
 function isFromOurUi(url: string): boolean {
   try {
@@ -133,6 +135,7 @@ app.whenReady().then(() => {
         logger.flush();
         shell.showItemInFolder(logger.file);
       },
+      checkForUpdates: () => updater.checkNow(),
     }),
   );
 
@@ -174,6 +177,7 @@ app.whenReady().then(() => {
   backend.start();
 
   createWindow();
+  updater.start();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

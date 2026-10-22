@@ -1,0 +1,115 @@
+import { app, dialog, type BrowserWindow } from 'electron';
+import { autoUpdater } from 'electron-updater';
+import type { FileLogger } from './logger';
+import { FIRST_CHECK_DELAY_MS, UPDATE_INTERVAL_MS, updateDecision } from './update-policy';
+
+/**
+ * Checks the public releases repo for new versions, downloads them in the
+ * background, and offers to restart once one is ready. Update files come from
+ * casazium/leverframe-releases over HTTPS; on macOS and Windows the installer
+ * is checked against the app's own code signature before it's used.
+ */
+export class Updater {
+  readonly enabled: boolean;
+  private readonly reason: string | undefined;
+  private manualCheck = false;
+  private prompting = false;
+
+  constructor(
+    private readonly logger: FileLogger,
+    private readonly getWindow: () => BrowserWindow | undefined,
+  ) {
+    const decision = updateDecision({
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+      env: process.env,
+    });
+    this.enabled = decision.check;
+    this.reason = decision.check ? undefined : decision.reason;
+
+    autoUpdater.logger = {
+      info: (message?: unknown) => logger.write('updater', 'info', String(message)),
+      warn: (message?: unknown) => logger.write('updater', 'warn', String(message)),
+      error: (message?: unknown) => logger.write('updater', 'error', String(message)),
+      debug: () => undefined,
+    };
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('update-not-available', () => {
+      if (this.manualCheck)
+        void this.message('info', 'Leverframe is up to date.', `You have version ${app.getVersion()}.`);
+      this.manualCheck = false;
+    });
+    autoUpdater.on('update-available', (info) => {
+      if (this.manualCheck) {
+        void this.message(
+          'info',
+          `Leverframe ${info.version} is available.`,
+          'It is downloading now. You will be asked to restart when it is ready.',
+        );
+      }
+      this.manualCheck = false;
+    });
+    autoUpdater.on('error', (error) => {
+      // Background checks fail quietly (offline, GitHub unavailable); errors go to the log.
+      if (this.manualCheck) void this.message('error', "Couldn't check for updates.", error.message);
+      this.manualCheck = false;
+    });
+    autoUpdater.on('update-downloaded', (info) => void this.offerRestart(info.version));
+  }
+
+  /** Checks shortly after startup, then every few hours. */
+  start(): void {
+    if (!this.enabled) {
+      this.logger.write('updater', 'info', `Update checks off: ${this.reason}`);
+      return;
+    }
+    setTimeout(() => this.check(), FIRST_CHECK_DELAY_MS).unref();
+    setInterval(() => this.check(), UPDATE_INTERVAL_MS).unref();
+  }
+
+  /** For the "Check for Updates…" menu item: reports the result either way. */
+  checkNow(): void {
+    if (!this.enabled) {
+      void this.message('info', "This copy of Leverframe doesn't update itself.", `Reason: ${this.reason}.`);
+      return;
+    }
+    this.manualCheck = true;
+    this.check();
+  }
+
+  private check(): void {
+    autoUpdater.checkForUpdates().catch(() => undefined); // Reported through the 'error' event.
+  }
+
+  private async offerRestart(version: string): Promise<void> {
+    if (this.prompting) return;
+    this.prompting = true;
+    try {
+      const result = await this.message(
+        'info',
+        `Leverframe ${version} is ready to install.`,
+        'Restart now to update, or it will install the next time you quit.',
+        ['Restart Now', 'Later'],
+      );
+      if (result === 0) autoUpdater.quitAndInstall();
+    } finally {
+      this.prompting = false;
+    }
+  }
+
+  private async message(
+    type: 'info' | 'error',
+    message: string,
+    detail: string,
+    buttons = ['OK'],
+  ): Promise<number> {
+    const options = { type, message, detail, buttons, defaultId: 0, cancelId: buttons.length - 1 };
+    const window = this.getWindow();
+    const { response } = window
+      ? await dialog.showMessageBox(window, options)
+      : await dialog.showMessageBox(options);
+    return response;
+  }
+}
