@@ -119,7 +119,7 @@ describe('backend', () => {
     const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: id });
     expect(detail.requestHeaders).toContainEqual(['x-test', 'yes']);
     expect(detail.responseHeaders).toBeDefined();
-    expect(detail.requestBody).toEqual({ size: 21 });
+    expect(detail.requestBody).toEqual({ size: 21, stored: 21 });
     expect(detail.timing.responseSentTimestamp).toBeGreaterThanOrEqual(detail.timing.startTimestamp);
 
     const requestBody = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'request' });
