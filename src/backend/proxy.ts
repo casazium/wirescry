@@ -1,7 +1,9 @@
+import net from 'node:net';
 import * as mockttp from 'mockttp';
 import type { BodyInfo, BodySide, ExchangeDetail, ExchangeTiming } from '../shared/api';
 import type { BodyStore } from './body-store';
 import type { CertificateAuthority } from './ca';
+import { SETUP_HOST, setupPageHtml } from './setup-page';
 import type { RequestStore } from './store';
 
 /** Bodies larger than this aren't captured (traffic still flows). Keeps memory bounded. */
@@ -20,6 +22,8 @@ export interface ProxyOptions {
   /** Extra CAs to trust for upstream servers (PEM). */
   upstreamCAs?: string[];
   maxBodySize?: number;
+  /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
+  onCATrusted?: (userAgent: string) => void;
 }
 
 export interface RunningProxy {
@@ -50,6 +54,38 @@ function bodyInfo(buffer: Buffer, headers: mockttp.Headers): BodyInfo {
   const declared = Number(headers['content-length']);
   if (buffer.length === 0 && declared > 0) return { size: declared, dropped: true };
   return { size: buffer.length };
+}
+
+export function isLoopback(address: string | undefined): boolean {
+  if (!address) return false;
+  const v4 = address.startsWith('::ffff:') ? address.slice(7) : address;
+  return v4.startsWith('127.') || address === '::1';
+}
+
+/**
+ * Mockttp listens on every network interface and has no option to change that. Drop
+ * connections from other machines, so the proxy isn't open to the local network.
+ */
+function restrictToLoopback(server: mockttp.Mockttp): void {
+  const listener = (server as unknown as { server?: net.Server }).server;
+  if (!listener) throw new Error("Can't restrict the proxy to this machine");
+  listener.prependListener('connection', (socket: net.Socket) => {
+    if (!isLoopback(socket.remoteAddress)) socket.destroy();
+  });
+}
+
+/**
+ * Mockttp listens on all addresses (::), which some systems allow even when another
+ * program already has 127.0.0.1 on that port. Local traffic would then go to that
+ * program, so check 127.0.0.1 is free first.
+ */
+async function assertLoopbackPortFree(port: number): Promise<void> {
+  const probe = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    probe.once('error', reject);
+    probe.listen({ port, host: '127.0.0.1', exclusive: true }, () => resolve());
+  });
+  await new Promise<void>((resolve) => probe.close(() => resolve()));
 }
 
 function mediaType(header: string | string[] | undefined): string | undefined {
@@ -142,11 +178,47 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     }));
   });
 
-  const passThrough = { additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })) };
-  await server.forAnyRequest().thenPassThrough(passThrough);
-  await server.forAnyWebSocket().thenPassThrough(passThrough);
+  // Requests to the setup host are answered by the proxy itself. Rules are marked
+  // always() because otherwise Mockttp moves on to the next matching rule once a rule
+  // has been used.
+  await server
+    .forAnyRequest()
+    .forHostname(SETUP_HOST)
+    .always()
+    .thenCallback((req) => {
+      const route = req.path.split('?')[0];
+      if (route === '/certificate') {
+        return { statusCode: 200, headers: { 'content-type': 'application/x-x509-ca-cert' }, body: ca.cert };
+      }
+      if (route === '/check') {
+        // Only reachable over HTTPS if the browser accepted a certificate signed by our CA.
+        if (req.protocol !== 'https') return { statusCode: 400 };
+        options.onCATrusted?.(req.headers['user-agent'] ?? '');
+        return {
+          statusCode: 200,
+          headers: { 'access-control-allow-origin': '*', 'cache-control': 'no-store' },
+          json: { trusted: true },
+        };
+      }
+      return {
+        statusCode: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+        body: setupPageHtml(),
+      };
+    });
 
+  const passThrough = { additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })) };
+  await server.forAnyRequest().always().thenPassThrough(passThrough);
+  await server.forAnyWebSocket().always().thenPassThrough(passThrough);
+
+  if (options.port !== undefined) await assertLoopbackPortFree(options.port);
   await server.start(options.port);
+  try {
+    restrictToLoopback(server);
+  } catch (error) {
+    await server.stop();
+    throw error;
+  }
 
   return {
     port: server.port,

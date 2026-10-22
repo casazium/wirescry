@@ -74,12 +74,27 @@ export interface BodyContent {
 export interface BrowserInfo {
   id: string;
   name: string;
+  kind: 'chromium' | 'firefox';
+}
+
+export interface CertificateInfo {
+  commonName: string;
+  /** Base64 SHA-256 of the public key. */
+  spkiFingerprint: string;
+  /** ISO date. */
+  validTo: string;
+  /** Where the PEM certificate is stored, for use in commands. */
+  path: string;
 }
 
 export interface ProxyStatus {
   proxyPort: number;
-  caFingerprint: string;
+  /** The port the user chose, or null to pick one automatically. */
+  proxyPortSetting: number | null;
+  certificate: CertificateInfo;
   browsers: BrowserInfo[];
+  /** Whether Leverframe's Firefox profile trusts the current certificate. */
+  firefoxTrusted: boolean;
 }
 
 /** Messages the backend pushes to the UI. */
@@ -89,6 +104,8 @@ export type ServerMessage =
   | { type: 'exchanges'; exchanges: ExchangeSummary[]; removed: string[] }
   | { type: 'cleared' }
   | { type: 'paused'; paused: boolean }
+  /** Sent when the port, certificate or Firefox setup changes. */
+  | { type: 'status'; status: ProxyStatus }
   | { type: 'result'; id: number; ok: true; value?: unknown }
   | { type: 'result'; id: number; ok: false; error: string };
 
@@ -97,6 +114,9 @@ export type ClientCommand =
   | { id: number; command: 'launchBrowser'; browserId: string }
   | { id: number; command: 'clear' }
   | { id: number; command: 'setPaused'; paused: boolean }
+  /** A port from 1024 to 65535, or null to pick one automatically. */
+  | { id: number; command: 'setProxyPort'; port: number | null }
+  | { id: number; command: 'resetCertificate' }
   | { id: number; command: 'getExchange'; exchangeId: string }
   | { id: number; command: 'getBody'; exchangeId: string; side: BodySide };
 
