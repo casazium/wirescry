@@ -36,7 +36,9 @@ const backend = new BackendSupervisor({
 
 function isFromOurUi(url: string): boolean {
   try {
-    return new URL(url).origin === uiOrigin;
+    // Not URL.origin: Node returns "null" for custom schemes like leverframe://.
+    const { protocol, host } = new URL(url);
+    return `${protocol}//${host}` === uiOrigin;
   } catch {
     return false;
   }
