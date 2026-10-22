@@ -10,7 +10,14 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['src/main/**', 'src/preload/**', 'src/backend/**', 'test/**', '*.config.*'],
+    files: [
+      'src/main/**',
+      'src/preload/**',
+      'src/backend/**',
+      'test/**',
+      '*.config.*',
+      'electron-builder.cjs',
+    ],
     languageOptions: { globals: globals.node },
   },
   {

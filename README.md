@@ -86,7 +86,9 @@ The backend tests start the real proxy and API, push an HTTPS request through th
 npm run package
 ```
 
-Builds installers for the current platform into `release/`. Use `package:mac`, `package:win` or `package:linux` for a specific one. Signing, notarization and auto-update are TODOs in [electron-builder.yml](electron-builder.yml).
+Builds unsigned installers for the current platform into `release/`. Use `package:mac`, `package:win` or `package:linux` for a specific one.
+
+Signed releases, notarization and auto-update are handled by the release workflow; see [docs/RELEASING.md](docs/RELEASING.md).
 
 ## How it fits together
 
