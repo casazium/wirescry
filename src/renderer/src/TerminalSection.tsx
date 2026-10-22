@@ -41,7 +41,7 @@ export function TerminalSection({
       <h2>Terminals</h2>
       <p className="muted">
         Opens a terminal window whose programs send their HTTP and HTTPS traffic through Leverframe. Works for
-        Node.js, Python, Ruby, Go, PHP, curl and git.
+        Node.js, Python, Ruby, Go, PHP, Java, curl and git.
       </p>
       {status.terminals.length > 0 ? (
         <div className="actions">
@@ -104,14 +104,19 @@ export function TerminalSection({
             <strong>PHP</strong>: the curl extension and libraries built on it, such as Guzzle.
           </li>
           <li>
+            <strong>Java</strong> 8 and later: HttpURLConnection, the java.net.http client, and libraries
+            built on them such as OkHttp and Spring's RestTemplate. Apache HttpClient needs its
+            system-properties builder. Every <code>java</code> command prints a &quot;Picked up
+            JAVA_TOOL_OPTIONS&quot; line; that&apos;s the JVM confirming the setup.
+          </li>
+          <li>
             <strong>curl</strong> and <strong>git</strong>.
             {status.platform === 'win32' &&
               " curl.exe gets Leverframe's own config in these terminals, so your _curlrc isn't read there and certificate revocation checks are off."}
           </li>
         </ul>
         <p className="muted">
-          Programs that ignore proxy settings, or use only the system certificate store, won't show up. Java
-          is coming separately.
+          Programs that ignore proxy settings, or use only the system certificate store, won't show up.
         </p>
       </details>
     </section>

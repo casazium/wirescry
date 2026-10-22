@@ -38,6 +38,12 @@ const rubyUsesSystemTrust =
 const go = findTool(['go'], ['version']);
 const php = findTool(['php']);
 const hasPhpCurl = php && spawnSync(php, ['-r', 'exit(function_exists("curl_init") ? 0 : 1);']).status === 0;
+// Single-file programs (`java Main.java`) need Java 11 or later.
+const java = [process.env.JAVA_HOME && path.join(process.env.JAVA_HOME, 'bin', 'java'), 'java']
+  .filter((j): j is string => Boolean(j))
+  .find((j) =>
+    /version "(1[1-9]|[2-9]\d)/.test(spawnSync(j, ['-version'], { encoding: 'utf8' }).stderr ?? ''),
+  );
 
 const URL = 'https://leverframe.internal/check';
 
@@ -47,9 +53,11 @@ describe('terminal interception', () => {
   let env: NodeJS.ProcessEnv;
   let api: Awaited<ReturnType<typeof apiClient>>;
   let goFile: string;
+  let javaFile: string;
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-terminal-test-'));
+    // A space in the path, like macOS's "Application Support", which tools must cope with.
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe terminal-test-'));
     backend = await startBackend({ dataDir, token: TOKEN, allowedOrigins: [UI_ORIGIN] });
     api = await apiClient(backend.apiPort);
     const status = (api.messages[0] as { status: ProxyStatus }).status;
@@ -59,6 +67,27 @@ describe('terminal interception', () => {
     await writeFile(
       goFile,
       'package main\nimport ("fmt"; "net/http"; "os")\nfunc main() {\n  r, err := http.Get(os.Args[1])\n  if err != nil { fmt.Println("ERR", err); return }\n  fmt.Print(r.StatusCode)\n}\n',
+    );
+    javaFile = path.join(dataDir, 'Main.java');
+    await writeFile(
+      javaFile,
+      [
+        'import java.net.*;',
+        'import java.net.http.*;',
+        'public class Main {',
+        '  public static void main(String[] args) throws Exception {',
+        '    if (args[0].equals("urlconnection")) {',
+        '      HttpURLConnection c = (HttpURLConnection) new URL(args[1]).openConnection();',
+        '      System.out.println(c.getResponseCode());',
+        '    } else {',
+        '      HttpResponse<Void> r = HttpClient.newHttpClient().send(',
+        '        HttpRequest.newBuilder(URI.create(args[1])).build(), HttpResponse.BodyHandlers.discarding());',
+        '      System.out.println(r.statusCode());',
+        '    }',
+        '  }',
+        '}',
+        '',
+      ].join('\n'),
     );
   });
 
@@ -157,6 +186,30 @@ describe('terminal interception', () => {
     180_000,
   );
 
+  it.skipIf(!java)(
+    'Java HttpURLConnection',
+    async () => {
+      await expectIntercepted(
+        java!,
+        [javaFile, 'urlconnection', `${URL}?from=java-urlconnection`],
+        'java-urlconnection',
+      );
+    },
+    120_000,
+  );
+
+  it.skipIf(!java)(
+    'Java HttpClient',
+    async () => {
+      await expectIntercepted(
+        java!,
+        [javaFile, 'httpclient', `${URL}?from=java-httpclient`],
+        'java-httpclient',
+      );
+    },
+    120_000,
+  );
+
   it.skipIf(!hasPhpCurl)('PHP curl', async () => {
     await expectIntercepted(
       php!,
@@ -176,6 +229,7 @@ describe('terminal setup', () => {
     bundlePath: '/tmp/bundle.pem',
     phpIniDir: '/tmp/php',
     curlHome: '/tmp/curl',
+    javaTrustStore: '/tmp/Application Support/trust.jks',
   };
   const env = terminalEnv(8123, paths, 'linux');
 
@@ -205,6 +259,14 @@ describe('terminal setup', () => {
     const curlrc = curlrcContent('C:\\Users\\me\\ca-bundle.pem');
     expect(curlrc).toContain('cacert = "C:\\\\Users\\\\me\\\\ca-bundle.pem"');
     expect(curlrc).toContain('ssl-no-revoke');
+  });
+
+  it('gives Java the proxy and a quoted trust store path', () => {
+    expect(env.JAVA_TOOL_OPTIONS).toBe(
+      '-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=8123 -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort=8123 ' +
+        '-Djavax.net.ssl.trustStore="/tmp/Application Support/trust.jks" -Djavax.net.ssl.trustStorePassword=changeit ' +
+        '-Djavax.net.ssl.trustStoreType=JKS',
+    );
   });
 
   it('quotes values for each shell', () => {
