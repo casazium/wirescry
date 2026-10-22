@@ -1,9 +1,10 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import https from 'node:https';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import tls from 'node:tls';
+import { encodeBuffer } from 'http-encoding';
 import { generateCACertificate, getLocal, type Mockttp } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
@@ -13,6 +14,9 @@ import { chromiumArgs } from '../src/backend/browsers';
 import {
   API_PROTOCOL,
   TOKEN_PROTOCOL_PREFIX,
+  type BodyContent,
+  type ClientCommand,
+  type ExchangeDetail,
   type ExchangeSummary,
   type ServerMessage,
 } from '../src/shared/api';
@@ -25,6 +29,7 @@ function requestViaProxy(
   proxyPort: number,
   url: string,
   ca: string,
+  options: { method?: string; body?: string; headers?: Record<string, string> } = {},
 ): Promise<{ status: number; body: string }> {
   const target = new URL(url);
   return new Promise((resolve, reject) => {
@@ -40,7 +45,8 @@ function requestViaProxy(
         {
           host: target.hostname,
           path: target.pathname + target.search,
-          method: 'GET',
+          method: options.method ?? 'GET',
+          headers: options.headers,
           ca,
           servername: target.hostname,
           // Run TLS over the CONNECT tunnel.
@@ -54,7 +60,7 @@ function requestViaProxy(
         },
       );
       req.once('error', reject);
-      req.end();
+      req.end(options.body);
     });
     connect.once('error', reject);
     connect.end();
@@ -70,6 +76,52 @@ function connectApi(port: number, opts: { token?: string; origin?: string; host?
       ...(opts.host ? { Host: opts.host } : {}),
     },
   });
+}
+
+type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
+
+/** Opens an authorised API connection that can send commands and collects pushed messages. */
+async function apiClient(port: number) {
+  const ws = connectApi(port, { token: TOKEN, origin: UI_ORIGIN });
+  const messages: ServerMessage[] = [];
+  const waiting = new Map<number, (m: Extract<ServerMessage, { type: 'result' }>) => void>();
+  ws.on('message', (data) => {
+    const message = JSON.parse(data.toString()) as ServerMessage;
+    if (message.type === 'result') waiting.get(message.id)?.(message);
+    else messages.push(message);
+  });
+  await new Promise((resolve, reject) => {
+    ws.once('open', resolve);
+    ws.once('error', reject);
+  });
+  let nextId = 1;
+  return {
+    messages,
+    close: () => ws.close(),
+    async send<T>(command: DistributiveOmit<ClientCommand, 'id'>): Promise<T> {
+      const id = nextId++;
+      const result = await new Promise<Extract<ServerMessage, { type: 'result' }>>((resolve) => {
+        waiting.set(id, resolve);
+        ws.send(JSON.stringify({ ...command, id }));
+      });
+      if (!result.ok) throw new Error(result.error);
+      return result.value as T;
+    },
+    /** Waits for the exchange at `pathAndQuery` to finish and returns its id. */
+    async completed(pathAndQuery: string): Promise<string> {
+      let found: ExchangeSummary | undefined;
+      await expect
+        .poll(() => {
+          found = messages
+            .filter((m): m is Extract<ServerMessage, { type: 'exchange' }> => m.type === 'exchange')
+            .map((m) => m.exchange)
+            .find((e) => e.path === pathAndQuery && e.status !== undefined);
+          return found;
+        })
+        .toBeTruthy();
+      return found!.id;
+    },
+  };
 }
 
 function rejectedStatus(ws: WebSocket): Promise<number> {
@@ -93,12 +145,24 @@ describe('backend', () => {
     upstream = getLocal({ https: upstreamCA });
     await upstream.start();
     await upstream.forGet('/hello').thenReply(200, 'hello from upstream');
+    await upstream.forPost('/echo').thenCallback((req) => ({ statusCode: 201, body: req.body.buffer }));
+    for (const encoding of ['gzip', 'br', 'zstd'] as const) {
+      const json = Buffer.from(JSON.stringify({ encoding, items: Array(50).fill('compressed') }));
+      await upstream.forGet(`/${encoding}`).thenReply(200, await encodeBuffer(json, encoding), {
+        'content-type': 'application/json',
+        'content-encoding': encoding,
+      });
+    }
+    await upstream
+      .forGet('/large')
+      .thenReply(200, Buffer.alloc(200 * 1024, 'x'), { 'content-type': 'text/plain' });
 
     backend = await startBackend({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
       upstreamCAs: [upstreamCA.cert],
+      bodyMemoryLimit: 64 * 1024,
     });
   });
 
@@ -110,7 +174,8 @@ describe('backend', () => {
 
   it('creates a CA in the data folder with a private key only the user can read', async () => {
     const keyStat = await stat(path.join(dataDir, 'ca.key'));
-    expect(keyStat.mode & 0o077).toBe(0);
+    // Windows doesn't use Unix permission bits.
+    if (process.platform !== 'win32') expect(keyStat.mode & 0o077).toBe(0);
     const cert = await readFile(backend.caCertPath, 'utf8');
     expect(cert).toContain('BEGIN CERTIFICATE');
   });
@@ -161,6 +226,58 @@ describe('backend', () => {
       protocol: 'https',
     });
     ws.close();
+  });
+
+  it('captures headers and bodies, and serves them on request', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    const response = await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/echo`, ca, {
+      method: 'POST',
+      body: '{"name":"leverframe"}',
+      headers: { 'content-type': 'application/json', 'x-test': 'yes' },
+    });
+    expect(response).toEqual({ status: 201, body: '{"name":"leverframe"}' });
+
+    const id = await api.completed('/echo');
+    const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: id });
+    expect(detail.requestHeaders).toContainEqual(['x-test', 'yes']);
+    expect(detail.responseHeaders).toBeDefined();
+    expect(detail.requestBody).toEqual({ size: 21 });
+    expect(detail.timing.responseSentTimestamp).toBeGreaterThanOrEqual(detail.timing.startTimestamp);
+
+    const requestBody = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'request' });
+    expect(Buffer.from(requestBody.base64, 'base64').toString()).toBe('{"name":"leverframe"}');
+    expect(requestBody.contentType).toBe('application/json');
+    api.close();
+  });
+
+  it.each(['gzip', 'br', 'zstd'])('decodes %s response bodies', async (encoding) => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/${encoding}`, ca);
+    const id = await api.completed(`/${encoding}`);
+    const body = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'response' });
+    expect(body.encoding).toBe(encoding);
+    expect(body.decodeError).toBeUndefined();
+    expect(body.decodedSize).toBeGreaterThan(body.size);
+    expect(JSON.parse(Buffer.from(body.base64, 'base64').toString())).toMatchObject({ encoding });
+    api.close();
+  });
+
+  it('stores large bodies on disk and removes them on clear', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/large`, ca);
+    const id = await api.completed('/large');
+    const bodiesDir = path.join(dataDir, 'bodies');
+    await expect.poll(() => readdir(bodiesDir)).toContain(`${id}.response`);
+    const body = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'response' });
+    expect(Buffer.from(body.base64, 'base64').length).toBe(200 * 1024);
+
+    await api.send({ command: 'clear' });
+    expect(await readdir(bodiesDir)).toEqual([]);
+    await expect(api.send({ command: 'getExchange', exchangeId: id })).rejects.toThrow('Exchange not found');
+    api.close();
   });
 
   it('rejects API connections without the right token', async () => {

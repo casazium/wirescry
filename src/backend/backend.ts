@@ -1,5 +1,8 @@
-import type { ClientCommand, ServerMessage } from '../shared/api';
+import path from 'node:path';
+import type { BodyContent, ClientCommand, ExchangeDetail, ServerMessage } from '../shared/api';
 import { startApiServer } from './api';
+import { toBodyContent } from './body-content';
+import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
 import { loadOrCreateCA } from './ca';
 import { startProxy } from './proxy';
@@ -14,6 +17,8 @@ export interface BackendOptions {
   proxyPort?: number;
   /** Extra CAs to trust for upstream servers (PEM). Used by tests. */
   upstreamCAs?: string[];
+  /** Bodies up to this size stay in memory; larger ones go to disk. */
+  bodyMemoryLimit?: number;
 }
 
 export interface RunningBackend {
@@ -26,7 +31,10 @@ export interface RunningBackend {
 /** Starts the proxy and the local API. Runs without Electron, so tests can use it directly. */
 export async function startBackend(options: BackendOptions): Promise<RunningBackend> {
   const ca = await loadOrCreateCA(options.dataDir);
-  const store = new InMemoryRequestStore();
+  const bodies = await HybridBodyStore.open(path.join(options.dataDir, 'bodies'), {
+    memoryLimit: options.bodyMemoryLimit,
+  });
+  const store = new InMemoryRequestStore(10_000, (id) => void bodies.delete(id).catch(() => undefined));
   const browsers = await detectBrowsers();
 
   // The API needs the proxy port and the proxy needs somewhere to send events,
@@ -36,9 +44,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   const proxy = await startProxy({
     ca,
     store,
+    bodies,
     port: options.proxyPort,
     upstreamCAs: options.upstreamCAs,
-    onExchange: (exchange) => broadcast({ type: 'exchange', exchange }),
+    onExchange: (exchange) => broadcast({ type: 'exchange', exchange: exchange.summary }),
   });
 
   const handleCommand = async (command: ClientCommand): Promise<unknown> => {
@@ -51,8 +60,23 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       }
       case 'clear':
         store.clear();
+        await bodies.clear();
         broadcast({ type: 'cleared' });
         return undefined;
+      case 'getExchange': {
+        const exchange: ExchangeDetail | undefined = store.get(command.exchangeId);
+        if (!exchange) throw new Error('Exchange not found');
+        return exchange;
+      }
+      case 'getBody': {
+        const exchange = store.get(command.exchangeId);
+        if (!exchange) throw new Error('Exchange not found');
+        const raw = await bodies.get(command.exchangeId, command.side);
+        if (!raw) return null;
+        const headers = command.side === 'request' ? exchange.requestHeaders : exchange.responseHeaders;
+        const content: BodyContent = await toBodyContent(raw, headers);
+        return content;
+      }
       default:
         throw new Error('Unknown command');
     }
@@ -82,6 +106,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     caCertPath: ca.certPath,
     async stop() {
       await Promise.all([api.stop(), proxy.stop()]);
+      await bodies.close();
     },
   };
 }

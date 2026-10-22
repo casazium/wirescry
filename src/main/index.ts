@@ -87,8 +87,10 @@ app.on('web-contents-created', (_event, contents) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(buildMenu());
 
-  // No camera, notifications, etc. for the UI.
-  session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  // The UI may write to the clipboard (copy URL, copy as curl) and nothing else: no camera, notifications, etc.
+  session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+    callback(permission === 'clipboard-sanitized-write' && isFromOurUi(wc.getURL()));
+  });
 
   if (devServerUrl) {
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {

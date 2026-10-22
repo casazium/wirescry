@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ExchangeSummary } from '../../shared/api';
+import { DetailPane } from './DetailPane';
 import { useBackend } from './useBackend';
 
 function statusClass(exchange: ExchangeSummary): string {
@@ -15,6 +16,9 @@ export function App(): React.JSX.Element {
   const { backendState, connected, status, exchanges, send } = useBackend();
   const [message, setMessage] = useState<string>();
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
+  const [selectedId, setSelectedId] = useState<string>();
+  const selectedIndex = selectedId ? exchanges.findIndex((e) => e.id === selectedId) : -1;
+  const selected = selectedIndex >= 0 ? exchanges[selectedIndex] : undefined;
   const listRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
 
@@ -23,8 +27,25 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     const list = listRef.current;
-    if (list && stickToBottom.current) list.scrollTop = list.scrollHeight;
-  }, [exchanges]);
+    if (list && stickToBottom.current && !selectedId) list.scrollTop = list.scrollHeight;
+  }, [exchanges, selectedId]);
+
+  const onListKey = (event: React.KeyboardEvent): void => {
+    if (event.key === 'Escape') {
+      setSelectedId(undefined);
+      return;
+    }
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const step = event.key === 'ArrowDown' ? 1 : -1;
+    const next = exchanges[Math.min(exchanges.length - 1, Math.max(0, selectedIndex + step))];
+    if (next) {
+      setSelectedId(next.id);
+      listRef.current
+        ?.querySelector(`[data-id="${CSS.escape(next.id)}"]`)
+        ?.scrollIntoView({ block: 'nearest' });
+    }
+  };
 
   const launch = async (): Promise<void> => {
     setMessage(undefined);
@@ -83,43 +104,54 @@ export function App(): React.JSX.Element {
       {backendState.state === 'failed' && <div className="banner error">{backendState.message}</div>}
       {message && <div className="banner error">{message}</div>}
 
-      <div
-        className="list"
-        ref={listRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
-        }}
-      >
-        <table>
-          <thead>
-            <tr>
-              <th className="col-method">Method</th>
-              <th className="col-status">Status</th>
-              <th className="col-host">Host</th>
-              <th>Path</th>
-            </tr>
-          </thead>
-          <tbody>
-            {exchanges.map((e) => (
-              <tr key={e.id} data-testid="exchange-row">
-                <td className="col-method">{e.method}</td>
-                <td className={`col-status ${statusClass(e)}`} title={e.error ?? e.statusMessage}>
-                  {e.error ? 'Failed' : (e.status ?? '…')}
-                </td>
-                <td className="col-host">{e.host}</td>
-                <td className="col-path" title={e.url}>
-                  {e.path}
-                </td>
+      <div className="main">
+        <div
+          className="list"
+          ref={listRef}
+          tabIndex={0}
+          onKeyDown={onListKey}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          }}
+        >
+          <table>
+            <thead>
+              <tr>
+                <th className="col-method">Method</th>
+                <th className="col-status">Status</th>
+                <th className="col-host">Host</th>
+                <th>Path</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-        {connected && exchanges.length === 0 && (
-          <p className="empty">
-            No traffic yet. Launch a browser, or send requests through 127.0.0.1:{status?.proxyPort}.
-          </p>
-        )}
+            </thead>
+            <tbody>
+              {exchanges.map((e) => (
+                <tr
+                  key={e.id}
+                  data-id={e.id}
+                  data-testid="exchange-row"
+                  className={e.id === selectedId ? 'selected' : undefined}
+                  onClick={() => setSelectedId(e.id === selectedId ? undefined : e.id)}
+                >
+                  <td className="col-method">{e.method}</td>
+                  <td className={`col-status ${statusClass(e)}`} title={e.error ?? e.statusMessage}>
+                    {e.error ? 'Failed' : (e.status ?? '…')}
+                  </td>
+                  <td className="col-host">{e.host}</td>
+                  <td className="col-path" title={e.url}>
+                    {e.path}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {connected && exchanges.length === 0 && (
+            <p className="empty">
+              No traffic yet. Launch a browser, or send requests through 127.0.0.1:{status?.proxyPort}.
+            </p>
+          )}
+        </div>
+        {selected && <DetailPane summary={selected} send={send} onClose={() => setSelectedId(undefined)} />}
       </div>
     </div>
   );
