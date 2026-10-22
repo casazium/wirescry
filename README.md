@@ -31,7 +31,8 @@ To send traffic through it:
 
 - **Chrome, Chromium, Edge or Brave:** click **Launch** to open the browser with a fresh temporary profile that uses the proxy and trusts Leverframe's certificate. The profile is deleted when the browser closes.
 - **Firefox:** Firefox can't be told to trust a certificate from the command line, so Leverframe keeps its own Firefox profile in the user data folder. The first launch opens a setup page at `http://leverframe.internal/` (answered by the proxy itself) where you trust the certificate once. Later launches go straight to browsing.
-- **Anything else:** the **Setup** view shows the proxy address, a **Save certificate…** button, and shell variables for curl, Node.js and Python.
+- **Terminals:** **Setup → Terminals** opens Terminal or iTerm (macOS), PowerShell or Command Prompt (Windows), or your terminal (Linux) with variables that send Node.js, Python, Ruby, Go, PHP, curl and git through Leverframe. The same variables are shown for bash, zsh, fish, PowerShell and cmd, to paste into a terminal that's already open. They point tools at a CA bundle (`ca-bundle.pem` in the user data folder) holding Leverframe's CA plus the usual public and system roots. Known gaps: the Python and Ruby built into macOS ignore the certificate setting, and Go on Windows reads only the Windows certificate store.
+- **Anything else:** the **Setup** view shows the proxy address and a **Save certificate…** button.
 - **curl:**
 
   ```bash
