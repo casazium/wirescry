@@ -10,7 +10,8 @@ import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
 
 export function App(): React.JSX.Element {
-  const { backendState, connected, status, exchanges, paused, send, pluginApi, session } = useBackend();
+  const { backendState, connected, status, exchanges, paused, send, pluginApi, session, badges } =
+    useBackend();
   const [message, setMessage] = useState<string>();
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string>();
@@ -112,6 +113,11 @@ export function App(): React.JSX.Element {
               onClick={() => setView(p.key)}
             >
               {p.view.label}
+              {badges[p.key] && (
+                <span className="tab-badge" aria-label={`${badges[p.key]} waiting`}>
+                  {badges[p.key]}
+                </span>
+              )}
             </button>
           ))}
         </nav>

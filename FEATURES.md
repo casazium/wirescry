@@ -54,6 +54,8 @@ Leverframe is a desktop tool for seeing, debugging and rewriting HTTP traffic, i
     - Done: match on method, host and path (with `*`) or a path regex, query parameters, request headers, and body text or JSON fields; mock a response, reply with a file, pass through, forward to another server, rewrite (request and response headers, status, whole bodies), close the connection, or time out, each optionally delayed; order and switch rules on and off; import and export (imported rules arrive switched off); the traffic list shows which rule handled a request.
     - Still to do: find and replace in bodies and JSON edits (need a streaming-safe approach); groups; rules for WebSockets; body matching beyond 64 KB.
 - **Breakpoints:** pause a request or a response, edit it, then resume it or reply by hand.
+  - **Status (October 2026):** built, in development builds only. Pause rules hold matching requests and/or responses in a Breakpoints tab (with a count badge) to edit and continue, reply by hand, or close. Limits: 50 paused, 5 minutes each, editable bodies up to 256 KB of text.
+  - Still to do: header changes on request bodies over 64 KB (blocked by a Mockttp bug that sends the wrong Content-Length), noticing when a paused client gives up, and pausing WebSocket messages.
 - **Request composer:** build and send requests, resend a captured request with edits, and keep a history. It should centre on captured traffic, not compete with standalone API clients.
 - **HAR import and export**, plus export as code snippets in common languages.
 - **Saved sessions:** reopen earlier captures.

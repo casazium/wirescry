@@ -127,9 +127,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     refreshRules: () => proxy.refreshRules(),
     passThroughStep: (transforms) =>
       new mockttp.requestSteps.PassThroughStep({
-        // Only the transforms; connection settings stay Leverframe's own.
+        // Only the transforms and callbacks; connection settings stay Leverframe's own.
         transformRequest: transforms?.transformRequest,
         transformResponse: transforms?.transformResponse,
+        beforeRequest: transforms?.beforeRequest,
+        beforeResponse: transforms?.beforeResponse,
         additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })),
       }),
     emit: (plugin, event, data) => broadcast({ type: 'plugin', plugin, event, data }),

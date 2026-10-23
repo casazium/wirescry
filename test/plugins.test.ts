@@ -387,4 +387,39 @@ describe('plugin host', () => {
       target.close();
     }
   });
+
+  it("runs a plugin's pass-through callbacks before the request and the response", async () => {
+    const target = http.createServer((req, res) => res.end(`saw x-paused=${req.headers['x-paused']}`));
+    await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+    const port = (target.address() as { port: number }).port;
+    try {
+      const pauser: BackendPlugin = {
+        name: 'pauser',
+        apiVersion: PLUGIN_API_VERSION,
+        async start(host) {
+          await host.setProxyRules([
+            {
+              id: 'p',
+              label: 'Pause',
+              matchers: [new mockttp.matchers.HostnameMatcher('127.0.0.1')],
+              steps: [
+                host.passThroughStep({
+                  beforeRequest: async (req) => ({ headers: { ...req.headers, 'x-paused': 'yes' } }),
+                  beforeResponse: async (res) => ({ statusCode: 299, body: `${await res.body.getText()}!` }),
+                }),
+              ],
+            },
+          ]);
+        },
+        handle: async () => undefined,
+      };
+      const b = await start([pauser]);
+      expect(await httpViaProxy(b.proxyPort, `http://127.0.0.1:${port}/`)).toMatchObject({
+        status: 299,
+        body: 'saw x-paused=yes!',
+      });
+    } finally {
+      target.close();
+    }
+  });
 });

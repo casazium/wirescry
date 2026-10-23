@@ -12,6 +12,8 @@ export interface BackendView {
   connected: boolean;
   /** Counts connections to the backend; changes when it restarts. */
   session: number;
+  /** Badges plugins put on their tabs, by `${plugin}:${viewId}`. */
+  badges: Record<string, string>;
   status?: ProxyStatus;
   exchanges: ExchangeSummary[];
   paused: boolean;
@@ -30,6 +32,8 @@ export function useBackend(): BackendView {
   const [status, setStatus] = useState<ProxyStatus>();
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
   const [paused, setPaused] = useState(false);
+  // Badges plugins put on their tabs, by `${plugin}:${viewId}`.
+  const [badges, setBadges] = useState<Record<string, string>>({});
   const clientRef = useRef<ApiClient | undefined>(undefined);
   // Bumped to reconnect when the API connection drops while the backend keeps running.
   const [attempt, setAttempt] = useState(0);
@@ -40,7 +44,11 @@ export function useBackend(): BackendView {
     let active = true;
     const update = (state: BackendState): void => {
       setBackendState(state);
-      if (state.state === 'ready') setSession((n) => n + 1);
+      if (state.state === 'ready') {
+        setSession((n) => n + 1);
+        // Plugin views remount and set their badges again.
+        setBadges({});
+      }
     };
     void window.leverframe.getBackendState().then((state) => {
       if (active) update(state);
@@ -142,6 +150,18 @@ export function useBackend(): BackendView {
           },
           saveFile: (options) => window.leverframe.saveTextFile(options),
           openFile: (options) => window.leverframe.openTextFile(options),
+          setBadge: (viewId, text) => {
+            const key = `${plugin}:${String(viewId)}`;
+            // Short text only: it sits on a tab.
+            const value = typeof text === 'string' && text !== '' ? text.slice(0, 6) : undefined;
+            setBadges((b) => {
+              if (b[key] === value) return b;
+              const next = { ...b };
+              if (value === undefined) delete next[key];
+              else next[key] = value;
+              return next;
+            });
+          },
         };
         pluginApis.current.set(plugin, api);
       }
@@ -150,5 +170,5 @@ export function useBackend(): BackendView {
     [send],
   );
 
-  return { backendState, connected, status, exchanges, paused, send, pluginApi, session };
+  return { backendState, connected, status, exchanges, paused, send, pluginApi, session, badges };
 }

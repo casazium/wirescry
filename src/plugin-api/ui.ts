@@ -17,6 +17,11 @@ export interface UiPluginApi {
   saveFile(options: { text: string; defaultName: string; extensions: string[] }): Promise<SaveTextFileResult>;
   /** Asks the user to pick a file, then resolves with its name and text (or nothing). Up to 16 MB. */
   openFile(options: { extensions: string[] }): Promise<OpenTextFileResult>;
+  /**
+   * Shows a short badge (e.g. a count) on one of this plugin's tabs, or clears it with
+   * undefined. For things that need attention while the tab isn't open.
+   */
+  setBadge(viewId: string, text: string | undefined): void;
 }
 
 export interface UiPluginView {
