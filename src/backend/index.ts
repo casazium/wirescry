@@ -2,7 +2,10 @@
  * Entry point for the backend, run by the main process as an Electron utility process.
  * It waits for a `start` message with its settings, then reports back the ports it's using.
  */
+// Must stay the first import: plugins may compile linear-time regexes as they load.
+import './v8-flags';
 import type { BackendMessage, BackendStartMessage } from '../shared/ipc';
+import { backendPlugins } from '@leverframe/pro/backend';
 import { startBackend, type RunningBackend } from './backend';
 
 const parentPort = process.parentPort;
@@ -17,6 +20,8 @@ parentPort.on('message', async ({ data }: { data: BackendStartMessage }) => {
       dataDir: data.dataDir,
       token: data.token,
       allowedOrigins: data.allowedOrigins,
+      plugins: backendPlugins,
+      pluginsEnabled: data.pluginsEnabled,
     });
     post({ type: 'ready', apiPort: backend.apiPort, proxyPort: backend.proxyPort });
   } catch (error) {

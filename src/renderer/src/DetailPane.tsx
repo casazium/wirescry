@@ -207,6 +207,12 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
                 </dd>
               </>
             )}
+            {summary.handledBy && (
+              <>
+                <dt>Handled by</dt>
+                <dd>Rule “{summary.handledBy.label}”</dd>
+              </>
+            )}
             <dt>Protocol</dt>
             <dd>
               {summary.protocol.toUpperCase()}, HTTP/{summary.httpVersion}

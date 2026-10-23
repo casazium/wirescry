@@ -5,6 +5,8 @@ export interface BackendStartMessage {
   dataDir: string;
   token: string;
   allowedOrigins: string[];
+  /** Whether plugins such as Pro may run. False in packaged builds until licensing exists. */
+  pluginsEnabled: boolean;
 }
 
 export type BackendMessage =

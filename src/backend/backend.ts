@@ -31,6 +31,9 @@ import { startProxy, type RunningProxy } from './proxy';
 import { isValidPort, loadSettings, saveSettings, type Settings } from './settings';
 import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
+import type { BackendPlugin } from '../plugin-api/backend';
+import { PluginHost } from './plugin-host';
+import * as mockttp from 'mockttp';
 import { WebSocketStore } from './websocket-store';
 
 export interface BackendOptions {
@@ -47,6 +50,12 @@ export interface BackendOptions {
   bodyMemoryLimit?: number;
   /** Bytes kept per body. Used by tests. */
   maxBodySize?: number;
+  /** Plugins built into this copy, such as Pro. */
+  plugins?: BackendPlugin[];
+  /** Whether plugins may run (licensing). */
+  pluginsEnabled?: boolean;
+  /** How long a plugin may take to start. */
+  pluginStartTimeoutMs?: number;
 }
 
 export interface RunningBackend {
@@ -103,10 +112,27 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     platform,
     terminals: terminals.map(({ id, name }) => ({ id, name })),
     terminalEnv: currentTerminalEnv(),
+    plugins: pluginHost.statuses(),
   });
 
   const currentTerminalEnv = (): Record<string, string> =>
     terminalEnv(proxy.port, { caPath: ca.certPath, ...terminalConfig }, platform);
+
+  // Plugins such as Pro. They start once the API is up.
+  const pluginHost = new PluginHost({
+    plugins: options.plugins ?? [],
+    enabled: options.pluginsEnabled ?? false,
+    disabledReason: 'Pro needs a licence.',
+    dataDir,
+    refreshRules: () => proxy.refreshRules(),
+    passThroughStep: () =>
+      new mockttp.requestSteps.PassThroughStep({
+        additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })),
+      }),
+    emit: (plugin, event, data) => broadcast({ type: 'plugin', plugin, event, data }),
+    onStatusChange: () => broadcast({ type: 'status', status: status() }),
+    startTimeoutMs: options.pluginStartTimeoutMs,
+  });
 
   const openProxy = (port: number | undefined): Promise<RunningProxy> =>
     startProxy({
@@ -117,6 +143,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       port,
       upstreamCAs: options.upstreamCAs,
       onExchange: (exchange) => updates.change(exchange.summary),
+      extraRules: () => pluginHost.rules(),
+      describeRule: (ruleId) => pluginHost.describeRule(ruleId),
+      ruleEndsWithoutResponse: (ruleId) => pluginHost.endsWithoutResponse(ruleId),
       isPaused: () => paused,
       onCATrusted: (userAgent) => {
         if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;
@@ -142,8 +171,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       proxy = await openProxy(port);
     } catch (error) {
       proxy = await openProxy(previousPort);
+      await proxy.refreshRules();
       throw error;
     }
+    // Plugins may have changed their rules while the new proxy was starting; reapply.
+    await proxy.refreshRules();
   };
 
   // Commands that restart the proxy run one at a time.
@@ -242,6 +274,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         );
         return content;
       }
+      case 'plugin': {
+        return pluginHost.call(command.plugin, command.name, command.args);
+      }
       case 'getWebSocketMessages': {
         if (!store.get(command.exchangeId)) throw new Error('Exchange not found');
         const result: WebSocketMessages = websockets.get(command.exchangeId, command.after);
@@ -295,6 +330,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   });
   broadcast = api.broadcast;
 
+  await pluginHost.startAll();
+
   return {
     apiPort: api.port,
     get proxyPort() {
@@ -302,6 +339,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
     caCertPath: ca.certPath,
     async stop() {
+      await pluginHost.stopAll();
       updates.reset();
       await Promise.all([api.stop(), proxy.stop(), formatter.close()]);
       await bodies.close();

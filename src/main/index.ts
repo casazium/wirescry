@@ -31,7 +31,10 @@ console.log(
 );
 
 // Set by electron-vite while running `npm run dev`.
-const devServerUrl = app.isPackaged ? undefined : process.env.ELECTRON_RENDERER_URL;
+// Development-only behaviour is decided when the app is built, not at run time:
+// app.isPackaged is false whenever the shipped app.asar is run with a stock Electron.
+const isDevBuild = import.meta.env.DEV;
+const devServerUrl = isDevBuild ? process.env.ELECTRON_RENDERER_URL : undefined;
 const uiOrigin = devServerUrl ? new URL(devServerUrl).origin : APP_ORIGIN;
 
 const CSP = [
@@ -57,6 +60,9 @@ let mainWindow: BrowserWindow | undefined;
 const backend = new BackendSupervisor({
   dataDir: app.getPath('userData'),
   allowedOrigins: [uiOrigin],
+  // Pro runs only in development builds until licensing exists. The real licence check
+  // will live in Pro's backend code, not here, since this file is open source.
+  pluginsEnabled: isDevBuild,
   logger,
 });
 logger.addSecret(backend.token);
@@ -131,6 +137,7 @@ app.on('web-contents-created', (_event, contents) => {
 app.whenReady().then(() => {
   Menu.setApplicationMenu(
     buildMenu({
+      devTools: isDevBuild,
       showLogFile: () => {
         logger.flush();
         shell.showItemInFolder(logger.file);

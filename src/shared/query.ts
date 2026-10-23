@@ -35,6 +35,8 @@ const FIELDS: Record<string, FieldSpec> = {
   size: { kind: 'size', get: (e) => e.responseSize },
   time: { kind: 'time', get: (e) => e.durationMs },
   protocol: { kind: 'text', get: (e) => e.protocol },
+  // The label of the plugin rule (e.g. a Pro mock rule) that handled the request.
+  rule: { kind: 'text', get: (e) => e.handledBy?.label },
   // Matches the failure's kind (dns, tls, timeout…) or its code (ENOTFOUND…).
   failure: { kind: 'text', get: (e) => (e.failure ? [e.failure.kind, e.failure.code] : undefined) },
 };

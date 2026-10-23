@@ -91,6 +91,33 @@ Builds unsigned installers for the current platform into `release/`. Use `packag
 
 Signed releases, notarization and auto-update are handled by the release workflow; see [docs/RELEASING.md](docs/RELEASING.md).
 
+## Plugins and Pro
+
+Pro features live in a separate, private repo (`leverframe-pro`) and plug into the app through `src/plugin-api`:
+
+- **Backend plugins** run in the backend process. They get a data folder, can add proxy rules that run after Leverframe's setup page and before normal pass-through, handle calls from their UI, and send it events.
+- **UI plugins** add views as toolbar tabs.
+
+The build uses the empty stubs in `src/pro-stub` unless `LEVERFRAME_PRO_DIR` points at a `leverframe-pro` checkout, usually next to this one:
+
+```bash
+LEVERFRAME_PRO_DIR=../leverframe-pro npm run dev
+```
+
+How plugins are kept in line (`src/backend/plugin-host.ts`):
+
+- A plugin declares the `PLUGIN_API_VERSION` it was built for, and isn't loaded with any other. Bump the version for breaking changes to `src/plugin-api`.
+- A plugin that throws, or takes more than 10 seconds to start, is marked as failed, and its rules are removed. Calls to it are refused, and it can't add rules back. Other plugins and the free features keep working.
+- Plugin rules keep only their matchers and steps, so they can't jump ahead of the setup page. Requests a plugin rule handled show a **Rule** badge, and `rule=` finds them in the search box.
+- A view that crashes shows an error in its tab, not a blank app.
+
+Plugins run only in development builds for now: packaged builds report "Pro needs a licence." until licensing exists. Set `LEVERFRAME_PRO_DIR` when running tests to include `test/pro-integration.test.ts`, which runs the real Pro module in the backend.
+
+With `LEVERFRAME_PRO_DIR` set:
+
+- `npm run typecheck:pro` typechecks the app with Pro in place of the stubs. Run it after changing `src/plugin-api`.
+- A production build (`npm run build`, `npm run package`) stops with an error, because Pro isn't ready to ship and its source would be readable in the bundle. `LEVERFRAME_ALLOW_PRO_BUILD=1` overrides this for a local test build that must not be shared.
+
 ## How it fits together
 
 | Part         | Folder         | Job                                                                                       |
