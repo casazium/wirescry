@@ -49,7 +49,7 @@ The **Setup** view also lets you fix the proxy port (it's otherwise picked autom
 
 If the real server can't be reached, the request's Status shows why: **DNS**, **Refused**, **TLS**, **Timeout**, **Reset**, **No route**, or **Closed** (the client gave up first). The detail pane explains the problem in plain language, with the original error. The client receives a 502 from Leverframe in these cases. Leverframe doesn't impose its own response timeout, so long-polling and other slow responses keep working; a request still waiting just shows `…`.
 
-WebSocket connections pass through and show in the list with status 101 and type `websocket`. Viewing their messages comes later.
+WebSocket connections show in the list with status 101 and type `websocket`. Select one to see its messages live: direction, time since the connection opened, size and content, with JSON formatted and binary shown as hex. Filter by sent or received, or search the text. Messages are kept in memory, at most 64 KB of each and 64 MB in total; the oldest are dropped first, and the view says when.
 
 ### Logs
 
