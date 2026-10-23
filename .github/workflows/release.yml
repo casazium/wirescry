@@ -5,7 +5,7 @@ name: Release
 # - Pushing a tag like v0.2.0 builds, signs (when the secrets exist) and uploads to a
 #   draft release on casazium/leverframe-releases. Publish the draft on GitHub to ship it.
 # - Pull requests that touch packaging, and manual runs, build without publishing and
-#   keep the installers as workflow artifacts for a week.
+#   keep the installers as workflow artifacts for three days.
 #
 # Signing is skipped, with a warning, for any platform whose secrets aren't set yet.
 # See docs/RELEASING.md for the secrets and variables.
@@ -131,7 +131,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: leverframe-${{ runner.os }}
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: error
           path: |
             release/*/*.dmg
