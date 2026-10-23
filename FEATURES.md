@@ -70,6 +70,7 @@ Leverframe is a desktop tool for seeing, debugging and rewriting HTTP traffic, i
 - Accounts and licence backend (PocketBase or Node), with sign-in and licence checks that keep working offline for a while.
 - Payments (Paddle or Stripe): checkout, receipts and subscription status.
 - Pro features locked in the app until a licence is active.
+  - **Status (October 2026):** built in Pro. Ed25519-signed licence keys, checked offline, with a 14-day grace period after expiry and protection against turning the clock back; a Licence tab and lock screens. Still to do: a production signing key, the licence server and payments, online renewal, and seat or machine limits.
 - Website, docs and download page.
 
 ## Stage 3: Pro v1.5 · ~6–7 months total

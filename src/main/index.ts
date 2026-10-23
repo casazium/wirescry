@@ -61,9 +61,9 @@ let mainWindow: BrowserWindow | undefined;
 const backend = new BackendSupervisor({
   dataDir: app.getPath('userData'),
   allowedOrigins: [uiOrigin],
-  // Pro runs only in development builds until licensing exists. The real licence check
-  // will live in Pro's backend code, not here, since this file is open source.
-  pluginsEnabled: isDevBuild,
+  // Plugins built into this copy (such as Pro) always start. Pro checks its own licence,
+  // in its own code: this file is open source, so a check here could simply be removed.
+  pluginsEnabled: true,
   logger,
 });
 logger.addSecret(backend.token);

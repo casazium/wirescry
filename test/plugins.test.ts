@@ -126,10 +126,10 @@ describe('plugin host', () => {
     expect(plugin.host).toBeUndefined();
     const api = await apiClient(b.apiPort);
     expect((await statusOf(api.messages)).plugins).toEqual([
-      { name: 'fake', active: false, reason: 'Pro needs a licence.' },
+      { name: 'fake', active: false, reason: 'Plugins are turned off.' },
     ]);
     await expect(api.send({ command: 'plugin', plugin: 'fake', name: 'echo' })).rejects.toThrow(
-      'Pro needs a licence.',
+      'Plugins are turned off.',
     );
     expect((await httpViaProxy(b.proxyPort, 'http://mocked.test/')).status).toBe(502);
     api.close();
