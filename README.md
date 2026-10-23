@@ -95,8 +95,8 @@ Signed releases, notarization and auto-update are handled by the release workflo
 
 Pro features live in a separate, private repo (`leverframe-pro`) and plug into the app through `src/plugin-api`:
 
-- **Backend plugins** run in the backend process. They get a data folder, can add proxy rules that run after Leverframe's setup page and before normal pass-through, handle calls from their UI, and send it events. Their rules can use Leverframe's own pass-through step, optionally with Mockttp's request and response transforms (to forward or rewrite).
-- **UI plugins** add views as toolbar tabs. They can also save and open files, always through a system dialog where the user picks the file (up to 16 MB), for example to export and import rules.
+- **Backend plugins** run in the backend process. They get a data folder, can add proxy rules that run after Leverframe's setup page and before normal pass-through, handle calls from their UI, and send it events. Their rules can use Leverframe's own pass-through step, optionally with Mockttp's request and response transforms (to forward or rewrite) or its `beforeRequest` and `beforeResponse` callbacks (to pause, for breakpoints).
+- **UI plugins** add views as toolbar tabs. They can also save and open files, always through a system dialog where the user picks the file (up to 16 MB), for example to export and import rules, and put a short badge on their tabs (such as how many requests are paused).
 
 The build uses the empty stubs in `src/pro-stub` unless `LEVERFRAME_PRO_DIR` points at a `leverframe-pro` checkout, usually next to this one:
 
