@@ -1,5 +1,6 @@
 import type { ExchangeSummary } from './api';
 import { exchangeType, type ExchangeType } from './exchange-type';
+import { compileQuery, type CompiledQuery } from './query';
 
 export const QUICK_FILTERS = [
   { id: 'all', label: 'All' },
@@ -39,15 +40,13 @@ function matchesQuick(exchange: ExchangeSummary, filter: QuickFilter): boolean {
   return filter === 'other' ? !NAMED_TYPES.has(type) : type === filter;
 }
 
-/**
- * True if the exchange passes the quick filter and contains every word of the search
- * (case-insensitive) in its URL, method, status or content type.
- */
+/** A quick filter plus a compiled search, ready to test many exchanges. */
+export function compileFilter(search: string, filter: QuickFilter): CompiledQuery {
+  const query = compileQuery(search);
+  return { ...query, matches: (e) => matchesQuick(e, filter) && query.matches(e) };
+}
+
+/** True if the exchange passes the quick filter and the search (see query.ts for the syntax). */
 export function matchesFilter(exchange: ExchangeSummary, search: string, filter: QuickFilter): boolean {
-  if (!matchesQuick(exchange, filter)) return false;
-  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return true;
-  const haystack =
-    `${exchange.method} ${exchange.status ?? ''} ${exchange.url} ${exchange.contentType ?? ''} ${exchange.failure ? `${exchange.failure.code} ${exchange.failure.kind}` : ''}`.toLowerCase();
-  return words.every((word) => haystack.includes(word));
+  return compileFilter(search, filter).matches(exchange);
 }
