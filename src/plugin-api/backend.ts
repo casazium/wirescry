@@ -3,13 +3,19 @@
  * open-source app; plugins import its types. Keep it small and stable, and bump
  * PLUGIN_API_VERSION (./version.ts) for breaking changes.
  */
-import type { RequestRuleData, RequestStep } from 'mockttp';
+import type { RequestRuleData, RequestStep, requestSteps } from 'mockttp';
 
 /** A proxy rule from a plugin. `id` should be stable; `label` names it in the traffic list. */
 export interface PluginRule extends Pick<RequestRuleData, 'matchers' | 'steps'> {
   id: string;
   label: string;
 }
+
+/** Changes a plugin's pass-through step may make. */
+export type PassThroughTransforms = Pick<
+  requestSteps.PassThroughStepOptions,
+  'transformRequest' | 'transformResponse'
+>;
 
 export interface BackendPluginHost {
   /** A folder for this plugin's own files, inside Leverframe's data folder. */
@@ -22,8 +28,10 @@ export interface BackendPluginHost {
   /**
    * A step that passes the request on to the real server with Leverframe's own
    * settings (trusted CAs, and later upstream proxies). Use it instead of building one.
+   * `transforms` can send it elsewhere or change it on the way, as Mockttp's
+   * PassThroughStep options of the same names.
    */
-  passThroughStep(): RequestStep;
+  passThroughStep(transforms?: PassThroughTransforms): RequestStep;
   /**
    * The most request body, in bytes, that the proxy buffers. A matcher must not read a
    * longer body (or one without a Content-Length): the read stops at this size and the

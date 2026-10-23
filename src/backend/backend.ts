@@ -125,8 +125,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     disabledReason: 'Pro needs a licence.',
     dataDir,
     refreshRules: () => proxy.refreshRules(),
-    passThroughStep: () =>
+    passThroughStep: (transforms) =>
       new mockttp.requestSteps.PassThroughStep({
+        // Only the transforms; connection settings stay Leverframe's own.
+        transformRequest: transforms?.transformRequest,
+        transformResponse: transforms?.transformResponse,
         additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })),
       }),
     emit: (plugin, event, data) => broadcast({ type: 'plugin', plugin, event, data }),
