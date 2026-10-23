@@ -4,8 +4,8 @@ name: Release
 #
 # - Pushing a tag like v0.2.0 builds, signs (when the secrets exist) and uploads to a
 #   draft release on casazium/leverframe-releases. Publish the draft on GitHub to ship it.
-# - Pull requests that touch packaging, and manual runs, build without publishing and
-#   keep the installers as workflow artifacts for three days.
+# - Pull requests that touch packaging build Linux only, without publishing, and keep
+#   the installer as a workflow artifact for three days. Manual runs build all three.
 #
 # Signing is skipped, with a warning, for any platform whose secrets aren't set yet.
 # See docs/RELEASING.md for the secrets and variables.
@@ -35,7 +35,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Packaging PRs build Linux only. It catches nearly all packaging
+        # breakage, and the hosted runners are not priced alike: macOS is
+        # 10x Linux's rate and Windows 2x. Every hosted macOS minute this
+        # org spent in October came from PR runs of this workflow - none
+        # from a release - so this is where that cost lives. Tags and
+        # manual runs still build all three, so nothing about how a
+        # release is built or signed changes.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest", "windows-latest", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
