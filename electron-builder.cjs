@@ -36,7 +36,7 @@ const azureSigning =
 module.exports = {
   appId: 'com.casazium.leverframe',
   productName: 'Leverframe',
-  copyright: 'Copyright © 2026 casazium',
+  copyright: 'Copyright © 2026 Bob Casazza',
   directories: {
     output: 'release/${version}',
     buildResources: 'build',
