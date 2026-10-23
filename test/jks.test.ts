@@ -8,7 +8,8 @@ import { pemToDer, trustStoreJks } from '../src/backend/jks';
 
 const keytool = ['keytool', process.env.JAVA_HOME && path.join(process.env.JAVA_HOME, 'bin', 'keytool')]
   .filter((k): k is string => Boolean(k))
-  .find((k) => spawnSync(k, ['-help'], { stdio: 'ignore' }).error === undefined);
+  // macOS has a /usr/bin/keytool placeholder that only reports there's no Java, so require success.
+  .find((k) => spawnSync(k, ['-help'], { stdio: 'ignore' }).status === 0);
 
 describe('trustStoreJks', () => {
   const certs = pemToDer(tls.rootCertificates.slice(0, 5).join('\n'));

@@ -29,6 +29,10 @@ export interface ExchangeSummary {
   websocket?: boolean;
   /** WebSocket close code, once the connection has closed. */
   closeCode?: number;
+  /** WebSocket close reason, if the closing side gave one. */
+  closeReason?: string;
+  /** Number of WebSocket messages so far, in both directions. */
+  messageCount?: number;
 }
 
 /** A header as sent on the wire. HTTP/2 pseudo-headers (`:method` etc.) are included. */
@@ -62,6 +66,28 @@ export interface ExchangeDetail {
   timing: ExchangeTiming;
   requestBody?: BodyInfo;
   responseBody?: BodyInfo;
+}
+
+/** One WebSocket message, without its content. */
+export interface WebSocketMessage {
+  /** Position in the connection, from 0. */
+  index: number;
+  /** True if the client (the app being debugged) sent it; false if the server did. */
+  fromClient: boolean;
+  isBinary: boolean;
+  /** Milliseconds since the connection started. */
+  time: number;
+  /** Size in bytes. Content over 64 KB is cut short. */
+  size: number;
+}
+
+export interface WebSocketMessages {
+  /** Each message with its content as base64 (cut to 64 KB). */
+  messages: Array<WebSocketMessage & { base64: string }>;
+  /** Messages dropped from the start to stay within Leverframe's memory budget. */
+  dropped: number;
+  /** Messages seen on this connection. */
+  total: number;
 }
 
 export interface BodyContent {
@@ -144,6 +170,8 @@ export type ClientCommand =
   | { id: number; command: 'setProxyPort'; port: number | null }
   | { id: number; command: 'resetCertificate' }
   | { id: number; command: 'launchTerminal'; terminalId: string }
+  /** WebSocket messages with index greater than `after` (default: from the start). */
+  | { id: number; command: 'getWebSocketMessages'; exchangeId: string; after?: number }
   | { id: number; command: 'getExchange'; exchangeId: string }
   | { id: number; command: 'getBody'; exchangeId: string; side: BodySide }
   | { id: number; command: 'formatBody'; exchangeId: string; side: BodySide };

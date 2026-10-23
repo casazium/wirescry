@@ -6,6 +6,7 @@ import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
 import type { RequestStore } from './store';
+import type { WebSocketStore } from './websocket-store';
 
 /**
  * How much of each body Mockttp itself buffers. Bodies are captured by streaming
@@ -18,6 +19,7 @@ export interface ProxyOptions {
   ca: CertificateAuthority;
   store: RequestStore;
   bodies: BodyStore;
+  websockets: WebSocketStore;
   /** Called whenever an exchange is added or updated. */
   onExchange: (exchange: ExchangeDetail) => void;
   /** While this returns true, new exchanges pass through but aren't recorded. */
@@ -329,6 +331,23 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     }));
   });
 
+  const onWebSocketMessage = (message: mockttp.WebSocketMessage): void => {
+    if (!store.get(message.streamId)) return; // Not recorded, e.g. while paused.
+    options.websockets.add(message.streamId, {
+      // Mockttp's point of view: 'received' came from the client, 'sent' went to it.
+      fromClient: message.direction === 'received',
+      content: message.content,
+      isBinary: message.isBinary,
+      time: Math.max(0, Math.round(message.eventTimestamp - message.timingEvents.startTimestamp)),
+    });
+    update(message.streamId, (existing) => ({
+      ...existing,
+      summary: { ...existing.summary, messageCount: options.websockets.count(message.streamId) },
+    }));
+  };
+  await server.on('websocket-message-received', onWebSocketMessage);
+  await server.on('websocket-message-sent', onWebSocketMessage);
+
   await server.on('websocket-close', (close) => {
     update(close.streamId, (existing) => {
       const { startTimestamp, wsClosedTimestamp } = close.timingEvents;
@@ -337,6 +356,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
         summary: {
           ...existing.summary,
           closeCode: close.closeCode,
+          closeReason: close.closeReason || undefined,
           durationMs:
             wsClosedTimestamp !== undefined ? Math.round(wsClosedTimestamp - startTimestamp) : undefined,
         },
