@@ -3,7 +3,12 @@
  * It waits for a `start` message with its settings, then reports back the ports it's using.
  */
 import type { BackendMessage, BackendStartMessage } from '../shared/ipc';
+import { setFlagsFromString } from 'node:v8';
 import { backendPlugins } from '@leverframe/pro/backend';
+
+// Lets code here (and plugins) compile regular expressions with the `l` flag, which V8 runs
+// in linear time and refuses for patterns that could backtrack catastrophically.
+setFlagsFromString('--enable-experimental-regexp-engine');
 import { startBackend, type RunningBackend } from './backend';
 
 const parentPort = process.parentPort;

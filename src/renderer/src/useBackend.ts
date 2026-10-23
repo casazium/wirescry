@@ -10,6 +10,8 @@ type PluginListener = (data: unknown) => void;
 export interface BackendView {
   backendState: BackendState;
   connected: boolean;
+  /** Counts connections to the backend; changes when it restarts. */
+  session: number;
   status?: ProxyStatus;
   exchanges: ExchangeSummary[];
   paused: boolean;
@@ -22,6 +24,8 @@ export interface BackendView {
 export function useBackend(): BackendView {
   const [backendState, setBackendState] = useState<BackendState>({ state: 'starting' });
   const [connected, setConnected] = useState(false);
+  // Goes up on every (re)connection, so plugin views can remount and refetch.
+  const [session, setSession] = useState(0);
   const [status, setStatus] = useState<ProxyStatus>();
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
   const [paused, setPaused] = useState(false);
@@ -57,6 +61,7 @@ export function useBackend(): BackendView {
     const onMessage = (message: ServerMessage): void => {
       switch (message.type) {
         case 'hello':
+          setSession((n) => n + 1);
           setStatus(message.status);
           setPaused(message.paused);
           list.reset(message.exchanges);
@@ -79,7 +84,12 @@ export function useBackend(): BackendView {
           break;
         case 'plugin':
           for (const listener of pluginListeners.current.get(message.plugin)?.get(message.event) ?? []) {
-            listener(message.data);
+            // One broken listener mustn't stop the others, or the rest of the UI.
+            try {
+              listener(message.data);
+            } catch (error) {
+              console.error(`[leverframe] ${message.plugin} listener for ${message.event} failed:`, error);
+            }
           }
           break;
       }
@@ -123,5 +133,5 @@ export function useBackend(): BackendView {
     [send],
   );
 
-  return { backendState, connected, status, exchanges, paused, send, pluginApi };
+  return { backendState, connected, status, exchanges, paused, send, pluginApi, session };
 }

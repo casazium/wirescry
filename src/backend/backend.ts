@@ -32,9 +32,8 @@ import { isValidPort, loadSettings, saveSettings, type Settings } from './settin
 import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
 import type { BackendPlugin } from '../plugin-api/backend';
-import { mkdir } from 'node:fs/promises';
+import { PluginHost } from './plugin-host';
 import * as mockttp from 'mockttp';
-import type { RequestRuleData } from 'mockttp';
 import { WebSocketStore } from './websocket-store';
 
 export interface BackendOptions {
@@ -55,6 +54,8 @@ export interface BackendOptions {
   plugins?: BackendPlugin[];
   /** Whether plugins may run (licensing). */
   pluginsEnabled?: boolean;
+  /** How long a plugin may take to start. */
+  pluginStartTimeoutMs?: number;
 }
 
 export interface RunningBackend {
@@ -111,22 +112,27 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     platform,
     terminals: terminals.map(({ id, name }) => ({ id, name })),
     terminalEnv: currentTerminalEnv(),
-    plugins: plugins.map(({ name }) => {
-      const failure = pluginFailures.get(name);
-      return failure ? { name, active: false, reason: failure } : { name, active: true };
-    }),
+    plugins: pluginHost.statuses(),
   });
 
   const currentTerminalEnv = (): Record<string, string> =>
     terminalEnv(proxy.port, { caPath: ca.certPath, ...terminalConfig }, platform);
 
-  // Plugins such as Pro: their proxy rules, and why any of them isn't running.
-  const plugins = options.plugins ?? [];
-  const pluginRules = new Map<string, RequestRuleData[]>();
-  const pluginFailures = new Map<string, string>();
-  if (!options.pluginsEnabled) {
-    for (const p of plugins) pluginFailures.set(p.name, 'Pro needs a licence.');
-  }
+  // Plugins such as Pro. They start once the API is up.
+  const pluginHost = new PluginHost({
+    plugins: options.plugins ?? [],
+    enabled: options.pluginsEnabled ?? false,
+    disabledReason: 'Pro needs a licence.',
+    dataDir,
+    refreshRules: () => proxy.refreshRules(),
+    passThroughStep: () =>
+      new mockttp.requestSteps.PassThroughStep({
+        additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })),
+      }),
+    emit: (plugin, event, data) => broadcast({ type: 'plugin', plugin, event, data }),
+    onStatusChange: () => broadcast({ type: 'status', status: status() }),
+    startTimeoutMs: options.pluginStartTimeoutMs,
+  });
 
   const openProxy = (port: number | undefined): Promise<RunningProxy> =>
     startProxy({
@@ -137,7 +143,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       port,
       upstreamCAs: options.upstreamCAs,
       onExchange: (exchange) => updates.change(exchange.summary),
-      extraRules: () => plugins.flatMap((p) => pluginRules.get(p.name) ?? []),
+      extraRules: () => pluginHost.rules(),
+      describeRule: (ruleId) => pluginHost.describeRule(ruleId),
       isPaused: () => paused,
       onCATrusted: (userAgent) => {
         if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;
@@ -163,8 +170,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       proxy = await openProxy(port);
     } catch (error) {
       proxy = await openProxy(previousPort);
+      await proxy.refreshRules();
       throw error;
     }
+    // Plugins may have changed their rules while the new proxy was starting; reapply.
+    await proxy.refreshRules();
   };
 
   // Commands that restart the proxy run one at a time.
@@ -264,11 +274,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         return content;
       }
       case 'plugin': {
-        const plugin = plugins.find((p) => p.name === command.plugin);
-        if (!plugin) throw new Error(`No plugin called ${command.plugin}`);
-        const failure = pluginFailures.get(plugin.name);
-        if (failure) throw new Error(failure);
-        return plugin.handle(command.name, command.args);
+        return pluginHost.call(command.plugin, command.name, command.args);
       }
       case 'getWebSocketMessages': {
         if (!store.get(command.exchangeId)) throw new Error('Exchange not found');
@@ -323,32 +329,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   });
   broadcast = api.broadcast;
 
-  for (const plugin of plugins) {
-    if (pluginFailures.has(plugin.name)) continue;
-    const pluginDir = path.join(dataDir, 'plugins', plugin.name);
-    try {
-      await mkdir(pluginDir, { recursive: true });
-      await plugin.start({
-        dataDir: pluginDir,
-        setProxyRules: async (rules) => {
-          pluginRules.set(plugin.name, rules);
-          await proxy.refreshRules();
-        },
-        passThroughStep: () =>
-          new mockttp.requestSteps.PassThroughStep({
-            additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })),
-          }),
-        emit: (event, data) => broadcast({ type: 'plugin', plugin: plugin.name, event, data }),
-        log: (message) => console.log(`[${plugin.name}] ${message}`),
-      });
-    } catch (error) {
-      console.error(`[leverframe] plugin ${plugin.name} failed to start:`, error);
-      pluginFailures.set(plugin.name, `Couldn't start: ${(error as Error).message}`);
-      pluginRules.delete(plugin.name);
-      await proxy.refreshRules().catch(() => undefined);
-    }
-  }
-  if (plugins.length > 0) broadcast({ type: 'status', status: status() });
+  await pluginHost.startAll();
 
   return {
     apiPort: api.port,
@@ -357,9 +338,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
     caCertPath: ca.certPath,
     async stop() {
-      for (const plugin of plugins) {
-        if (!pluginFailures.has(plugin.name)) await Promise.resolve(plugin.stop?.()).catch(() => undefined);
-      }
+      await pluginHost.stopAll();
       updates.reset();
       await Promise.all([api.stop(), proxy.stop(), formatter.close()]);
       await bodies.close();

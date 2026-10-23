@@ -1,6 +1,10 @@
 import { app, Menu, type MenuItemConstructorOptions } from 'electron';
 
-export function buildMenu(actions: { showLogFile(): void; checkForUpdates(): void }): Menu {
+export function buildMenu(actions: {
+  devTools: boolean;
+  showLogFile(): void;
+  checkForUpdates(): void;
+}): Menu {
   const isMac = process.platform === 'darwin';
   const checkForUpdates: MenuItemConstructorOptions = {
     label: 'Check for Updates…',
@@ -33,7 +37,7 @@ export function buildMenu(actions: { showLogFile(): void; checkForUpdates(): voi
       submenu: [
         { role: 'reload' },
         { role: 'forceReload' },
-        ...(app.isPackaged ? [] : [{ role: 'toggleDevTools' as const }]),
+        ...(actions.devTools ? [{ role: 'toggleDevTools' as const }] : []),
         { type: 'separator' },
         { role: 'resetZoom' },
         { role: 'zoomIn' },

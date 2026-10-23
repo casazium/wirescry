@@ -4,12 +4,13 @@ import { DetailPane } from './DetailPane';
 import { FilterHelp } from './FilterHelp';
 import { PluginView } from './PluginView';
 import { uiPlugins } from '@leverframe/pro/ui';
+import { PLUGIN_API_VERSION } from '../../plugin-api/version';
 import { SetupPage } from './SetupPage';
 import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
 
 export function App(): React.JSX.Element {
-  const { backendState, connected, status, exchanges, paused, send, pluginApi } = useBackend();
+  const { backendState, connected, status, exchanges, paused, send, pluginApi, session } = useBackend();
   const [message, setMessage] = useState<string>();
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string>();
@@ -17,9 +18,12 @@ export function App(): React.JSX.Element {
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   // 'traffic', 'setup', or `${plugin}:${viewId}` for a plugin's view.
   const [view, setView] = useState<string>('traffic');
-  const pluginViews = uiPlugins.flatMap((plugin) =>
-    plugin.views.map((v) => ({ key: `${plugin.name}:${v.id}`, plugin: plugin.name, view: v })),
-  );
+  // A UI plugin built for another API version is left out; its backend half reports why.
+  const pluginViews = uiPlugins
+    .filter((p) => p.apiVersion === PLUGIN_API_VERSION)
+    .flatMap((plugin) =>
+      plugin.views.map((v) => ({ key: `${plugin.name}:${v.id}`, plugin: plugin.name, view: v })),
+    );
   const activePluginView = pluginViews.find((p) => p.key === view);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -141,6 +145,8 @@ export function App(): React.JSX.Element {
 
       {activePluginView && (
         <PluginView
+          // Remount after the backend restarts, so the view loads fresh state.
+          key={`${activePluginView.key}:${session}`}
           view={activePluginView.view}
           status={status?.plugins.find((p) => p.name === activePluginView.plugin)}
           api={pluginApi(activePluginView.plugin)}

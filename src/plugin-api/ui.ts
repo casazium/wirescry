@@ -21,5 +21,7 @@ export interface UiPluginView {
 export interface UiPlugin {
   /** Must match the backend plugin's name. */
   name: string;
+  /** The PLUGIN_API_VERSION this plugin was built against. */
+  apiVersion: number;
   views: UiPluginView[];
 }

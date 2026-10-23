@@ -33,6 +33,15 @@ export interface ExchangeSummary {
   closeReason?: string;
   /** Number of WebSocket messages so far, in both directions. */
   messageCount?: number;
+  /** Set when a plugin rule (e.g. a Pro mock rule) handled this request. */
+  handledBy?: HandledBy;
+}
+
+/** A plugin rule that handled a request. */
+export interface HandledBy {
+  plugin: string;
+  ruleId: string;
+  label: string;
 }
 
 /** A header as sent on the wire. HTTP/2 pseudo-headers (`:method` etc.) are included. */

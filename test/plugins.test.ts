@@ -5,6 +5,7 @@ import * as mockttp from 'mockttp';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend';
+import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import type { ProxyStatus, ServerMessage } from '../src/shared/api';
 import { apiClient, httpViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
@@ -12,10 +13,13 @@ import { apiClient, httpViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 function fakePlugin(name = 'fake'): BackendPlugin & { host?: BackendPluginHost } {
   const plugin: BackendPlugin & { host?: BackendPluginHost } = {
     name,
+    apiVersion: PLUGIN_API_VERSION,
     async start(host) {
       plugin.host = host;
       await host.setProxyRules([
         {
+          id: 'teapot',
+          label: 'Teapot',
           matchers: [new mockttp.matchers.HostnameMatcher('mocked.test')],
           steps: [new mockttp.requestSteps.FixedResponseStep(418, undefined, 'from the plugin')],
         },
@@ -33,7 +37,11 @@ describe('plugin host', () => {
   let dataDir: string;
   let backend: RunningBackend | undefined;
 
-  const start = async (plugins: BackendPlugin[], pluginsEnabled = true): Promise<RunningBackend> => {
+  const start = async (
+    plugins: BackendPlugin[],
+    pluginsEnabled = true,
+    pluginStartTimeoutMs?: number,
+  ): Promise<RunningBackend> => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-plugin-test-'));
     backend = await startBackend({
       dataDir,
@@ -41,6 +49,7 @@ describe('plugin host', () => {
       allowedOrigins: [UI_ORIGIN],
       plugins,
       pluginsEnabled,
+      pluginStartTimeoutMs,
     });
     return backend;
   };
@@ -128,9 +137,12 @@ describe('plugin host', () => {
   it('isolates a plugin that fails to start', async () => {
     const broken: BackendPlugin = {
       name: 'broken',
+      apiVersion: PLUGIN_API_VERSION,
       async start(host) {
         await host.setProxyRules([
           {
+            id: 'r',
+            label: 'r',
             matchers: [new mockttp.matchers.HostnameMatcher('mocked.test')],
             steps: [new mockttp.requestSteps.FixedResponseStep(418)],
           },
@@ -158,5 +170,137 @@ describe('plugin host', () => {
     const api = await apiClient(b.apiPort);
     expect((await statusOf(api.messages)).plugins).toEqual([]);
     api.close();
+  });
+
+  it('marks requests a plugin rule handled', async () => {
+    const b = await start([fakePlugin()]);
+    const api = await apiClient(b.apiPort);
+    await httpViaProxy(b.proxyPort, 'http://mocked.test/x');
+    await expect
+      .poll(
+        () =>
+          api.messages
+            .flatMap((m) => (m.type === 'exchanges' ? m.exchanges : []))
+            .find((e) => e.status === 418)?.handledBy,
+      )
+      .toEqual({ plugin: 'fake', ruleId: 'teapot', label: 'Teapot' });
+    api.close();
+  });
+
+  it('describes a request a rule closed without answering', async () => {
+    const plugin: BackendPlugin = {
+      name: 'closer',
+      apiVersion: PLUGIN_API_VERSION,
+      async start(host) {
+        await host.setProxyRules([
+          {
+            id: 'c',
+            label: 'Drop it',
+            matchers: [new mockttp.matchers.HostnameMatcher('mocked.test')],
+            steps: [new mockttp.requestSteps.CloseConnectionStep()],
+          },
+        ]);
+      },
+      handle: async () => undefined,
+    };
+    const b = await start([plugin]);
+    const api = await apiClient(b.apiPort);
+    await httpViaProxy(b.proxyPort, 'http://mocked.test/').catch(() => undefined);
+    await expect
+      .poll(
+        () =>
+          api.messages.flatMap((m) => (m.type === 'exchanges' ? m.exchanges : [])).find((e) => e.failure)
+            ?.failure,
+      )
+      .toMatchObject({ kind: 'rule', message: expect.stringContaining('Drop it') });
+    api.close();
+  });
+
+  it("ignores a plugin rule's priority, so the setup page always comes first", async () => {
+    const greedy: BackendPlugin = {
+      name: 'greedy',
+      apiVersion: PLUGIN_API_VERSION,
+      async start(host) {
+        await host.setProxyRules([
+          {
+            id: 'all',
+            label: 'all',
+            priority: 100,
+            matchers: [new mockttp.matchers.WildcardMatcher()],
+            steps: [new mockttp.requestSteps.FixedResponseStep(418)],
+          } as Parameters<BackendPluginHost['setProxyRules']>[0][number],
+        ]);
+      },
+      handle: async () => undefined,
+    };
+    const b = await start([greedy]);
+    expect((await httpViaProxy(b.proxyPort, 'http://leverframe.internal/')).status).toBe(200);
+    expect((await httpViaProxy(b.proxyPort, 'http://other.test/')).status).toBe(418);
+  });
+
+  it('refuses plugins with a bad name or another API version', async () => {
+    const b = await start([
+      { ...fakePlugin('Bad Name') },
+      { ...fakePlugin('old'), apiVersion: PLUGIN_API_VERSION + 1 },
+      fakePlugin('fake'),
+      fakePlugin('fake'),
+    ]);
+    const api = await apiClient(b.apiPort);
+    const plugins = (await statusOf(api.messages)).plugins;
+    expect(plugins.map((p) => [p.name, p.active])).toEqual([
+      ['Bad Name', false],
+      ['old', false],
+      ['fake', true],
+      ['fake', false],
+    ]);
+    expect(plugins[1]!.reason).toContain('plugin API version');
+    api.close();
+  });
+
+  it('fails a plugin that takes too long to start, and refuses calls until it has started', async () => {
+    let release!: () => void;
+    let slowHost: BackendPluginHost | undefined;
+    const slow: BackendPlugin = {
+      name: 'slow',
+      apiVersion: PLUGIN_API_VERSION,
+      start: (host) => {
+        slowHost = host;
+        return new Promise<void>((resolve) => (release = resolve));
+      },
+      handle: async () => 'ok',
+    };
+    const starting = start([slow], true, 300);
+    // The API is up before plugins have started; calls are refused meanwhile.
+    await expect.poll(() => slowHost).toBeDefined();
+    const b = await starting;
+    const api = await apiClient(b.apiPort);
+    const status = (await statusOf(api.messages)).plugins[0]!;
+    expect(status.active).toBe(false);
+    expect(status.reason).toContain("didn't finish starting");
+    // Starting late doesn't revive it, and it can't add rules any more.
+    release();
+    await slowHost!.setProxyRules([
+      {
+        id: 'x',
+        label: 'x',
+        matchers: [new mockttp.matchers.HostnameMatcher('mocked.test')],
+        steps: [new mockttp.requestSteps.FixedResponseStep(418)],
+      },
+    ]);
+    expect((await httpViaProxy(b.proxyPort, 'http://mocked.test/')).status).toBe(502);
+    await expect(api.send({ command: 'plugin', plugin: 'slow', name: 'x' })).rejects.toThrow("didn't finish");
+    api.close();
+  });
+
+  it('survives a plugin whose stop throws', async () => {
+    const plugin = {
+      ...fakePlugin(),
+      stop: () => {
+        throw new Error('nope');
+      },
+    };
+    await start([plugin]);
+    await backend!.stop();
+    backend = undefined;
   });
 });

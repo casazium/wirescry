@@ -1,7 +1,12 @@
 import net from 'node:net';
 import * as mockttp from 'mockttp';
-import type { BodySide, ExchangeDetail, ExchangeTiming } from '../shared/api';
-import { describeFailure, describePartialFailure, upstreamErrorCode } from '../shared/failure';
+import type { BodySide, ExchangeDetail, ExchangeTiming, HandledBy } from '../shared/api';
+import {
+  describeFailure,
+  describePartialFailure,
+  describeRuleEnded,
+  upstreamErrorCode,
+} from '../shared/failure';
 import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
@@ -30,6 +35,8 @@ export interface ProxyOptions {
   upstreamCAs?: string[];
   /** Extra rules (from plugins) that run before normal pass-through, in order. */
   extraRules?: () => mockttp.RequestRuleData[];
+  /** Which plugin rule a Mockttp rule id belongs to, for the traffic list. */
+  describeRule?: (ruleId: string | undefined) => HandledBy | undefined;
   /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
   onCATrusted?: (userAgent: string) => void;
 }
@@ -226,9 +233,12 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     });
   });
 
+  const handledBy = (ruleId: string | undefined): HandledBy | undefined => options.describeRule?.(ruleId);
+
   await server.on('request', (req) => {
     update(req.id, (existing) => ({
       ...existing,
+      summary: { ...existing.summary, handledBy: handledBy(req.matchedRuleId) ?? existing.summary.handledBy },
       requestHeaders: req.rawHeaders,
       timing: timingOf(req.timingEvents),
     }));
@@ -293,18 +303,25 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     const partial = answered.has(req.id);
     answered.delete(req.id);
     brokenMidBody.delete(req.id);
-    update(req.id, (existing) => ({
-      ...existing,
-      summary: {
-        ...existing.summary,
-        failure: !upstream?.code
-          ? describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
-          : partial
-            ? describePartialFailure(upstream.code, existing.summary.host, upstream.message)
-            : describeFailure(upstream.code, existing.summary.host, upstream.message),
-      },
-      timing: timingOf(req.timingEvents),
-    }));
+    update(req.id, (existing) => {
+      const rule = handledBy(req.matchedRuleId) ?? existing.summary.handledBy;
+      return {
+        ...existing,
+        summary: {
+          ...existing.summary,
+          handledBy: rule,
+          failure: !upstream?.code
+            ? // A rule that closes or never answers ends here too; say so instead of "client closed".
+              rule
+              ? describeRuleEnded(rule.label)
+              : describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
+            : partial
+              ? describePartialFailure(upstream.code, existing.summary.host, upstream.message)
+              : describeFailure(upstream.code, existing.summary.host, upstream.message),
+        },
+        timing: timingOf(req.timingEvents),
+      };
+    });
   });
 
   await server.on('websocket-request', (req) => {
@@ -412,8 +429,12 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   // The first matching rule handles each request: the setup host, then plugin rules in
   // order, then normal pass-through. Every rule is "always", or Mockttp would move on to
   // the next matching rule once a rule has been used.
+  // Only the id, matchers and steps are kept: a plugin can't set a priority that would put
+  // its rule ahead of the setup page.
   const always = (rule: mockttp.RequestRuleData): mockttp.RequestRuleData => ({
-    ...rule,
+    id: rule.id,
+    matchers: rule.matchers,
+    steps: rule.steps,
     completionChecker: new mockttp.completionCheckers.Always(),
   });
   const applyRules = async (): Promise<void> => {

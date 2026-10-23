@@ -1,6 +1,6 @@
 /** Why an exchange didn't get a response from the real server. */
 export type FailureKind =
-  'dns' | 'refused' | 'tls' | 'timeout' | 'reset' | 'unreachable' | 'client-closed' | 'other';
+  'dns' | 'refused' | 'tls' | 'timeout' | 'reset' | 'unreachable' | 'client-closed' | 'rule' | 'other';
 
 export interface ExchangeFailure {
   kind: FailureKind;
@@ -22,6 +22,7 @@ export const FAILURE_LABELS: Record<FailureKind, string> = {
   reset: 'Reset',
   unreachable: 'No route',
   'client-closed': 'Closed',
+  rule: 'Rule',
   other: 'Failed',
 };
 
@@ -85,4 +86,13 @@ export function describePartialFailure(code: string, target: string, detail?: st
 /** Reads the error code from Mockttp's `passthrough-error:CODE` tag, if present. */
 export function upstreamErrorCode(tags: readonly string[]): string | undefined {
   return tags.find((t) => t.startsWith('passthrough-error:'))?.slice('passthrough-error:'.length);
+}
+
+/** A request that a rule ended without a response, e.g. a "close connection" mock rule. */
+export function describeRuleEnded(label: string): ExchangeFailure {
+  return {
+    kind: 'rule',
+    code: 'RULE',
+    message: `The rule "${label}" ended this request without a response.`,
+  };
 }

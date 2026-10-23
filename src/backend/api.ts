@@ -82,6 +82,12 @@ export async function startApiServer(options: ApiServerOptions): Promise<Running
   };
 
   wss.on('connection', (ws: WebSocket) => {
+    // A protocol error (such as a message over maxPayload) closes this connection; without a
+    // listener it would be an uncaught exception that takes the whole backend down.
+    ws.on('error', (error) => {
+      console.error('[leverframe] API connection error:', error.message);
+      ws.terminate();
+    });
     send(ws, handlers.hello());
     ws.on('message', async (data) => {
       let command: ClientCommand;

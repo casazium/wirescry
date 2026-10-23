@@ -153,6 +153,13 @@ describe('compileQuery', () => {
     expect(ids('status>abc method=POST')).toEqual(['apiPost']); // The bad term is ignored.
   });
 
+  it('filters by the plugin rule that handled a request', () => {
+    const mocked = { ...base, handledBy: { plugin: 'pro', ruleId: 'r1', label: 'Login mock' } };
+    expect(compileQuery('rule=login*').matches(mocked)).toBe(true);
+    expect(compileQuery('rule=login*').matches(base)).toBe(false);
+    expect(compileQuery('rule=*').matches(base)).toBe(false);
+  });
+
   it("doesn't match missing values in numeric comparisons", () => {
     const pending = { ...base, status: undefined, responseSize: undefined, durationMs: undefined };
     expect(compileQuery('status<500').matches(pending)).toBe(false);
