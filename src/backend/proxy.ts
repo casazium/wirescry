@@ -18,7 +18,7 @@ import type { WebSocketStore } from './websocket-store';
  * their chunks into the BodyStore instead, so this only needs to cover small
  * things like the 502 bodies Mockttp writes for upstream errors.
  */
-const MOCKTTP_BUFFER_LIMIT = 64 * 1024;
+export const MOCKTTP_BUFFER_LIMIT = 64 * 1024;
 
 export interface ProxyOptions {
   ca: CertificateAuthority;
