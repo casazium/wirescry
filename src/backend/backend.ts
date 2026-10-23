@@ -8,6 +8,7 @@ import type {
   FormattedBody,
   ProxyStatus,
   ServerMessage,
+  WebSocketMessages,
 } from '../shared/api';
 import { startApiServer } from './api';
 import { headerValue, toBodyContent } from './body-content';
@@ -30,6 +31,7 @@ import { startProxy, type RunningProxy } from './proxy';
 import { isValidPort, loadSettings, saveSettings, type Settings } from './settings';
 import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
+import { WebSocketStore } from './websocket-store';
 
 export interface BackendOptions {
   /** Folder for this install's data, e.g. the CA. */
@@ -80,8 +82,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   const updates = new UpdateBatcher((message) => broadcast(message));
   let paused = false;
 
+  const websockets = new WebSocketStore();
   const store = new InMemoryRequestStore(10_000, (id) => {
     updates.remove(id);
+    websockets.delete(id);
     void bodies.delete(id).catch(() => undefined);
   });
 
@@ -109,6 +113,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       ca,
       store,
       bodies,
+      websockets,
       port,
       upstreamCAs: options.upstreamCAs,
       onExchange: (exchange) => updates.change(exchange.summary),
@@ -177,6 +182,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'clear':
         updates.reset();
         store.clear();
+        websockets.clear();
         await bodies.clear();
         broadcast({ type: 'cleared' });
         return undefined;
@@ -235,6 +241,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           headers,
         );
         return content;
+      }
+      case 'getWebSocketMessages': {
+        if (!store.get(command.exchangeId)) throw new Error('Exchange not found');
+        const result: WebSocketMessages = websockets.get(command.exchangeId, command.after);
+        return result;
       }
       case 'formatBody': {
         const { exchangeId, side } = command;
