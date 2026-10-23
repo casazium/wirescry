@@ -83,7 +83,9 @@ export class PluginHost {
               emit: (event, data) => {
                 if (this.isRunning(plugin)) this.options.emit(plugin.name, event, data);
               },
-              log: (message) => console.log(`[${plugin.name}] ${String(message).replace(/[\r\n\0]/g, ' ')}`),
+              log: (message) =>
+                // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+                console.log(`[${plugin.name}] ${String(message).replace(/[\x00-\x1f\x7f]/g, ' ')}`),
             }))(),
           new Promise((_, reject) => {
             timer = setTimeout(
