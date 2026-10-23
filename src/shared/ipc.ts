@@ -27,7 +27,32 @@ export const IPC = {
   getBackendState: 'leverframe:get-backend-state',
   backendStateChanged: 'leverframe:backend-state-changed',
   exportCertificate: 'leverframe:export-certificate',
+  saveTextFile: 'leverframe:save-text-file',
+  openTextFile: 'leverframe:open-text-file',
 } as const;
+
+export interface SaveTextFileRequest {
+  text: string;
+  /** Suggested file name. */
+  defaultName: string;
+  /** Allowed extensions, without dots, e.g. ['json']. */
+  extensions: string[];
+}
+
+/** The saved file's name, or nothing if the user cancelled. */
+export interface SaveTextFileResult {
+  name?: string;
+}
+
+export interface OpenTextFileRequest {
+  extensions: string[];
+}
+
+/** The chosen file's name and text, or nothing if the user cancelled. */
+export interface OpenTextFileResult {
+  name?: string;
+  text?: string;
+}
 
 /** Where the certificate was saved, or undefined if the user cancelled. */
 export interface ExportResult {
@@ -41,4 +66,8 @@ export interface LeverframeBridge {
   onBackendStateChanged(callback: (state: BackendState) => void): () => void;
   /** Asks where to save the CA certificate, then saves it. */
   exportCertificate(): Promise<ExportResult>;
+  /** Asks where to save some text (e.g. exported rules), then saves it. */
+  saveTextFile(request: SaveTextFileRequest): Promise<SaveTextFileResult>;
+  /** Asks the user to pick a text file and returns it. */
+  openTextFile(request: OpenTextFileRequest): Promise<OpenTextFileResult>;
 }

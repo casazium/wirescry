@@ -3,12 +3,20 @@
  * plugins import these types.
  */
 import type { ComponentType } from 'react';
+import type { OpenTextFileResult, SaveTextFileResult } from '../shared/ipc';
 
 export interface UiPluginApi {
   /** Calls the plugin's backend half. */
   call(name: string, args?: unknown): Promise<unknown>;
   /** Listens for events from the plugin's backend half. Returns a function that stops listening. */
   on(event: string, listener: (data: unknown) => void): () => void;
+  /**
+   * Asks where to save `text` in a system dialog, then saves it. Resolves with the file
+   * name, or nothing if the user cancelled. Up to 16 MB.
+   */
+  saveFile(options: { text: string; defaultName: string; extensions: string[] }): Promise<SaveTextFileResult>;
+  /** Asks the user to pick a file, then resolves with its name and text (or nothing). Up to 16 MB. */
+  openFile(options: { extensions: string[] }): Promise<OpenTextFileResult>;
 }
 
 export interface UiPluginView {
