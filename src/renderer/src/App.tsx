@@ -24,7 +24,6 @@ export function App(): React.JSX.Element {
     .flatMap((plugin) =>
       plugin.views.map((v) => ({ key: `${plugin.name}:${v.id}`, plugin: plugin.name, view: v })),
     );
-  const activePluginView = pluginViews.find((p) => p.key === view);
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Typing stays responsive while a large list is re-filtered.
@@ -143,15 +142,16 @@ export function App(): React.JSX.Element {
         )}
       </header>
 
-      {activePluginView && (
-        <PluginView
-          // Remount after the backend restarts, so the view loads fresh state.
-          key={`${activePluginView.key}:${session}`}
-          view={activePluginView.view}
-          status={status?.plugins.find((p) => p.name === activePluginView.plugin)}
-          api={pluginApi(activePluginView.plugin)}
-        />
-      )}
+      {/* Plugin views stay mounted while hidden, so switching tabs keeps unsaved edits. */}
+      {pluginViews.map((p) => (
+        <div key={`${p.key}:${session}`} hidden={view !== p.key} className="plugin-view-host">
+          <PluginView
+            view={p.view}
+            status={status?.plugins.find((s) => s.name === p.plugin)}
+            api={pluginApi(p.plugin)}
+          />
+        </div>
+      ))}
 
       {view === 'setup' && status && (
         <SetupPage status={status} connected={connected} send={send} onLaunched={() => setView('traffic')} />

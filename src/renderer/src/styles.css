@@ -742,6 +742,17 @@ button.help-button {
   font-size: 12px;
 }
 
+.plugin-view-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-view-host[hidden] {
+  display: none;
+}
+
 .plugin-view {
   flex: 1;
   min-height: 0;

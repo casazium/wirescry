@@ -37,6 +37,8 @@ export interface ProxyOptions {
   extraRules?: () => mockttp.RequestRuleData[];
   /** Which plugin rule a Mockttp rule id belongs to, for the traffic list. */
   describeRule?: (ruleId: string | undefined) => HandledBy | undefined;
+  /** Whether that rule closes the connection or never answers. */
+  ruleEndsWithoutResponse?: (ruleId: string | undefined) => boolean;
   /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
   onCATrusted?: (userAgent: string) => void;
 }
@@ -311,8 +313,8 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
           ...existing.summary,
           handledBy: rule,
           failure: !upstream?.code
-            ? // A rule that closes or never answers ends here too; say so instead of "client closed".
-              rule
+            ? // A close or timeout rule ends here too; say so instead of "client closed".
+              rule && options.ruleEndsWithoutResponse?.(req.matchedRuleId)
               ? describeRuleEnded(rule.label)
               : describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
             : partial

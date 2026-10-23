@@ -6,6 +6,8 @@ import type { BackendPlugin, PluginRule } from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
 
 const NAME = /^[a-z0-9-]{1,32}$/;
+/** Mockttp steps that end a request without a response. */
+const SILENT_STEPS = new Set(['close-connection', 'reset-connection', 'timeout']);
 
 export interface PluginHostOptions {
   plugins: BackendPlugin[];
@@ -33,6 +35,8 @@ export class PluginHost {
   private readonly states = new Map<BackendPlugin, State>();
   private readonly rulesByPlugin = new Map<string, mockttp.RequestRuleData[]>();
   private readonly labels = new Map<string, HandledBy>();
+  // Rules that end a request without answering (close or time out), by Mockttp rule id.
+  private readonly silentRules = new Set<string>();
 
   constructor(private readonly options: PluginHostOptions) {
     const seen = new Set<string>();
@@ -50,6 +54,11 @@ export class PluginHost {
   /** Every running plugin's rules, in plugin order, ready for the proxy. */
   rules(): mockttp.RequestRuleData[] {
     return this.options.plugins.flatMap((p) => this.rulesByPlugin.get(p.name) ?? []);
+  }
+
+  /** Whether a rule closes the connection or never answers, rather than responding. */
+  endsWithoutResponse(ruleId: string | undefined): boolean {
+    return ruleId !== undefined && this.silentRules.has(ruleId);
   }
 
   /** Which plugin rule a Mockttp rule id belongs to, if any. */
@@ -71,33 +80,43 @@ export class PluginHost {
     for (const plugin of this.options.plugins) {
       if (this.states.get(plugin)?.state !== 'starting') continue;
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let starting: Promise<void> | undefined;
+      let timedOut = false;
       try {
         const dataDir = path.join(this.options.dataDir, 'plugins', plugin.name);
         await mkdir(dataDir, { recursive: true });
+        starting = (async () =>
+          plugin.start({
+            dataDir,
+            setProxyRules: (rules) => this.setRules(plugin, rules),
+            passThroughStep: () => this.options.passThroughStep(),
+            emit: (event, data) => {
+              if (this.isRunning(plugin)) this.options.emit(plugin.name, event, data);
+            },
+            log: (message) =>
+              // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+              console.log(`[${plugin.name}] ${String(message).replace(/[\x00-\x1f\x7f]/g, ' ')}`),
+          }))();
         await Promise.race([
-          (async () =>
-            plugin.start({
-              dataDir,
-              setProxyRules: (rules) => this.setRules(plugin, rules),
-              passThroughStep: () => this.options.passThroughStep(),
-              emit: (event, data) => {
-                if (this.isRunning(plugin)) this.options.emit(plugin.name, event, data);
-              },
-              log: (message) =>
-                // eslint-disable-next-line no-control-regex -- stripping control characters is the point
-                console.log(`[${plugin.name}] ${String(message).replace(/[\x00-\x1f\x7f]/g, ' ')}`),
-            }))(),
+          starting,
           new Promise((_, reject) => {
-            timer = setTimeout(
-              () => reject(new Error(`didn't finish starting within ${timeoutMs / 1000} s`)),
-              timeoutMs,
-            );
+            timer = setTimeout(() => {
+              timedOut = true;
+              reject(new Error(`didn't finish starting within ${timeoutMs / 1000} s`));
+            }, timeoutMs);
           }),
         ]);
-        // It may have been marked failed meanwhile, e.g. by bad rules.
+        // It may have been marked failed meanwhile, by the timeout.
         if (this.states.get(plugin)?.state === 'starting') this.states.set(plugin, { state: 'running' });
       } catch (error) {
         await this.fail(plugin, `Couldn't start: ${(error as Error).message}`);
+        // A plugin that finishes starting after the deadline still gets stopped, so it
+        // doesn't leave watchers or handles open.
+        if (timedOut) {
+          void starting
+            ?.then(async () => plugin.stop?.())
+            .catch((stopError: unknown) => console.error(`[leverframe] plugin ${plugin.name}:`, stopError));
+        }
       } finally {
         clearTimeout(timer);
       }
@@ -137,6 +156,7 @@ export class PluginHost {
     const { name } = plugin;
     const data: mockttp.RequestRuleData[] = [];
     const labels = new Map<string, HandledBy>();
+    const silent = new Set<string>();
     for (const [i, rule] of rules.entries()) {
       if (
         !rule ||
@@ -154,9 +174,13 @@ export class PluginHost {
       // Only these fields: in particular no `priority`, which could put a plugin rule
       // ahead of Leverframe's own setup page.
       data.push({ id, matchers: rule.matchers, steps: rule.steps });
+      const last = rule.steps[rule.steps.length - 1] as { type?: string } | undefined;
+      if (last?.type && SILENT_STEPS.has(last.type)) silent.add(id);
     }
     for (const key of [...this.labels.keys()]) if (key.startsWith(`${name}/`)) this.labels.delete(key);
     for (const [key, value] of labels) this.labels.set(key, value);
+    for (const key of [...this.silentRules]) if (key.startsWith(`${name}/`)) this.silentRules.delete(key);
+    for (const key of silent) this.silentRules.add(key);
     this.rulesByPlugin.set(name, data);
     await this.options.refreshRules();
   }

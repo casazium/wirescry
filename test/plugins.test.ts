@@ -1,4 +1,5 @@
 import { mkdtemp, rm, stat } from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import * as mockttp from 'mockttp';
@@ -302,5 +303,53 @@ describe('plugin host', () => {
     await start([plugin]);
     await backend!.stop();
     backend = undefined;
+  });
+
+  it('says the client closed when it gives up during a slow rule', async () => {
+    const plugin: BackendPlugin = {
+      name: 'slowmock',
+      apiVersion: PLUGIN_API_VERSION,
+      async start(host) {
+        await host.setProxyRules([
+          {
+            id: 's',
+            label: 'Slow mock',
+            matchers: [new mockttp.matchers.HostnameMatcher('mocked.test')],
+            steps: [
+              new mockttp.requestSteps.DelayStep(3000),
+              new mockttp.requestSteps.FixedResponseStep(200),
+            ],
+          },
+        ]);
+      },
+      handle: async () => undefined,
+    };
+    const b = await start([plugin]);
+    const api = await apiClient(b.apiPort);
+    const req = http.request({ host: '127.0.0.1', port: b.proxyPort, path: 'http://mocked.test/' });
+    req.on('error', () => undefined);
+    req.end();
+    setTimeout(() => req.destroy(), 300);
+    await expect
+      .poll(() =>
+        api.messages.flatMap((m) => (m.type === 'exchanges' ? m.exchanges : [])).find((e) => e.failure),
+      )
+      .toMatchObject({ failure: { kind: 'client-closed' }, handledBy: { label: 'Slow mock' } });
+    api.close();
+  });
+
+  it('stops a plugin that finishes starting after the deadline', async () => {
+    let stopped = false;
+    const late: BackendPlugin = {
+      name: 'late',
+      apiVersion: PLUGIN_API_VERSION,
+      start: () => new Promise<void>((resolve) => setTimeout(resolve, 400)),
+      handle: async () => undefined,
+      stop: () => {
+        stopped = true;
+      },
+    };
+    await start([late], true, 100);
+    await expect.poll(() => stopped, { timeout: 3000 }).toBe(true);
   });
 });

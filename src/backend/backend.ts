@@ -145,6 +145,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       onExchange: (exchange) => updates.change(exchange.summary),
       extraRules: () => pluginHost.rules(),
       describeRule: (ruleId) => pluginHost.describeRule(ruleId),
+      ruleEndsWithoutResponse: (ruleId) => pluginHost.endsWithoutResponse(ruleId),
       isPaused: () => paused,
       onCATrusted: (userAgent) => {
         if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;

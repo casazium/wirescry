@@ -30,6 +30,8 @@ export function useBackend(): BackendView {
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
   const [paused, setPaused] = useState(false);
   const clientRef = useRef<ApiClient | undefined>(undefined);
+  // Bumped to reconnect when the API connection drops while the backend keeps running.
+  const [attempt, setAttempt] = useState(0);
   // plugin name -> event name -> listeners
   const pluginListeners = useRef(new Map<string, Map<string, Set<PluginListener>>>());
 
@@ -49,6 +51,8 @@ export function useBackend(): BackendView {
 
   useEffect(() => {
     if (!connection) return;
+    let open = true;
+    let retry: ReturnType<typeof setTimeout> | undefined;
     const list = new ExchangeList();
     let frame: number | undefined;
     const render = (): void => {
@@ -95,14 +99,21 @@ export function useBackend(): BackendView {
       }
     };
 
-    const client = new ApiClient(connection, onMessage, () => setConnected(false));
+    const client = new ApiClient(connection, onMessage, () => {
+      setConnected(false);
+      // E.g. the backend dropped an oversized message. Try again shortly; a restarted
+      // backend instead arrives as a new connection.
+      if (open) retry = setTimeout(() => setAttempt((n) => n + 1), 1000);
+    });
     clientRef.current = client;
     return () => {
+      open = false;
+      clearTimeout(retry);
       if (frame !== undefined) cancelAnimationFrame(frame);
       client.close();
       clientRef.current = undefined;
     };
-  }, [connection]);
+  }, [connection, attempt]);
 
   const send = useCallback((command: Command) => {
     const client = clientRef.current;
