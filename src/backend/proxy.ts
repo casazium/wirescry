@@ -28,12 +28,16 @@ export interface ProxyOptions {
   port?: number;
   /** Extra CAs to trust for upstream servers (PEM). */
   upstreamCAs?: string[];
+  /** Extra rules (from plugins) that run before normal pass-through, in order. */
+  extraRules?: () => mockttp.RequestRuleData[];
   /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
   onCATrusted?: (userAgent: string) => void;
 }
 
 export interface RunningProxy {
   port: number;
+  /** Re-reads `extraRules`, e.g. after a plugin changes its rules. */
+  refreshRules(): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -365,37 +369,57 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     });
   });
 
-  // Requests to the setup host are answered by the proxy itself. Rules are marked
-  // always() because otherwise Mockttp moves on to the next matching rule once a rule
-  // has been used.
-  await server
-    .forAnyRequest()
-    .forHostname(SETUP_HOST)
-    .always()
-    .thenCallback((req) => {
-      const route = req.path.split('?')[0];
-      if (route === '/certificate') {
-        return { statusCode: 200, headers: { 'content-type': 'application/x-x509-ca-cert' }, body: ca.cert };
-      }
-      if (route === '/check') {
-        // Only reachable over HTTPS if the browser accepted a certificate signed by our CA.
-        if (req.protocol !== 'https') return { statusCode: 400 };
-        options.onCATrusted?.(req.headers['user-agent'] ?? '');
+  // Requests to the setup host are answered by the proxy itself.
+  const setupRule: mockttp.RequestRuleData = {
+    matchers: [new mockttp.matchers.HostnameMatcher(SETUP_HOST)],
+    steps: [
+      new mockttp.requestSteps.CallbackStep((req) => {
+        const route = req.path.split('?')[0];
+        if (route === '/certificate') {
+          return {
+            statusCode: 200,
+            headers: { 'content-type': 'application/x-x509-ca-cert' },
+            body: ca.cert,
+          };
+        }
+        if (route === '/check') {
+          // Only reachable over HTTPS if the browser accepted a certificate signed by our CA.
+          if (req.protocol !== 'https') return { statusCode: 400 };
+          options.onCATrusted?.(req.headers['user-agent'] ?? '');
+          return {
+            statusCode: 200,
+            headers: { 'access-control-allow-origin': '*', 'cache-control': 'no-store' },
+            json: { trusted: true },
+          };
+        }
         return {
           statusCode: 200,
-          headers: { 'access-control-allow-origin': '*', 'cache-control': 'no-store' },
-          json: { trusted: true },
+          headers: { 'content-type': 'text/html; charset=utf-8' },
+          body: setupPageHtml(),
         };
-      }
-      return {
-        statusCode: 200,
-        headers: { 'content-type': 'text/html; charset=utf-8' },
-        body: setupPageHtml(),
-      };
-    });
+      }),
+    ],
+    completionChecker: new mockttp.completionCheckers.Always(),
+  };
 
   const passThrough = { additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })) };
-  await server.forAnyRequest().always().thenPassThrough(passThrough);
+  const passThroughRule: mockttp.RequestRuleData = {
+    matchers: [new mockttp.matchers.WildcardMatcher()],
+    steps: [new mockttp.requestSteps.PassThroughStep(passThrough)],
+    completionChecker: new mockttp.completionCheckers.Always(),
+  };
+
+  // The first matching rule handles each request: the setup host, then plugin rules in
+  // order, then normal pass-through. Every rule is "always", or Mockttp would move on to
+  // the next matching rule once a rule has been used.
+  const always = (rule: mockttp.RequestRuleData): mockttp.RequestRuleData => ({
+    ...rule,
+    completionChecker: new mockttp.completionCheckers.Always(),
+  });
+  const applyRules = async (): Promise<void> => {
+    await server.setRequestRules(setupRule, ...(options.extraRules?.() ?? []).map(always), passThroughRule);
+  };
+  await applyRules();
   await server.forAnyWebSocket().always().thenPassThrough(passThrough);
 
   if (options.port !== undefined) await assertLoopbackPortFree(options.port);
@@ -409,6 +433,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
 
   return {
     port: server.port,
+    refreshRules: applyRules,
     stop: () => server.stop(),
   };
 }

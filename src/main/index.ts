@@ -57,6 +57,8 @@ let mainWindow: BrowserWindow | undefined;
 const backend = new BackendSupervisor({
   dataDir: app.getPath('userData'),
   allowedOrigins: [uiOrigin],
+  // Pro runs in development builds. Packaged builds keep it locked until licensing exists.
+  pluginsEnabled: !app.isPackaged,
   logger,
 });
 logger.addSecret(backend.token);

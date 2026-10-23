@@ -2,18 +2,25 @@ import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
 import { DetailPane } from './DetailPane';
 import { FilterHelp } from './FilterHelp';
+import { PluginView } from './PluginView';
+import { uiPlugins } from '@leverframe/pro/ui';
 import { SetupPage } from './SetupPage';
 import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
 
 export function App(): React.JSX.Element {
-  const { backendState, connected, status, exchanges, paused, send } = useBackend();
+  const { backendState, connected, status, exchanges, paused, send, pluginApi } = useBackend();
   const [message, setMessage] = useState<string>();
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string>();
   const [search, setSearch] = useState('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
-  const [view, setView] = useState<'traffic' | 'setup'>('traffic');
+  // 'traffic', 'setup', or `${plugin}:${viewId}` for a plugin's view.
+  const [view, setView] = useState<string>('traffic');
+  const pluginViews = uiPlugins.flatMap((plugin) =>
+    plugin.views.map((v) => ({ key: `${plugin.name}:${v.id}`, plugin: plugin.name, view: v })),
+  );
+  const activePluginView = pluginViews.find((p) => p.key === view);
   const searchRef = useRef<HTMLInputElement>(null);
 
   // Typing stays responsive while a large list is re-filtered.
@@ -93,6 +100,17 @@ export function App(): React.JSX.Element {
           >
             Setup
           </button>
+          {pluginViews.map((p) => (
+            <button
+              key={p.key}
+              type="button"
+              className={`tab ${view === p.key ? 'active' : ''}`}
+              aria-current={view === p.key ? 'page' : undefined}
+              onClick={() => setView(p.key)}
+            >
+              {p.view.label}
+            </button>
+          ))}
         </nav>
         <div className="spacer" />
         {browsers.length > 0 ? (
@@ -120,6 +138,14 @@ export function App(): React.JSX.Element {
           </button>
         )}
       </header>
+
+      {activePluginView && (
+        <PluginView
+          view={activePluginView.view}
+          status={status?.plugins.find((p) => p.name === activePluginView.plugin)}
+          api={pluginApi(activePluginView.plugin)}
+        />
+      )}
 
       {view === 'setup' && status && (
         <SetupPage status={status} connected={connected} send={send} onLaunched={() => setView('traffic')} />

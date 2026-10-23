@@ -20,7 +20,14 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private restarts: number[] = [];
   private current: BackendState = { state: 'starting' };
 
-  constructor(private readonly options: { dataDir: string; allowedOrigins: string[]; logger?: FileLogger }) {
+  constructor(
+    private readonly options: {
+      dataDir: string;
+      allowedOrigins: string[];
+      pluginsEnabled: boolean;
+      logger?: FileLogger;
+    },
+  ) {
     super();
   }
 
@@ -84,6 +91,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       dataDir: this.options.dataDir,
       token: this.token,
       allowedOrigins: this.options.allowedOrigins,
+      pluginsEnabled: this.options.pluginsEnabled,
     };
     child.postMessage(start);
   }

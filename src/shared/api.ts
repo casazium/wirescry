@@ -133,6 +133,14 @@ export interface TerminalInfo {
   name: string;
 }
 
+export interface PluginStatus {
+  name: string;
+  /** False when the plugin is installed but not running, e.g. Pro without a licence. */
+  active: boolean;
+  /** Why it isn't active. */
+  reason?: string;
+}
+
 export interface ProxyStatus {
   proxyPort: number;
   /** The port the user chose, or null to pick one automatically. */
@@ -147,6 +155,8 @@ export interface ProxyStatus {
   terminals: TerminalInfo[];
   /** The variables those terminals get, for setting up an existing terminal by hand. */
   terminalEnv: Record<string, string>;
+  /** Plugins built into this copy of Leverframe, such as Pro. Empty in the free build. */
+  plugins: PluginStatus[];
 }
 
 /** Messages the backend pushes to the UI. */
@@ -158,6 +168,8 @@ export type ServerMessage =
   | { type: 'paused'; paused: boolean }
   /** Sent when the port, certificate or Firefox setup changes. */
   | { type: 'status'; status: ProxyStatus }
+  /** An event from a plugin's backend half to its UI. */
+  | { type: 'plugin'; plugin: string; event: string; data: unknown }
   | { type: 'result'; id: number; ok: true; value?: unknown }
   | { type: 'result'; id: number; ok: false; error: string };
 
@@ -172,6 +184,8 @@ export type ClientCommand =
   | { id: number; command: 'launchTerminal'; terminalId: string }
   /** WebSocket messages with index greater than `after` (default: from the start). */
   | { id: number; command: 'getWebSocketMessages'; exchangeId: string; after?: number }
+  /** A call from a plugin's UI to its backend half. */
+  | { id: number; command: 'plugin'; plugin: string; name: string; args?: unknown }
   | { id: number; command: 'getExchange'; exchangeId: string }
   | { id: number; command: 'getBody'; exchangeId: string; side: BodySide }
   | { id: number; command: 'formatBody'; exchangeId: string; side: BodySide };

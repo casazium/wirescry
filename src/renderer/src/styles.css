@@ -741,3 +741,20 @@ button.help-button {
   font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
   font-size: 12px;
 }
+
+.plugin-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.plugin-locked {
+  padding: 24px;
+}
+
+.plugin-locked h2 {
+  font-size: 15px;
+  margin: 0 0 8px;
+}

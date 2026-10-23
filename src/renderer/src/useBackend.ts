@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ExchangeSummary, ProxyStatus, ServerMessage } from '../../shared/api';
 import type { BackendState } from '../../shared/ipc';
+import type { UiPluginApi } from '../../plugin-api/ui';
 import { ApiClient, type Command } from './api-client';
 import { ExchangeList } from './exchange-list';
+
+type PluginListener = (data: unknown) => void;
 
 export interface BackendView {
   backendState: BackendState;
@@ -11,6 +14,8 @@ export interface BackendView {
   exchanges: ExchangeSummary[];
   paused: boolean;
   send(command: Command): Promise<unknown>;
+  /** The call and event channel for one plugin's UI. */
+  pluginApi(plugin: string): UiPluginApi;
 }
 
 /** Connects to the backend and keeps a live list of exchanges, re-rendering at most once per frame. */
@@ -21,6 +26,8 @@ export function useBackend(): BackendView {
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
   const [paused, setPaused] = useState(false);
   const clientRef = useRef<ApiClient | undefined>(undefined);
+  // plugin name -> event name -> listeners
+  const pluginListeners = useRef(new Map<string, Map<string, Set<PluginListener>>>());
 
   useEffect(() => {
     let active = true;
@@ -70,6 +77,11 @@ export function useBackend(): BackendView {
         case 'status':
           setStatus(message.status);
           break;
+        case 'plugin':
+          for (const listener of pluginListeners.current.get(message.plugin)?.get(message.event) ?? []) {
+            listener(message.data);
+          }
+          break;
       }
     };
 
@@ -87,5 +99,29 @@ export function useBackend(): BackendView {
     return client ? client.send(command) : Promise.reject(new Error('Not connected'));
   }, []);
 
-  return { backendState, connected, status, exchanges, paused, send };
+  // One channel object per plugin, kept for the session so plugin views can depend on it.
+  const pluginApis = useRef(new Map<string, UiPluginApi>());
+  const pluginApi = useCallback(
+    (plugin: string): UiPluginApi => {
+      let api = pluginApis.current.get(plugin);
+      if (!api) {
+        api = {
+          call: (name, args) => send({ command: 'plugin', plugin, name, args }),
+          on: (event, listener) => {
+            const byEvent = pluginListeners.current.get(plugin) ?? new Map<string, Set<PluginListener>>();
+            pluginListeners.current.set(plugin, byEvent);
+            const listeners = byEvent.get(event) ?? new Set<PluginListener>();
+            byEvent.set(event, listeners);
+            listeners.add(listener);
+            return () => listeners.delete(listener);
+          },
+        };
+        pluginApis.current.set(plugin, api);
+      }
+      return api;
+    },
+    [send],
+  );
+
+  return { backendState, connected, status, exchanges, paused, send, pluginApi };
 }

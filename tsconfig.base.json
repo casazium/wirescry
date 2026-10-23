@@ -14,6 +14,10 @@
     "resolveJsonModule": true,
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": false,
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@leverframe/pro/backend": ["./src/pro-stub/backend.ts"],
+      "@leverframe/pro/ui": ["./src/pro-stub/ui.ts"]
+    }
   }
 }
