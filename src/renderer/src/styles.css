@@ -607,3 +607,73 @@ button.danger {
 .coverage li {
   margin: 4px 0;
 }
+
+.ws-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+input.search.small {
+  width: auto;
+  flex: 1;
+  margin-left: 8px;
+  padding: 2px 8px;
+}
+
+.ws-list {
+  max-height: 40vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ws-row {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) 64px 72px;
+  gap: 8px;
+  align-items: center;
+  padding: 3px 8px;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
+  cursor: default;
+}
+
+.ws-row:nth-child(even) {
+  background: var(--bg-alt);
+}
+
+.ws-row.selected {
+  background: var(--selected);
+}
+
+.ws-row .ws-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ws-row .ws-size,
+.ws-row .ws-time {
+  text-align: right;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ws-row.sent .ws-dir {
+  color: var(--accent);
+}
+
+.ws-row.received .ws-dir {
+  color: var(--ok);
+}
+
+.ws-detail {
+  margin-top: 8px;
+}
+
+.ws-list .muted {
+  padding: 8px;
+  margin: 0;
+}

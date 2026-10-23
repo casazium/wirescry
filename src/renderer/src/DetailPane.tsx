@@ -12,6 +12,7 @@ import { toCurl } from '../../shared/curl';
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
 import { base64ToBytes, formatBytes } from './bytes';
+import { WebSocketMessagesView } from './WebSocketMessagesView';
 
 interface Props {
   summary: ExchangeSummary;
@@ -160,9 +161,11 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
         <button type="button" className="secondary" onClick={() => void copy('URL', summary.url)}>
           Copy URL
         </button>
-        <button type="button" className="secondary" onClick={() => void copyCurl()} disabled={!detail}>
-          Copy as curl
-        </button>
+        {!summary.websocket && (
+          <button type="button" className="secondary" onClick={() => void copyCurl()} disabled={!detail}>
+            Copy as curl
+          </button>
+        )}
         {copied && <span className="muted">{copied === 'Copy failed' ? copied : `Copied ${copied}`}</span>}
       </div>
       <div className="detail-body">
@@ -198,7 +201,10 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
             {summary.closeCode !== undefined && (
               <>
                 <dt>Closed</dt>
-                <dd>WebSocket close code {summary.closeCode}</dd>
+                <dd>
+                  Code {summary.closeCode}
+                  {summary.closeReason ? `: ${summary.closeReason}` : ''}
+                </dd>
               </>
             )}
             <dt>Protocol</dt>
@@ -226,6 +232,15 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
               <dd>{ms(timing.startTimestamp, timing.responseSentTimestamp ?? timing.abortedTimestamp)}</dd>
             </dl>
           </section>
+        )}
+
+        {summary.websocket && (
+          <WebSocketMessagesView
+            key={summary.id}
+            exchangeId={summary.id}
+            messageCount={summary.messageCount ?? 0}
+            send={send}
+          />
         )}
 
         <details open>
