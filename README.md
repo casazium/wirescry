@@ -113,6 +113,11 @@ How plugins are kept in line (`src/backend/plugin-host.ts`):
 
 Plugins run only in development builds for now: packaged builds report "Pro needs a licence." until licensing exists. Set `LEVERFRAME_PRO_DIR` when running tests to include `test/pro-integration.test.ts`, which runs the real Pro module in the backend.
 
+With `LEVERFRAME_PRO_DIR` set:
+
+- `npm run typecheck:pro` typechecks the app with Pro in place of the stubs. Run it after changing `src/plugin-api`.
+- A production build (`npm run build`, `npm run package`) stops with an error, because Pro isn't ready to ship and its source would be readable in the bundle. `LEVERFRAME_ALLOW_PRO_BUILD=1` overrides this for a local test build that must not be shared.
+
 ## How it fits together
 
 | Part         | Folder         | Job                                                                                       |
