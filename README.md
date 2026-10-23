@@ -111,7 +111,7 @@ How plugins are kept in line (`src/backend/plugin-host.ts`):
 - Plugin rules keep only their matchers and steps, so they can't jump ahead of the setup page. Requests a plugin rule handled show a **Rule** badge, and `rule=` finds them in the search box.
 - A view that crashes shows an error in its tab, not a blank app.
 
-Plugins run only in development builds for now: packaged builds report "Pro needs a licence." until licensing exists. Set `LEVERFRAME_PRO_DIR` when running tests to include `test/pro-integration.test.ts`, which runs the real Pro module in the backend.
+Plugins always start. Pro checks its own licence, in Pro's code rather than this open-source app: without a valid licence it applies no rules and pauses nothing, and its tabs ask for a licence key. Development builds run Pro without a licence; that's decided when the app is built, so release builds don't have the shortcut. Set `LEVERFRAME_PRO_DIR` when running tests to include `test/pro-integration.test.ts`, which runs the real Pro module in the backend.
 
 With `LEVERFRAME_PRO_DIR` set:
 

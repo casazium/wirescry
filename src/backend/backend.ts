@@ -122,7 +122,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   const pluginHost = new PluginHost({
     plugins: options.plugins ?? [],
     enabled: options.pluginsEnabled ?? false,
-    disabledReason: 'Pro needs a licence.',
+    disabledReason: 'Plugins are turned off.',
     dataDir,
     refreshRules: () => proxy.refreshRules(),
     passThroughStep: (transforms) =>
