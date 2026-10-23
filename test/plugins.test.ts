@@ -352,4 +352,39 @@ describe('plugin host', () => {
     await start([late], true, 100);
     await expect.poll(() => stopped, { timeout: 3000 }).toBe(true);
   });
+
+  it("lets a plugin forward requests with Leverframe's pass-through step", async () => {
+    const target = http.createServer((req, res) => res.end(`target saw ${req.headers.host} ${req.url}`));
+    await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+    const port = (target.address() as { port: number }).port;
+    try {
+      const forwarder: BackendPlugin = {
+        name: 'forwarder',
+        apiVersion: PLUGIN_API_VERSION,
+        async start(host) {
+          await host.setProxyRules([
+            {
+              id: 'f',
+              label: 'Forward',
+              matchers: [new mockttp.matchers.HostnameMatcher('mocked.test')],
+              steps: [
+                host.passThroughStep({
+                  transformRequest: { replaceHost: { targetHost: `127.0.0.1:${port}` } },
+                  transformResponse: { updateHeaders: { 'x-forwarded-by': 'plugin' } },
+                }),
+              ],
+            },
+          ]);
+        },
+        handle: async () => undefined,
+      };
+      const b = await start([forwarder]);
+      expect(await httpViaProxy(b.proxyPort, 'http://mocked.test/a?b=1')).toMatchObject({
+        status: 200,
+        body: `target saw 127.0.0.1:${port} /a?b=1`,
+      });
+    } finally {
+      target.close();
+    }
+  });
 });

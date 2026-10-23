@@ -2,7 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import * as mockttp from 'mockttp';
 import type { HandledBy, PluginStatus } from '../shared/api';
-import type { BackendPlugin, PluginRule } from '../plugin-api/backend';
+import type { BackendPlugin, PassThroughTransforms, PluginRule } from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
 import { MOCKTTP_BUFFER_LIMIT } from './proxy';
 
@@ -19,7 +19,7 @@ export interface PluginHostOptions {
   dataDir: string;
   /** Reapplies the proxy's rules, e.g. after a plugin changes its own. */
   refreshRules(): Promise<void>;
-  passThroughStep(): mockttp.RequestStep;
+  passThroughStep(transforms?: PassThroughTransforms): mockttp.RequestStep;
   emit(plugin: string, event: string, data: unknown): void;
   /** Called when a plugin's status changes. */
   onStatusChange(): void;
@@ -90,7 +90,7 @@ export class PluginHost {
           plugin.start({
             dataDir,
             setProxyRules: (rules) => this.setRules(plugin, rules),
-            passThroughStep: () => this.options.passThroughStep(),
+            passThroughStep: (transforms) => this.options.passThroughStep(transforms),
             maxBufferedRequestBody: MOCKTTP_BUFFER_LIMIT,
             emit: (event, data) => {
               if (this.isRunning(plugin)) this.options.emit(plugin.name, event, data);
