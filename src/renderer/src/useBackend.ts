@@ -24,7 +24,8 @@ export interface BackendView {
 export function useBackend(): BackendView {
   const [backendState, setBackendState] = useState<BackendState>({ state: 'starting' });
   const [connected, setConnected] = useState(false);
-  // Goes up on every (re)connection, so plugin views can remount and refetch.
+  // Goes up when the backend (re)starts, so plugin views remount and load fresh state.
+  // A reconnect to the same backend doesn't count, so unsaved edits survive it.
   const [session, setSession] = useState(0);
   const [status, setStatus] = useState<ProxyStatus>();
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
@@ -37,10 +38,14 @@ export function useBackend(): BackendView {
 
   useEffect(() => {
     let active = true;
+    const update = (state: BackendState): void => {
+      setBackendState(state);
+      if (state.state === 'ready') setSession((n) => n + 1);
+    };
     void window.leverframe.getBackendState().then((state) => {
-      if (active) setBackendState(state);
+      if (active) update(state);
     });
-    const unsubscribe = window.leverframe.onBackendStateChanged(setBackendState);
+    const unsubscribe = window.leverframe.onBackendStateChanged(update);
     return () => {
       active = false;
       unsubscribe();
@@ -65,7 +70,6 @@ export function useBackend(): BackendView {
     const onMessage = (message: ServerMessage): void => {
       switch (message.type) {
         case 'hello':
-          setSession((n) => n + 1);
           setStatus(message.status);
           setPaused(message.paused);
           list.reset(message.exchanges);
