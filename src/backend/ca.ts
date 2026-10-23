@@ -34,8 +34,8 @@ export async function loadOrCreateCA(dir: string): Promise<CertificateAuthority>
     ({ key, cert } = await generateCACertificate({
       subject: {
         // A random suffix makes each install's CA easy to tell apart in trust stores.
-        commonName: `Leverframe CA (${randomBytes(4).toString('hex')})`,
-        organizationName: 'Leverframe',
+        commonName: `Wirescry CA (${randomBytes(4).toString('hex')})`,
+        organizationName: 'Wirescry',
       },
       bits: 2048,
     }));

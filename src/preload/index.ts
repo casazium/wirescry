@@ -1,11 +1,11 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { IPC, type BackendState, type LeverframeBridge } from '../shared/ipc';
+import { IPC, type BackendState, type WirescryBridge } from '../shared/ipc';
 
 /**
  * The only API the UI gets from Electron: how to reach the backend, and system dialogs
  * for saving and opening files. Everything else goes over the token-protected local API.
  */
-const api: LeverframeBridge = {
+const api: WirescryBridge = {
   getBackendState: () => ipcRenderer.invoke(IPC.getBackendState),
   exportCertificate: () => ipcRenderer.invoke(IPC.exportCertificate),
   saveTextFile: (request) => ipcRenderer.invoke(IPC.saveTextFile, request),
@@ -17,4 +17,4 @@ const api: LeverframeBridge = {
   },
 };
 
-contextBridge.exposeInMainWorld('leverframe', api);
+contextBridge.exposeInMainWorld('wirescry', api);

@@ -35,7 +35,7 @@ describe('upstream failures and WebSockets', () => {
   let upstreamCA: { key: string; cert: string };
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-robust-test-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-robust-test-'));
     upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
     await upstream.forAnyWebSocket().thenEcho();

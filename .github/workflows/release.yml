@@ -3,7 +3,7 @@ name: Release
 # Builds installers for macOS, Windows and Linux.
 #
 # - Pushing a tag like v0.2.0 builds, signs (when the secrets exist) and uploads to a
-#   draft release on casazium/leverframe-releases. Publish the draft on GitHub to ship it.
+#   draft release on casazium/wirescry-releases. Publish the draft on GitHub to ship it.
 # - Pull requests that touch packaging build Linux only, without publishing, and keep
 #   the installer as a workflow artifact for three days. Manual runs build all three.
 #
@@ -128,7 +128,7 @@ jobs:
       - name: Package
         shell: bash
         env:
-          # Used only to upload to casazium/leverframe-releases; never built into the app.
+          # Used only to upload to casazium/wirescry-releases; never built into the app.
           GH_TOKEN: ${{ env.PUBLISH == 'true' && secrets.RELEASES_TOKEN || '' }}
         run: |
           if [ "$PUBLISH" = "true" ]; then publish=always; else publish=never; fi
@@ -137,7 +137,7 @@ jobs:
       - name: Keep the installers
         uses: actions/upload-artifact@v7
         with:
-          name: leverframe-${{ runner.os }}
+          name: wirescry-${{ runner.os }}
           retention-days: 3
           if-no-files-found: error
           path: |

@@ -61,7 +61,7 @@ export type BodySide = 'request' | 'response';
 export interface BodyInfo {
   /** Bytes as sent on the wire, before decoding. */
   size: number;
-  /** Bytes kept. Less than `size` if the body was larger than Leverframe stores. */
+  /** Bytes kept. Less than `size` if the body was larger than Wirescry stores. */
   stored: number;
   /** True if the connection closed before the whole body arrived. */
   incomplete?: boolean;
@@ -93,7 +93,7 @@ export interface WebSocketMessage {
 export interface WebSocketMessages {
   /** Each message with its content as base64 (cut to 64 KB). */
   messages: Array<WebSocketMessage & { base64: string }>;
-  /** Messages dropped from the start to stay within Leverframe's memory budget. */
+  /** Messages dropped from the start to stay within Wirescry's memory budget. */
   dropped: number;
   /** Messages seen on this connection. */
   total: number;
@@ -156,15 +156,15 @@ export interface ProxyStatus {
   proxyPortSetting: number | null;
   certificate: CertificateInfo;
   browsers: BrowserInfo[];
-  /** Whether Leverframe's Firefox profile trusts the current certificate. */
+  /** Whether Wirescry's Firefox profile trusts the current certificate. */
   firefoxTrusted: boolean;
   /** The operating system the backend runs on. */
   platform: 'darwin' | 'win32' | 'linux' | 'other';
-  /** Terminals Leverframe can open with interception set up. */
+  /** Terminals Wirescry can open with interception set up. */
   terminals: TerminalInfo[];
   /** The variables those terminals get, for setting up an existing terminal by hand. */
   terminalEnv: Record<string, string>;
-  /** Plugins built into this copy of Leverframe, such as Pro. Empty in the free build. */
+  /** Plugins built into this copy of Wirescry, such as Pro. Empty in the free build. */
   plugins: PluginStatus[];
 }
 
@@ -200,5 +200,5 @@ export type ClientCommand =
   | { id: number; command: 'formatBody'; exchangeId: string; side: BodySide };
 
 /** WebSocket subprotocol prefix used to carry the API token. Browsers can't set headers on WebSockets. */
-export const TOKEN_PROTOCOL_PREFIX = 'leverframe.token.';
-export const API_PROTOCOL = 'leverframe.v1';
+export const TOKEN_PROTOCOL_PREFIX = 'wirescry.token.';
+export const API_PROTOCOL = 'wirescry.v1';

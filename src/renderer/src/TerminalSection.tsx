@@ -18,7 +18,7 @@ const SHELLS_BY_PLATFORM: Record<ProxyStatus['platform'], ShellKind[]> = {
   other: ['posix', 'fish', 'powershell', 'cmd'],
 };
 
-/** Open a terminal that sends its traffic through Leverframe, or set up an existing one. */
+/** Open a terminal that sends its traffic through Wirescry, or set up an existing one. */
 export function TerminalSection({
   status,
   connected,
@@ -40,7 +40,7 @@ export function TerminalSection({
     <section>
       <h2>Terminals</h2>
       <p className="muted">
-        Opens a terminal window whose programs send their HTTP and HTTPS traffic through Leverframe. Works for
+        Opens a terminal window whose programs send their HTTP and HTTPS traffic through Wirescry. Works for
         Node.js, Python, Ruby, Go, PHP, Java, curl and git.
       </p>
       {status.terminals.length > 0 ? (
@@ -89,7 +89,7 @@ export function TerminalSection({
           {status.platform === 'darwin' && (
             <li>
               The Python and Ruby built into macOS (<code>/usr/bin/python3</code>, <code>/usr/bin/ruby</code>)
-              ignore the certificate setting, so their standard libraries won't trust Leverframe. Python
+              ignore the certificate setting, so their standard libraries won't trust Wirescry. Python
               requests still works. Python and Ruby from Homebrew, pyenv, python.org, uv, rbenv or asdf work
               fully.
             </li>
@@ -112,7 +112,7 @@ export function TerminalSection({
           <li>
             <strong>curl</strong> and <strong>git</strong>.
             {status.platform === 'win32' &&
-              " curl.exe gets Leverframe's own config in these terminals, so your _curlrc isn't read there and certificate revocation checks are off."}
+              " curl.exe gets Wirescry's own config in these terminals, so your _curlrc isn't read there and certificate revocation checks are off."}
           </li>
         </ul>
         <p className="muted">

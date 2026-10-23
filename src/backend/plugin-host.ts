@@ -15,7 +15,7 @@ export interface PluginHostOptions {
   /** Whether plugins may run at all (licensing). */
   enabled: boolean;
   disabledReason: string;
-  /** Leverframe's data folder; each plugin gets `plugins/<name>` inside it. */
+  /** Wirescry's data folder; each plugin gets `plugins/<name>` inside it. */
   dataDir: string;
   /** Reapplies the proxy's rules, e.g. after a plugin changes its own. */
   refreshRules(): Promise<void>;
@@ -45,7 +45,7 @@ export class PluginHost {
       let reason: string | undefined;
       if (!NAME.test(plugin.name) || seen.has(plugin.name)) reason = 'Invalid or duplicate plugin name.';
       else if (plugin.apiVersion !== PLUGIN_API_VERSION) {
-        reason = `Built for plugin API version ${plugin.apiVersion}; this Leverframe has version ${PLUGIN_API_VERSION}.`;
+        reason = `Built for plugin API version ${plugin.apiVersion}; this Wirescry has version ${PLUGIN_API_VERSION}.`;
       } else if (!options.enabled) reason = options.disabledReason;
       seen.add(plugin.name);
       this.states.set(plugin, reason ? { state: 'failed', reason } : { state: 'starting' });
@@ -117,7 +117,7 @@ export class PluginHost {
         if (timedOut) {
           void starting
             ?.then(async () => plugin.stop?.())
-            .catch((stopError: unknown) => console.error(`[leverframe] plugin ${plugin.name}:`, stopError));
+            .catch((stopError: unknown) => console.error(`[wirescry] plugin ${plugin.name}:`, stopError));
         }
       } finally {
         clearTimeout(timer);
@@ -143,7 +143,7 @@ export class PluginHost {
       if (!this.isRunning(plugin)) continue;
       // An async wrapper catches synchronous throws too.
       await (async () => plugin.stop?.())().catch((error: unknown) => {
-        console.error(`[leverframe] plugin ${plugin.name} failed to stop:`, error);
+        console.error(`[wirescry] plugin ${plugin.name} failed to stop:`, error);
       });
     }
   }
@@ -174,7 +174,7 @@ export class PluginHost {
       if (labels.has(id)) throw new Error(`Duplicate rule id ${ruleId}.`);
       labels.set(id, { plugin: name, ruleId, label: String(rule.label ?? ruleId).slice(0, 200) });
       // Only these fields: in particular no `priority`, which could put a plugin rule
-      // ahead of Leverframe's own setup page.
+      // ahead of Wirescry's own setup page.
       data.push({ id, matchers: rule.matchers, steps: rule.steps });
       const last = rule.steps[rule.steps.length - 1] as { type?: string } | undefined;
       if (last?.type && SILENT_STEPS.has(last.type)) silent.add(id);
@@ -189,7 +189,7 @@ export class PluginHost {
 
   private async fail(plugin: BackendPlugin, reason: string): Promise<void> {
     const { name } = plugin;
-    console.error(`[leverframe] plugin ${name}: ${reason}`);
+    console.error(`[wirescry] plugin ${name}: ${reason}`);
     this.states.set(plugin, { state: 'failed', reason });
     this.rulesByPlugin.delete(name);
     for (const key of [...this.labels.keys()]) if (key.startsWith(`${name}/`)) this.labels.delete(key);

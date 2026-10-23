@@ -2,8 +2,8 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { net, protocol } from 'electron';
 
-/** Packaged builds serve the UI from leverframe://app, giving it a fixed origin the API can check. */
-export const APP_SCHEME = 'leverframe';
+/** Packaged builds serve the UI from wirescry://app, giving it a fixed origin the API can check. */
+export const APP_SCHEME = 'wirescry';
 export const APP_ORIGIN = `${APP_SCHEME}://app`;
 
 export function registerAppSchemeAsPrivileged(): void {

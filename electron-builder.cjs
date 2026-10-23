@@ -34,8 +34,8 @@ const azureSigning =
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
-  appId: 'com.casazium.leverframe',
-  productName: 'Leverframe',
+  appId: 'com.casazium.wirescry',
+  productName: 'Wirescry',
   copyright: 'Copyright © 2026 Bob Casazza',
   directories: {
     output: 'release/${version}',
@@ -92,7 +92,7 @@ module.exports = {
   publish: {
     provider: 'github',
     owner: 'casazium',
-    repo: 'leverframe-releases',
+    repo: 'wirescry-releases',
     releaseType: 'draft',
     private: false,
   },

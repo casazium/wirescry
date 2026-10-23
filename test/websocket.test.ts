@@ -76,7 +76,7 @@ describe('WebSocket messages through the proxy', () => {
   let backend: RunningBackend;
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-ws-test-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-ws-test-'));
     upstream = getLocal();
     await upstream.forAnyWebSocket().thenEcho();
     await upstream.start();

@@ -1,13 +1,13 @@
 /**
- * Environment variables that send a terminal's HTTP traffic through Leverframe,
+ * Environment variables that send a terminal's HTTP traffic through Wirescry,
  * and how to write them for each shell. Shared so the launched terminals and the
  * snippets on the Setup page are always the same.
  */
 
 export interface TerminalEnvPaths {
-  /** Leverframe's CA certificate alone. */
+  /** Wirescry's CA certificate alone. */
   caPath: string;
-  /** Leverframe's CA plus the usual public and system roots, for tools that replace their trust store. */
+  /** Wirescry's CA plus the usual public and system roots, for tools that replace their trust store. */
   bundlePath: string;
   /** Folder holding a PHP .ini file (see phpIniContent). */
   phpIniDir: string;
@@ -22,7 +22,7 @@ export const JAVA_TRUST_STORE_PASSWORD = 'changeit';
 
 /**
  * Options every JVM reads from JAVA_TOOL_OPTIONS: send HTTP and HTTPS through the proxy,
- * and trust the Leverframe trust store. The path is quoted because it may contain spaces
+ * and trust the Wirescry trust store. The path is quoted because it may contain spaces
  * (macOS's "Application Support"), which the JVM otherwise splits on.
  */
 export function javaToolOptions(proxyPort: number, trustStore: string): string {
@@ -68,14 +68,14 @@ export function terminalEnv(
     ...(windows ? { CURL_HOME: curlHome } : {}),
     // Java ignores the proxy variables; JVMs read these options at startup.
     JAVA_TOOL_OPTIONS: javaToolOptions(proxyPort, javaTrustStore),
-    LEVERFRAME_PROXY: proxy,
+    WIRESCRY_PROXY: proxy,
   };
 }
 
 /** PHP settings that make the curl extension and stream wrappers trust the bundle. */
 export function phpIniContent(bundlePath: string): string {
   return [
-    '; Written by Leverframe for terminals it sets up.',
+    '; Written by Wirescry for terminals it sets up.',
     `curl.cainfo = "${bundlePath}"`,
     `openssl.cafile = "${bundlePath}"`,
     '',
@@ -85,14 +85,14 @@ export function phpIniContent(bundlePath: string): string {
 /**
  * curl config for Windows terminals. curl.exe there uses Schannel, which ignores
  * CURL_CA_BUNDLE, and can't check revocation for a local CA that has nowhere to publish
- * revocation lists, so that check is turned off. Only used inside terminals Leverframe
+ * revocation lists, so that check is turned off. Only used inside terminals Wirescry
  * sets up; the user's own _curlrc isn't read there.
  */
 export function curlrcContent(bundlePath: string): string {
   // curl config strings use backslash escapes, so double Windows path separators.
   const quoted = bundlePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return [
-    '# Written by Leverframe for terminals it sets up.',
+    '# Written by Wirescry for terminals it sets up.',
     `cacert = "${quoted}"`,
     'ssl-no-revoke',
     '',

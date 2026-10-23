@@ -48,7 +48,7 @@ function useAction(): [string | undefined, string | undefined, (task: () => Prom
   return [error, note, run];
 }
 
-/** Ways to send traffic through Leverframe, plus the proxy port and certificate settings. */
+/** Ways to send traffic through Wirescry, plus the proxy port and certificate settings. */
 export function SetupPage({ status, connected, send, onLaunched }: Props): React.JSX.Element {
   const address = `127.0.0.1:${status.proxyPort}`;
   const proxyUrl = `http://${address}`;
@@ -87,9 +87,7 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
     <div className="setup">
       <section>
         <h2>Browsers</h2>
-        <p className="muted">
-          Opens a separate browser window with its own profile, sent through Leverframe.
-        </p>
+        <p className="muted">Opens a separate browser window with its own profile, sent through Wirescry.</p>
         {status.browsers.length === 0 && <p>No supported browser found. Use manual setup below.</p>}
         <ul className="browser-list">
           {chromium.map((b) => (
@@ -104,7 +102,7 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
           {!firefox && (
             <li>
               <span>Firefox</span>
-              <span className="muted">Not found. Install Firefox, then restart Leverframe.</span>
+              <span className="muted">Not found. Install Firefox, then restart Wirescry.</span>
               <span />
             </li>
           )}
@@ -152,7 +150,7 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
               className="secondary small"
               onClick={() =>
                 runExport(async () => {
-                  const result = await window.leverframe.exportCertificate();
+                  const result = await window.wirescry.exportCertificate();
                   return result.path ? `Saved to ${result.path}` : undefined;
                 })
               }
@@ -160,7 +158,7 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
               Save certificate…
             </button>
             <span className="muted">
-              or, through the proxy, open <code>http://leverframe.internal/certificate</code>
+              or, through the proxy, open <code>http://wirescry.internal/certificate</code>
             </span>
           </dd>
         </dl>

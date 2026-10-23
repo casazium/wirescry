@@ -85,7 +85,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<Running
     // A protocol error (such as a message over maxPayload) closes this connection; without a
     // listener it would be an uncaught exception that takes the whole backend down.
     ws.on('error', (error) => {
-      console.error('[leverframe] API connection error:', error.message);
+      console.error('[wirescry] API connection error:', error.message);
       ws.terminate();
     });
     send(ws, handlers.hello());

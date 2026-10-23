@@ -45,7 +45,7 @@ const java = [process.env.JAVA_HOME && path.join(process.env.JAVA_HOME, 'bin', '
     /version "(1[1-9]|[2-9]\d)/.test(spawnSync(j, ['-version'], { encoding: 'utf8' }).stderr ?? ''),
   );
 
-const URL = 'https://leverframe.internal/check';
+const URL = 'https://wirescry.internal/check';
 
 describe('terminal interception', () => {
   let dataDir: string;
@@ -57,7 +57,7 @@ describe('terminal interception', () => {
 
   beforeAll(async () => {
     // A space in the path, like macOS's "Application Support", which tools must cope with.
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe terminal-test-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry terminal-test-'));
     backend = await startBackend({ dataDir, token: TOKEN, allowedOrigins: [UI_ORIGIN] });
     api = await apiClient(backend.apiPort);
     const status = (api.messages[0] as { status: ProxyStatus }).status;
@@ -108,7 +108,7 @@ describe('terminal interception', () => {
       .toBe(true);
   };
 
-  it('writes a CA bundle with Leverframe first, then the usual roots', async () => {
+  it('writes a CA bundle with Wirescry first, then the usual roots', async () => {
     const status = (api.messages[0] as { status: ProxyStatus }).status;
     const bundle = await readFile(status.terminalEnv.SSL_CERT_FILE!, 'utf8');
     const ca = await readFile(backend.caCertPath, 'utf8');
@@ -233,7 +233,7 @@ describe('terminal setup', () => {
   };
   const env = terminalEnv(8123, paths, 'linux');
 
-  it('points every proxy variable at Leverframe', () => {
+  it('points every proxy variable at Wirescry', () => {
     for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy']) {
       expect(env[key]).toBe('http://127.0.0.1:8123');
     }
@@ -281,7 +281,7 @@ describe('terminal setup', () => {
   it.skipIf(process.platform === 'win32')(
     'builds a start script that sets the variables, deletes itself and starts the shell',
     async () => {
-      const dir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-script-test-'));
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-script-test-'));
       const script = path.join(dir, 'start.command');
       await writeFile(script, posixStartScript(env, '127.0.0.1:8123'), { mode: 0o700 });
       // Stand in for the user's shell: print what it was given.
@@ -290,7 +290,7 @@ describe('terminal setup', () => {
         mode: 0o755,
       });
       const { stdout } = await exec('/bin/sh', [script], { env: { ...process.env, SHELL: fakeShell } });
-      expect(stdout).toContain('sends HTTP and HTTPS traffic through Leverframe (127.0.0.1:8123)');
+      expect(stdout).toContain('sends HTTP and HTTPS traffic through Wirescry (127.0.0.1:8123)');
       expect(stdout).toContain("proxy=http://127.0.0.1:8123 ca=/tmp/it's/ca.pem args=-l");
       await expect(stat(script)).rejects.toThrow();
       await rm(dir, { recursive: true, force: true });
@@ -308,7 +308,7 @@ describe('terminal setup', () => {
     );
     expect((await detectTerminals('win32', { PATH: '' })).map((t) => t.id)).toEqual(['powershell', 'cmd']);
     if (process.platform !== 'win32') {
-      const dir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-path-test-'));
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-path-test-'));
       await writeFile(path.join(dir, 'xterm'), '#!/bin/sh\n', { mode: 0o755 });
       expect(await detectTerminals('linux', { PATH: dir })).toMatchObject([
         { id: 'xterm', execFlag: ['-e'] },

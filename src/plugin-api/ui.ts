@@ -1,5 +1,5 @@
 /**
- * What a UI plugin (such as Leverframe Pro) can do. Part of the open-source app;
+ * What a UI plugin (such as Wirescry Pro) can do. Part of the open-source app;
  * plugins import these types.
  */
 import type { ComponentType } from 'react';

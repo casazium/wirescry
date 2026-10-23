@@ -1,6 +1,6 @@
-# Releasing Leverframe
+# Releasing Wirescry
 
-Releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) and published to the public [casazium/leverframe-releases](https://github.com/casazium/leverframe-releases) repo, which the app's updater reads. The source repo stays private.
+Releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) and published to the public [casazium/wirescry-releases](https://github.com/casazium/wirescry-releases) repo, which the app's updater reads. The source repo stays private.
 
 ## Cutting a release
 
@@ -15,20 +15,20 @@ Releases are built by [`.github/workflows/release.yml`](../.github/workflows/rel
    git push origin v0.2.0
    ```
 
-3. The workflow builds on macOS, Windows and Linux, signs what it has secrets for, and uploads everything to a **draft** release in `casazium/leverframe-releases`. The tag must match `package.json`, or the build stops.
+3. The workflow builds on macOS, Windows and Linux, signs what it has secrets for, and uploads everything to a **draft** release in `casazium/wirescry-releases`. The tag must match `package.json`, or the build stops.
 4. Download and try the installers from the draft. When they're good, click **Publish release** on GitHub. Only published releases reach users.
 
 Pull requests that change packaging, and manual runs (**Actions → Release → Run workflow**), build the same installers without publishing and keep them as workflow artifacts for 7 days.
 
 ## Secrets and variables
 
-Set these in **casazium/leverframe → Settings → Secrets and variables → Actions**. Each platform signs only when all of its values are set; otherwise it builds unsigned and the run shows a warning.
+Set these in **casazium/wirescry → Settings → Secrets and variables → Actions**. Each platform signs only when all of its values are set; otherwise it builds unsigned and the run shows a warning.
 
 ### Publishing
 
-| Secret           | What                                                                                                                                                   |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `RELEASES_TOKEN` | Fine-grained GitHub token with **Contents: read and write** on `casazium/leverframe-releases` only. Used to upload releases; never built into the app. |
+| Secret           | What                                                                                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RELEASES_TOKEN` | Fine-grained GitHub token with **Contents: read and write** on `casazium/wirescry-releases` only. Used to upload releases; never built into the app. |
 
 ### macOS signing and notarization
 
@@ -69,9 +69,9 @@ Nothing to set. AppImage and `.deb` builds aren't signed.
 
 ## How updates work
 
-- The app checks `casazium/leverframe-releases` 30 seconds after launch and every 6 hours, downloads a newer version in the background, and asks to restart when it's ready. Otherwise it installs on the next quit. **Check for Updates…** (app menu on macOS, Help on Windows and Linux) checks on demand.
+- The app checks `casazium/wirescry-releases` 30 seconds after launch and every 6 hours, downloads a newer version in the background, and asks to restart when it's ready. Otherwise it installs on the next quit. **Check for Updates…** (app menu on macOS, Help on Windows and Linux) checks on demand.
 - Update files come over HTTPS from GitHub and are verified by SHA-512. On macOS the update must be signed by the same Developer ID as the running app, so **unsigned builds can't update themselves**. On Windows, signed builds check the installer's publisher.
-- Updates are off in development, for `.deb` installs (reinstall instead), and when `LEVERFRAME_DISABLE_UPDATES` is set.
+- Updates are off in development, for `.deb` installs (reinstall instead), and when `WIRESCRY_DISABLE_UPDATES` is set.
 - Update checks and errors are written to the log (**Help → Show Log File**).
 
 ## Building locally
@@ -84,8 +84,8 @@ Builds unsigned installers for the current platform into `release/<version>/`. T
 
 ## Pro in releases: not yet
 
-Releases are built from this repo alone, so they include only the free app. Pro (the private `leverframe-pro` repo) isn't in any release yet, and shouldn't be until these are in place:
+Releases are built from this repo alone, so they include only the free app. Pro (the private `wirescry-pro` repo) isn't in any release yet, and shouldn't be until these are in place:
 
 - ~~Licence checks~~: done, in Pro (signed keys checked offline; see its README). Still needed: a production signing key, and a way to sell and deliver keys.
 - Pro compiled to V8 bytecode, and Electron's fuses and integrity checks turned on.
-- The release workflow checking out `leverframe-pro` (through the `leverframe-ci` GitHub App that Pro's own CI uses) and building with `LEVERFRAME_PRO_DIR` and `LEVERFRAME_ALLOW_PRO_BUILD` set.
+- The release workflow checking out `wirescry-pro` (through the `wirescry-ci` GitHub App that Pro's own CI uses) and building with `WIRESCRY_PRO_DIR` and `WIRESCRY_ALLOW_PRO_BUILD` set.

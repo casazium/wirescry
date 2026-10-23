@@ -5,7 +5,7 @@
 // Must stay the first import: plugins may compile linear-time regexes as they load.
 import './v8-flags';
 import type { BackendMessage, BackendStartMessage } from '../shared/ipc';
-import { backendPlugins } from '@leverframe/pro/backend';
+import { backendPlugins } from '@wirescry/pro/backend';
 import { startBackend, type RunningBackend } from './backend';
 
 const parentPort = process.parentPort;

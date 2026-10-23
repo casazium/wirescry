@@ -50,10 +50,10 @@ export function useBackend(): BackendView {
         setBadges({});
       }
     };
-    void window.leverframe.getBackendState().then((state) => {
+    void window.wirescry.getBackendState().then((state) => {
       if (active) update(state);
     });
-    const unsubscribe = window.leverframe.onBackendStateChanged(update);
+    const unsubscribe = window.wirescry.onBackendStateChanged(update);
     return () => {
       active = false;
       unsubscribe();
@@ -104,7 +104,7 @@ export function useBackend(): BackendView {
             try {
               listener(message.data);
             } catch (error) {
-              console.error(`[leverframe] ${message.plugin} listener for ${message.event} failed:`, error);
+              console.error(`[wirescry] ${message.plugin} listener for ${message.event} failed:`, error);
             }
           }
           break;
@@ -148,8 +148,8 @@ export function useBackend(): BackendView {
             listeners.add(listener);
             return () => listeners.delete(listener);
           },
-          saveFile: (options) => window.leverframe.saveTextFile(options),
-          openFile: (options) => window.leverframe.openTextFile(options),
+          saveFile: (options) => window.wirescry.saveTextFile(options),
+          openFile: (options) => window.wirescry.openTextFile(options),
           setBadge: (viewId, text) => {
             const key = `${plugin}:${String(viewId)}`;
             // Short text only: it sits on a tab.

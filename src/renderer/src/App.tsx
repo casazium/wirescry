@@ -3,7 +3,7 @@ import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/fil
 import { DetailPane } from './DetailPane';
 import { FilterHelp } from './FilterHelp';
 import { PluginView } from './PluginView';
-import { uiPlugins } from '@leverframe/pro/ui';
+import { uiPlugins } from '@wirescry/pro/ui';
 import { PLUGIN_API_VERSION } from '../../plugin-api/version';
 import { SetupPage } from './SetupPage';
 import { TrafficList } from './TrafficList';
@@ -82,7 +82,7 @@ export function App(): React.JSX.Element {
   return (
     <div className="app">
       <header className="toolbar">
-        <h1>Leverframe</h1>
+        <h1>Wirescry</h1>
         <span className={`pill ${connected ? 'live' : ''}`} data-testid="proxy-status">
           {stateLabel}
         </span>

@@ -7,9 +7,9 @@ import { pemToDer, trustStoreJks } from './jks';
 export const CA_BUNDLE_FILE = 'ca-bundle.pem';
 
 /**
- * Writes Leverframe's CA followed by Node's bundled public roots and the operating
+ * Writes Wirescry's CA followed by Node's bundled public roots and the operating
  * system's roots. Tools told to use this file (SSL_CERT_FILE and similar) then trust
- * Leverframe without losing trust in everything else, e.g. for hosts that skip the proxy.
+ * Wirescry without losing trust in everything else, e.g. for hosts that skip the proxy.
  */
 export async function writeCABundle(dir: string, caCert: string): Promise<{ path: string; pem: string }> {
   let system: string[] = [];
@@ -39,14 +39,14 @@ export async function writeTerminalConfig(dir: string, caCert: string): Promise<
   const curlHome = path.join(dir, 'terminal-config', 'curl');
   await mkdir(phpIniDir, { recursive: true });
   await mkdir(curlHome, { recursive: true });
-  await writeFile(path.join(phpIniDir, 'leverframe.ini'), phpIniContent(bundlePath));
+  await writeFile(path.join(phpIniDir, 'wirescry.ini'), phpIniContent(bundlePath));
   // Windows curl reads _curlrc; newer versions also read .curlrc.
   await writeFile(path.join(curlHome, '_curlrc'), curlrcContent(bundlePath));
   await writeFile(path.join(curlHome, '.curlrc'), curlrcContent(bundlePath));
   // Java can't read PEM bundles, so give it the same certificates as a JKS trust store.
   const javaDir = path.join(dir, 'terminal-config', 'java');
   await mkdir(javaDir, { recursive: true });
-  const javaTrustStore = path.join(javaDir, 'leverframe-truststore.jks');
+  const javaTrustStore = path.join(javaDir, 'wirescry-truststore.jks');
   await writeFile(javaTrustStore, trustStoreJks(pemToDer(pem), JAVA_TRUST_STORE_PASSWORD));
   return { bundlePath, phpIniDir, curlHome, javaTrustStore };
 }

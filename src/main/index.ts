@@ -28,7 +28,7 @@ for (const [method, level] of [
 process.on('uncaughtException', (error) => console.error('Uncaught exception:', error));
 process.on('unhandledRejection', (reason) => console.error('Unhandled rejection:', reason));
 console.log(
-  `Leverframe ${app.getVersion()} starting (Electron ${process.versions.electron}, ${process.platform} ${os.release()} ${process.arch})`,
+  `Wirescry ${app.getVersion()} starting (Electron ${process.versions.electron}, ${process.platform} ${os.release()} ${process.arch})`,
 );
 
 // Set by electron-vite while running `npm run dev`.
@@ -71,7 +71,7 @@ const updater = new Updater(logger, () => mainWindow);
 
 function isFromOurUi(url: string): boolean {
   try {
-    // Not URL.origin: Node returns "null" for custom schemes like leverframe://.
+    // Not URL.origin: Node returns "null" for custom schemes like wirescry://.
     const { protocol, host } = new URL(url);
     return `${protocol}//${host}` === uiOrigin;
   } catch {
@@ -85,7 +85,7 @@ function createWindow(): void {
     height: 800,
     minWidth: 640,
     minHeight: 400,
-    title: 'Leverframe',
+    title: 'Wirescry',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -169,8 +169,8 @@ app.whenReady().then(() => {
   ipcMain.handle(IPC.exportCertificate, async (event): Promise<ExportResult> => {
     if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
     const options = {
-      title: 'Save Leverframe certificate',
-      defaultPath: path.join(app.getPath('downloads'), 'Leverframe CA.pem'),
+      title: 'Save Wirescry certificate',
+      defaultPath: path.join(app.getPath('downloads'), 'Wirescry CA.pem'),
       filters: [{ name: 'Certificate', extensions: ['pem', 'crt'] }],
     };
     const result = mainWindow

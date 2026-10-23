@@ -13,9 +13,9 @@ export interface LoggerOptions {
 }
 
 /**
- * Appends timestamped lines to `<dir>/leverframe.log`. Lines are buffered and
+ * Appends timestamped lines to `<dir>/wirescry.log`. Lines are buffered and
  * written in batches; when the file passes `maxBytes` it's renamed to
- * `leverframe.old.log`, replacing the previous one.
+ * `wirescry.old.log`, replacing the previous one.
  */
 export class FileLogger {
   readonly file: string;
@@ -28,8 +28,8 @@ export class FileLogger {
 
   constructor(dir: string, options: LoggerOptions = {}) {
     mkdirSync(dir, { recursive: true });
-    this.file = path.join(dir, 'leverframe.log');
-    this.previous = path.join(dir, 'leverframe.old.log');
+    this.file = path.join(dir, 'wirescry.log');
+    this.previous = path.join(dir, 'wirescry.old.log');
     this.maxBytes = options.maxBytes ?? 5 * 1024 * 1024;
     this.secrets = (options.secrets ?? []).filter((s) => s.length >= 8);
     try {

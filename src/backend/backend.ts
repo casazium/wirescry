@@ -127,7 +127,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     refreshRules: () => proxy.refreshRules(),
     passThroughStep: (transforms) =>
       new mockttp.requestSteps.PassThroughStep({
-        // Only the transforms and callbacks; connection settings stay Leverframe's own.
+        // Only the transforms and callbacks; connection settings stay Wirescry's own.
         transformRequest: transforms?.transformRequest,
         transformResponse: transforms?.transformResponse,
         beforeRequest: transforms?.beforeRequest,
@@ -160,7 +160,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           () => broadcast({ type: 'status', status: status() }),
           (error: unknown) => {
             firefoxTrusted = false;
-            console.error('[leverframe] could not record Firefox trust:', error);
+            console.error('[wirescry] could not record Firefox trust:', error);
           },
         );
       },

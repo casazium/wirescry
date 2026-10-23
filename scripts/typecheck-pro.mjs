@@ -1,5 +1,5 @@
 // Typechecks the app against the real Pro module instead of the stubs, so a change to
-// src/plugin-api that breaks Pro shows up here. Needs LEVERFRAME_PRO_DIR.
+// src/plugin-api that breaks Pro shows up here. Needs WIRESCRY_PRO_DIR.
 import { spawnSync } from 'node:child_process';
 import console from 'node:console';
 import process from 'node:process';
@@ -7,19 +7,19 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const proDir = process.env.LEVERFRAME_PRO_DIR;
+const proDir = process.env.WIRESCRY_PRO_DIR;
 if (!proDir) {
-  console.error('Set LEVERFRAME_PRO_DIR to a leverframe-pro checkout.');
+  console.error('Set WIRESCRY_PRO_DIR to a wirescry-pro checkout.');
   process.exit(1);
 }
 const root = path.resolve(import.meta.dirname, '..');
 const pro = path.resolve(proDir);
-const dir = mkdtempSync(path.join(tmpdir(), 'leverframe-typecheck-pro-'));
+const dir = mkdtempSync(path.join(tmpdir(), 'wirescry-typecheck-pro-'));
 let failed = false;
 try {
   for (const [name, extra] of [
-    ['tsconfig.node.json', { '@leverframe/pro/backend': [path.join(pro, 'src/backend/index.ts')] }],
-    ['tsconfig.web.json', { '@leverframe/pro/ui': [path.join(pro, 'src/ui/index.ts')] }],
+    ['tsconfig.node.json', { '@wirescry/pro/backend': [path.join(pro, 'src/backend/index.ts')] }],
+    ['tsconfig.web.json', { '@wirescry/pro/ui': [path.join(pro, 'src/ui/index.ts')] }],
   ]) {
     const config = path.join(dir, name);
     writeFileSync(
@@ -27,7 +27,7 @@ try {
       JSON.stringify({
         extends: path.join(root, name),
         compilerOptions: {
-          paths: { ...extra, '@leverframe/plugin-api/*': [path.join(root, 'src/plugin-api/*')] },
+          paths: { ...extra, '@wirescry/plugin-api/*': [path.join(root, 'src/plugin-api/*')] },
           // Pro's own files need the app's types for mockttp and React.
           typeRoots: [path.join(root, 'node_modules/@types')],
         },

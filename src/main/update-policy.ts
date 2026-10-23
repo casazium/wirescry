@@ -10,7 +10,7 @@ export type UpdateDecision = { check: true } | { check: false; reason: string };
 
 export function updateDecision({ isPackaged, platform, env }: UpdateContext): UpdateDecision {
   if (!isPackaged) return { check: false, reason: 'not a packaged build' };
-  if (env.LEVERFRAME_DISABLE_UPDATES) return { check: false, reason: 'LEVERFRAME_DISABLE_UPDATES is set' };
+  if (env.WIRESCRY_DISABLE_UPDATES) return { check: false, reason: 'WIRESCRY_DISABLE_UPDATES is set' };
   // On Linux only the AppImage can update itself; a .deb install is updated by reinstalling.
   if (platform === 'linux' && !env.APPIMAGE) return { check: false, reason: 'not running as an AppImage' };
   return { check: true };

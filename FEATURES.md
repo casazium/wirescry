@@ -1,8 +1,8 @@
-# Leverframe: feature list
+# Wirescry: feature list
 
-Leverframe is a desktop tool for seeing, debugging and rewriting HTTP traffic, in the same space as HTTP Toolkit. It's built with Electron and TypeScript, with Mockttp as the proxy engine.
+Wirescry is a desktop tool for seeing, debugging and rewriting HTTP traffic, in the same space as HTTP Toolkit. It's built with Electron and TypeScript, with Mockttp as the proxy engine.
 
-- **Repo:** `github.com/casazium/leverframe` (not created yet)
+- **Repo:** `github.com/casazium/wirescry` (not created yet)
 - **Team:** Bob, working full-time, with Claude
 - **Timings** are cumulative from the start of work. Double them if working about 20 hours a week.
 - **Pro** marks paid features. Everything else is free.
@@ -115,7 +115,8 @@ Leverframe is a desktop tool for seeing, debugging and rewriting HTTP traffic, i
 Everything that changes traffic, automates hard setup or explains APIs is Pro.
 
 ## Decisions made
-- **Name:** Leverframe. Checked October 2026: no clashing product, npm package or GitHub account. leverframe.com is taken (registered 2018, unused). leverframe.dev and getleverframe.com looked free.
+- **Name (October 2026): Wirescry**, renamed from the working name Leverframe before anything was public. Leverframe was dropped because two open-source developer tools (one a local proxy) already used it, it sat close to Lever's live software trademark, and leverframe.com was taken.
+  - Do-it-yourself checks for Wirescry (October 2026, not a legal clearance): no US, EU or UK trademark for it or close spellings; nothing on the web; no GitHub projects; npm `wirescry`, wirescry.com and wirescry.dev unregistered. One thing for an attorney: a live US **SCRY** mark covers software and SaaS.
 - **Stack:** Electron, TypeScript and React, with Mockttp as the proxy engine.
 - **Pro:** Android automatic setup, the Docker interceptor and the request composer.
 - **Order:** the Java agent comes in Stage 3, after the terminal interceptor. Java has about 23M developers, a similar number to Python's 24M (SlashData, Q3 2025).
@@ -128,5 +129,5 @@ Everything that changes traffic, automates hard setup or explains APIs is Pro.
 ## Open questions
 - When to make the repo public, after the lawyer's review.
 - CLA wording, and which tool collects signatures.
-- Trademark search for "Leverframe" at the USPTO, UK IPO and EUIPO, in classes 9 and 42.
-- Register leverframe.dev and getleverframe.com.
+- A trademark attorney's view on Wirescry (especially the SCRY mark), then file in the US (classes 9 and 42), and in the UK or EU within six months if selling there.
+- Register wirescry.com and wirescry.dev.

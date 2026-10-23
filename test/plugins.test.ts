@@ -43,7 +43,7 @@ describe('plugin host', () => {
     pluginsEnabled = true,
     pluginStartTimeoutMs?: number,
   ): Promise<RunningBackend> => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-plugin-test-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-plugin-test-'));
     backend = await startBackend({
       dataDir,
       token: TOKEN,
@@ -78,7 +78,7 @@ describe('plugin host', () => {
     const mocked = await httpViaProxy(b.proxyPort, 'http://mocked.test/anything');
     expect(mocked).toMatchObject({ status: 418, body: 'from the plugin' });
     // The setup host still comes first.
-    expect((await httpViaProxy(b.proxyPort, 'http://leverframe.internal/')).status).toBe(200);
+    expect((await httpViaProxy(b.proxyPort, 'http://wirescry.internal/')).status).toBe(200);
     // Each plugin gets its own data folder.
     expect((await stat(plugin.host!.dataDir)).isDirectory()).toBe(true);
     expect(plugin.host!.dataDir).toBe(path.join(dataDir, 'plugins', 'fake'));
@@ -235,7 +235,7 @@ describe('plugin host', () => {
       handle: async () => undefined,
     };
     const b = await start([greedy]);
-    expect((await httpViaProxy(b.proxyPort, 'http://leverframe.internal/')).status).toBe(200);
+    expect((await httpViaProxy(b.proxyPort, 'http://wirescry.internal/')).status).toBe(200);
     expect((await httpViaProxy(b.proxyPort, 'http://other.test/')).status).toBe(418);
   });
 
@@ -353,7 +353,7 @@ describe('plugin host', () => {
     await expect.poll(() => stopped, { timeout: 3000 }).toBe(true);
   });
 
-  it("lets a plugin forward requests with Leverframe's pass-through step", async () => {
+  it("lets a plugin forward requests with Wirescry's pass-through step", async () => {
     const target = http.createServer((req, res) => res.end(`target saw ${req.headers.host} ${req.url}`));
     await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
     const port = (target.address() as { port: number }).port;

@@ -51,7 +51,7 @@ function Body({
       {info?.incomplete && <p className="note">The connection closed before the whole body arrived.</p>}
       {info && info.stored < info.size && (
         <p className="note">
-          Leverframe kept the first {formatBytes(info.stored)} of this {formatBytes(info.size)} body.
+          Wirescry kept the first {formatBytes(info.stored)} of this {formatBytes(info.size)} body.
         </p>
       )}
     </>
@@ -181,7 +181,7 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
               summary.failure.kind !== 'client-closed' &&
               summary.status !== undefined && (
                 <span className="muted">
-                  The server never answered, so Leverframe replied to the client with {summary.status}.
+                  The server never answered, so Wirescry replied to the client with {summary.status}.
                 </span>
               )
             )}
