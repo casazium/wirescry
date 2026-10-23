@@ -81,3 +81,11 @@ npm run package
 ```
 
 Builds unsigned installers for the current platform into `release/<version>/`. To skip looking for a signing certificate in your keychain on macOS, set `CSC_IDENTITY_AUTO_DISCOVERY=false`.
+
+## Pro in releases: not yet
+
+Releases are built from this repo alone, so they include only the free app. Pro (the private `leverframe-pro` repo) isn't in any release yet, and shouldn't be until these are in place:
+
+- Licence checks, done in Pro or backend code rather than the open-source main process.
+- Pro compiled to V8 bytecode, and Electron's fuses and integrity checks turned on.
+- The release workflow checking out `leverframe-pro` (a deploy key or token as a secret) and building with `LEVERFRAME_PRO_DIR` set. CI doesn't build or test Pro yet either.

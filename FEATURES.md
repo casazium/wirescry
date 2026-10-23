@@ -50,6 +50,9 @@ Leverframe is a desktop tool for seeing, debugging and rewriting HTTP traffic, i
   - Match on method, URL or regex, host, path, query, headers or body.
   - Actions: mock a response, reply from a file, forward to another host, rewrite headers or body, add a delay, time out, drop the connection, or pass through.
   - Rules can be ordered, switched on and off, grouped, and imported and exported.
+  - **Status (October 2026):** first slice built, in development builds only.
+    - Done: match on method, host and path (with `*`) or a path regex; mock a response, pass through (optionally delayed), close the connection, or time out; order and switch rules on and off; the traffic list shows which rule handled a request.
+    - Still to do: query, header and body matching; reply from a file; forward to another host; rewrite headers or body; groups; import and export; rules for WebSockets.
 - **Breakpoints:** pause a request or a response, edit it, then resume it or reply by hand.
 - **Request composer:** build and send requests, resend a captured request with edits, and keep a history. It should centre on captured traffic, not compete with standalone API clients.
 - **HAR import and export**, plus export as code snippets in common languages.
