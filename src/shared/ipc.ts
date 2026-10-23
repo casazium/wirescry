@@ -24,11 +24,11 @@ export type BackendState =
   | { state: 'failed'; message: string };
 
 export const IPC = {
-  getBackendState: 'leverframe:get-backend-state',
-  backendStateChanged: 'leverframe:backend-state-changed',
-  exportCertificate: 'leverframe:export-certificate',
-  saveTextFile: 'leverframe:save-text-file',
-  openTextFile: 'leverframe:open-text-file',
+  getBackendState: 'wirescry:get-backend-state',
+  backendStateChanged: 'wirescry:backend-state-changed',
+  exportCertificate: 'wirescry:export-certificate',
+  saveTextFile: 'wirescry:save-text-file',
+  openTextFile: 'wirescry:open-text-file',
 } as const;
 
 export interface SaveTextFileRequest {
@@ -59,8 +59,8 @@ export interface ExportResult {
   path?: string;
 }
 
-/** The API the preload script exposes to the UI as `window.leverframe`. */
-export interface LeverframeBridge {
+/** The API the preload script exposes to the UI as `window.wirescry`. */
+export interface WirescryBridge {
   getBackendState(): Promise<BackendState>;
   /** Returns a function that unsubscribes. */
   onBackendStateChanged(callback: (state: BackendState) => void): () => void;

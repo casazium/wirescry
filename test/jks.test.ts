@@ -26,12 +26,15 @@ describe('trustStoreJks', () => {
     expect(jks.readUInt32BE(8)).toBe(5);
     const bodyLength =
       12 +
-      certs.reduce((n, c, i) => n + 4 + 2 + (i === 0 ? 13 : `root-${i}`.length) + 8 + 7 + 4 + c.length, 0);
+      certs.reduce(
+        (n, c, i) => n + 4 + 2 + (i === 0 ? 'wirescry-ca'.length : `root-${i}`.length) + 8 + 7 + 4 + c.length,
+        0,
+      );
     expect(jks.length).toBe(bodyLength + 20);
   });
 
   it.skipIf(!keytool)('is read by keytool, with every certificate trusted', async () => {
-    const dir = await mkdtemp(path.join(os.tmpdir(), 'leverframe jks test-'));
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry jks test-'));
     const file = path.join(dir, 'trust.jks');
     await writeFile(file, trustStoreJks(certs, 'changeit'));
     const ok = spawnSync(
@@ -43,7 +46,7 @@ describe('trustStoreJks', () => {
     );
     expect(ok.status).toBe(0);
     expect(ok.stdout.match(/trustedCertEntry/g)).toHaveLength(5);
-    expect(ok.stdout).toContain('leverframe-ca');
+    expect(ok.stdout).toContain('wirescry-ca');
 
     const wrong = spawnSync(
       keytool!,

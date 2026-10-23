@@ -38,7 +38,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   start(): void {
     this.setState({ state: 'starting' });
     const child = utilityProcess.fork(path.join(__dirname, 'backend.js'), [], {
-      serviceName: 'Leverframe Backend',
+      serviceName: 'Wirescry Backend',
       stdio: 'pipe',
     });
     this.child = child;
@@ -65,9 +65,9 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
           state: 'ready',
           connection: { apiUrl: `ws://127.0.0.1:${message.apiPort}/`, token: this.token },
         });
-        console.log(`[leverframe] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}`);
+        console.log(`[wirescry] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}`);
       } else if (message.type === 'error') {
-        console.error('[leverframe] backend failed to start:', message.message);
+        console.error('[wirescry] backend failed to start:', message.message);
         this.setState({ state: 'failed', message: message.message });
       }
     });
@@ -75,7 +75,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     child.on('exit', (code) => {
       if (this.child === child) this.child = undefined;
       if (this.stopping) return;
-      console.error(`[leverframe] backend exited with code ${code}`);
+      console.error(`[wirescry] backend exited with code ${code}`);
       const now = Date.now();
       this.restarts = this.restarts.filter((t) => now - t < RESTART_WINDOW_MS);
       if (this.restarts.length >= MAX_RESTARTS) {

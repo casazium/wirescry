@@ -11,7 +11,7 @@ class PluginErrorBoundary extends Component<{ label: string; children: ReactNode
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error(`[leverframe] ${this.props.label} view failed:`, error, info.componentStack);
+    console.error(`[wirescry] ${this.props.label} view failed:`, error, info.componentStack);
   }
 
   override render(): ReactNode {
@@ -44,7 +44,7 @@ export function PluginView({
         <h2>{view.label}</h2>
         <p>{status?.reason ?? 'This feature isn’t available.'}</p>
         {status?.reason !== 'Starting…' && (
-          <p className="muted">Everything else in Leverframe keeps working without it.</p>
+          <p className="muted">Everything else in Wirescry keeps working without it.</p>
         )}
       </div>
     );

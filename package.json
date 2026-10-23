@@ -1,6 +1,6 @@
 {
-  "name": "leverframe",
-  "productName": "Leverframe",
+  "name": "wirescry",
+  "productName": "Wirescry",
   "version": "0.1.0",
   "description": "Desktop tool for seeing, debugging and rewriting HTTP traffic",
   "private": true,

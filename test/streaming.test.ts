@@ -18,7 +18,7 @@ describe('streaming bodies', () => {
   let backend: RunningBackend;
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-stream-test-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-stream-test-'));
     const big = Buffer.alloc(20 * MB, 'a');
     const bigGzip = gzipSync(Buffer.alloc(30 * MB, 'b'));
     server = http.createServer((req, res) => {
@@ -111,7 +111,7 @@ describe('formatBody', () => {
   const minifiedJs = 'function hello(n){if(n>1){return"many"}return"one"}';
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-format-test-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-format-test-'));
     server = http.createServer((req, res) => {
       const routes: Record<string, [string, string | Buffer, Record<string, string>?]> = {
         '/app.js': ['application/javascript', gzipSync(minifiedJs), { 'content-encoding': 'gzip' }],

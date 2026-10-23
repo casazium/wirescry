@@ -18,7 +18,7 @@ describe('HybridBodyStore', () => {
   let store: HybridBodyStore;
 
   beforeEach(async () => {
-    root = await mkdtemp(path.join(os.tmpdir(), 'leverframe-bodies-test-'));
+    root = await mkdtemp(path.join(os.tmpdir(), 'wirescry-bodies-test-'));
     dir = path.join(root, 'bodies');
     store = await HybridBodyStore.open(dir, { memoryLimit: 10, maxBodySize: 40 });
   });

@@ -45,7 +45,7 @@ export function trustStoreJks(certs: Buffer[], password: string, createdAt = Dat
     // Aliases must be unique; Java lower-cases them.
     parts.push(
       u32(TRUSTED_CERT_TAG),
-      utf(i === 0 ? 'leverframe-ca' : `root-${i}`),
+      utf(i === 0 ? 'wirescry-ca' : `root-${i}`),
       time,
       utf('X.509'),
       u32(der.length),

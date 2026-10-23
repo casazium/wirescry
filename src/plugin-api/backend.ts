@@ -1,5 +1,5 @@
 /**
- * What a backend plugin (such as Leverframe Pro) can do. This file is part of the
+ * What a backend plugin (such as Wirescry Pro) can do. This file is part of the
  * open-source app; plugins import its types. Keep it small and stable, and bump
  * PLUGIN_API_VERSION (./version.ts) for breaking changes.
  */
@@ -26,15 +26,15 @@ export type PassThroughTransforms = Pick<
 >;
 
 export interface BackendPluginHost {
-  /** A folder for this plugin's own files, inside Leverframe's data folder. */
+  /** A folder for this plugin's own files, inside Wirescry's data folder. */
   dataDir: string;
   /**
-   * Replaces this plugin's proxy rules. They run in order, after Leverframe's own setup
+   * Replaces this plugin's proxy rules. They run in order, after Wirescry's own setup
    * page and before its normal pass-through, so the first matching rule handles the request.
    */
   setProxyRules(rules: PluginRule[]): Promise<void>;
   /**
-   * A step that passes the request on to the real server with Leverframe's own
+   * A step that passes the request on to the real server with Wirescry's own
    * settings (trusted CAs, and later upstream proxies). Use it instead of building one.
    * `transforms` can send it elsewhere or change it on the way, as Mockttp's
    * PassThroughStep options of the same names.
@@ -48,7 +48,7 @@ export interface BackendPluginHost {
   maxBufferedRequestBody: number;
   /** Sends an event to this plugin's UI. */
   emit(event: string, data: unknown): void;
-  /** Writes to Leverframe's log. */
+  /** Writes to Wirescry's log. */
   log(message: string): void;
 }
 

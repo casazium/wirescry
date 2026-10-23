@@ -32,7 +32,7 @@ function isRefused(host: string, port: number): Promise<boolean> {
     const socket = net.connect({ host, port });
     let answered = false;
     socket.on('connect', () =>
-      socket.write('GET http://leverframe.internal/ HTTP/1.1\r\nHost: leverframe.internal\r\n\r\n'),
+      socket.write('GET http://wirescry.internal/ HTTP/1.1\r\nHost: wirescry.internal\r\n\r\n'),
     );
     socket.on('data', () => {
       answered = true;
@@ -53,7 +53,7 @@ describe('setup', () => {
   let backend: RunningBackend;
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-setup-test-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-setup-test-'));
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
     await upstream.start();
@@ -79,14 +79,14 @@ describe('setup', () => {
     expect(await isRefused(lan, backend.proxyPort)).toBe(true);
   });
 
-  it('serves the setup page and certificate at leverframe.internal', async () => {
-    const page = await httpViaProxy(backend.proxyPort, 'http://leverframe.internal/');
+  it('serves the setup page and certificate at wirescry.internal', async () => {
+    const page = await httpViaProxy(backend.proxyPort, 'http://wirescry.internal/');
     expect(page.status).toBe(200);
-    expect(page.body).toContain('Leverframe setup');
+    expect(page.body).toContain('Wirescry setup');
 
     // Twice, to check the rule keeps matching after its first use.
     for (let i = 0; i < 2; i++) {
-      const cert = await httpViaProxy(backend.proxyPort, 'http://leverframe.internal/certificate');
+      const cert = await httpViaProxy(backend.proxyPort, 'http://wirescry.internal/certificate');
       expect(cert.type).toBe('application/x-x509-ca-cert');
       expect(cert.body).toBe(await readFile(backend.caCertPath, 'utf8'));
     }
@@ -99,14 +99,14 @@ describe('setup', () => {
     expect(hello.status.firefoxTrusted).toBe(false);
 
     // Plain HTTP proves nothing about trust.
-    expect((await httpViaProxy(backend.proxyPort, 'http://leverframe.internal/check')).status).toBe(400);
+    expect((await httpViaProxy(backend.proxyPort, 'http://wirescry.internal/check')).status).toBe(400);
 
-    const check = await requestViaProxy(backend.proxyPort, 'https://leverframe.internal:443/check', ca, {
+    const check = await requestViaProxy(backend.proxyPort, 'https://wirescry.internal:443/check', ca, {
       headers: { 'user-agent': 'Mozilla/5.0 (Macintosh) Gecko/20100101 Firefox/150.0' },
     });
     expect(check.status).toBe(200);
     await expect.poll(() => lastStatus(api.messages)?.firefoxTrusted).toBe(true);
-    const marker = await readFile(path.join(dataDir, FIREFOX_PROFILE_DIR, 'leverframe-trusted-ca'), 'utf8');
+    const marker = await readFile(path.join(dataDir, FIREFOX_PROFILE_DIR, 'wirescry-trusted-ca'), 'utf8');
     expect(marker.trim()).toBe(lastStatus(api.messages)?.certificate.spkiFingerprint);
     api.close();
   });
@@ -118,7 +118,7 @@ describe('setup', () => {
     expect(backend.proxyPort).toBe(port);
     expect(await loadSettings(dataDir)).toEqual({ proxyPort: port });
     expect(lastStatus(api.messages)).toMatchObject({ proxyPort: port, proxyPortSetting: port });
-    expect((await httpViaProxy(port, 'http://leverframe.internal/')).status).toBe(200);
+    expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
 
     // Taken on all addresses, and taken on 127.0.0.1 only.
     for (const host of [undefined, '127.0.0.1']) {
@@ -131,7 +131,7 @@ describe('setup', () => {
       blocker.close();
     }
     expect(backend.proxyPort).toBe(port);
-    expect((await httpViaProxy(port, 'http://leverframe.internal/')).status).toBe(200);
+    expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
 
     await expect(api.send({ command: 'setProxyPort', port: 80 })).rejects.toThrow('1024 to 65535');
 

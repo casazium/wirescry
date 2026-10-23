@@ -6,7 +6,7 @@ import { FIRST_CHECK_DELAY_MS, UPDATE_INTERVAL_MS, updateDecision } from './upda
 /**
  * Checks the public releases repo for new versions, downloads them in the
  * background, and offers to restart once one is ready. Update files come from
- * casazium/leverframe-releases over HTTPS; on macOS and Windows the installer
+ * casazium/wirescry-releases over HTTPS; on macOS and Windows the installer
  * is checked against the app's own code signature before it's used.
  */
 export class Updater {
@@ -38,14 +38,14 @@ export class Updater {
 
     autoUpdater.on('update-not-available', () => {
       if (this.manualCheck)
-        void this.message('info', 'Leverframe is up to date.', `You have version ${app.getVersion()}.`);
+        void this.message('info', 'Wirescry is up to date.', `You have version ${app.getVersion()}.`);
       this.manualCheck = false;
     });
     autoUpdater.on('update-available', (info) => {
       if (this.manualCheck) {
         void this.message(
           'info',
-          `Leverframe ${info.version} is available.`,
+          `Wirescry ${info.version} is available.`,
           'It is downloading now. You will be asked to restart when it is ready.',
         );
       }
@@ -72,7 +72,7 @@ export class Updater {
   /** For the "Check for Updates…" menu item: reports the result either way. */
   checkNow(): void {
     if (!this.enabled) {
-      void this.message('info', "This copy of Leverframe doesn't update itself.", `Reason: ${this.reason}.`);
+      void this.message('info', "This copy of Wirescry doesn't update itself.", `Reason: ${this.reason}.`);
       return;
     }
     this.manualCheck = true;
@@ -89,7 +89,7 @@ export class Updater {
     try {
       const result = await this.message(
         'info',
-        `Leverframe ${version} is ready to install.`,
+        `Wirescry ${version} is ready to install.`,
         'Restart now to update, or it will install the next time you quit.',
         ['Restart Now', 'Later'],
       );

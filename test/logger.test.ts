@@ -7,7 +7,7 @@ import { FileLogger, lineSplitter } from '../src/main/logger';
 describe('FileLogger', () => {
   let dir: string;
   beforeEach(async () => {
-    dir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-log-test-'));
+    dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-log-test-'));
   });
   afterEach(async () => {
     await rm(dir, { recursive: true, force: true });
@@ -40,9 +40,9 @@ describe('FileLogger', () => {
       logger.flush();
     }
     logger.close();
-    expect((await readdir(dir)).sort()).toEqual(['leverframe.log', 'leverframe.old.log']);
+    expect((await readdir(dir)).sort()).toEqual(['wirescry.log', 'wirescry.old.log']);
     expect(await readFile(logger.file, 'utf8')).toContain('round 2');
-    expect(await readFile(path.join(dir, 'leverframe.old.log'), 'utf8')).toContain('round 1');
+    expect(await readFile(path.join(dir, 'wirescry.old.log'), 'utf8')).toContain('round 1');
   });
 });
 

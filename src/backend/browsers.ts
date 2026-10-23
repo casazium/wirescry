@@ -138,7 +138,7 @@ export async function launchChromium(
   browser: DetectedBrowser,
   options: Omit<ChromiumLaunchOptions, 'profileDir'>,
 ): Promise<void> {
-  const profileDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-profile-'));
+  const profileDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-profile-'));
   const child = spawn(browser.executable, chromiumArgs({ ...options, profileDir }), {
     stdio: 'ignore',
   });

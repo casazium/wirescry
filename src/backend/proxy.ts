@@ -168,7 +168,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
           stored: info.stored,
           incomplete: info.incomplete || undefined,
         }),
-      (error: unknown) => console.error(`[leverframe] could not store ${side} body for ${id}:`, error),
+      (error: unknown) => console.error(`[wirescry] could not store ${side} body for ${id}:`, error),
     );
   };
 

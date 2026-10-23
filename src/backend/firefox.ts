@@ -5,13 +5,13 @@ import type { DetectedBrowser } from './browsers';
 import { SETUP_HOST } from './setup-page';
 
 /**
- * Firefox has no command-line flag to trust a certificate, so Leverframe keeps one
+ * Firefox has no command-line flag to trust a certificate, so Wirescry keeps one
  * Firefox profile in its data folder. The user trusts the CA in it once, and later
  * launches reuse it.
  */
 export const FIREFOX_PROFILE_DIR = 'firefox-profile';
 /** Holds the SPKI fingerprint of the CA this profile is known to trust. */
-const TRUST_MARKER = 'leverframe-trusted-ca';
+const TRUST_MARKER = 'wirescry-trusted-ca';
 
 /** Prefs written to the profile's user.js on every launch. */
 export function firefoxPrefs(proxyPort: number): string {
@@ -35,7 +35,7 @@ export function firefoxPrefs(proxyPort: number): string {
     'toolkit.telemetry.reportingpolicy.firstRun': false,
   };
   return (
-    '// Written by Leverframe on every launch. Changes here are overwritten.\n' +
+    '// Written by Wirescry on every launch. Changes here are overwritten.\n' +
     Object.entries(prefs)
       .map(([key, value]) => `user_pref(${JSON.stringify(key)}, ${JSON.stringify(value)});`)
       .join('\n') +
@@ -67,7 +67,7 @@ export interface FirefoxLaunchOptions {
   spkiFingerprint: string;
 }
 
-/** Launches Firefox with the Leverframe profile, opening setup if it doesn't trust the CA yet. */
+/** Launches Firefox with the Wirescry profile, opening setup if it doesn't trust the CA yet. */
 export async function launchFirefox(browser: DetectedBrowser, options: FirefoxLaunchOptions): Promise<void> {
   await mkdir(options.profileDir, { recursive: true, mode: 0o700 });
   await writeFile(path.join(options.profileDir, 'user.js'), firefoxPrefs(options.proxyPort));

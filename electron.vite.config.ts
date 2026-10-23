@@ -4,12 +4,12 @@ import react from '@vitejs/plugin-react';
 import { defineConfig } from 'electron-vite';
 
 /**
- * Leverframe Pro lives in a separate private repo. Set LEVERFRAME_PRO_DIR to its
+ * Wirescry Pro lives in a separate private repo. Set WIRESCRY_PRO_DIR to its
  * checkout to build with Pro; otherwise the free build uses the stubs in src/pro-stub.
  */
-const proDir = process.env.LEVERFRAME_PRO_DIR ? resolve(process.env.LEVERFRAME_PRO_DIR) : undefined;
+const proDir = process.env.WIRESCRY_PRO_DIR ? resolve(process.env.WIRESCRY_PRO_DIR) : undefined;
 if (proDir && !existsSync(resolve(proDir, 'src/backend/index.ts'))) {
-  throw new Error(`LEVERFRAME_PRO_DIR is set, but ${proDir} doesn't look like a leverframe-pro checkout.`);
+  throw new Error(`WIRESCRY_PRO_DIR is set, but ${proDir} doesn't look like a wirescry-pro checkout.`);
 }
 const pluginApi = resolve(__dirname, 'src/plugin-api');
 const proBackend = proDir
@@ -20,18 +20,18 @@ const proUi = proDir ? resolve(proDir, 'src/ui/index.ts') : resolve(__dirname, '
 export default defineConfig(({ command }) => {
   // Pro isn't ready to ship (no licence checks or bytecode yet), and a production build
   // would bundle its source in readable form. Refuse unless explicitly asked.
-  if (proDir && command === 'build' && process.env.LEVERFRAME_ALLOW_PRO_BUILD !== '1') {
+  if (proDir && command === 'build' && process.env.WIRESCRY_ALLOW_PRO_BUILD !== '1') {
     throw new Error(
-      'LEVERFRAME_PRO_DIR is set for a production build, which would put readable Pro code in out/. ' +
-        'Unset it, or set LEVERFRAME_ALLOW_PRO_BUILD=1 for a local test build that must not be shipped.',
+      'WIRESCRY_PRO_DIR is set for a production build, which would put readable Pro code in out/. ' +
+        'Unset it, or set WIRESCRY_ALLOW_PRO_BUILD=1 for a local test build that must not be shipped.',
     );
   }
   return {
     main: {
       resolve: {
         alias: {
-          '@leverframe/pro/backend': proBackend,
-          '@leverframe/plugin-api': pluginApi,
+          '@wirescry/pro/backend': proBackend,
+          '@wirescry/plugin-api': pluginApi,
         },
         // Pro's files sit outside this repo; make sure they use this app's Mockttp.
         dedupe: ['mockttp'],
@@ -59,8 +59,8 @@ export default defineConfig(({ command }) => {
       plugins: [react()],
       resolve: {
         alias: {
-          '@leverframe/pro/ui': proUi,
-          '@leverframe/plugin-api': pluginApi,
+          '@wirescry/pro/ui': proUi,
+          '@wirescry/plugin-api': pluginApi,
         },
         // Pro's files sit outside this repo; make sure they use this app's React.
         dedupe: ['react', 'react-dom'],

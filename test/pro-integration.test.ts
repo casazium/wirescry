@@ -10,9 +10,9 @@ import { apiClient, httpViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
 /**
  * Runs the real Pro module inside the real backend. Pro is private, so this only runs
- * when LEVERFRAME_PRO_DIR points at a leverframe-pro checkout.
+ * when WIRESCRY_PRO_DIR points at a wirescry-pro checkout.
  */
-const proDir = process.env.LEVERFRAME_PRO_DIR;
+const proDir = process.env.WIRESCRY_PRO_DIR;
 
 describe.skipIf(!proDir)('Pro in the backend', () => {
   let dataDir: string;
@@ -29,7 +29,7 @@ describe.skipIf(!proDir)('Pro in the backend', () => {
     const { backendPlugins } = (await import(path.resolve(proDir!, 'src/backend/index.ts'))) as {
       backendPlugins: BackendPlugin[];
     };
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-pro-int-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-pro-int-'));
     backend = await startBackend({
       dataDir,
       token: TOKEN,

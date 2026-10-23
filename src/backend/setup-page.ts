@@ -1,8 +1,8 @@
 /** Hostname the proxy answers itself, for in-browser setup. Never resolved in DNS: only reachable through the proxy. */
-export const SETUP_HOST = 'leverframe.internal';
+export const SETUP_HOST = 'wirescry.internal';
 
 /**
- * Served at http://leverframe.internal/ to a browser using the proxy. It links to the
+ * Served at http://wirescry.internal/ to a browser using the proxy. It links to the
  * certificate, then checks over HTTPS whether the browser now trusts it.
  */
 export function setupPageHtml(): string {
@@ -11,7 +11,7 @@ export function setupPageHtml(): string {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Leverframe setup</title>
+<title>Wirescry setup</title>
 <style>
   :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
   body { max-width: 560px; margin: 48px auto; padding: 0 16px; line-height: 1.5; }
@@ -21,8 +21,8 @@ export function setupPageHtml(): string {
 </style>
 </head>
 <body>
-<h1>Leverframe setup</h1>
-<p>This browser is sending its traffic through Leverframe. To see HTTPS traffic, it needs to trust Leverframe's certificate once.</p>
+<h1>Wirescry setup</h1>
+<p>This browser is sending its traffic through Wirescry. To see HTTPS traffic, it needs to trust Wirescry's certificate once.</p>
 <p><a class="button" href="/certificate">Install certificate</a></p>
 <p>When Firefox asks, tick <strong>Trust this CA to identify websites</strong>, then click <strong>OK</strong>.</p>
 <p id="status">Checking whether this browser trusts the certificate…</p>
@@ -33,7 +33,7 @@ export function setupPageHtml(): string {
       const response = await fetch('https://${SETUP_HOST}/check', { cache: 'no-store' });
       if (response.ok) {
         status.className = 'ok';
-        status.innerHTML = 'Certificate trusted. HTTPS traffic from this browser now shows in Leverframe. <a href="https://example.com/">Continue to example.com</a>';
+        status.innerHTML = 'Certificate trusted. HTTPS traffic from this browser now shows in Wirescry. <a href="https://example.com/">Continue to example.com</a>';
         return;
       }
     } catch {}

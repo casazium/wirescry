@@ -6,7 +6,7 @@ import path from 'node:path';
 import type { TerminalInfo } from '../shared/api';
 import { shellSnippet } from '../shared/terminal-env';
 
-/** A terminal Leverframe can open on this machine. */
+/** A terminal Wirescry can open on this machine. */
 export interface DetectedTerminal extends TerminalInfo {
   /** macOS: application name for `open -a`. Elsewhere: the executable. */
   command: string;
@@ -95,30 +95,30 @@ export function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>)
 export function posixStartScript(env: Record<string, string>, proxyAddress: string): string {
   return [
     '#!/bin/sh',
-    '# Opened by Leverframe. Deletes itself once it has run.',
+    '# Opened by Wirescry. Deletes itself once it has run.',
     shellSnippet(env, 'posix'),
-    `printf '\\033]0;Leverframe\\007'`,
-    `echo "This terminal sends HTTP and HTTPS traffic through Leverframe (${proxyAddress})."`,
-    'echo "Requests from programs you start here show up in Leverframe."',
+    `printf '\\033]0;Wirescry\\007'`,
+    `echo "This terminal sends HTTP and HTTPS traffic through Wirescry (${proxyAddress})."`,
+    'echo "Requests from programs you start here show up in Wirescry."',
     'rm -f -- "$0"',
     'exec "${SHELL:-/bin/sh}" -l',
     '',
   ].join('\n');
 }
 
-/** Opens a new terminal window whose programs send their traffic through Leverframe. */
+/** Opens a new terminal window whose programs send their traffic through Wirescry. */
 export async function launchTerminal(
   terminal: DetectedTerminal,
   env: Record<string, string>,
   options: { scriptDir: string; proxyAddress: string },
 ): Promise<void> {
-  const banner = `This terminal sends HTTP and HTTPS traffic through Leverframe (${options.proxyAddress}).`;
+  const banner = `This terminal sends HTTP and HTTPS traffic through Wirescry (${options.proxyAddress}).`;
 
   if (process.platform === 'darwin') {
     // macOS terminals don't take an environment from the caller, so hand them a
     // .command script that sets it and then starts the user's shell.
     await mkdir(options.scriptDir, { recursive: true, mode: 0o700 });
-    const script = path.join(options.scriptDir, `leverframe-${randomBytes(6).toString('hex')}.command`);
+    const script = path.join(options.scriptDir, `wirescry-${randomBytes(6).toString('hex')}.command`);
     await writeFile(script, posixStartScript(env, options.proxyAddress), { mode: 0o700 });
     await chmod(script, 0o700);
     await run('open', ['-a', terminal.command, script], process.env);

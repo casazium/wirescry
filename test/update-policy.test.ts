@@ -19,13 +19,13 @@ describe('updateDecision', () => {
       reason: 'not running as an AppImage',
     });
     expect(
-      updateDecision({ isPackaged: true, platform: 'linux', env: { APPIMAGE: '/opt/Leverframe.AppImage' } }),
+      updateDecision({ isPackaged: true, platform: 'linux', env: { APPIMAGE: '/opt/Wirescry.AppImage' } }),
     ).toEqual({ check: true });
   });
 
-  it('can be turned off with LEVERFRAME_DISABLE_UPDATES', () => {
+  it('can be turned off with WIRESCRY_DISABLE_UPDATES', () => {
     expect(
-      updateDecision({ isPackaged: true, platform: 'darwin', env: { LEVERFRAME_DISABLE_UPDATES: '1' } }),
+      updateDecision({ isPackaged: true, platform: 'darwin', env: { WIRESCRY_DISABLE_UPDATES: '1' } }),
     ).toMatchObject({ check: false });
   });
 });

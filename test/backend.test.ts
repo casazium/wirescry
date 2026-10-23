@@ -24,7 +24,7 @@ describe('backend', () => {
   let backend: RunningBackend;
 
   beforeAll(async () => {
-    dataDir = await mkdtemp(path.join(os.tmpdir(), 'leverframe-test-'));
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-test-'));
 
     // A local HTTPS server standing in for a real website, with its own CA.
     const upstreamCA = await generateCACertificate();
@@ -110,20 +110,20 @@ describe('backend', () => {
     const ca = await readFile(backend.caCertPath, 'utf8');
     const response = await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/echo`, ca, {
       method: 'POST',
-      body: '{"name":"leverframe"}',
+      body: '{"name":"wirescry"}',
       headers: { 'content-type': 'application/json', 'x-test': 'yes' },
     });
-    expect(response).toEqual({ status: 201, body: '{"name":"leverframe"}' });
+    expect(response).toEqual({ status: 201, body: '{"name":"wirescry"}' });
 
     const id = await api.completed('/echo');
     const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: id });
     expect(detail.requestHeaders).toContainEqual(['x-test', 'yes']);
     expect(detail.responseHeaders).toBeDefined();
-    expect(detail.requestBody).toEqual({ size: 21, stored: 21 });
+    expect(detail.requestBody).toEqual({ size: 19, stored: 19 }); // The 19-byte body above.
     expect(detail.timing.responseSentTimestamp).toBeGreaterThanOrEqual(detail.timing.startTimestamp);
 
     const requestBody = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'request' });
-    expect(Buffer.from(requestBody.base64, 'base64').toString()).toBe('{"name":"leverframe"}');
+    expect(Buffer.from(requestBody.base64, 'base64').toString()).toBe('{"name":"wirescry"}');
     expect(requestBody.contentType).toBe('application/json');
     api.close();
   });
