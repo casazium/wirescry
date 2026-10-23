@@ -118,3 +118,11 @@ The UI fetches headers and bodies only for the exchange you select. Bodies are d
 ## Notes
 
 - `tls-impersonate`, an optional Mockttp dependency for TLS fingerprint mirroring, is not built and not packaged. Mockttp works without it, and Leverframe doesn't use that feature.
+
+## Licence
+
+Leverframe's free app is open source under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). Copyright © 2026 Bob Casazza.
+
+Leverframe Pro features are developed separately and aren't covered by this licence. Released builds of Leverframe include them, locked until a Pro licence is active.
+
+Contributions will need a contributor licence agreement, so the project can keep offering combined builds with Pro. Details will be here before outside contributions are accepted.
