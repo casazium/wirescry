@@ -4,6 +4,7 @@ import * as mockttp from 'mockttp';
 import type { HandledBy, PluginStatus } from '../shared/api';
 import type { BackendPlugin, PluginRule } from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
+import { MOCKTTP_BUFFER_LIMIT } from './proxy';
 
 const NAME = /^[a-z0-9-]{1,32}$/;
 /** Mockttp steps that end a request without a response. */
@@ -90,6 +91,7 @@ export class PluginHost {
             dataDir,
             setProxyRules: (rules) => this.setRules(plugin, rules),
             passThroughStep: () => this.options.passThroughStep(),
+            maxBufferedRequestBody: MOCKTTP_BUFFER_LIMIT,
             emit: (event, data) => {
               if (this.isRunning(plugin)) this.options.emit(plugin.name, event, data);
             },

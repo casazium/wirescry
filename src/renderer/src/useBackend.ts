@@ -140,6 +140,8 @@ export function useBackend(): BackendView {
             listeners.add(listener);
             return () => listeners.delete(listener);
           },
+          saveFile: (options) => window.leverframe.saveTextFile(options),
+          openFile: (options) => window.leverframe.openTextFile(options),
         };
         pluginApis.current.set(plugin, api);
       }

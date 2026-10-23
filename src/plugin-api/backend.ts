@@ -24,6 +24,12 @@ export interface BackendPluginHost {
    * settings (trusted CAs, and later upstream proxies). Use it instead of building one.
    */
   passThroughStep(): RequestStep;
+  /**
+   * The most request body, in bytes, that the proxy buffers. A matcher must not read a
+   * longer body (or one without a Content-Length): the read stops at this size and the
+   * request would then be passed on without its body.
+   */
+  maxBufferedRequestBody: number;
   /** Sends an event to this plugin's UI. */
   emit(event: string, data: unknown): void;
   /** Writes to Leverframe's log. */

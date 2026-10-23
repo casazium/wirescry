@@ -8,6 +8,7 @@ import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './
 import { BackendSupervisor } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
+import { openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
 
 // Errors and warnings from every part of the app go to one local file, for support and debugging.
@@ -179,6 +180,14 @@ app.whenReady().then(() => {
     // Only the public certificate. The private key never leaves the data folder.
     await copyFile(path.join(app.getPath('userData'), 'ca.pem'), result.filePath);
     return { path: result.filePath };
+  });
+  ipcMain.handle(IPC.saveTextFile, (event, request: unknown) => {
+    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+    return saveTextFile(mainWindow, request);
+  });
+  ipcMain.handle(IPC.openTextFile, (event, request: unknown) => {
+    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+    return openTextFile(mainWindow, request);
   });
   backend.on('state', (state) => mainWindow?.webContents.send(IPC.backendStateChanged, state));
   backend.start();
