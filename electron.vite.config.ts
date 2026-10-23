@@ -24,6 +24,8 @@ export default defineConfig({
         '@leverframe/pro/backend': proBackend,
         '@leverframe/plugin-api': pluginApi,
       },
+      // Pro's files sit outside this repo; make sure they use this app's Mockttp.
+      dedupe: ['mockttp'],
     },
     build: {
       rolldownOptions: {
