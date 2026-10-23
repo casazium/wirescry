@@ -2,7 +2,7 @@
  * What a backend plugin (such as Leverframe Pro) can do. This file is part of the
  * open-source app; plugins import its types. Keep it small and stable.
  */
-import type { RequestRuleData } from 'mockttp';
+import type { RequestRuleData, RequestStep } from 'mockttp';
 
 export interface BackendPluginHost {
   /** A folder for this plugin's own files, inside Leverframe's data folder. */
@@ -12,6 +12,11 @@ export interface BackendPluginHost {
    * normal pass-through, so the first matching rule handles the request.
    */
   setProxyRules(rules: RequestRuleData[]): Promise<void>;
+  /**
+   * A step that passes the request on to the real server with Leverframe's own
+   * settings (trusted CAs, and later upstream proxies). Use it instead of building one.
+   */
+  passThroughStep(): RequestStep;
   /** Sends an event to this plugin's UI. */
   emit(event: string, data: unknown): void;
   /** Writes to Leverframe's log. */

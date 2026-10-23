@@ -33,6 +33,7 @@ import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
 import type { BackendPlugin } from '../plugin-api/backend';
 import { mkdir } from 'node:fs/promises';
+import * as mockttp from 'mockttp';
 import type { RequestRuleData } from 'mockttp';
 import { WebSocketStore } from './websocket-store';
 
@@ -333,6 +334,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           pluginRules.set(plugin.name, rules);
           await proxy.refreshRules();
         },
+        passThroughStep: () =>
+          new mockttp.requestSteps.PassThroughStep({
+            additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })),
+          }),
         emit: (event, data) => broadcast({ type: 'plugin', plugin: plugin.name, event, data }),
         log: (message) => console.log(`[${plugin.name}] ${message}`),
       });
