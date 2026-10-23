@@ -50,6 +50,7 @@ body,
 }
 
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -676,4 +677,67 @@ input.search.small {
 .ws-list .muted {
   padding: 8px;
   margin: 0;
+}
+
+button.help-button {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  width: 22px;
+  height: 22px;
+  font-size: 12px;
+  padding: 0;
+}
+
+.filter-notes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
+.filter-notes .error {
+  color: var(--error);
+}
+
+.filter-help-anchor {
+  position: relative;
+  height: 0;
+}
+
+.filter-help {
+  position: absolute;
+  top: 4px;
+  left: 12px;
+  z-index: 10;
+  width: min(460px, calc(100vw - 24px));
+  padding: 12px 14px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+}
+
+.filter-help-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.filter-help p {
+  margin: 6px 0;
+}
+
+.filter-help ul {
+  list-style: none;
+  padding: 0;
+  margin: 6px 0;
+  display: grid;
+  gap: 2px;
+}
+
+.filter-help code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 12px;
 }
