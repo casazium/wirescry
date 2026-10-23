@@ -1,6 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
-import { matchesFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
+import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
 import { DetailPane } from './DetailPane';
+import { FilterHelp } from './FilterHelp';
 import { SetupPage } from './SetupPage';
 import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
@@ -17,10 +18,9 @@ export function App(): React.JSX.Element {
 
   // Typing stays responsive while a large list is re-filtered.
   const deferredSearch = useDeferredValue(search);
-  const rows = useMemo(
-    () => exchanges.filter((e) => matchesFilter(e, deferredSearch, quickFilter)),
-    [exchanges, deferredSearch, quickFilter],
-  );
+  const [showHelp, setShowHelp] = useState(false);
+  const compiled = useMemo(() => compileFilter(deferredSearch, quickFilter), [deferredSearch, quickFilter]);
+  const rows = useMemo(() => exchanges.filter((e) => compiled.matches(e)), [exchanges, compiled]);
   const selected = selectedId ? exchanges.find((e) => e.id === selectedId) : undefined;
 
   const browsers = status?.browsers ?? [];
@@ -132,7 +132,7 @@ export function App(): React.JSX.Element {
               ref={searchRef}
               type="search"
               className="search"
-              placeholder="Search URL, method, status…"
+              placeholder="Search, or filter: status>=400 host=api.*"
               aria-label="Search traffic"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -140,6 +140,15 @@ export function App(): React.JSX.Element {
                 if (e.key === 'Escape') setSearch('');
               }}
             />
+            <button
+              type="button"
+              className="icon help-button"
+              aria-label="Search syntax"
+              aria-expanded={showHelp}
+              onClick={() => setShowHelp((v) => !v)}
+            >
+              ?
+            </button>
             <div className="chips" role="radiogroup" aria-label="Quick filter">
               {QUICK_FILTERS.map((f) => (
                 <button
@@ -181,6 +190,33 @@ export function App(): React.JSX.Element {
               Clear
             </button>
           </div>
+          {(compiled.errors.length > 0 || compiled.hints.length > 0) && (
+            <div className="filter-notes" role="status">
+              {compiled.errors.map((e) => (
+                <span key={e} className="error">
+                  {e}
+                </span>
+              ))}
+              {compiled.hints.map((h) => (
+                <span key={h} className="muted">
+                  {h}
+                </span>
+              ))}
+            </div>
+          )}
+          {showHelp && (
+            // Zero-height anchor, so the popup opens just below the toolbar and any notes.
+            <div className="filter-help-anchor">
+              <FilterHelp
+                onPick={(query) => {
+                  setSearch(query);
+                  setShowHelp(false);
+                  searchRef.current?.focus();
+                }}
+                onClose={() => setShowHelp(false)}
+              />
+            </div>
+          )}
         </>
       )}
 
