@@ -11,10 +11,18 @@ export interface PluginRule extends Pick<RequestRuleData, 'matchers' | 'steps'> 
   label: string;
 }
 
-/** Changes a plugin's pass-through step may make. */
+/**
+ * Changes a plugin's pass-through step may make, as Mockttp's PassThroughStep options
+ * of the same names. Use either the transforms or the callbacks, not both.
+ *
+ * `beforeRequest` only sees request bodies up to maxBufferedRequestBody; a longer one
+ * reads as empty, so don't replace or re-measure it (keep Content-Length as sent).
+ * `beforeResponse` makes Mockttp hold the whole response in memory, with no size limit,
+ * so only use it for responses a user asked to stop.
+ */
 export type PassThroughTransforms = Pick<
   requestSteps.PassThroughStepOptions,
-  'transformRequest' | 'transformResponse'
+  'transformRequest' | 'transformResponse' | 'beforeRequest' | 'beforeResponse'
 >;
 
 export interface BackendPluginHost {
