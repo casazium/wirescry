@@ -113,8 +113,14 @@ Everything that changes traffic, automates hard setup or explains APIs is Pro.
 - **Stack:** Electron, TypeScript and React, with Mockttp as the proxy engine.
 - **Pro:** Android automatic setup, the Docker interceptor and the request composer.
 - **Order:** the Java agent comes in Stage 3, after the terminal interceptor. Java has about 23M developers, a similar number to Python's 24M (SlashData, Q3 2025).
+- **Licensing (October 2026): open core.**
+  - The free app is open source under AGPL-3.0. Bob owns all of its copyright, so it contains no AGPL code from anyone else (including HTTP Toolkit), and outside contributions need a contributor licence agreement (CLA).
+  - Pro features live in a separate private module under a commercial licence. The released app includes both, with Pro locked until a licence is active.
+  - Pro protection: Pro ships as compiled V8 bytecode; licences are signed by the server and checked offline with a grace period; Electron's integrity checks and code signing catch patched apps. Server-backed Pro features, such as team sharing, add value that can't be cracked.
+  - Before the repo goes public: a lawyer reviews the AGPL-plus-commercial builds and the CLA wording.
 
 ## Open questions
-- Open source or closed? This decides whether AGPL-licensed HTTP Toolkit code can be reused, and how easily the Pro checks can be removed.
+- When to make the repo public, after the lawyer's review.
+- CLA wording, and which tool collects signatures.
 - Trademark search for "Leverframe" at the USPTO, UK IPO and EUIPO, in classes 9 and 42.
 - Register leverframe.dev and getleverframe.com.
