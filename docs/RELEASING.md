@@ -86,6 +86,6 @@ Builds unsigned installers for the current platform into `release/<version>/`. T
 
 Releases are built from this repo alone, so they include only the free app. Pro (the private `wirescry-pro` repo) isn't in any release yet, and shouldn't be until these are in place:
 
-- ~~Licence checks~~: done, in Pro (signed keys checked offline; see its README). Still needed: a production signing key, and a way to sell and deliver keys.
+- ~~License checks~~: done, in Pro (signed keys checked offline; see its README). Still needed: a production signing key, and a way to sell and deliver keys.
 - Pro compiled to V8 bytecode, and Electron's fuses and integrity checks turned on.
 - The release workflow checking out `wirescry-pro` (through the `wirescry-ci` GitHub App that Pro's own CI uses) and building with `WIRESCRY_PRO_DIR` and `WIRESCRY_ALLOW_PRO_BUILD` set.

@@ -12,7 +12,7 @@ export interface UiPluginApi {
   on(event: string, listener: (data: unknown) => void): () => void;
   /**
    * Asks where to save `text` in a system dialog, then saves it. Resolves with the file
-   * name, or nothing if the user cancelled. Up to 16 MB.
+   * name, or nothing if the user canceled. Up to 16 MB.
    */
   saveFile(options: { text: string; defaultName: string; extensions: string[] }): Promise<SaveTextFileResult>;
   /** Asks the user to pick a file, then resolves with its name and text (or nothing). Up to 16 MB. */

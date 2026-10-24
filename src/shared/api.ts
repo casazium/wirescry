@@ -144,7 +144,7 @@ export interface TerminalInfo {
 
 export interface PluginStatus {
   name: string;
-  /** False when the plugin is installed but not running, e.g. Pro without a licence. */
+  /** False when the plugin is installed but not running, e.g. Pro without a license. */
   active: boolean;
   /** Why it isn't active. */
   reason?: string;
