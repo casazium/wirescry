@@ -6,11 +6,6 @@ export interface BackendStartMessage {
   dataDir: string;
   token: string;
   allowedOrigins: string[];
-  /**
-   * Whether the main process can encrypt for plugins' secure stores with the OS
-   * keychain ('os'), or not ('none': Linux without a keyring, for example).
-   */
-  secureStorage: 'os' | 'none';
   /** This Wirescry's version, and when it was built (ISO 8601), for plugins. */
   app: { version: string; releaseDate: string };
   /** Whether plugins such as Pro may run. Pro checks its own license. */
@@ -31,11 +26,15 @@ export type BackendMessage =
 /** What the main process sends the backend. */
 export type MainToBackendMessage = BackendStartMessage | CryptoReply;
 
-/** Backend to main: encrypt or decrypt with safeStorage. */
+/**
+ * Backend to main: encrypt or decrypt with safeStorage, or ask whether it can ('available',
+ * answered 'os' or 'none'). Asked only when a plugin is built in, so the free build never
+ * touches the keychain.
+ */
 export interface CryptoRequest {
   type: 'crypto';
   id: number;
-  op: 'encrypt' | 'decrypt';
+  op: 'encrypt' | 'decrypt' | 'available';
   /** Text to encrypt, or base64 to decrypt. */
   data: string;
 }

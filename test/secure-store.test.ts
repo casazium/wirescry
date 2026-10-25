@@ -52,17 +52,17 @@ describe('plugin secure store', () => {
     });
   });
 
-  it("returns nothing for a value it can't decrypt or parse", async () => {
+  it("rejects a saved value it can't decrypt or parse, rather than reporting none", async () => {
     await createSecureStore(dir, fakeEncryptor()).set({ key: 'ABC' });
     // No keychain now (or a different one).
-    expect(await createSecureStore(dir, undefined).get()).toBeUndefined();
+    await expect(createSecureStore(dir, undefined).get()).rejects.toThrow("keychain isn't available");
     const other: Encryptor = {
       ...fakeEncryptor(),
       decrypt: async () => Promise.reject(new Error('wrong key')),
     };
-    expect(await createSecureStore(dir, other).get()).toBeUndefined();
+    await expect(createSecureStore(dir, other).get()).rejects.toThrow('wrong key');
     await writeFile(path.join(dir, 'secure-store.json'), '{not json');
-    expect(await createSecureStore(dir, fakeEncryptor()).get()).toBeUndefined();
+    await expect(createSecureStore(dir, fakeEncryptor()).get()).rejects.toThrow("can't be read");
   });
 
   it('refuses values JSON cannot hold, or over 1 MB, and leaves no temp files', async () => {
@@ -86,7 +86,10 @@ describe('IPC encryptor', () => {
     const encryptor = ipcEncryptor((request) => sent.push(request));
     const a = encryptor.encrypt('hello');
     const b = encryptor.decrypt('d29ybGQ=');
-    expect(sent.map((r) => r.op)).toEqual(['encrypt', 'decrypt']);
+    const c = encryptor.available();
+    expect(sent.map((r) => r.op)).toEqual(['encrypt', 'decrypt', 'available']);
+    encryptor.receive({ type: 'crypto-result', id: sent[2]!.id, ok: true, data: 'os' });
+    await expect(c).resolves.toBe(true);
     const reply = (r: CryptoReply): void => encryptor.receive(r);
     reply({ type: 'crypto-result', id: sent[1]!.id, ok: false, error: 'locked' });
     reply({ type: 'crypto-result', id: sent[0]!.id, ok: true, data: 'aGVsbG8=' });

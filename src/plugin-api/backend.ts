@@ -43,7 +43,11 @@ export interface SecureValue {
 export interface PluginSecureStore {
   /** Whether set() encrypts on this computer. */
   readonly encrypted: boolean;
-  /** The saved value, or undefined if there's none or it can't be read or decrypted. */
+  /**
+   * The saved value, or undefined if there's none. Rejects if there is one but it can't be
+   * read or decrypted (a reset or locked keychain, for example): the plugin decides what
+   * that means, rather than mistaking it for nothing saved.
+   */
   get(): Promise<SecureValue | undefined>;
   set(value: unknown): Promise<void>;
   clear(): Promise<void>;

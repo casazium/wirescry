@@ -32,7 +32,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private stopping = false;
   private restarts: number[] = [];
   private current: BackendState = { state: 'starting' };
-  private storage: SecureStorage | undefined;
+  /** The keychain, worked out on the first request after each start (null: none). */
+  private storage: SecureStorage | null | undefined;
   /** Plugins the backend loaded, as of its last start. */
   plugins: PluginStatus[] = [];
 
@@ -59,7 +60,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
 
   start(): void {
     this.setState({ state: 'starting' });
-    this.storage = this.options.secureStorage?.();
+    this.storage = undefined;
     const child = utilityProcess.fork(path.join(__dirname, 'backend.js'), [], {
       serviceName: 'Wirescry Backend',
       stdio: 'pipe',
@@ -121,7 +122,6 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       token: this.token,
       allowedOrigins: this.options.allowedOrigins,
       pluginsEnabled: this.options.pluginsEnabled,
-      secureStorage: this.storage ? 'os' : 'none',
       app: this.options.app,
     };
     child.postMessage(start);
@@ -134,8 +134,10 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
 
   private crypto(request: CryptoRequest): CryptoReply {
     const { id, op, data } = request;
-    const storage = this.storage;
     try {
+      this.storage ??= this.options.secureStorage?.() ?? null;
+      const storage = this.storage;
+      if (op === 'available') return { type: 'crypto-result', id, ok: true, data: storage ? 'os' : 'none' };
       if (!storage) throw new Error('No secure storage on this computer');
       if (typeof data !== 'string' || data.length > 4 * 1024 * 1024) throw new Error('Bad data');
       const result =

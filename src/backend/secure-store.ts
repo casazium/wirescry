@@ -49,19 +49,21 @@ export function createSecureStore(
         try {
           saved = JSON.parse(await readFile(file, 'utf8')) as Saved;
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT')
-            log(`Couldn't read ${FILE}: ${(error as Error).message}`);
-          return undefined;
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+          log(`Couldn't read ${FILE}: ${(error as Error).message}`);
+          throw new Error(`The saved value can't be read: ${(error as Error).message}`);
         }
-        if (saved?.v !== 1) return undefined;
+        if (saved?.v !== 1) throw new Error('The saved value is in an unknown format.');
         if (saved.encrypted) {
-          if (!encryptor || typeof saved.data !== 'string') return undefined;
+          if (!encryptor || typeof saved.data !== 'string') {
+            throw new Error("The saved value is encrypted, and this computer's keychain isn't available.");
+          }
           try {
             return { value: JSON.parse(await encryptor.decrypt(saved.data)), encrypted: true };
           } catch (error) {
-            // E.g. the keychain was reset, or the file was copied from another computer.
+            // E.g. the keychain was reset or locked, or the file came from another computer.
             log(`Couldn't decrypt ${FILE}: ${(error as Error).message}`);
-            return undefined;
+            throw new Error(`The saved value can't be decrypted: ${(error as Error).message}`);
           }
         }
         return { value: saved.value, encrypted: false };
@@ -95,17 +97,19 @@ export function createSecureStore(
  * `send` posts a request; call `receive` with each reply.
  */
 export function ipcEncryptor(send: (request: CryptoRequest) => void): Encryptor & {
+  /** Whether the main process can encrypt with the OS keychain. Asked once, when needed. */
+  available(): Promise<boolean>;
   receive(reply: CryptoReply): void;
 } {
   let next = 0;
   const pending = new Map<number, { resolve(data: string): void; reject(error: Error): void }>();
-  const call = (op: 'encrypt' | 'decrypt', data: string): Promise<string> =>
+  const call = (op: CryptoRequest['op'], data: string): Promise<string> =>
     new Promise((resolve, reject) => {
       const id = ++next;
       const timer = setTimeout(() => {
         pending.delete(id);
         reject(new Error(`${op} timed out`));
-      }, 10_000);
+      }, 60_000);
       pending.set(id, {
         resolve: (result) => {
           clearTimeout(timer);
@@ -119,6 +123,7 @@ export function ipcEncryptor(send: (request: CryptoRequest) => void): Encryptor 
       send({ type: 'crypto', id, op, data });
     });
   return {
+    available: () => call('available', '').then((answer) => answer === 'os'),
     encrypt: (text) => call('encrypt', text),
     decrypt: (data) => call('decrypt', data),
     receive(reply) {

@@ -32,7 +32,9 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
       allowedOrigins: data.allowedOrigins,
       plugins: backendPlugins,
       pluginsEnabled: data.pluginsEnabled,
-      encryptor: data.secureStorage === 'os' ? encryptor : undefined,
+      // Only asked with a plugin built in, so the free build never touches the keychain.
+      encryptor:
+        backendPlugins.length > 0 && (await encryptor.available().catch(() => false)) ? encryptor : undefined,
       app: data.app,
     });
     post({

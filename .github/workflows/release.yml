@@ -170,8 +170,14 @@ jobs:
         shell: bash
         run: |
           # The build's release date, which Pro compares with a lapsed subscription's end
-          # (its perpetual fallback). The commit's date, so a rebuild gets the same one.
-          export WIRESCRY_RELEASE_DATE="$(git log -1 --format=%cI)"
+          # (its perpetual fallback): the later of the app's and Pro's commit dates, so a
+          # rebuild gets the same one, and a Pro-only change still counts as new.
+          WIRESCRY_RELEASE_DATE="$(git log -1 --format=%cI)"
+          if [ -d wirescry-pro ]; then
+            WIRESCRY_RELEASE_DATE="$(node -e 'console.log(new Date(Math.max(...process.argv.slice(1).map(Date.parse))).toISOString())' "$WIRESCRY_RELEASE_DATE" "$(git -C wirescry-pro log -1 --format=%cI)")"
+          fi
+          export WIRESCRY_RELEASE_DATE
+          echo "Release date: $WIRESCRY_RELEASE_DATE"
           if [ -d wirescry-pro ]; then
             export WIRESCRY_PRO_DIR="$PWD/wirescry-pro"
             echo "Building with Pro at $(git -C wirescry-pro rev-parse HEAD)"
