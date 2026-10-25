@@ -23,6 +23,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -194,6 +195,9 @@ for (const dir of [dest, electronDest]) {
   mkdirSync(dir, { recursive: true });
 }
 writeFileSync(join(dest, 'THIRD_PARTY_NOTICES.txt'), text);
+// Electron downloads its binary (and these files with it) the first time its path is
+// asked for, not when it's installed, so a fresh `npm ci` may not have them yet.
+createRequire(join(root, 'package.json'))('electron');
 const electronDist = join(root, 'node_modules/electron/dist');
 copyFileSync(join(electronDist, 'LICENSE'), join(electronDest, 'LICENSE.electron.txt'));
 copyFileSync(join(electronDist, 'LICENSES.chromium.html'), join(electronDest, 'LICENSES.chromium.html'));
