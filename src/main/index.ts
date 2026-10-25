@@ -11,6 +11,15 @@ import { buildMenu } from './menu';
 import { openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
 
+/**
+ * `--wirescry-self-test=<file>`: start the backend without a window, write what loaded
+ * to <file> as JSON, and quit. The release workflow runs packaged builds this way to
+ * check that Pro's bytecode loads on each platform. Use a throwaway --user-data-dir.
+ */
+const selfTestFile = app.commandLine.getSwitchValue('wirescry-self-test');
+// A self-test's log goes in its throwaway data folder, not the user's real log.
+if (selfTestFile) app.setAppLogsPath(path.join(app.getPath('userData'), 'logs'));
+
 // Errors and warnings from every part of the app go to one local file, for support and debugging.
 const logger = new FileLogger(app.getPath('logs'));
 for (const [method, level] of [
@@ -52,13 +61,6 @@ const CSP = [
 ].join('; ');
 
 registerAppSchemeAsPrivileged();
-
-/**
- * `--wirescry-self-test=<file>`: start the backend without a window, write what loaded
- * to <file> as JSON, and quit. The release workflow runs packaged builds this way to
- * check that Pro's bytecode loads on each platform. Use a throwaway --user-data-dir.
- */
-const selfTestFile = app.commandLine.getSwitchValue('wirescry-self-test');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -148,6 +150,8 @@ function runSelfTest(file: string): void {
       await writeFile(file, JSON.stringify({ version: app.getVersion(), arch: process.arch, ...result }));
     } finally {
       backend.stop();
+      // app.exit skips will-quit, where the log is normally closed.
+      logger.close();
       app.exit(code);
     }
   };

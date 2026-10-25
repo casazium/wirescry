@@ -1,4 +1,5 @@
 /** Messages between the Electron main process and the backend utility process. */
+import type { PluginStatus } from './api';
 
 export interface BackendStartMessage {
   type: 'start';
@@ -14,8 +15,8 @@ export type BackendMessage =
       type: 'ready';
       apiPort: number;
       proxyPort: number;
-      /** Names of the plugins built into this copy and loaded, such as "pro". */
-      plugins: string[];
+      /** The plugins built into this copy, such as Pro, and whether each started. */
+      plugins: PluginStatus[];
     }
   | { type: 'error'; message: string };
 

@@ -91,6 +91,8 @@ async function prepare(code, filename) {
     comments: false,
     sourceType: 'script',
     plugins: [
+      require.resolve('@babel/plugin-transform-class-static-block'),
+      require.resolve('@babel/plugin-transform-private-methods'),
       require.resolve('@babel/plugin-transform-class-properties'),
       require.resolve('@babel/plugin-transform-arrow-functions'),
     ],

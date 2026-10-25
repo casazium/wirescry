@@ -65,7 +65,7 @@ jobs:
 
       - name: Get a read-only token for Pro
         id: pro-token
-        if: env.PRO_SHA != ''
+        if: env.HAS_PRO_ACCESS == 'true'
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.CI_APP_ID }}
@@ -75,11 +75,11 @@ jobs:
           permission-contents: read
 
       - name: Check out Pro
-        if: env.PRO_SHA != ''
+        if: env.HAS_PRO_ACCESS == 'true'
         uses: actions/checkout@v7
         with:
           repository: casazium/wirescry-pro
-          ref: ${{ env.PRO_SHA }}
+          ref: ${{ inputs.pro_ref || 'main' }}
           path: wirescry-pro
           token: ${{ steps.pro-token.outputs.token }}
           persist-credentials: false

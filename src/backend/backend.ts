@@ -6,6 +6,7 @@ import type {
   ExchangeDetail,
   FormatLanguage,
   FormattedBody,
+  PluginStatus,
   ProxyStatus,
   ServerMessage,
   WebSocketMessages,
@@ -62,6 +63,8 @@ export interface RunningBackend {
   apiPort: number;
   readonly proxyPort: number;
   caCertPath: string;
+  /** Each plugin's state. Plugins have finished starting by the time startBackend resolves. */
+  pluginStatuses(): PluginStatus[];
   stop(): Promise<void>;
 }
 
@@ -343,6 +346,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       return proxy.port;
     },
     caCertPath: ca.certPath,
+    pluginStatuses: () => pluginHost.statuses(),
     async stop() {
       await pluginHost.stopAll();
       updates.reset();

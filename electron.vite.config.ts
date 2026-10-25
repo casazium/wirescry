@@ -32,6 +32,21 @@ const v8FlagsKey = idKey(realpathSync(v8Flags));
 const isProModule = (id: string): boolean => proRoot !== undefined && idKey(id).startsWith(proRoot);
 
 /**
+ * A second opinion for checkProChunk: resolves the module's file on disk, so a Pro file
+ * whose id is spelled differently (another symlink, a Windows short name) still counts.
+ */
+const nativeProRoot = proDir ? idKey(realpathSync.native(proDir)) + '/' : undefined;
+const isProFile = (id: string): boolean => {
+  if (!nativeProRoot) return false;
+  const file = id.replace(/^\0/, '').split('?')[0] ?? '';
+  try {
+    return idKey(realpathSync.native(file)).startsWith(nativeProRoot);
+  } catch {
+    return false; // Virtual modules and the like aren't files.
+  }
+};
+
+/**
  * Fails the build if any of Pro's backend code would ship outside chunks/pro-*.js,
  * which scripts/pro-bytecode/compile.mjs turns into bytecode. With Pro, also leaves
  * out/main/.pro-build, so electron-builder.cjs knows Pro must be there as bytecode.
@@ -45,7 +60,7 @@ function checkProChunk(): Plugin {
       let found = false;
       for (const chunk of Object.values(bundle)) {
         if (chunk.type !== 'chunk') continue;
-        const pro = Object.keys(chunk.modules).filter(isProModule);
+        const pro = Object.keys(chunk.modules).filter((id) => isProModule(id) || isProFile(id));
         if (chunk.name === 'pro') found = true;
         else if (pro.length > 0) {
           this.error(`Pro code would ship readable in ${chunk.fileName}: ${pro.slice(0, 3).join(', ')}`);

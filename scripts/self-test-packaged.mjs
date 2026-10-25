@@ -2,7 +2,7 @@
 /**
  * Starts each packaged app in release/<version>/ with --wirescry-self-test, which runs
  * the backend without a window and reports what loaded, and fails unless every one
- * started. For a Pro build (out/main/.pro-build), Pro must have loaded too: the loader
+ * started. For a Pro build (out/main/.pro-build), Pro must have loaded and started too: the loader
  * otherwise falls back to the free app quietly, which would hide broken bytecode.
  *
  *   node scripts/self-test-packaged.mjs     (on Linux: xvfb-run -a node …)
@@ -53,14 +53,27 @@ function run({ name, exe }) {
       } catch {
         result = undefined;
       }
-      rmSync(work, { recursive: true, force: true });
       let problem;
       if (!result) problem = `exited (code ${code}) without a result`;
       else if (result.error) problem = result.error;
-      else if (expectPro && !result.plugins?.includes('pro')) problem = 'Pro did not load; see the log above';
+      else if (expectPro) {
+        // Unlicensed is fine: Pro still starts, and locks its features itself.
+        const pro = result.plugins?.find((p) => p.name === 'pro');
+        if (!pro) problem = 'Pro did not load; see the log';
+        else if (!pro.active) problem = `Pro did not start: ${pro.reason}`;
+      }
       console.log(
         `${name}: ${problem ? `FAILED: ${problem}` : 'ok'} ${result ? JSON.stringify(result) : ''}`,
       );
+      // Windows doesn't show a GUI app's output, so print the end of its log on failure.
+      if (problem) {
+        const logs = join(work, 'data/logs');
+        for (const f of existsSync(logs) ? readdirSync(logs) : []) {
+          console.log(`--- ${f} (last 40 lines) ---`);
+          console.log(readFileSync(join(logs, f), 'utf8').split('\n').slice(-40).join('\n'));
+        }
+      }
+      rmSync(work, { recursive: true, force: true });
       done(!problem);
     });
   });
