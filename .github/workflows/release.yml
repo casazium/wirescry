@@ -5,7 +5,8 @@ name: Release
 # - Pushing a tag like v0.2.0 builds, signs (when the secrets exist) and uploads to a
 #   draft release on casazium/wirescry-releases. Publish the draft on GitHub to ship it.
 # - Pull requests that touch packaging build Linux only, without publishing, and keep
-#   the installer as a workflow artifact for three days. Manual runs build all three.
+#   the installer as a workflow artifact for three days. Manual runs build all three,
+#   and keep theirs for one day.
 #
 # Signing is skipped, with a warning, for any platform whose secrets aren't set yet.
 # See docs/RELEASING.md for the secrets and variables.
@@ -274,7 +275,22 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: wirescry-${{ runner.os }}
-          retention-days: 3
+          # Three days for a pull request, one for anything else. A packaging
+          # PR builds Linux only (~225MB) and a reviewer may not get to it
+          # until Monday, so three days earns its keep there. Everything else
+          # builds all three platforms - about 930MB - and does not need
+          # them: a workflow_dispatch was triggered by someone who is looking
+          # now, and a tag push has already published the installers to
+          # casazium/wirescry-releases through electron-builder, so the
+          # artifact is a redundant second copy.
+          #
+          # Measured on 2026-10-25: one dispatch run on main held 930MB for
+          # three days, which was more Actions storage than every other
+          # artifact in the organisation combined and pushed the account to
+          # 107% of its 0.5GB included allowance. Storage is billed as a
+          # time-integrated average, so the cost is size x days - which is
+          # why this knob matters more than it looks.
+          retention-days: ${{ github.event_name == 'pull_request' && 3 || 1 }}
           if-no-files-found: error
           path: |
             release/*/*.dmg
