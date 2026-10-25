@@ -3,7 +3,19 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { utilityProcess, type UtilityProcess } from 'electron';
 import type { PluginStatus } from '../shared/api';
-import type { BackendMessage, BackendStartMessage, BackendState } from '../shared/ipc';
+import type {
+  BackendMessage,
+  BackendStartMessage,
+  BackendState,
+  CryptoReply,
+  CryptoRequest,
+} from '../shared/ipc';
+
+/** Encrypts text for plugins with the OS keychain: text in, base64 out, and back. */
+export interface SecureStorage {
+  encrypt(text: string): string;
+  decrypt(base64: string): string;
+}
 import { lineSplitter, type FileLogger } from './logger';
 
 const MAX_RESTARTS = 5;
@@ -20,6 +32,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private stopping = false;
   private restarts: number[] = [];
   private current: BackendState = { state: 'starting' };
+  private storage: SecureStorage | undefined;
   /** Plugins the backend loaded, as of its last start. */
   plugins: PluginStatus[] = [];
 
@@ -29,6 +42,12 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       allowedOrigins: string[];
       pluginsEnabled: boolean;
       logger?: FileLogger;
+      /**
+       * Encryption for plugins' secure stores (safeStorage), or undefined if the OS has
+       * no keychain to use. Called at each start, since safeStorage needs the app ready.
+       */
+      secureStorage?: () => SecureStorage | undefined;
+      app: { version: string; releaseDate: string };
     },
   ) {
     super();
@@ -40,6 +59,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
 
   start(): void {
     this.setState({ state: 'starting' });
+    this.storage = this.options.secureStorage?.();
     const child = utilityProcess.fork(path.join(__dirname, 'backend.js'), [], {
       serviceName: 'Wirescry Backend',
       stdio: 'pipe',
@@ -73,6 +93,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
           `[wirescry] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}, ` +
             `plugins: ${message.plugins.map((p) => `${p.name} (${p.active ? 'running' : p.reason})`).join(', ') || 'none'}`,
         );
+      } else if (message.type === 'crypto') {
+        child.postMessage(this.crypto(message));
       } else if (message.type === 'error') {
         console.error('[wirescry] backend failed to start:', message.message);
         this.setState({ state: 'failed', message: message.message });
@@ -99,6 +121,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       token: this.token,
       allowedOrigins: this.options.allowedOrigins,
       pluginsEnabled: this.options.pluginsEnabled,
+      secureStorage: this.storage ? 'os' : 'none',
+      app: this.options.app,
     };
     child.postMessage(start);
   }
@@ -106,6 +130,21 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   stop(): void {
     this.stopping = true;
     this.child?.kill();
+  }
+
+  private crypto(request: CryptoRequest): CryptoReply {
+    const { id, op, data } = request;
+    const storage = this.storage;
+    try {
+      if (!storage) throw new Error('No secure storage on this computer');
+      if (typeof data !== 'string' || data.length > 4 * 1024 * 1024) throw new Error('Bad data');
+      const result =
+        op === 'encrypt' ? storage.encrypt(data) : op === 'decrypt' ? storage.decrypt(data) : undefined;
+      if (result === undefined) throw new Error('Unknown operation');
+      return { type: 'crypto-result', id, ok: true, data: result };
+    } catch (error) {
+      return { type: 'crypto-result', id, ok: false, error: (error as Error).message };
+    }
   }
 
   private setState(state: BackendState): void {

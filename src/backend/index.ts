@@ -4,17 +4,27 @@
  */
 // Must stay the first import: plugins may compile linear-time regexes as they load.
 import './v8-flags';
-import type { BackendMessage, BackendStartMessage } from '../shared/ipc';
+import type { BackendMessage, MainToBackendMessage } from '../shared/ipc';
 import { backendPlugins } from '@wirescry/pro/backend';
 import { startBackend, type RunningBackend } from './backend';
+import { ipcEncryptor } from './secure-store';
 
 const parentPort = process.parentPort;
 let backend: RunningBackend | undefined;
+let starting = false;
 
 const post = (message: BackendMessage): void => parentPort.postMessage(message);
 
-parentPort.on('message', async ({ data }: { data: BackendStartMessage }) => {
-  if (data?.type !== 'start' || backend) return;
+// Plugins' secure stores are encrypted by the main process, which has safeStorage.
+const encryptor = ipcEncryptor(post);
+
+parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
+  if (data?.type === 'crypto-result') {
+    encryptor.receive(data);
+    return;
+  }
+  if (data?.type !== 'start' || starting) return;
+  starting = true;
   try {
     backend = await startBackend({
       dataDir: data.dataDir,
@@ -22,6 +32,8 @@ parentPort.on('message', async ({ data }: { data: BackendStartMessage }) => {
       allowedOrigins: data.allowedOrigins,
       plugins: backendPlugins,
       pluginsEnabled: data.pluginsEnabled,
+      encryptor: data.secureStorage === 'os' ? encryptor : undefined,
+      app: data.app,
     });
     post({
       type: 'ready',

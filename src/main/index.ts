@@ -2,10 +2,10 @@ import { copyFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { format } from 'node:util';
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session, shell } from 'electron';
 import { IPC, type BackendState, type ExportResult } from '../shared/ipc';
 import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './app-protocol';
-import { BackendSupervisor } from './backend-supervisor';
+import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
 import { openTextFile, saveTextFile } from './text-files';
@@ -67,8 +67,24 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 let mainWindow: BrowserWindow | undefined;
+/**
+ * Plugins' secure stores are encrypted with the OS keychain, through safeStorage. Not on
+ * Linux without a keyring, where safeStorage falls back to a fixed, built-in password.
+ */
+function secureStorage(): SecureStorage | undefined {
+  if (!safeStorage.isEncryptionAvailable()) return undefined;
+  if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')
+    return undefined;
+  return {
+    encrypt: (text) => safeStorage.encryptString(text).toString('base64'),
+    decrypt: (base64) => safeStorage.decryptString(Buffer.from(base64, 'base64')),
+  };
+}
+
 const backend = new BackendSupervisor({
   dataDir: app.getPath('userData'),
+  app: { version: app.getVersion(), releaseDate: import.meta.env.WIRESCRY_RELEASE_DATE },
+  secureStorage,
   allowedOrigins: [uiOrigin],
   // Plugins built into this copy (such as Pro) always start. Pro checks its own license,
   // in its own code: this file is open source, so a check here could simply be removed.

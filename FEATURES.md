@@ -70,7 +70,7 @@ Wirescry is a desktop tool for seeing, debugging and rewriting HTTP traffic, in 
 - Accounts and license backend (PocketBase or Node), with sign-in and license checks that keep working offline for a while.
 - Payments (Paddle or Stripe): checkout, receipts and subscription status.
 - Pro features locked in the app until a license is active.
-  - **Status (October 2026):** built in Pro. Ed25519-signed license keys, checked offline, with a 14-day grace period after expiry and a deterrent against turning the clock back; an offline list of withdrawn licenses; a License tab and lock screens. Production signing key in place, and release builds ship Pro's backend as V8 bytecode with Electron's integrity checks on. Still to do: the license server and payments, online renewal and revocation, and seat or machine limits.
+  - **Status (October 2026):** built in Pro, on the Casazium License Server: keys bought through Stripe, activated on up to 3 computers, checked daily and when Pro starts, working offline for 14 days, with a perpetual fallback for versions released while a subscription was paid up, and a License tab to activate, check and move computers. Release builds ship Pro's backend as V8 bytecode with Electron's integrity checks on. Still to do: the live server and Stripe setup, the purchase page, monthly plans and team seats.
 - Website, docs and download page.
 
 ## Stage 3: Pro v1.5 · ~6–7 months total

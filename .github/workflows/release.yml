@@ -169,6 +169,9 @@ jobs:
       - name: Build the app
         shell: bash
         run: |
+          # The build's release date, which Pro compares with a lapsed subscription's end
+          # (its perpetual fallback). The commit's date, so a rebuild gets the same one.
+          export WIRESCRY_RELEASE_DATE="$(git log -1 --format=%cI)"
           if [ -d wirescry-pro ]; then
             export WIRESCRY_PRO_DIR="$PWD/wirescry-pro"
             echo "Building with Pro at $(git -C wirescry-pro rev-parse HEAD)"

@@ -12,6 +12,7 @@ import type {
   WebSocketMessages,
 } from '../shared/api';
 import { startApiServer } from './api';
+import type { Encryptor } from './secure-store';
 import { headerValue, toBodyContent } from './body-content';
 import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
@@ -57,6 +58,10 @@ export interface BackendOptions {
   pluginsEnabled?: boolean;
   /** How long a plugin may take to start. */
   pluginStartTimeoutMs?: number;
+  /** Encrypts plugins' secure stores; leave out where the OS has no keychain to use. */
+  encryptor?: Encryptor;
+  /** This Wirescry's version and build date, for plugins. Defaults suit tests. */
+  app?: { version: string; releaseDate: string };
 }
 
 export interface RunningBackend {
@@ -127,6 +132,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     enabled: options.pluginsEnabled ?? false,
     disabledReason: 'Plugins are turned off.',
     dataDir,
+    encryptor: options.encryptor,
+    app: options.app ?? { version: '0.0.0-test', releaseDate: new Date().toISOString() },
     refreshRules: () => proxy.refreshRules(),
     passThroughStep: (transforms) =>
       new mockttp.requestSteps.PassThroughStep({
