@@ -5,6 +5,7 @@ import type { HandledBy, PluginStatus } from '../shared/api';
 import type { BackendPlugin, PassThroughTransforms, PluginRule } from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
 import { MOCKTTP_BUFFER_LIMIT } from './proxy';
+import { createSecureStore, type Encryptor } from './secure-store';
 
 const NAME = /^[a-z0-9-]{1,32}$/;
 /** Mockttp steps that end a request without a response. */
@@ -17,6 +18,10 @@ export interface PluginHostOptions {
   disabledReason: string;
   /** Wirescry's data folder; each plugin gets `plugins/<name>` inside it. */
   dataDir: string;
+  /** Encrypts plugins' secure stores; undefined where the OS has no keychain to use. */
+  encryptor?: Encryptor;
+  /** This Wirescry's version and build date, passed to plugins. */
+  app: { version: string; releaseDate: string };
   /** Reapplies the proxy's rules, e.g. after a plugin changes its own. */
   refreshRules(): Promise<void>;
   passThroughStep(transforms?: PassThroughTransforms): mockttp.RequestStep;
@@ -86,18 +91,21 @@ export class PluginHost {
       try {
         const dataDir = path.join(this.options.dataDir, 'plugins', plugin.name);
         await mkdir(dataDir, { recursive: true });
+        const log = (message: string): void =>
+          // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+          console.log(`[${plugin.name}] ${String(message).replace(/[\x00-\x1f\x7f]/g, ' ')}`);
         starting = (async () =>
           plugin.start({
             dataDir,
+            app: { ...this.options.app },
+            secureStore: createSecureStore(dataDir, this.options.encryptor, log),
             setProxyRules: (rules) => this.setRules(plugin, rules),
             passThroughStep: (transforms) => this.options.passThroughStep(transforms),
             maxBufferedRequestBody: MOCKTTP_BUFFER_LIMIT,
             emit: (event, data) => {
               if (this.isRunning(plugin)) this.options.emit(plugin.name, event, data);
             },
-            log: (message) =>
-              // eslint-disable-next-line no-control-regex -- stripping control characters is the point
-              console.log(`[${plugin.name}] ${String(message).replace(/[\x00-\x1f\x7f]/g, ' ')}`),
+            log,
           }))();
         await Promise.race([
           starting,

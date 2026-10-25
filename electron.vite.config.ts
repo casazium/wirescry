@@ -96,17 +96,26 @@ function recordBundledPackages(): Plugin {
   };
 }
 
+const releaseDate = process.env.WIRESCRY_RELEASE_DATE ?? new Date().toISOString();
+if (Number.isNaN(Date.parse(releaseDate)))
+  throw new Error(`WIRESCRY_RELEASE_DATE isn't a date: ${releaseDate}`);
+
 export default defineConfig(() => {
   return {
     main: {
       plugins: [recordBundledPackages(), checkProChunk()],
+      define: {
+        // Plugins compare it with a license's paid-up date (Pro's perpetual fallback).
+        // Releases set WIRESCRY_RELEASE_DATE; other builds use the time of the build.
+        'import.meta.env.WIRESCRY_RELEASE_DATE': JSON.stringify(releaseDate),
+      },
       resolve: {
         alias: {
           '@wirescry/pro/backend': proBackend,
           '@wirescry/plugin-api': pluginApi,
         },
         // Pro's files sit outside this repo; make sure they use this app's Mockttp.
-        dedupe: ['mockttp'],
+        dedupe: ['mockttp', '@casazium/license-sdk'],
       },
       build: {
         rolldownOptions: {

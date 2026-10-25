@@ -25,9 +25,41 @@ export type PassThroughTransforms = Pick<
   'transformRequest' | 'transformResponse' | 'beforeRequest' | 'beforeResponse'
 >;
 
+/** A value read from a plugin's secure store. */
+export interface SecureValue {
+  value: unknown;
+  /**
+   * Whether it was stored encrypted with the OS keychain. A plain value could have been
+   * written by anyone who can edit the file, so don't trust it for anything that matters.
+   */
+  encrypted: boolean;
+}
+
+/**
+ * One small JSON value per plugin (up to 1 MB), encrypted with the OS keychain where
+ * there is one, so it can't be edited on disk. Where there isn't (some Linux setups),
+ * it's stored as plain JSON and `encrypted` is false.
+ */
+export interface PluginSecureStore {
+  /** Whether set() encrypts on this computer. */
+  readonly encrypted: boolean;
+  /**
+   * The saved value, or undefined if there's none. Rejects if there is one but it can't be
+   * read or decrypted (a reset or locked keychain, for example): the plugin decides what
+   * that means, rather than mistaking it for nothing saved.
+   */
+  get(): Promise<SecureValue | undefined>;
+  set(value: unknown): Promise<void>;
+  clear(): Promise<void>;
+}
+
 export interface BackendPluginHost {
   /** A folder for this plugin's own files, inside Wirescry's data folder. */
   dataDir: string;
+  /** This Wirescry: its version, and when this build was made (ISO 8601). */
+  app: { version: string; releaseDate: string };
+  /** Encrypted storage for this plugin. */
+  secureStore: PluginSecureStore;
   /**
    * Replaces this plugin's proxy rules. They run in order, after Wirescry's own setup
    * page and before its normal pass-through, so the first matching rule handles the request.

@@ -95,7 +95,7 @@ Signed releases, notarization and auto-update are handled by the release workflo
 
 Pro features live in a separate, private repo (`wirescry-pro`) and plug into the app through `src/plugin-api`:
 
-- **Backend plugins** run in the backend process. They get a data folder, can add proxy rules that run after Wirescry's setup page and before normal pass-through, handle calls from their UI, and send it events. Their rules can use Wirescry's own pass-through step, optionally with Mockttp's request and response transforms (to forward or rewrite) or its `beforeRequest` and `beforeResponse` callbacks (to pause, for breakpoints).
+- **Backend plugins** run in the backend process. They get a data folder, a small secure store (one JSON value, encrypted with the OS keychain through the main process's `safeStorage`, or plain where there's no keychain, which the store reports), the app's version and build date, can add proxy rules that run after Wirescry's setup page and before normal pass-through, handle calls from their UI, and send it events. Their rules can use Wirescry's own pass-through step, optionally with Mockttp's request and response transforms (to forward or rewrite) or its `beforeRequest` and `beforeResponse` callbacks (to pause, for breakpoints).
 - **UI plugins** add views as toolbar tabs. They can also save and open files, always through a system dialog where the user picks the file (up to 16 MB), for example to export and import rules, and put a short badge on their tabs (such as how many requests are paused).
 
 The build uses the empty stubs in `src/pro-stub` unless `WIRESCRY_PRO_DIR` points at a `wirescry-pro` checkout, usually next to this one:

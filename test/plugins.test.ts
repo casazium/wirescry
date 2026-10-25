@@ -166,6 +166,20 @@ describe('plugin host', () => {
     api.close();
   });
 
+  it('gives each plugin the app version, build date and its own secure store', async () => {
+    const plugin = fakePlugin();
+    await start([plugin]);
+    const host = plugin.host!;
+    expect(host.app.version).toEqual(expect.any(String));
+    expect(Number.isNaN(Date.parse(host.app.releaseDate))).toBe(false);
+    // No encryptor in tests, so the store says it's plain.
+    expect(host.secureStore.encrypted).toBe(false);
+    await host.secureStore.set({ saved: true });
+    expect(await host.secureStore.get()).toEqual({ value: { saved: true }, encrypted: false });
+    // Kept in the plugin's own folder.
+    await stat(path.join(dataDir, 'plugins', 'fake', 'secure-store.json'));
+  });
+
   it('reports no plugins in the free build', async () => {
     const b = await start([]);
     const api = await apiClient(b.apiPort);

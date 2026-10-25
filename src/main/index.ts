@@ -2,10 +2,10 @@ import { copyFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { format } from 'node:util';
-import { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session, shell } from 'electron';
 import { IPC, type BackendState, type ExportResult } from '../shared/ipc';
 import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './app-protocol';
-import { BackendSupervisor } from './backend-supervisor';
+import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
 import { openTextFile, saveTextFile } from './text-files';
@@ -67,8 +67,30 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 let mainWindow: BrowserWindow | undefined;
+/**
+ * Plugins' secure stores are encrypted with the OS keychain, through safeStorage. Not on
+ * Linux without a keyring, where safeStorage falls back to a fixed, built-in password.
+ */
+function secureStorage(): SecureStorage | undefined {
+  // Decided without touching the keychain (which can ask for a password): macOS and
+  // Windows always have one; on Linux, Electron says which store it picked. The async
+  // API keeps a keychain prompt from freezing the app while it waits.
+  if (
+    process.platform === 'linux' &&
+    ['basic_text', 'unknown'].includes(safeStorage.getSelectedStorageBackend())
+  ) {
+    return undefined;
+  }
+  return {
+    encrypt: async (text) => (await safeStorage.encryptStringAsync(text)).toString('base64'),
+    decrypt: async (base64) => (await safeStorage.decryptStringAsync(Buffer.from(base64, 'base64'))).result,
+  };
+}
+
 const backend = new BackendSupervisor({
   dataDir: app.getPath('userData'),
+  app: { version: app.getVersion(), releaseDate: import.meta.env.WIRESCRY_RELEASE_DATE },
+  secureStorage,
   allowedOrigins: [uiOrigin],
   // Plugins built into this copy (such as Pro) always start. Pro checks its own license,
   // in its own code: this file is open source, so a check here could simply be removed.

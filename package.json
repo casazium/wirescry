@@ -40,6 +40,7 @@
     "@babel/plugin-transform-class-properties": "^7.29.7",
     "@babel/plugin-transform-class-static-block": "^7.29.7",
     "@babel/plugin-transform-private-methods": "^7.29.7",
+    "@casazium/license-sdk": "^0.4.2",
     "@electron/get": "^5.1.0",
     "@eslint/js": "^10.0.1",
     "@types/js-beautify": "^1.14.3",
