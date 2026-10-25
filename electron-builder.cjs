@@ -14,7 +14,47 @@
  * See docs/RELEASING.md.
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
+const { Arch } = require('electron-builder');
+
 const env = process.env;
+
+/**
+ * Refuses to package a build without its license notices, or with Pro's readable source. A build with WIRESCRY_PRO_DIR set puts Pro's
+ * backend in out/main/chunks/pro-*.js; scripts/pro-bytecode/compile.mjs must then swap it
+ * for bytecode for every architecture being packaged. Set WIRESCRY_REQUIRE_PRO=1 (the
+ * release workflow does) to also refuse a build without Pro.
+ *
+ * @param {import('electron-builder').BeforePackContext} context
+ */
+function checkBuild(context) {
+  if (!fs.existsSync(path.join(__dirname, 'out/licenses/THIRD_PARTY_NOTICES.txt'))) {
+    throw new Error('No out/licenses. Build with `npm run build`, which writes the license notices.');
+  }
+  const chunks = path.join(__dirname, 'out/main/chunks');
+  const names = fs.existsSync(chunks) ? fs.readdirSync(chunks) : [];
+  const proChunks = names.filter((n) => /^pro-[\w-]+\.js$/.test(n));
+  if (proChunks.length === 0) {
+    if (env.WIRESCRY_REQUIRE_PRO === '1')
+      throw new Error('WIRESCRY_REQUIRE_PRO=1, but this build has no Pro.');
+    return;
+  }
+  if (proChunks.length > 1)
+    throw new Error(`More than one Pro chunk in out/main/chunks: ${proChunks.join(', ')}`);
+  const chunk = proChunks[0];
+  const head = fs.readFileSync(path.join(chunks, chunk), 'utf8').slice(0, 64);
+  if (!head.startsWith('/* wirescry-pro-bytecode-loader */')) {
+    throw new Error(`${chunk} is Pro's source. Run scripts/pro-bytecode/compile.mjs before packaging.`);
+  }
+  const arch = Arch[context.arch];
+  const jsc = `${chunk.slice(0, -'.js'.length)}.${arch}.jsc`;
+  if (!names.includes(jsc)) {
+    throw new Error(
+      `No Pro bytecode for ${arch} (${jsc}). Run scripts/pro-bytecode/compile.mjs --arch ${arch}.`,
+    );
+  }
+}
 
 const azureSigning =
   env.AZURE_TENANT_ID &&
@@ -45,6 +85,8 @@ module.exports = {
     'out/**',
     'package.json',
     '!**/*.map',
+    // Shipped as plain files instead (extraResources), so people can read them.
+    '!out/licenses/**',
     // Optional Mockttp module for TLS fingerprint mirroring, which we don't use. It needs
     // OpenSSL and can't be built against Electron's BoringSSL; Mockttp works without it.
     '!node_modules/tls-impersonate/**',
@@ -53,6 +95,28 @@ module.exports = {
   npmRebuild: false,
   // Never ship a CA: each install generates its own at first run, in the user data folder.
   asar: true,
+  beforePack: checkBuild,
+  // Third-party license notices, from scripts/third-party-notices.mjs.
+  extraResources: [{ from: 'out/licenses', to: 'licenses' }],
+
+  // Electron features the app doesn't use, turned off so they can't be used against it
+  // or to read Pro's code: running the app as plain Node, NODE_OPTIONS, --inspect, and
+  // loading app code from outside the signed, integrity-checked app.asar.
+  electronFuses: {
+    runAsNode: false,
+    enableCookieEncryption: true,
+    enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false,
+    enableEmbeddedAsarIntegrityValidation: true,
+    onlyLoadAppFromAsar: true,
+    loadBrowserProcessSpecificV8Snapshot: false,
+    // The UI is served from the app's own protocol (src/main/app-protocol.ts), not file://.
+    grantFileProtocolExtraPrivileges: false,
+    // Flipping fuses breaks Electron's ad-hoc signature, and macOS kills an arm64 app whose
+    // signature doesn't match. Re-sign ad hoc so unsigned local builds run; release builds
+    // are then signed properly over it.
+    resetAdHocDarwinSignature: true,
+  },
 
   mac: {
     category: 'public.app-category.developer-tools',

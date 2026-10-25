@@ -12,7 +12,7 @@
   },
   "scripts": {
     "dev": "electron-vite dev",
-    "build": "npm run typecheck && electron-vite build",
+    "build": "npm run typecheck && electron-vite build && node scripts/third-party-notices.mjs",
     "start": "electron-vite preview",
     "typecheck": "tsc -p tsconfig.node.json && tsc -p tsconfig.web.json",
     "lint": "eslint .",
@@ -35,6 +35,9 @@
     "xml-formatter": "^3.7.0"
   },
   "devDependencies": {
+    "@babel/core": "^7.29.7",
+    "@babel/plugin-transform-arrow-functions": "^7.29.7",
+    "@electron/get": "^5.1.0",
     "@eslint/js": "^10.0.1",
     "@types/js-beautify": "^1.14.3",
     "@types/node": "^24.19.2",
