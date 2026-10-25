@@ -78,7 +78,7 @@ export function exchangesIn(messages: ServerMessage[]): ExchangeSummary[] {
 
 export type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
 
-/** Opens an authorised API connection that can send commands and collects pushed messages. */
+/** Opens an authorized API connection that can send commands and collects pushed messages. */
 export async function apiClient(port: number) {
   const ws = connectApi(port, { token: TOKEN, origin: UI_ORIGIN });
   const messages: ServerMessage[] = [];

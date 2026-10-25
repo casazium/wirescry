@@ -18,7 +18,7 @@ const proBackend = proDir
 const proUi = proDir ? resolve(proDir, 'src/ui/index.ts') : resolve(__dirname, 'src/pro-stub/ui.ts');
 
 export default defineConfig(({ command }) => {
-  // Pro isn't ready to ship (no licence checks or bytecode yet), and a production build
+  // Pro isn't ready to ship (no license checks or bytecode yet), and a production build
   // would bundle its source in readable form. Refuse unless explicitly asked.
   if (proDir && command === 'build' && process.env.WIRESCRY_ALLOW_PRO_BUILD !== '1') {
     throw new Error(

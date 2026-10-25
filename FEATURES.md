@@ -56,7 +56,7 @@ Wirescry is a desktop tool for seeing, debugging and rewriting HTTP traffic, in 
 - **Breakpoints:** pause a request or a response, edit it, then resume it or reply by hand.
   - **Status (October 2026):** built, in development builds only. Pause rules hold matching requests and/or responses in a Breakpoints tab (with a count badge) to edit and continue, reply by hand, or close. Limits: 50 paused, 5 minutes each, editable bodies up to 256 KB of text.
   - Still to do: header changes on request bodies over 64 KB (blocked by a Mockttp bug that sends the wrong Content-Length), noticing when a paused client gives up, and pausing WebSocket messages.
-- **Request composer:** build and send requests, resend a captured request with edits, and keep a history. It should centre on captured traffic, not compete with standalone API clients.
+- **Request composer:** build and send requests, resend a captured request with edits, and keep a history. It should center on captured traffic, not compete with standalone API clients.
 - **HAR import and export**, plus export as code snippets in common languages.
 - **Saved sessions:** reopen earlier captures.
 - **Advanced proxy settings:**
@@ -67,10 +67,10 @@ Wirescry is a desktop tool for seeing, debugging and rewriting HTTP traffic, in 
 - **Extra themes** (light and dark stay free).
 
 ### Business
-- Accounts and licence backend (PocketBase or Node), with sign-in and licence checks that keep working offline for a while.
+- Accounts and license backend (PocketBase or Node), with sign-in and license checks that keep working offline for a while.
 - Payments (Paddle or Stripe): checkout, receipts and subscription status.
-- Pro features locked in the app until a licence is active.
-  - **Status (October 2026):** built in Pro. Ed25519-signed licence keys, checked offline, with a 14-day grace period after expiry and a deterrent against turning the clock back; an offline list of withdrawn licences; a Licence tab and lock screens. Still to do: a production signing key, the licence server and payments, online renewal and revocation, seat or machine limits, and protection against patching (bytecode and integrity checks).
+- Pro features locked in the app until a license is active.
+  - **Status (October 2026):** built in Pro. Ed25519-signed license keys, checked offline, with a 14-day grace period after expiry and a deterrent against turning the clock back; an offline list of withdrawn licenses; a License tab and lock screens. Still to do: a production signing key, the license server and payments, online renewal and revocation, seat or machine limits, and protection against patching (bytecode and integrity checks).
 - Website, docs and download page.
 
 ## Stage 3: Pro v1.5 · ~6–7 months total
@@ -121,9 +121,9 @@ Everything that changes traffic, automates hard setup or explains APIs is Pro.
 - **Pro:** Android automatic setup, the Docker interceptor and the request composer.
 - **Order:** the Java agent comes in Stage 3, after the terminal interceptor. Java has about 23M developers, a similar number to Python's 24M (SlashData, Q3 2025).
 - **Licensing (October 2026): open core.**
-  - The free app is open source under AGPL-3.0. Bob owns all of its copyright, so it contains no AGPL code from anyone else (including HTTP Toolkit), and outside contributions need a contributor licence agreement (CLA).
-  - Pro features live in a separate private module under a commercial licence. The released app includes both, with Pro locked until a licence is active.
-  - Pro protection: Pro ships as compiled V8 bytecode; licences are signed by the server and checked offline with a grace period; Electron's integrity checks and code signing catch patched apps. Server-backed Pro features, such as team sharing, add value that can't be cracked.
+  - The free app is open source under AGPL-3.0. Bob owns all of its copyright, so it contains no AGPL code from anyone else (including HTTP Toolkit), and outside contributions need a contributor license agreement (CLA).
+  - Pro features live in a separate private module under a commercial license. The released app includes both, with Pro locked until a license is active.
+  - Pro protection: Pro ships as compiled V8 bytecode; licenses are signed by the server and checked offline with a grace period; Electron's integrity checks and code signing catch patched apps. Server-backed Pro features, such as team sharing, add value that can't be cracked.
   - Before the repo goes public: a lawyer reviews the AGPL-plus-commercial builds and the CLA wording.
 
 ## Open questions

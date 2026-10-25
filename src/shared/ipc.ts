@@ -39,7 +39,7 @@ export interface SaveTextFileRequest {
   extensions: string[];
 }
 
-/** The saved file's name, or nothing if the user cancelled. */
+/** The saved file's name, or nothing if the user canceled. */
 export interface SaveTextFileResult {
   name?: string;
 }
@@ -48,13 +48,13 @@ export interface OpenTextFileRequest {
   extensions: string[];
 }
 
-/** The chosen file's name and text, or nothing if the user cancelled. */
+/** The chosen file's name and text, or nothing if the user canceled. */
 export interface OpenTextFileResult {
   name?: string;
   text?: string;
 }
 
-/** Where the certificate was saved, or undefined if the user cancelled. */
+/** Where the certificate was saved, or undefined if the user canceled. */
 export interface ExportResult {
   path?: string;
 }

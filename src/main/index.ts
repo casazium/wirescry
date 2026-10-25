@@ -32,7 +32,7 @@ console.log(
 );
 
 // Set by electron-vite while running `npm run dev`.
-// Development-only behaviour is decided when the app is built, not at run time:
+// Development-only behavior is decided when the app is built, not at run time:
 // app.isPackaged is false whenever the shipped app.asar is run with a stock Electron.
 const isDevBuild = import.meta.env.DEV;
 const devServerUrl = isDevBuild ? process.env.ELECTRON_RENDERER_URL : undefined;
@@ -61,7 +61,7 @@ let mainWindow: BrowserWindow | undefined;
 const backend = new BackendSupervisor({
   dataDir: app.getPath('userData'),
   allowedOrigins: [uiOrigin],
-  // Plugins built into this copy (such as Pro) always start. Pro checks its own licence,
+  // Plugins built into this copy (such as Pro) always start. Pro checks its own license,
   // in its own code: this file is open source, so a check here could simply be removed.
   pluginsEnabled: true,
   logger,

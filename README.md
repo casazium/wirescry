@@ -111,7 +111,7 @@ How plugins are kept in line (`src/backend/plugin-host.ts`):
 - Plugin rules keep only their matchers and steps, so they can't jump ahead of the setup page. Requests a plugin rule handled show a **Rule** badge, and `rule=` finds them in the search box.
 - A view that crashes shows an error in its tab, not a blank app.
 
-Plugins always start. Pro checks its own licence, in Pro's code rather than this open-source app: without a valid licence it applies no rules and pauses nothing, and its tabs ask for a licence key. Development builds run Pro without a licence; that's decided when the app is built, so release builds don't have the shortcut. Set `WIRESCRY_PRO_DIR` when running tests to include `test/pro-integration.test.ts`, which runs the real Pro module in the backend.
+Plugins always start. Pro checks its own license, in Pro's code rather than this open-source app: without a valid license it applies no rules and pauses nothing, and its tabs ask for a license key. Development builds run Pro without a license; that's decided when the app is built, so release builds don't have the shortcut. Set `WIRESCRY_PRO_DIR` when running tests to include `test/pro-integration.test.ts`, which runs the real Pro module in the backend.
 
 With `WIRESCRY_PRO_DIR` set:
 
@@ -146,10 +146,10 @@ The UI fetches headers and bodies only for the exchange you select. Bodies are d
 
 - `tls-impersonate`, an optional Mockttp dependency for TLS fingerprint mirroring, is not built and not packaged. Mockttp works without it, and Wirescry doesn't use that feature.
 
-## Licence
+## License
 
 Wirescry's free app is open source under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). Copyright © 2026 Bob Casazza.
 
-Wirescry Pro features are developed separately and aren't covered by this licence. Released builds of Wirescry include them, locked until a Pro licence is active.
+Wirescry Pro features are developed separately and aren't covered by this license. Released builds of Wirescry include them, locked until a Pro license is active.
 
-Contributions will need a contributor licence agreement, so the project can keep offering combined builds with Pro. Details will be here before outside contributions are accepted.
+Contributions will need a contributor license agreement, so the project can keep offering combined builds with Pro. Details will be here before outside contributions are accepted.
