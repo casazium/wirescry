@@ -51,7 +51,7 @@ export function createSecureStore(
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
           log(`Couldn't read ${FILE}: ${(error as Error).message}`);
-          throw new Error(`The saved value can't be read: ${(error as Error).message}`);
+          throw new Error(`The saved value can't be read: ${(error as Error).message}`, { cause: error });
         }
         if (saved?.v !== 1) throw new Error('The saved value is in an unknown format.');
         if (saved.encrypted) {
@@ -63,7 +63,9 @@ export function createSecureStore(
           } catch (error) {
             // E.g. the keychain was reset or locked, or the file came from another computer.
             log(`Couldn't decrypt ${FILE}: ${(error as Error).message}`);
-            throw new Error(`The saved value can't be decrypted: ${(error as Error).message}`);
+            throw new Error(`The saved value can't be decrypted: ${(error as Error).message}`, {
+              cause: error,
+            });
           }
         }
         return { value: saved.value, encrypted: false };
