@@ -1,4 +1,4 @@
-import { copyFile } from 'node:fs/promises';
+import { copyFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { format } from 'node:util';
@@ -10,6 +10,15 @@ import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
 import { openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
+
+/**
+ * `--wirescry-self-test=<file>`: start the backend without a window, write what loaded
+ * to <file> as JSON, and quit. The release workflow runs packaged builds this way to
+ * check that Pro's bytecode loads on each platform. Use a throwaway --user-data-dir.
+ */
+const selfTestFile = app.commandLine.getSwitchValue('wirescry-self-test');
+// A self-test's log goes in its throwaway data folder, not the user's real log.
+if (selfTestFile) app.setAppLogsPath(path.join(app.getPath('userData'), 'logs'));
 
 // Errors and warnings from every part of the app go to one local file, for support and debugging.
 const logger = new FileLogger(app.getPath('logs'));
@@ -135,7 +144,35 @@ app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (event) => event.preventDefault());
 });
 
+function runSelfTest(file: string): void {
+  const finish = async (result: object, code: number): Promise<void> => {
+    try {
+      await writeFile(file, JSON.stringify({ version: app.getVersion(), arch: process.arch, ...result }));
+    } finally {
+      backend.stop();
+      // app.exit skips will-quit, where the log is normally closed.
+      logger.close();
+      app.exit(code);
+    }
+  };
+  const timer = setTimeout(
+    () => void finish({ error: 'The backend took over 2 minutes to start.' }, 2),
+    120_000,
+  );
+  backend.on('state', (state) => {
+    if (state.state === 'starting') return;
+    clearTimeout(timer);
+    if (state.state === 'ready') void finish({ plugins: backend.plugins }, 0);
+    else void finish({ error: state.message }, 1);
+  });
+  backend.start();
+}
+
 app.whenReady().then(() => {
+  if (selfTestFile) {
+    runSelfTest(path.resolve(selfTestFile));
+    return;
+  }
   Menu.setApplicationMenu(
     buildMenu({
       devTools: isDevBuild,

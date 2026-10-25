@@ -17,8 +17,15 @@ export default tseslint.config(
       'test/**',
       '*.config.*',
       'electron-builder.cjs',
+      'scripts/**',
     ],
     languageOptions: { globals: globals.node },
+  },
+  {
+    // Plain CommonJS: build config, and scripts that run in Electron as CommonJS.
+    files: ['**/*.cjs'],
+    languageOptions: { sourceType: 'commonjs', globals: globals.node },
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
   {
     files: ['src/renderer/**/*.{ts,tsx}'],

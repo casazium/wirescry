@@ -116,7 +116,7 @@ Plugins always start. Pro checks its own license, in Pro's code rather than this
 With `WIRESCRY_PRO_DIR` set:
 
 - `npm run typecheck:pro` typechecks the app with Pro in place of the stubs. Run it after changing `src/plugin-api`.
-- A production build (`npm run build`, `npm run package`) stops with an error, because Pro isn't ready to ship and its source would be readable in the bundle. `WIRESCRY_ALLOW_PRO_BUILD=1` overrides this for a local test build that must not be shared.
+- A production build with Pro has to compile Pro's backend to bytecode before it can be packaged; `electron-builder` refuses otherwise. See [docs/RELEASING.md](docs/RELEASING.md#how-pro-is-built-in).
 
 ## How it fits together
 

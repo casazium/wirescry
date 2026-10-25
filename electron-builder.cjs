@@ -14,7 +14,69 @@
  * See docs/RELEASING.md.
  */
 
+const fs = require('node:fs');
+const path = require('node:path');
+const { Arch } = require('electron-builder');
+
 const env = process.env;
+
+// Third-party license notices, from scripts/third-party-notices.mjs. Windows and Linux
+// builds already carry Electron's own license files; electron-builder removes them from
+// macOS builds, so those get the copies in out/licenses-electron.
+const notices = { from: 'out/licenses', to: 'licenses' };
+const electronNotices = { from: 'out/licenses-electron', to: 'licenses' };
+
+/**
+ * Refuses to package a build without up-to-date license notices, or with Pro's readable
+ * source. A build with WIRESCRY_PRO_DIR set puts Pro's backend in out/main/chunks/pro-*.js
+ * (and leaves out/main/.pro-build); scripts/pro-bytecode/compile.mjs must then swap it
+ * for bytecode for every architecture being packaged. Set WIRESCRY_REQUIRE_PRO=1 (the
+ * release workflow does) to also refuse a build without Pro.
+ *
+ * @param {import('electron-builder').BeforePackContext} context
+ */
+function checkBuild(context) {
+  const out = path.join(__dirname, 'out');
+  const notices = path.join(out, 'licenses/THIRD_PARTY_NOTICES.txt');
+  const built = path.join(out, 'main/backend.js');
+  // The notices script deletes the .bundled-packages.json files the build leaves.
+  const unlisted = ['main', 'preload', 'renderer'].some((part) =>
+    fs.existsSync(path.join(out, part, '.bundled-packages.json')),
+  );
+  if (
+    !fs.existsSync(notices) ||
+    !fs.existsSync(built) ||
+    unlisted ||
+    fs.statSync(notices).mtimeMs < fs.statSync(built).mtimeMs
+  ) {
+    throw new Error('Missing or old license notices. Build with `npm run build`, which writes them.');
+  }
+  const chunks = path.join(out, 'main/chunks');
+  const names = fs.existsSync(chunks) ? fs.readdirSync(chunks) : [];
+  const proChunks = names.filter((n) => /^pro-[\w-]+\.js$/.test(n));
+  const proBuild = fs.existsSync(path.join(out, 'main/.pro-build'));
+  if (proChunks.length === 0) {
+    if (proBuild) throw new Error('This is a Pro build, but its Pro chunk is missing.');
+    if (env.WIRESCRY_REQUIRE_PRO === '1')
+      throw new Error('WIRESCRY_REQUIRE_PRO=1, but this build has no Pro.');
+    return;
+  }
+  if (!proBuild) throw new Error('A Pro chunk without out/main/.pro-build: delete out/ and build again.');
+  if (proChunks.length > 1)
+    throw new Error(`More than one Pro chunk in out/main/chunks: ${proChunks.join(', ')}`);
+  const chunk = proChunks[0];
+  const head = fs.readFileSync(path.join(chunks, chunk), 'utf8').slice(0, 64);
+  if (!head.startsWith('/* wirescry-pro-bytecode-loader */')) {
+    throw new Error(`${chunk} is Pro's source. Run scripts/pro-bytecode/compile.mjs before packaging.`);
+  }
+  const arch = Arch[context.arch];
+  const jsc = `${chunk.slice(0, -'.js'.length)}.${arch}.jsc`;
+  if (!names.includes(jsc)) {
+    throw new Error(
+      `No Pro bytecode for ${arch} (${jsc}). Run scripts/pro-bytecode/compile.mjs --arch ${arch}.`,
+    );
+  }
+}
 
 const azureSigning =
   env.AZURE_TENANT_ID &&
@@ -45,6 +107,9 @@ module.exports = {
     'out/**',
     'package.json',
     '!**/*.map',
+    // Shipped as plain files instead (extraResources), so people can read them.
+    '!out/licenses*/**',
+    '!out/main/.pro-build',
     // Optional Mockttp module for TLS fingerprint mirroring, which we don't use. It needs
     // OpenSSL and can't be built against Electron's BoringSSL; Mockttp works without it.
     '!node_modules/tls-impersonate/**',
@@ -53,8 +118,31 @@ module.exports = {
   npmRebuild: false,
   // Never ship a CA: each install generates its own at first run, in the user data folder.
   asar: true,
+  beforePack: checkBuild,
+
+  // Electron features the app doesn't use, turned off so they can't be used against it
+  // or to read Pro's code: running the app as plain Node, NODE_OPTIONS, --inspect, and
+  // loading app code from outside the signed, integrity-checked app.asar.
+  electronFuses: {
+    runAsNode: false,
+    // Would tie the app to the system keychain (and prompt on Linux) to protect cookies,
+    // which it doesn't use.
+    enableCookieEncryption: false,
+    enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false,
+    enableEmbeddedAsarIntegrityValidation: true,
+    onlyLoadAppFromAsar: true,
+    loadBrowserProcessSpecificV8Snapshot: false,
+    // The UI is served from the app's own protocol (src/main/app-protocol.ts), not file://.
+    grantFileProtocolExtraPrivileges: false,
+    // Flipping fuses breaks Electron's ad-hoc signature, and macOS kills an arm64 app whose
+    // signature doesn't match. Re-sign ad hoc so unsigned local builds run; release builds
+    // are then signed properly over it.
+    resetAdHocDarwinSignature: true,
+  },
 
   mac: {
+    extraResources: [notices, electronNotices],
     category: 'public.app-category.developer-tools',
     target: [
       // The zip is what the auto-updater downloads; the dmg is for first installs.
@@ -69,6 +157,7 @@ module.exports = {
   },
 
   win: {
+    extraResources: [notices],
     target: [{ target: 'nsis', arch: ['x64', 'arm64'] }],
     ...(azureSigning ? { azureSignOptions: azureSigning } : {}),
   },
@@ -80,6 +169,7 @@ module.exports = {
   },
 
   linux: {
+    extraResources: [notices],
     category: 'Development',
     // AppImage can auto-update; deb is updated by reinstalling.
     target: ['AppImage', 'deb'],

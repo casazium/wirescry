@@ -23,7 +23,12 @@ parentPort.on('message', async ({ data }: { data: BackendStartMessage }) => {
       plugins: backendPlugins,
       pluginsEnabled: data.pluginsEnabled,
     });
-    post({ type: 'ready', apiPort: backend.apiPort, proxyPort: backend.proxyPort });
+    post({
+      type: 'ready',
+      apiPort: backend.apiPort,
+      proxyPort: backend.proxyPort,
+      plugins: backend.pluginStatuses(),
+    });
   } catch (error) {
     post({ type: 'error', message: (error as Error).stack ?? String(error) });
     process.exit(1);

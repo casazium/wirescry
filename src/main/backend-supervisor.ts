@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { utilityProcess, type UtilityProcess } from 'electron';
+import type { PluginStatus } from '../shared/api';
 import type { BackendMessage, BackendStartMessage, BackendState } from '../shared/ipc';
 import { lineSplitter, type FileLogger } from './logger';
 
@@ -19,6 +20,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private stopping = false;
   private restarts: number[] = [];
   private current: BackendState = { state: 'starting' };
+  /** Plugins the backend loaded, as of its last start. */
+  plugins: PluginStatus[] = [];
 
   constructor(
     private readonly options: {
@@ -61,11 +64,15 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
 
     child.on('message', (message: BackendMessage) => {
       if (message.type === 'ready') {
+        this.plugins = message.plugins;
         this.setState({
           state: 'ready',
           connection: { apiUrl: `ws://127.0.0.1:${message.apiPort}/`, token: this.token },
         });
-        console.log(`[wirescry] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}`);
+        console.log(
+          `[wirescry] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}, ` +
+            `plugins: ${message.plugins.map((p) => `${p.name} (${p.active ? 'running' : p.reason})`).join(', ') || 'none'}`,
+        );
       } else if (message.type === 'error') {
         console.error('[wirescry] backend failed to start:', message.message);
         this.setState({ state: 'failed', message: message.message });

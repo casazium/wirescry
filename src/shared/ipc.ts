@@ -1,16 +1,24 @@
 /** Messages between the Electron main process and the backend utility process. */
+import type { PluginStatus } from './api';
 
 export interface BackendStartMessage {
   type: 'start';
   dataDir: string;
   token: string;
   allowedOrigins: string[];
-  /** Whether plugins such as Pro may run. False in packaged builds until licensing exists. */
+  /** Whether plugins such as Pro may run. Pro checks its own license. */
   pluginsEnabled: boolean;
 }
 
 export type BackendMessage =
-  { type: 'ready'; apiPort: number; proxyPort: number } | { type: 'error'; message: string };
+  | {
+      type: 'ready';
+      apiPort: number;
+      proxyPort: number;
+      /** The plugins built into this copy, such as Pro, and whether each started. */
+      plugins: PluginStatus[];
+    }
+  | { type: 'error'; message: string };
 
 /** What the preload hands the UI so it can reach the backend. */
 export interface BackendConnection {
