@@ -13,8 +13,8 @@ import type {
 
 /** Encrypts text for plugins with the OS keychain: text in, base64 out, and back. */
 export interface SecureStorage {
-  encrypt(text: string): string;
-  decrypt(base64: string): string;
+  encrypt(text: string): Promise<string>;
+  decrypt(base64: string): Promise<string>;
 }
 import { lineSplitter, type FileLogger } from './logger';
 
@@ -95,7 +95,10 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
             `plugins: ${message.plugins.map((p) => `${p.name} (${p.active ? 'running' : p.reason})`).join(', ') || 'none'}`,
         );
       } else if (message.type === 'crypto') {
-        child.postMessage(this.crypto(message));
+        void this.crypto(message).then((reply) => {
+          // A restarted backend doesn't get the old one's answers.
+          if (this.child === child) child.postMessage(reply);
+        });
       } else if (message.type === 'error') {
         console.error('[wirescry] backend failed to start:', message.message);
         this.setState({ state: 'failed', message: message.message });
@@ -132,7 +135,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     this.child?.kill();
   }
 
-  private crypto(request: CryptoRequest): CryptoReply {
+  private async crypto(request: CryptoRequest): Promise<CryptoReply> {
     const { id, op, data } = request;
     try {
       this.storage ??= this.options.secureStorage?.() ?? null;
@@ -141,7 +144,11 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       if (!storage) throw new Error('No secure storage on this computer');
       if (typeof data !== 'string' || data.length > 4 * 1024 * 1024) throw new Error('Bad data');
       const result =
-        op === 'encrypt' ? storage.encrypt(data) : op === 'decrypt' ? storage.decrypt(data) : undefined;
+        op === 'encrypt'
+          ? await storage.encrypt(data)
+          : op === 'decrypt'
+            ? await storage.decrypt(data)
+            : undefined;
       if (result === undefined) throw new Error('Unknown operation');
       return { type: 'crypto-result', id, ok: true, data: result };
     } catch (error) {

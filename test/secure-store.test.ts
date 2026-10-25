@@ -65,6 +65,15 @@ describe('plugin secure store', () => {
     await expect(createSecureStore(dir, fakeEncryptor()).get()).rejects.toThrow("can't be read");
   });
 
+  it("won't replace an encrypted value with a plain one when the keychain is missing", async () => {
+    await createSecureStore(dir, fakeEncryptor()).set({ key: 'ABC' });
+    await expect(createSecureStore(dir, undefined).set({ key: 'XYZ' })).rejects.toThrow('keychain');
+    expect(await createSecureStore(dir, fakeEncryptor()).get()).toEqual({
+      value: { key: 'ABC' },
+      encrypted: true,
+    });
+  });
+
   it('refuses values JSON cannot hold, or over 1 MB, and leaves no temp files', async () => {
     const store = createSecureStore(dir, fakeEncryptor());
     await expect(store.set(undefined)).rejects.toThrow(TypeError);

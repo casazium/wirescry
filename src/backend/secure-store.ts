@@ -76,6 +76,17 @@ export function createSecureStore(
         const json = JSON.stringify(value);
         if (json === undefined) throw new TypeError('secureStore.set needs a value JSON can hold');
         if (json.length > SECURE_STORE_LIMIT) throw new RangeError('secureStore.set: value is over 1 MB');
+        // Without the keychain this run (it may just not be up yet), never replace an
+        // encrypted value with a plain one: the next run, with the keychain, would then
+        // ignore what was saved.
+        if (!encryptor) {
+          const existing = await readFile(file, 'utf8').catch(() => undefined);
+          if (existing !== undefined && (JSON.parse(existing) as Partial<Saved>)?.encrypted === true) {
+            throw new Error(
+              "The system keychain isn't available right now, so this can't be saved. Unlock it or restart Wirescry.",
+            );
+          }
+        }
         const saved: Saved = encryptor
           ? { v: 1, encrypted: true, data: await encryptor.encrypt(json) }
           : { v: 1, encrypted: false, value: JSON.parse(json) as unknown };

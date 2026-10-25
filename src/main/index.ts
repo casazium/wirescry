@@ -72,12 +72,18 @@ let mainWindow: BrowserWindow | undefined;
  * Linux without a keyring, where safeStorage falls back to a fixed, built-in password.
  */
 function secureStorage(): SecureStorage | undefined {
-  if (!safeStorage.isEncryptionAvailable()) return undefined;
-  if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend() === 'basic_text')
+  // Decided without touching the keychain (which can ask for a password): macOS and
+  // Windows always have one; on Linux, Electron says which store it picked. The async
+  // API keeps a keychain prompt from freezing the app while it waits.
+  if (
+    process.platform === 'linux' &&
+    ['basic_text', 'unknown'].includes(safeStorage.getSelectedStorageBackend())
+  ) {
     return undefined;
+  }
   return {
-    encrypt: (text) => safeStorage.encryptString(text).toString('base64'),
-    decrypt: (base64) => safeStorage.decryptString(Buffer.from(base64, 'base64')),
+    encrypt: async (text) => (await safeStorage.encryptStringAsync(text)).toString('base64'),
+    decrypt: async (base64) => (await safeStorage.decryptStringAsync(Buffer.from(base64, 'base64'))).result,
   };
 }
 

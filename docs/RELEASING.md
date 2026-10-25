@@ -147,7 +147,7 @@ CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac dir
 
 Bytecode makes Pro much harder to read or patch, not impossible: V8 bytecode can be decompiled, and anyone who can change the app's code (any Linux install, or a re-signed macOS or Windows copy) can interfere with what Pro calls. The license check doesn't depend on secrecy, since keys are verified against a public key, but treat bytecode as a deterrent, not a lock.
 
-**Release date.** Each build carries the date it was released, which Pro compares with a lapsed subscription's end (its perpetual fallback; see `wirescry-pro`'s `docs/PRICING.md`). The release workflow sets `WIRESCRY_RELEASE_DATE` to the app commit's date, so rebuilding a tag gives the same date. Other builds use the time of the build.
+**Release date.** Each build carries the date it was released, which Pro compares with a lapsed subscription's end (its perpetual fallback; see `wirescry-pro`'s `docs/PRICING.md`). The release workflow sets `WIRESCRY_RELEASE_DATE` to the later of the app's and Pro's commit dates, so rebuilding a tag gives the same date and a Pro-only change still counts as new. Other builds use the time of the build.
 
 **License server settings.** A release with Pro needs `wirescry-pro`'s `src/backend/license-config.ts` filled in (server URL, product UUID, public key). Without them, Pro refuses to start in a release build, and the packaged-app check fails.
 
