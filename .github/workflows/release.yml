@@ -11,9 +11,10 @@ name: Release
 # See docs/RELEASING.md for the secrets and variables.
 #
 # Pro: the build checks out casazium/wirescry-pro (read-only, through the org's
-# "wirescry-ci" GitHub App) and compiles Pro's backend to V8 bytecode for each CPU type
-# before packaging. Tags must include Pro; other runs include it when CI_APP_ID and
-# CI_APP_PRIVATE_KEY are set, and build the free app otherwise.
+# "wirescry-ci" GitHub App) at one commit for every platform, compiles Pro's backend to
+# V8 bytecode for each CPU type, and checks each packaged app loads it. Tags must include
+# Pro; manual runs include it when CI_APP_ID and CI_APP_PRIVATE_KEY are set. Pull
+# requests never do, so a workflow change in a PR can't reach Pro's source.
 
 on:
   push:
@@ -28,6 +29,8 @@ on:
       - 'electron.vite.config.ts'
       - 'scripts/pro-bytecode/**'
       - 'scripts/third-party-notices.mjs'
+      - 'scripts/self-test-packaged.mjs'
+      - 'src/main/**'
   workflow_dispatch:
     inputs:
       pro_ref:
@@ -43,8 +46,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  pro:
+    name: Pick the Pro commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      # Empty for a build without Pro.
+      sha: ${{ steps.pick.outputs.sha }}
+    env:
+      HAS_PRO_ACCESS: ${{ github.event_name != 'pull_request' && vars.CI_APP_ID != '' && secrets.CI_APP_PRIVATE_KEY != '' }}
+      IS_TAG: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    steps:
+      - name: Check Pro can be included
+        if: env.IS_TAG == 'true' && env.HAS_PRO_ACCESS != 'true'
+        run: |
+          echo "::error::Releases must include Pro, but the CI_APP_ID variable or CI_APP_PRIVATE_KEY secret isn't set. See docs/RELEASING.md."
+          exit 1
+
+      - name: Get a read-only token for Pro
+        id: pro-token
+        if: env.PRO_SHA != ''
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.CI_APP_ID }}
+          private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
+          owner: casazium
+          repositories: wirescry-pro
+          permission-contents: read
+
+      - name: Check out Pro
+        if: env.PRO_SHA != ''
+        uses: actions/checkout@v7
+        with:
+          repository: casazium/wirescry-pro
+          ref: ${{ env.PRO_SHA }}
+          path: wirescry-pro
+          token: ${{ steps.pro-token.outputs.token }}
+          persist-credentials: false
+
+      - name: Pick the commit
+        id: pick
+        run: |
+          if [ -d wirescry-pro ]; then
+            sha="$(git -C wirescry-pro rev-parse HEAD)"
+            echo "sha=$sha" >> "$GITHUB_OUTPUT"
+            echo "Pro: casazium/wirescry-pro@$sha" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Pro: not included (free build)" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   build:
     name: Build (${{ matrix.os }})
+    needs: pro
     strategy:
       fail-fast: false
       matrix:
@@ -61,13 +114,14 @@ jobs:
         # x64 Windows can't run arm64. The macOS runners are Apple silicon, with Rosetta.
         os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest", "windows-11-arm", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # Windows on Arm runners have 2 cores, and build x64 emulated.
+    timeout-minutes: 90
     env:
       PUBLISH: ${{ startsWith(github.ref, 'refs/tags/v') && secrets.RELEASES_TOKEN != '' }}
       HAS_MAC_CERT: ${{ secrets.CSC_LINK != '' && secrets.CSC_KEY_PASSWORD != '' }}
       HAS_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER != '' }}
       HAS_AZURE: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.AZURE_SIGNING_ENDPOINT != '' }}
-      HAS_PRO_ACCESS: ${{ vars.CI_APP_ID != '' && secrets.CI_APP_PRIVATE_KEY != '' }}
+      PRO_SHA: ${{ needs.pro.outputs.sha }}
       # electron-builder.cjs then refuses to package a release without Pro.
       WIRESCRY_REQUIRE_PRO: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '' }}
     steps:
@@ -91,16 +145,9 @@ jobs:
             exit 1
           fi
 
-      - name: Check Pro can be included
-        if: env.WIRESCRY_REQUIRE_PRO == '1' && env.HAS_PRO_ACCESS != 'true'
-        shell: bash
-        run: |
-          echo "::error::Releases must include Pro, but the CI_APP_ID variable or CI_APP_PRIVATE_KEY secret isn't set. See docs/RELEASING.md."
-          exit 1
-
       - name: Get a read-only token for Pro
         id: pro-token
-        if: env.HAS_PRO_ACCESS == 'true'
+        if: env.PRO_SHA != ''
         uses: actions/create-github-app-token@v2
         with:
           app-id: ${{ vars.CI_APP_ID }}
@@ -110,11 +157,11 @@ jobs:
           permission-contents: read
 
       - name: Check out Pro
-        if: env.HAS_PRO_ACCESS == 'true'
+        if: env.PRO_SHA != ''
         uses: actions/checkout@v7
         with:
           repository: casazium/wirescry-pro
-          ref: ${{ inputs.pro_ref || 'main' }}
+          ref: ${{ env.PRO_SHA }}
           path: wirescry-pro
           token: ${{ steps.pro-token.outputs.token }}
           persist-credentials: false
@@ -201,6 +248,18 @@ jobs:
         run: |
           if [ "$PUBLISH" = "true" ]; then publish=always; else publish=never; fi
           npx electron-builder --publish "$publish"
+
+      # Starts each packaged app without a window and checks it runs and, in a Pro build,
+      # that Pro loaded. On a tag this runs after the upload; the release is still a
+      # draft, so if it fails, delete the draft rather than publishing it.
+      - name: Check the packaged apps start
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a node scripts/self-test-packaged.mjs
+          else
+            node scripts/self-test-packaged.mjs
+          fi
 
       - name: Keep the installers
         uses: actions/upload-artifact@v7

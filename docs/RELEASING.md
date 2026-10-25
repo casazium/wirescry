@@ -19,7 +19,7 @@ Releases are built by [`.github/workflows/release.yml`](../.github/workflows/rel
 4. Write the release notes in the draft, using the headings below.
 5. Download and try the installers from the draft. When they're good, click **Publish release** on GitHub. Only published releases reach users.
 
-Pull requests that change packaging build Linux only; manual runs (**Actions → Release → Run workflow**) build all three. Neither publishes; they keep the installers as workflow artifacts for 3 days. A manual run can build in a different Pro branch or commit (**Pro branch, tag or commit**).
+Pull requests that change packaging build Linux only; manual runs (**Actions → Release → Run workflow**) build all three. Neither publishes; they keep the installers as workflow artifacts for 3 days. Pull requests always build the free app, so a workflow change in a pull request can't read Pro. A manual run includes Pro, and can build in a different Pro branch or commit (**Pro branch, tag or commit**); its artifacts then contain that Pro, as bytecode.
 
 ## Release notes
 
@@ -90,7 +90,7 @@ Nothing to set. AppImage and `.deb` builds aren't signed.
 
 ### Pro
 
-The workflow reads the private `casazium/wirescry-pro` repo through the org's **wirescry-ci** GitHub App (the one Pro's own CI uses), with a read-only token that expires within the hour. Tag builds stop if these aren't set; other runs build the free app without them.
+The workflow reads the private `casazium/wirescry-pro` repo through the org's **wirescry-ci** GitHub App (the one Pro's own CI uses), with a read-only token that expires within the hour. Tag builds stop if these aren't set; manual runs build the free app without them. Every platform builds the same Pro commit, picked once at the start of the run and shown in the run's summary.
 
 | Name                 | Kind     | What                                         |
 | -------------------- | -------- | -------------------------------------------- |
@@ -98,6 +98,8 @@ The workflow reads the private `casazium/wirescry-pro` repo through the org's **
 | `CI_APP_PRIVATE_KEY` | Secret   | A private key (`.pem`) generated for the app |
 
 The app must also be installed on `casazium/wirescry-pro`, with **Contents: read-only**: org **Settings → GitHub Apps → wirescry-ci → Configure → Repository access**.
+
+Anyone who can push a branch to this repo and start a manual run could change the workflow on that branch to read Pro. While only the owner can push, that's fine. Before adding collaborators, move `CI_APP_PRIVATE_KEY` into a GitHub **Environment** (for example `release`) that only `main` and `v*` tags can use, and add `environment: release` to the workflow's `pro` job.
 
 ## How updates work
 
@@ -118,11 +120,16 @@ Builds unsigned installers for the current platform into `release/<version>/`. T
 
 Pro's frontend is bundled like the rest of the UI. Its backend, where licenses are checked, ships as V8 bytecode rather than JavaScript:
 
-1. With `WIRESCRY_PRO_DIR` set, `electron-vite build` puts all of Pro's backend code in one file, `out/main/chunks/pro-<hash>.js` (see `electron.vite.config.ts`).
-2. [`scripts/pro-bytecode/compile.mjs`](../scripts/pro-bytecode/compile.mjs) `--arch <list>` compiles that file to `pro-<hash>.<arch>.jsc` with Electron for each CPU type, then replaces the JavaScript with a small loader that picks the file for the machine it runs on. Bytecode only loads on the CPU type and Electron version that made it, so the other architecture runs emulated: Rosetta on Apple silicon makes x64, and Windows on Arm makes x64 (which is why Windows builds on `windows-11-arm`). x64 machines can't make arm64.
+1. With `WIRESCRY_PRO_DIR` set, `electron-vite build` puts all of Pro's backend code in one file, `out/main/chunks/pro-<hash>.js`, and fails if any of it lands anywhere else (see `electron.vite.config.ts`).
+2. [`scripts/pro-bytecode/compile.mjs`](../scripts/pro-bytecode/compile.mjs) `--arch <list>` minifies that file (renaming Pro's own variables and functions), rewrites arrow functions and class fields, and compiles it to `pro-<hash>.<arch>.jsc` with Electron for each CPU type, then replaces the JavaScript with a small loader that picks the file for the machine it runs on. Bytecode only loads on the CPU type and Electron version that made it, so the other architecture runs emulated: Rosetta on Apple silicon makes x64, and Windows on Arm makes x64 (which is why Windows builds on `windows-11-arm`). x64 machines can't make arm64.
 3. `electron-builder.cjs` refuses to package Pro's JavaScript, or a build missing an architecture's bytecode. With `WIRESCRY_REQUIRE_PRO=1`, as on tags, it also refuses a build without Pro.
+4. [`scripts/self-test-packaged.mjs`](../scripts/self-test-packaged.mjs) starts each packaged app with `--wirescry-self-test`, which runs the backend without a window, and fails unless Pro loaded.
 
-If an installed copy can't load the bytecode, Pro turns off, the app runs as the free version, and the reason goes to the log.
+If an installed copy can't load the bytecode, Pro turns off, the app runs as the free version, and the reason goes to the log. Step 4 is there so that never reaches a release unnoticed.
+
+The compiler runs Electron without `NODE_OPTIONS` or `ELECTRON_*` variables: V8 flags passed that way would be baked into the bytecode, and the packaged app, which ignores `NODE_OPTIONS`, would then reject it.
+
+Pro's errors in a release build point at `pro-<hash>.<arch>.jsc` with no useful line numbers, and the readable, minified copy isn't kept. To trace one, rebuild the same app and Pro commits locally.
 
 To build a Pro package locally (Apple silicon shown):
 
@@ -138,9 +145,9 @@ node scripts/pro-bytecode/compile.mjs --arch arm64,x64
 CSC_IDENTITY_AUTO_DISCOVERY=false npx electron-builder --mac dir
 ```
 
-Bytecode makes Pro much harder to read or patch, not impossible; the license check doesn't depend on it staying secret, since keys are verified against a public key.
+Bytecode makes Pro much harder to read or patch, not impossible: V8 bytecode can be decompiled, and anyone who can change the app's code (any Linux install, or a re-signed macOS or Windows copy) can interfere with what Pro calls. The license check doesn't depend on secrecy, since keys are verified against a public key, but treat bytecode as a deterrent, not a lock.
 
 ## What else release builds do
 
 - **Electron fuses** (`electronFuses` in `electron-builder.cjs`): the app can't be run as plain Node, ignores `NODE_OPTIONS` and `--inspect`, loads its code only from `app.asar`, and on macOS and Windows checks `app.asar` against a hash built into the signed executable before loading it.
-- **License notices**: `npm run build` runs [`scripts/third-party-notices.mjs`](../scripts/third-party-notices.mjs), which writes the licenses of every npm package in the app, plus Electron's and Chromium's, to `out/licenses`. They ship as plain files in the app's resources folder, under `licenses/`. Packaging stops if they're missing.
+- **License notices**: `npm run build` runs [`scripts/third-party-notices.mjs`](../scripts/third-party-notices.mjs), which writes the licenses of every npm package in the app to `out/licenses/THIRD_PARTY_NOTICES.txt`. It ships in the app's resources folder, under `licenses/`, with Electron's and Chromium's licenses on macOS (Windows and Linux builds have those in the install folder already). Packaging stops if the notices are missing or older than the build.

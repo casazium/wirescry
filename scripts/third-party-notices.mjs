@@ -6,8 +6,9 @@
  * - THIRD_PARTY_NOTICES.txt: every npm package in the app. That's the production
  *   dependencies (shipped as node_modules) plus the packages bundled into the built
  *   code, which the build lists in out/<part>/.bundled-packages.json.
- * - LICENSE.electron.txt and LICENSES.chromium.html: Electron's own, which
- *   electron-builder leaves out of macOS builds.
+ * - out/licenses-electron: Electron's LICENSE (as LICENSE.electron.txt) and
+ *   LICENSES.chromium.html, for macOS builds, which electron-builder leaves them out
+ *   of. Windows and Linux builds already carry them.
  *
  * Run after `electron-vite build`. Fails if a package has no license we can name.
  */
@@ -27,6 +28,7 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(root, 'out');
 const dest = join(out, 'licenses');
+const electronDest = join(out, 'licenses-electron');
 
 function fail(message) {
   console.error(`third-party-notices: ${message}`);
@@ -82,7 +84,7 @@ function licenseName(pkg) {
 /** LICENSE, LICENCE, COPYING and NOTICE files at the package's top level. */
 function licenseFiles(dir) {
   return readdirSync(dir)
-    .filter((n) => /^(licen[cs]e|copying|notice)([.-].*)?$/i.test(n))
+    .filter((n) => /licen[cs]e|copying|notice|copyright/i.test(n) && !/\.(c?js|mjs|ts|json|map)$/i.test(n))
     .sort()
     .map((n) => ({ name: n, text: readFileSync(join(dir, n), 'utf8').trim() }));
 }
@@ -108,8 +110,46 @@ SOFTWARE.`;
 function authorName(pkg) {
   const a = pkg.author;
   const name = typeof a === 'string' ? a.replace(/\s*[<(].*$/, '') : a?.name;
-  return name?.trim() || `the ${pkg.name} authors`;
+  return name?.trim() || undefined;
 }
+
+/** Notices for code a package carries that its own license files don't cover. */
+const EXTRA_NOTICES = {
+  // Ships Zstandard compiled to WebAssembly and asm.js.
+  'zstd-codec': {
+    name: 'Zstandard (built into zstd-codec), BSD License',
+    text: `BSD License
+
+For Zstandard software
+
+Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Facebook, nor Meta, nor the names of its contributors may
+   be used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`,
+  },
+};
 
 const entries = [];
 const seen = new Set();
@@ -124,11 +164,14 @@ for (const dir of dirs) {
     // A few MIT packages leave the license file out of what they publish; the notice
     // still has to ship, so use the standard text with the author from package.json.
     if (license !== 'MIT') fail(`${id} (${license ?? 'no license named'}) has no license file`);
+    const author = authorName(pkg);
     files.push({
       name: 'MIT license (standard text; the package has no license file)',
-      text: `Copyright (c) ${authorName(pkg)}\n\n${MIT_TEXT}`,
+      text: `${author ? `Copyright (c) ${author}` : 'Copyright holders not stated in the package.'}\n\n${MIT_TEXT}`,
     });
   }
+  const extra = EXTRA_NOTICES[pkg.name];
+  if (extra) files.push(extra);
   entries.push({ id, license: license ?? 'see the license text', homepage: pkg.homepage, files });
 }
 entries.sort((a, b) => a.id.localeCompare(b.id));
@@ -136,8 +179,8 @@ entries.sort((a, b) => a.id.localeCompare(b.id));
 const rule = '-'.repeat(78);
 let text =
   'Wirescry includes the third-party software listed below, under the licenses shown.\n' +
-  'Electron and Chromium are covered by LICENSE.electron.txt and LICENSES.chromium.html\n' +
-  'in the same folder as this file.\n\n' +
+  "Electron's and Chromium's licenses are in LICENSE.electron.txt and LICENSES.chromium.html:\n" +
+  "on macOS in the same folder as this file, on Windows and Linux in the app's install folder.\n\n" +
   entries.map((e) => `  ${e.id}  (${e.license})`).join('\n') +
   '\n';
 for (const e of entries) {
@@ -146,10 +189,12 @@ for (const e of entries) {
   for (const f of e.files) text += `\n--- ${f.name} ---\n\n${f.text}\n`;
 }
 
-rmSync(dest, { recursive: true, force: true });
-mkdirSync(dest, { recursive: true });
+for (const dir of [dest, electronDest]) {
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+}
 writeFileSync(join(dest, 'THIRD_PARTY_NOTICES.txt'), text);
 const electronDist = join(root, 'node_modules/electron/dist');
-copyFileSync(join(electronDist, 'LICENSE'), join(dest, 'LICENSE.electron.txt'));
-copyFileSync(join(electronDist, 'LICENSES.chromium.html'), join(dest, 'LICENSES.chromium.html'));
+copyFileSync(join(electronDist, 'LICENSE'), join(electronDest, 'LICENSE.electron.txt'));
+copyFileSync(join(electronDist, 'LICENSES.chromium.html'), join(electronDest, 'LICENSES.chromium.html'));
 console.log(`Wrote notices for ${entries.length} packages to ${relative(root, dest)}`);

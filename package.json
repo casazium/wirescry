@@ -37,6 +37,7 @@
   "devDependencies": {
     "@babel/core": "^7.29.7",
     "@babel/plugin-transform-arrow-functions": "^7.29.7",
+    "@babel/plugin-transform-class-properties": "^7.29.7",
     "@electron/get": "^5.1.0",
     "@eslint/js": "^10.0.1",
     "@types/js-beautify": "^1.14.3",

@@ -10,7 +10,14 @@ export interface BackendStartMessage {
 }
 
 export type BackendMessage =
-  { type: 'ready'; apiPort: number; proxyPort: number } | { type: 'error'; message: string };
+  | {
+      type: 'ready';
+      apiPort: number;
+      proxyPort: number;
+      /** Names of the plugins built into this copy and loaded, such as "pro". */
+      plugins: string[];
+    }
+  | { type: 'error'; message: string };
 
 /** What the preload hands the UI so it can reach the backend. */
 export interface BackendConnection {

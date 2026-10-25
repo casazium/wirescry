@@ -15,7 +15,16 @@
  * electron-builder.cjs refuses to package if this hasn't run for the target architecture.
  */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { arch as hostArch, platform } from 'node:process';
 import { dirname, join, resolve } from 'node:path';
@@ -27,9 +36,11 @@ const root = resolve(here, '../..');
 const chunks = join(root, 'out/main/chunks');
 const LOADER_MARK = '/* wirescry-pro-bytecode-loader */';
 
+class CompileError extends Error {}
+
+/** Stops with a message for the user; cleanup in `finally` blocks still runs. */
 function fail(message) {
-  console.error(`compile-pro-bytecode: ${message}`);
-  process.exit(1);
+  throw new CompileError(message);
 }
 
 function parseArches() {
@@ -61,17 +72,28 @@ function findChunk() {
 }
 
 /**
- * V8 can compile arrow functions lazily even with --no-lazy, and a lazily compiled
- * function needs its source, which the bytecode build doesn't have. Plain functions don't.
+ * Minifies the chunk, renaming its own variables and functions so the bytecode carries
+ * fewer readable names, then rewrites arrow functions as plain ones: V8 can compile arrow
+ * functions lazily even with --no-lazy, and a lazily compiled function needs its source,
+ * which the bytecode build doesn't have. Class fields go too, as Babel can only rewrite
+ * an arrow function in a class field once the field is a constructor assignment.
  */
-async function withoutArrowFunctions(code) {
+async function prepare(code, filename) {
+  const { minifySync } = await import('rolldown/utils');
+  const minified = minifySync(filename, code, { module: false, compress: true, mangle: { toplevel: true } });
+  if (minified.errors.length > 0)
+    fail(`minifying failed: ${minified.errors.map((e) => e.message).join('; ')}`);
   const babel = require('@babel/core');
-  const result = await babel.transformAsync(code, {
+  const result = await babel.transformAsync(minified.code, {
     babelrc: false,
     configFile: false,
-    compact: false,
+    compact: true,
     comments: false,
-    plugins: [require.resolve('@babel/plugin-transform-arrow-functions')],
+    sourceType: 'script',
+    plugins: [
+      require.resolve('@babel/plugin-transform-class-properties'),
+      require.resolve('@babel/plugin-transform-arrow-functions'),
+    ],
   });
   if (!result?.code) fail('Babel returned no code');
   return result.code;
@@ -112,37 +134,61 @@ async function electronFor(targetArch) {
   return exe;
 }
 
-const arches = parseArches();
-const { file, base } = findChunk();
-const prepared = join(chunks, `${base}.prepared.js`);
-writeFileSync(prepared, await withoutArrowFunctions(readFileSync(file, 'utf8')));
+/**
+ * The environment for the compiling Electron. NODE_OPTIONS can carry V8 flags, which V8
+ * bakes into the bytecode; the packaged app ignores NODE_OPTIONS (see electronFuses in
+ * electron-builder.cjs), so bytecode made with them would be rejected there. Electron's
+ * own variables could change how it runs, too.
+ */
+function cleanEnv() {
+  const env = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key === 'NODE_OPTIONS' || /^ELECTRON_/i.test(key)) continue;
+    env[key] = value;
+  }
+  return env;
+}
 
-try {
-  for (const a of arches) {
-    const out = join(chunks, `${base}.${a}.jsc`);
-    const exe = await electronFor(a);
-    const env = { ...process.env };
-    delete env.ELECTRON_RUN_AS_NODE;
+async function main() {
+  const arches = parseArches();
+  const { file, base } = findChunk();
+  // Outside out/, so the readable, prepared copy can't be packaged.
+  const work = mkdtempSync(join(tmpdir(), 'wirescry-pro-'));
+  try {
+    const prepared = join(work, `${base}.js`);
+    writeFileSync(prepared, await prepare(readFileSync(file, 'utf8'), `${base}.js`));
+    const env = cleanEnv();
     // On Linux, Electron needs a display (in CI, run this under xvfb-run) and, on Ubuntu
     // 24.04 and later, --no-sandbox: its sandbox helper isn't set up in node_modules.
     if (platform === 'linux' && !env.DISPLAY && !env.WAYLAND_DISPLAY) {
       fail('Electron needs a display on Linux. Run this under xvfb-run.');
     }
     const flags = platform === 'linux' ? ['--no-sandbox'] : [];
-    const run = spawnSync(exe, [...flags, join(here, 'electron-main.cjs'), prepared, out], {
-      stdio: 'inherit',
-      env,
-    });
-    if (run.status !== 0 || !existsSync(out)) {
-      rmSync(prepared, { force: true });
-      fail(`compiling for ${a} failed`);
+    for (const a of arches) {
+      const out = join(chunks, `${base}.${a}.jsc`);
+      rmSync(out, { force: true });
+      const exe = await electronFor(a);
+      const run = spawnSync(exe, [...flags, join(here, 'electron-main.cjs'), prepared, out], {
+        stdio: 'inherit',
+        env,
+      });
+      if (run.status !== 0 || !existsSync(out)) fail(`compiling for ${a} failed`);
     }
+  } finally {
+    rmSync(work, { recursive: true, force: true });
   }
-} finally {
-  rmSync(prepared, { force: true });
+
+  // Last, so a failure above leaves the plain chunk to compile again.
+  const loader = readFileSync(join(here, 'loader.cjs'), 'utf8').replaceAll('__JSC_BASE__', base);
+  writeFileSync(file, loader);
+  console.log(`Pro backend is now bytecode for ${arches.join(', ')}: ${base}.<arch>.jsc`);
 }
 
-// Last, so a failure above leaves the plain chunk to compile again.
-const loader = readFileSync(join(here, 'loader.cjs'), 'utf8').replaceAll('__JSC_BASE__', base);
-writeFileSync(file, loader);
-console.log(`Pro backend is now bytecode for ${arches.join(', ')}: ${base}.<arch>.jsc`);
+try {
+  await main();
+} catch (error) {
+  console.error(
+    `compile-pro-bytecode: ${error instanceof CompileError ? error.message : (error?.stack ?? error)}`,
+  );
+  process.exitCode = 1;
+}

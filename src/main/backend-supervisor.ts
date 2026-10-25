@@ -19,6 +19,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private stopping = false;
   private restarts: number[] = [];
   private current: BackendState = { state: 'starting' };
+  /** Plugins the backend loaded, as of its last start. */
+  plugins: string[] = [];
 
   constructor(
     private readonly options: {
@@ -61,11 +63,15 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
 
     child.on('message', (message: BackendMessage) => {
       if (message.type === 'ready') {
+        this.plugins = message.plugins;
         this.setState({
           state: 'ready',
           connection: { apiUrl: `ws://127.0.0.1:${message.apiPort}/`, token: this.token },
         });
-        console.log(`[wirescry] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}`);
+        console.log(
+          `[wirescry] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}, ` +
+            `plugins: ${message.plugins.join(', ') || 'none'}`,
+        );
       } else if (message.type === 'error') {
         console.error('[wirescry] backend failed to start:', message.message);
         this.setState({ state: 'failed', message: message.message });

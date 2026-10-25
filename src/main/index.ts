@@ -1,4 +1,4 @@
-import { copyFile } from 'node:fs/promises';
+import { copyFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { format } from 'node:util';
@@ -52,6 +52,13 @@ const CSP = [
 ].join('; ');
 
 registerAppSchemeAsPrivileged();
+
+/**
+ * `--wirescry-self-test=<file>`: start the backend without a window, write what loaded
+ * to <file> as JSON, and quit. The release workflow runs packaged builds this way to
+ * check that Pro's bytecode loads on each platform. Use a throwaway --user-data-dir.
+ */
+const selfTestFile = app.commandLine.getSwitchValue('wirescry-self-test');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
@@ -135,7 +142,33 @@ app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (event) => event.preventDefault());
 });
 
+function runSelfTest(file: string): void {
+  const finish = async (result: object, code: number): Promise<void> => {
+    try {
+      await writeFile(file, JSON.stringify({ version: app.getVersion(), arch: process.arch, ...result }));
+    } finally {
+      backend.stop();
+      app.exit(code);
+    }
+  };
+  const timer = setTimeout(
+    () => void finish({ error: 'The backend took over 2 minutes to start.' }, 2),
+    120_000,
+  );
+  backend.on('state', (state) => {
+    if (state.state === 'starting') return;
+    clearTimeout(timer);
+    if (state.state === 'ready') void finish({ plugins: backend.plugins }, 0);
+    else void finish({ error: state.message }, 1);
+  });
+  backend.start();
+}
+
 app.whenReady().then(() => {
+  if (selfTestFile) {
+    runSelfTest(path.resolve(selfTestFile));
+    return;
+  }
   Menu.setApplicationMenu(
     buildMenu({
       devTools: isDevBuild,

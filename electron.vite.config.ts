@@ -1,8 +1,8 @@
-import { existsSync } from 'node:fs';
-import { resolve, sep } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'electron-vite';
-import type { Plugin } from 'vite';
+import { normalizePath, type Plugin } from 'vite';
 
 /**
  * Wirescry Pro lives in a separate private repo. Set WIRESCRY_PRO_DIR to its
@@ -20,6 +20,44 @@ const proBackend = proDir
 const proUi = proDir ? resolve(proDir, 'src/ui/index.ts') : resolve(__dirname, 'src/pro-stub/ui.ts');
 
 /**
+ * Module ids as the bundler sees them: real paths (symlinks resolved), forward slashes.
+ * Lowercased on Windows, where paths ignore case and drive letters vary.
+ */
+const idKey = (file: string): string => {
+  const key = normalizePath(file.replace(/^\0/, '').split('?')[0] ?? '');
+  return process.platform === 'win32' ? key.toLowerCase() : key;
+};
+const proRoot = proDir ? idKey(realpathSync(proDir)) + '/' : undefined;
+const v8FlagsKey = idKey(realpathSync(v8Flags));
+const isProModule = (id: string): boolean => proRoot !== undefined && idKey(id).startsWith(proRoot);
+
+/**
+ * Fails the build if any of Pro's backend code would ship outside chunks/pro-*.js,
+ * which scripts/pro-bytecode/compile.mjs turns into bytecode. With Pro, also leaves
+ * out/main/.pro-build, so electron-builder.cjs knows Pro must be there as bytecode.
+ */
+function checkProChunk(): Plugin {
+  return {
+    name: 'wirescry:check-pro-chunk',
+    apply: 'build',
+    generateBundle(_options, bundle) {
+      if (!proRoot) return;
+      let found = false;
+      for (const chunk of Object.values(bundle)) {
+        if (chunk.type !== 'chunk') continue;
+        const pro = Object.keys(chunk.modules).filter(isProModule);
+        if (chunk.name === 'pro') found = true;
+        else if (pro.length > 0) {
+          this.error(`Pro code would ship readable in ${chunk.fileName}: ${pro.slice(0, 3).join(', ')}`);
+        }
+      }
+      if (!found) this.error('WIRESCRY_PRO_DIR is set, but no Pro chunk was made.');
+      this.emitFile({ type: 'asset', fileName: '.pro-build', source: 'Pro is in this build.\n' });
+    },
+  };
+}
+
+/**
  * Lists the npm packages bundled into this part of the app, as .bundled-packages.json
  * next to its output, for scripts/third-party-notices.mjs (which then deletes the file).
  */
@@ -30,7 +68,7 @@ function recordBundledPackages(): Plugin {
     generateBundle() {
       const dirs = new Set<string>();
       for (const id of this.getModuleIds()) {
-        const file = id.replace(/\\/g, '/').replace(/^\0/, '').split('?')[0] ?? '';
+        const file = normalizePath(id.replace(/^\0/, '').split('?')[0] ?? '');
         const match = /^(.*\/node_modules\/(?:@[^/]+\/)?[^/]+)\//.exec(file);
         if (match?.[1]) dirs.add(match[1]);
       }
@@ -46,7 +84,7 @@ function recordBundledPackages(): Plugin {
 export default defineConfig(() => {
   return {
     main: {
-      plugins: [recordBundledPackages()],
+      plugins: [recordBundledPackages(), checkProChunk()],
       resolve: {
         alias: {
           '@wirescry/pro/backend': proBackend,
@@ -72,8 +110,8 @@ export default defineConfig(() => {
             ? {
                 codeSplitting: {
                   groups: [
-                    { name: 'v8-flags', test: (id: string) => id === v8Flags, priority: 2 },
-                    { name: 'pro', test: (id: string) => id.startsWith(proDir + sep), priority: 1 },
+                    { name: 'v8-flags', test: (id: string) => idKey(id) === v8FlagsKey, priority: 2 },
+                    { name: 'pro', test: isProModule, priority: 1 },
                   ],
                 },
               }
