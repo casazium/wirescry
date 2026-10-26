@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, truncate, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, truncate, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeBuffer } from 'http-encoding';
@@ -175,11 +175,9 @@ describe('HAR export and import', () => {
     await expect.poll(() => exchangesIn(api.messages).length).toBe(3);
     const ids = exchangesIn(api.messages).map((e) => e.id);
 
-    const locked = path.join(dir, 'locked');
-    await mkdir(locked, { mode: 0o500 });
-    await expect(backend.exportHar(path.join(locked, 'x.har'), ids)).rejects.toThrow(/EACCES|EPERM/);
-    await chmod(locked, 0o700);
-    expect(await readdir(locked)).toEqual([]);
+    // A path inside a file can't be written on any system.
+    const notAFolder = path.join(dir, 'source.har', 'x.har');
+    await expect(backend.exportHar(notAFolder, ids)).rejects.toThrow(/ENOTDIR|ENOENT/);
 
     // Still running, and nothing is left behind.
     await expect(backend.exportHar(path.join(dir, 'gone.har'), ['no-such-id'])).rejects.toThrow(
