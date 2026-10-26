@@ -207,6 +207,12 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
                 </dd>
               </>
             )}
+            {detail?.importedFrom && (
+              <>
+                <dt>Imported from</dt>
+                <dd>{detail.importedFrom}</dd>
+              </>
+            )}
             {summary.handledBy && (
               <>
                 <dt>Handled by</dt>

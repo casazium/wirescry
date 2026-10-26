@@ -23,6 +23,25 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
     encryptor.receive(data);
     return;
   }
+  if (data?.type === 'har') {
+    const { id } = data;
+    const job = !backend
+      ? Promise.reject(new Error("Wirescry's backend is still starting."))
+      : data.op === 'export'
+        ? backend.exportHar(data.file, data.exchangeIds)
+        : backend.importHar(data.file, data.name);
+    job.then(
+      (value) => post({ type: 'har-result', id, ok: true, value }),
+      (error: unknown) =>
+        post({
+          type: 'har-result',
+          id,
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+    );
+    return;
+  }
   if (data?.type !== 'start' || starting) return;
   starting = true;
   try {

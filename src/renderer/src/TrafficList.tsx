@@ -119,6 +119,11 @@ export function TrafficList({ rows, selectedId, onSelect, onKeyDown, empty }: Pr
                   {e.host}
                 </span>
                 <span role="cell" className="path" title={e.url}>
+                  {e.imported && (
+                    <span className="rule-badge imported-badge" title="Loaded from a HAR file">
+                      HAR
+                    </span>
+                  )}
                   {e.handledBy && (
                     <span className="rule-badge" title={`Handled by the rule "${e.handledBy.label}"`}>
                       Rule

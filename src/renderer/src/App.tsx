@@ -13,6 +13,9 @@ export function App(): React.JSX.Element {
   const { backendState, connected, status, exchanges, paused, send, pluginApi, session, badges } =
     useBackend();
   const [message, setMessage] = useState<string>();
+  /** The last HAR import or export, until dismissed. */
+  const [notice, setNotice] = useState<string>();
+  const [harBusy, setHarBusy] = useState(false);
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string>();
   const [search, setSearch] = useState('');
@@ -61,6 +64,51 @@ export function App(): React.JSX.Element {
     const step = event.key === 'ArrowDown' ? 1 : -1;
     const next = rows[Math.min(rows.length - 1, Math.max(0, current + step))];
     if (next) setSelectedId(next.id);
+  };
+
+  /** Exports what the list shows (the filter applies), in list order. */
+  const exportHar = async (): Promise<void> => {
+    setMessage(undefined);
+    setNotice(undefined);
+    setHarBusy(true);
+    try {
+      const result = await window.wirescry.exportHar(rows.map((e) => e.id));
+      if (result.name) {
+        setNotice(
+          `Exported ${result.count?.toLocaleString()} ${result.count === 1 ? 'request' : 'requests'} to ${result.name}.`,
+        );
+      }
+    } catch (error) {
+      setMessage(`Couldn't export: ${(error as Error).message}`);
+    } finally {
+      setHarBusy(false);
+    }
+  };
+
+  const importHar = async (): Promise<void> => {
+    setMessage(undefined);
+    setNotice(undefined);
+    setHarBusy(true);
+    try {
+      const result = await window.wirescry.importHar();
+      if (result.name) {
+        const imported = result.imported ?? 0;
+        const problems = (result.problems ?? []).join(' ');
+        if (imported === 0) {
+          setMessage(`Nothing to import from ${result.name}.${problems ? ` ${problems}` : ''}`);
+          return;
+        }
+        const plural = (n: number): string => `${n.toLocaleString()} ${n === 1 ? 'request' : 'requests'}`;
+        let text = `Imported ${plural(imported)} from ${result.name}.`;
+        if (result.skipped) text += ` Skipped ${result.skipped.toLocaleString()}: ${problems}`;
+        if (result.removed) text += ` To make room, the oldest ${plural(result.removed)} left the list.`;
+        setNotice(text);
+      }
+    } catch (error) {
+      setMessage(`Couldn't import: ${(error as Error).message}`);
+    } finally {
+      setHarBusy(false);
+    }
   };
 
   const launch = async (): Promise<void> => {
@@ -210,6 +258,24 @@ export function App(): React.JSX.Element {
             <button
               type="button"
               className="secondary"
+              title="Open a HAR file, e.g. one saved from a browser's developer tools"
+              onClick={() => void importHar()}
+              disabled={!connected || harBusy}
+            >
+              Import HAR
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              title={filtered ? 'Save the requests shown as a HAR file' : 'Save all requests as a HAR file'}
+              onClick={() => void exportHar()}
+              disabled={!connected || harBusy || rows.length === 0}
+            >
+              Export HAR
+            </button>
+            <button
+              type="button"
+              className="secondary"
               aria-pressed={paused}
               onClick={() => void send({ command: 'setPaused', paused: !paused })}
               disabled={!connected}
@@ -260,6 +326,14 @@ export function App(): React.JSX.Element {
 
       {backendState.state === 'failed' && <div className="banner error">{backendState.message}</div>}
       {message && <div className="banner error">{message}</div>}
+      {notice && (
+        <div className="banner notice" role="status">
+          <span>{notice}</span>
+          <button type="button" className="icon" aria-label="Dismiss" onClick={() => setNotice(undefined)}>
+            ×
+          </button>
+        </div>
+      )}
 
       {view === 'traffic' && (
         <div className="main">

@@ -9,7 +9,13 @@ import type {
   BackendState,
   CryptoReply,
   CryptoRequest,
+  HarRequest,
 } from '../shared/ipc';
+
+/** How long a HAR export or import may take (large captures, slow disks). */
+const HAR_TIMEOUT_MS = 10 * 60 * 1000;
+
+type HarJob = HarRequest extends infer R ? (R extends HarRequest ? Omit<R, 'type' | 'id'> : never) : never;
 
 /** Encrypts text for plugins with the OS keychain: text in, base64 out, and back. */
 export interface SecureStorage {
@@ -32,6 +38,11 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private stopping = false;
   private restarts: number[] = [];
   private current: BackendState = { state: 'starting' };
+  private nextHarId = 0;
+  private readonly harWaiting = new Map<
+    number,
+    { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
+  >();
   /** The keychain, worked out on the first request after each start (null: none). */
   private storage: SecureStorage | null | undefined;
   /** Plugins the backend loaded, as of its last start. */
@@ -94,6 +105,13 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
           `[wirescry] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}, ` +
             `plugins: ${message.plugins.map((p) => `${p.name} (${p.active ? 'running' : p.reason})`).join(', ') || 'none'}`,
         );
+      } else if (message.type === 'har-result') {
+        const waiting = this.harWaiting.get(message.id);
+        if (!waiting) return;
+        this.harWaiting.delete(message.id);
+        clearTimeout(waiting.timer);
+        if (message.ok) waiting.resolve(message.value);
+        else waiting.reject(new Error(message.error));
       } else if (message.type === 'crypto') {
         void this.crypto(message).then((reply) => {
           // A restarted backend doesn't get the old one's answers.
@@ -107,6 +125,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
 
     child.on('exit', (code) => {
       if (this.child === child) this.child = undefined;
+      this.failHarJobs('The backend stopped while working on the file.');
       if (this.stopping) return;
       console.error(`[wirescry] backend exited with code ${code}`);
       const now = Date.now();
@@ -128,6 +147,30 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       app: this.options.app,
     };
     child.postMessage(start);
+  }
+
+  /** Asks the backend to export or import a HAR file at a path the user chose. */
+  har(job: HarJob): Promise<unknown> {
+    const child = this.child;
+    if (!child || this.current.state !== 'ready')
+      return Promise.reject(new Error("Wirescry's backend isn't running."));
+    const id = ++this.nextHarId;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.harWaiting.delete(id);
+        reject(new Error('That took too long.'));
+      }, HAR_TIMEOUT_MS);
+      this.harWaiting.set(id, { resolve, reject, timer });
+      child.postMessage({ type: 'har', id, ...job } satisfies HarRequest);
+    });
+  }
+
+  private failHarJobs(reason: string): void {
+    for (const [id, waiting] of this.harWaiting) {
+      clearTimeout(waiting.timer);
+      waiting.reject(new Error(reason));
+      this.harWaiting.delete(id);
+    }
   }
 
   stop(): void {

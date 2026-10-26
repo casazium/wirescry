@@ -21,10 +21,39 @@ export type BackendMessage =
       plugins: PluginStatus[];
     }
   | { type: 'error'; message: string }
-  | CryptoRequest;
+  | CryptoRequest
+  | HarReply;
 
 /** What the main process sends the backend. */
-export type MainToBackendMessage = BackendStartMessage | CryptoReply;
+export type MainToBackendMessage = BackendStartMessage | CryptoReply | HarRequest;
+
+/** Main to backend: write or read a HAR file at a path the user chose in a dialog. */
+export type HarRequest =
+  | { type: 'har'; id: number; op: 'export'; file: string; exchangeIds: string[] }
+  | { type: 'har'; id: number; op: 'import'; file: string; name: string };
+
+/** Backend to main: how a HAR request went. */
+export type HarReply =
+  | { type: 'har-result'; id: number; ok: true; value: unknown }
+  | { type: 'har-result'; id: number; ok: false; error: string };
+
+/** What exporting a HAR file did: the file's name and how many exchanges it has, or nothing if canceled. */
+export interface HarExportResult {
+  name?: string;
+  count?: number;
+}
+
+/** What importing a HAR file did, or nothing if canceled. */
+export interface HarImportResult {
+  name?: string;
+  imported?: number;
+  /** Entries that couldn't be read. */
+  skipped?: number;
+  /** Why some were skipped (the first few). */
+  problems?: string[];
+  /** Older exchanges dropped from the list to make room. */
+  removed?: number;
+}
 
 /**
  * Backend to main: encrypt or decrypt with safeStorage, or ask whether it can ('available',
@@ -61,6 +90,8 @@ export const IPC = {
   exportCertificate: 'wirescry:export-certificate',
   saveTextFile: 'wirescry:save-text-file',
   openTextFile: 'wirescry:open-text-file',
+  exportHar: 'wirescry:export-har',
+  importHar: 'wirescry:import-har',
 } as const;
 
 export interface SaveTextFileRequest {
@@ -102,4 +133,8 @@ export interface WirescryBridge {
   saveTextFile(request: SaveTextFileRequest): Promise<SaveTextFileResult>;
   /** Asks the user to pick a text file and returns it. */
   openTextFile(request: OpenTextFileRequest): Promise<OpenTextFileResult>;
+  /** Asks where to save, then writes these exchanges (in this order) as a HAR file. */
+  exportHar(exchangeIds: string[]): Promise<HarExportResult>;
+  /** Asks the user to pick a HAR file, then adds its exchanges to the traffic list. */
+  importHar(): Promise<HarImportResult>;
 }

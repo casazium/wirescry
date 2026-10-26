@@ -40,6 +40,10 @@ export class InMemoryRequestStore implements RequestStore {
     return [...this.exchanges.values()].map((e) => e.summary);
   }
 
+  get size(): number {
+    return this.exchanges.size;
+  }
+
   clear(): void {
     this.exchanges.clear();
   }
