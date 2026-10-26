@@ -8,6 +8,7 @@ import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './
 import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
+import { clearScratch, exportHar, importHar } from './har-files';
 import { openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
 
@@ -195,6 +196,7 @@ app.whenReady().then(() => {
     runSelfTest(path.resolve(selfTestFile));
     return;
   }
+  void clearScratch().catch(() => undefined);
   Menu.setApplicationMenu(
     buildMenu({
       devTools: isDevBuild,
@@ -243,6 +245,14 @@ app.whenReady().then(() => {
   ipcMain.handle(IPC.saveTextFile, (event, request: unknown) => {
     if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
     return saveTextFile(mainWindow, request);
+  });
+  ipcMain.handle(IPC.exportHar, (event, request: unknown) => {
+    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+    return exportHar(mainWindow, backend, request);
+  });
+  ipcMain.handle(IPC.importHar, (event) => {
+    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+    return importHar(mainWindow, backend);
   });
   ipcMain.handle(IPC.openTextFile, (event, request: unknown) => {
     if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');

@@ -1,17 +1,23 @@
+import { randomBytes, randomUUID } from 'node:crypto';
+import { open, readFile, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import type {
   BodyContent,
+  BodySide,
   ClientCommand,
   ExchangeDetail,
+  ExchangeSummary,
   FormatLanguage,
   FormattedBody,
+  Header,
   PluginStatus,
   ProxyStatus,
   ServerMessage,
   WebSocketMessages,
 } from '../shared/api';
 import { startApiServer } from './api';
+import { harEntry, harFrame, MAX_HAR_BODY_BYTES, MAX_HAR_IMPORT_BYTES, parseHar } from './har';
 import type { Encryptor } from './secure-store';
 import { headerValue, toBodyContent } from './body-content';
 import { exchangeType } from '../shared/exchange-type';
@@ -64,12 +70,29 @@ export interface BackendOptions {
   app?: { version: string; releaseDate: string };
 }
 
+export interface HarImportCounts {
+  imported: number;
+  skipped: number;
+  problems: string[];
+  removed: number;
+}
+
+/** Exchanges kept in the traffic list; the oldest go past this. */
+const STORE_LIMIT = 10_000;
+
 export interface RunningBackend {
   apiPort: number;
   readonly proxyPort: number;
   caCertPath: string;
   /** Each plugin's state. Plugins have finished starting by the time startBackend resolves. */
   pluginStatuses(): PluginStatus[];
+  /** Writes these exchanges (in this order) to a HAR file. Ids that are gone are skipped. */
+  exportHar(file: string, exchangeIds: string[]): Promise<{ count: number }>;
+  /**
+   * Adds the exchanges in a HAR file to the traffic list. `name` is the file's name to
+   * show (the file may be a copy). `removed` counts older exchanges dropped to make room.
+   */
+  importHar(file: string, name?: string): Promise<HarImportCounts>;
   stop(): Promise<void>;
 }
 
@@ -100,7 +123,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   let paused = false;
 
   const websockets = new WebSocketStore();
-  const store = new InMemoryRequestStore(10_000, (id) => {
+  const store = new InMemoryRequestStore(STORE_LIMIT, (id) => {
     updates.remove(id);
     websockets.delete(id);
     void bodies.delete(id).catch(() => undefined);
@@ -201,6 +224,180 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     return result;
   };
 
+  /** Headers to decode a stored body with: an imported one is stored decoded already. */
+  const decodingHeaders = (exchange: ExchangeDetail, side: BodySide): Header[] | undefined => {
+    const headers = side === 'request' ? exchange.requestHeaders : exchange.responseHeaders;
+    return exchange.importedFrom
+      ? headers?.filter(([name]) => name.toLowerCase() !== 'content-encoding')
+      : headers;
+  };
+
+  /** A stored body, decoded, up to `limit` bytes; null if there's none. */
+  const readBody = async (
+    exchange: ExchangeDetail,
+    side: BodySide,
+    limit?: number,
+  ): Promise<BodyContent | null> => {
+    const id = exchange.summary.id;
+    const info = side === 'request' ? exchange.requestBody : exchange.responseBody;
+    if (!info || !bodies.read(id, side)) return null;
+    return toBodyContent(
+      () => bodies.read(id, side) ?? Readable.from([]),
+      info.size,
+      decodingHeaders(exchange, side),
+      limit,
+    );
+  };
+
+  /** A body for a HAR file; an error reading it is noted rather than failing the export. */
+  const harBody = async (
+    exchange: ExchangeDetail,
+    side: BodySide,
+    notes: string[],
+  ): Promise<BodyContent | null> => {
+    if (bodies.isReceiving(exchange.summary.id, side)) {
+      notes.push(`The ${side} body was still arriving, so it was left out.`);
+      return null;
+    }
+    try {
+      return await readBody(exchange, side, MAX_HAR_BODY_BYTES);
+    } catch {
+      notes.push(`The ${side} body couldn't be read, so it was left out.`);
+      return null;
+    }
+  };
+
+  const exportHar = async (file: string, exchangeIds: string[]): Promise<{ count: number }> => {
+    const { head, tail } = harFrame(options.app?.version ?? '0.0.0');
+    // Written to a temporary file and renamed into place, so a failure never leaves half a file.
+    const temp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+    const out = await open(temp, 'wx', 0o600);
+    // Small entries are gathered and written together.
+    let pending: string[] = [];
+    let pendingLength = 0;
+    const flush = async (): Promise<void> => {
+      if (pending.length === 0) return;
+      const text = pending.join('');
+      pending = [];
+      pendingLength = 0;
+      await out.writeFile(text, 'utf8');
+    };
+    const write = async (text: string): Promise<void> => {
+      pending.push(text);
+      pendingLength += text.length;
+      if (pendingLength >= 1024 * 1024) await flush();
+    };
+    let count = 0;
+    try {
+      await write(head);
+      for (const id of new Set(exchangeIds)) {
+        const exchange = store.get(id);
+        if (!exchange) continue;
+        const notes: string[] = [];
+        const item = {
+          detail: exchange,
+          requestBody: await harBody(exchange, 'request', notes),
+          responseBody: await harBody(exchange, 'response', notes),
+          messages: exchange.summary.websocket ? websockets.get(id, -1, Number.MAX_SAFE_INTEGER) : undefined,
+          notes,
+        };
+        // Two very large bodies can make an entry longer than a string can be:
+        // then leave out the response body, and if need be the request body too.
+        const attempts = [
+          item,
+          {
+            ...item,
+            responseBody: null,
+            notes: [...notes, 'The response body was too large to write, so it was left out.'],
+          },
+          {
+            ...item,
+            requestBody: null,
+            responseBody: null,
+            notes: [...notes, 'The bodies were too large to write, so they were left out.'],
+          },
+        ];
+        let text: string | undefined;
+        for (const attempt of attempts) {
+          try {
+            text = JSON.stringify(harEntry(attempt));
+            break;
+          } catch (error) {
+            if (!(error instanceof RangeError) || attempt === attempts.at(-1)) throw error;
+          }
+        }
+        await write((count > 0 ? ',\n' : '') + text!);
+        count += 1;
+      }
+      if (count === 0) throw new Error('None of those requests are in the list any more.');
+      await write(tail);
+      await flush();
+      await out.close();
+      await rename(temp, file);
+    } catch (error) {
+      await out.close().catch(() => undefined);
+      await rm(temp, { force: true });
+      throw error;
+    }
+    return { count };
+  };
+
+  // Bumped by Clear, so an import that's running stops adding to the list.
+  let clears = 0;
+  // A body being stored by an import; Clear waits for it before emptying the body folder.
+  let importWrite: Promise<unknown> = Promise.resolve();
+
+  const importHar = async (file: string, name?: string): Promise<HarImportCounts> => {
+    const startedAt = clears;
+    if ((await stat(file)).size > MAX_HAR_IMPORT_BYTES) {
+      throw new Error(`That file is larger than ${MAX_HAR_IMPORT_BYTES / 1024 / 1024} MB.`);
+    }
+    const parsed = await parseHar(await readFile(file, 'utf8'), STORE_LIMIT);
+    // A name to show, without folders or control characters.
+    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+    const importedFrom = (path.basename(name ?? file).replace(/[\x00-\x1f\x7f]/g, '') || 'HAR file').slice(
+      0,
+      200,
+    );
+    const cleared = (): boolean => clears !== startedAt;
+    const removed = Math.max(0, store.size + parsed.exchanges.length - STORE_LIMIT);
+    let imported = 0;
+    for (const item of parsed.exchanges) {
+      if (cleared()) break;
+      const id = `har-${randomUUID()}`;
+      const put = async (side: BodySide, body: Buffer | undefined) => {
+        if (!body || cleared()) return undefined;
+        const stored = bodies.put(id, side, body);
+        importWrite = stored.catch(() => undefined);
+        return stored;
+      };
+      const requestBody = await put('request', item.requestBody);
+      const responseBody = await put('response', item.responseBody);
+      if (cleared()) break;
+      for (const message of item.messages ?? []) websockets.add(id, message);
+      const summary: ExchangeSummary = {
+        ...item.summary,
+        id,
+        imported: true,
+        ...(item.summary.websocket ? { messageCount: websockets.count(id) } : {}),
+      };
+      const detail: ExchangeDetail = {
+        summary,
+        requestHeaders: item.requestHeaders,
+        ...(item.responseHeaders ? { responseHeaders: item.responseHeaders } : {}),
+        timing: item.timing,
+        ...(requestBody ? { requestBody: { size: requestBody.size, stored: requestBody.stored } } : {}),
+        ...(responseBody ? { responseBody: { size: responseBody.size, stored: responseBody.stored } } : {}),
+        importedFrom,
+      };
+      store.upsert(detail);
+      updates.change(summary);
+      imported += 1;
+    }
+    if (cleared()) throw new Error('The import stopped because the list was cleared.');
+    return { imported, skipped: parsed.skipped, problems: parsed.problems, removed };
+  };
+
   const handleCommand = async (command: ClientCommand): Promise<unknown> => {
     switch (command.command) {
       case 'launchBrowser': {
@@ -227,9 +424,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         return undefined;
       }
       case 'clear':
+        clears += 1;
         updates.reset();
         store.clear();
         websockets.clear();
+        await importWrite;
         await bodies.clear();
         broadcast({ type: 'cleared' });
         return undefined;
@@ -278,15 +477,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'getBody': {
         const exchange = store.get(command.exchangeId);
         if (!exchange) throw new Error('Exchange not found');
-        const { exchangeId, side } = command;
-        const info = side === 'request' ? exchange.requestBody : exchange.responseBody;
-        if (!info || !bodies.read(exchangeId, side)) return null;
-        const headers = side === 'request' ? exchange.requestHeaders : exchange.responseHeaders;
-        const content: BodyContent = await toBodyContent(
-          () => bodies.read(exchangeId, side) ?? Readable.from([]),
-          info.size,
-          headers,
-        );
+        const content: BodyContent | null = await readBody(exchange, command.side);
         return content;
       }
       case 'plugin': {
@@ -312,12 +503,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           return result({ ok: false, reason: 'only HTML, XML, JavaScript and CSS are formatted' });
         }
         if (!info || !bodies.read(exchangeId, side)) return result({ ok: false, reason: 'no body' });
-        const content = await toBodyContent(
-          () => bodies.read(exchangeId, side) ?? Readable.from([]),
-          info.size,
-          headers,
-          MAX_FORMAT_INPUT,
-        );
+        const content = (await readBody(exchange, side, MAX_FORMAT_INPUT))!;
         if (content.truncated) return result({ ok: false, reason: 'too large to format (over 2 MB)' });
         const text = Buffer.from(content.base64, 'base64').toString('utf8');
         try {
@@ -354,6 +540,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
     caCertPath: ca.certPath,
     pluginStatuses: () => pluginHost.statuses(),
+    exportHar,
+    importHar,
     async stop() {
       await pluginHost.stopAll();
       updates.reset();

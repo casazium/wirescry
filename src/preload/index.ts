@@ -10,6 +10,8 @@ const api: WirescryBridge = {
   exportCertificate: () => ipcRenderer.invoke(IPC.exportCertificate),
   saveTextFile: (request) => ipcRenderer.invoke(IPC.saveTextFile, request),
   openTextFile: (request) => ipcRenderer.invoke(IPC.openTextFile, request),
+  exportHar: (exchangeIds) => ipcRenderer.invoke(IPC.exportHar, exchangeIds),
+  importHar: () => ipcRenderer.invoke(IPC.importHar),
   onBackendStateChanged(callback) {
     const listener = (_event: IpcRendererEvent, state: BackendState): void => callback(state);
     ipcRenderer.on(IPC.backendStateChanged, listener);

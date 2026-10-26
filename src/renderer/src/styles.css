@@ -96,6 +96,8 @@ select {
   background: var(--accent);
   color: var(--accent-fg);
   cursor: pointer;
+  /* A button's label stays on one line; the toolbar wraps whole controls instead. */
+  white-space: nowrap;
 }
 
 button.secondary,
@@ -122,6 +124,17 @@ button:disabled {
 .banner.error {
   color: var(--error);
   border-bottom: 1px solid var(--border);
+}
+
+.banner.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.banner.notice span {
+  flex: 1;
 }
 
 .empty {
@@ -781,6 +794,11 @@ button.help-button {
   vertical-align: 1px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent);
+}
+
+.imported-badge {
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: var(--muted);
 }
 
 .tab-badge {

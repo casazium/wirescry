@@ -35,6 +35,8 @@ export interface ExchangeSummary {
   messageCount?: number;
   /** Set when a plugin rule (e.g. a Pro mock rule) handled this request. */
   handledBy?: HandledBy;
+  /** True for an exchange loaded from a HAR file rather than captured. */
+  imported?: true;
 }
 
 /** A plugin rule that handled a request. */
@@ -75,6 +77,8 @@ export interface ExchangeDetail {
   timing: ExchangeTiming;
   requestBody?: BodyInfo;
   responseBody?: BodyInfo;
+  /** For an imported exchange: the file it came from. Its bodies are stored decoded. */
+  importedFrom?: string;
 }
 
 /** One WebSocket message, without its content. */
