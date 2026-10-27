@@ -119,6 +119,8 @@ module.exports = {
   // Never ship a CA: each install generates its own at first run, in the user data folder.
   asar: true,
   beforePack: checkBuild,
+  // Signs and notarizes each macOS .dmg when the build is signed and notarized.
+  artifactBuildCompleted: './scripts/notarize-dmg.cjs',
 
   // Electron features the app doesn't use, turned off so they can't be used against it
   // or to read Pro's code: running the app as plain Node, NODE_OPTIONS, --inspect, and
@@ -154,6 +156,13 @@ module.exports = {
     entitlementsInherit: 'build/entitlements.mac.plist',
     // Notarizes when APPLE_API_KEY, APPLE_API_KEY_ID and APPLE_API_ISSUER are set.
     notarize: true,
+  },
+
+  dmg: {
+    // The updater downloads the zip, so the .dmg stays out of latest-mac.yml (and gets no
+    // blockmap). scripts/notarize-dmg.cjs changes the .dmg after it's built, which would
+    // leave both out of date.
+    writeUpdateInfo: false,
   },
 
   win: {

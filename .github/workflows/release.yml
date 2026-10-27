@@ -31,6 +31,7 @@ on:
       - 'scripts/pro-bytecode/**'
       - 'scripts/third-party-notices.mjs'
       - 'scripts/self-test-packaged.mjs'
+      - 'scripts/notarize-dmg.cjs'
       - 'src/main/**'
   workflow_dispatch:
     inputs:
@@ -288,7 +289,9 @@ jobs:
 
       # Starts each packaged app without a window and checks it runs and, in a Pro build,
       # that Pro loaded. On a tag this runs after the upload; the release is still a
-      # draft, so if it fails, delete the draft rather than publishing it.
+      # draft, so if it fails, delete the draft rather than publishing it. The same goes
+      # for a failed Package step (for example a .dmg Apple refused to notarize), which
+      # can leave a draft holding only some of the files.
       - name: Check the packaged apps start
         shell: bash
         run: |

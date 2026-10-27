@@ -63,7 +63,7 @@ Needs an [Apple Developer Program](https://developer.apple.com/programs/) member
 | `APPLE_API_KEY_ID` | That key's Key ID                                                                                                                                                                                                                               |
 | `APPLE_API_ISSUER` | The Issuer ID shown above the Team Keys list                                                                                                                                                                                                    |
 
-Notarization runs only when the app is also signed.
+Notarization runs only when the app is also signed. When it does, the `.dmg` is also signed, notarized and stapled (`scripts/notarize-dmg.cjs`), so the disk image itself passes Gatekeeper; otherwise the `.dmg` is left unsigned. This needs the release workflow, which sets `CSC_NAME`: a local build signed from `CSC_LINK` leaves the `.dmg` unsigned, with a warning.
 
 ### Windows signing (Azure Artifact Signing)
 
