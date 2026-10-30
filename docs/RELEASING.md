@@ -104,7 +104,7 @@ Anyone who can push a branch to this repo and start a manual run could change th
 ## How updates work
 
 - The app checks `casazium/wirescry-releases` 30 seconds after launch and every 6 hours, downloads a newer version in the background, and asks to restart when it's ready. Otherwise it installs on the next quit. **Check for Updates…** (app menu on macOS, Help on Windows and Linux) checks on demand.
-- Update files come over HTTPS from GitHub and are verified by SHA-512. On macOS the update must be signed by the same Developer ID as the running app, so **unsigned builds can't update themselves**. On Windows, signed builds check the installer's publisher.
+- Update files come over HTTPS from GitHub and are verified by SHA-512. On macOS the update must be signed by the same Developer ID as the running app, so **unsigned builds can't update themselves**. On Windows, signed builds check the installer is signed by one of the publisher names in `electron-builder.cjs` (`windowsPublishers`): the `AZURE_SIGNING_PUBLISHER` name, `Robert Casazza` and `Casazium`. Both identities are listed so signing can move from one to the other without breaking updates for installed copies. A new name must ship in a release before the first release signed with it.
 - Updates are off in development, for `.deb` installs (reinstall instead), and when `WIRESCRY_DISABLE_UPDATES` is set.
 - Update checks and errors are written to the log (**Help → Show Log File**).
 

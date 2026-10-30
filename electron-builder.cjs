@@ -94,6 +94,18 @@ const azureSigning =
       }
     : undefined;
 
+/**
+ * The publisher names a signed Windows build accepts updates from. The updater checks
+ * each downloaded installer is signed by one of these (by certificate CN), and refuses
+ * it otherwise. Listing both lets Windows signing move from the individual identity to
+ * the Casazium one without stranding installed copies: they must already accept the new
+ * name before the first release signed with it. Remove a name only when no supported
+ * version still needs to update to a build signed with it.
+ */
+const windowsPublishers = azureSigning
+  ? [...new Set([env.AZURE_SIGNING_PUBLISHER, 'Robert Casazza', 'Casazium'])]
+  : undefined;
+
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
   appId: 'com.casazium.wirescry',
@@ -194,5 +206,9 @@ module.exports = {
     repo: 'wirescry-releases',
     releaseType: 'draft',
     private: false,
+    // Written into the app's app-update.yml; only the Windows updater reads it. Set only
+    // for Azure-signed builds, as before: electron-builder otherwise fills in the one
+    // name in azureSignOptions.publisherName.
+    ...(windowsPublishers ? { publisherName: windowsPublishers } : {}),
   },
 };
