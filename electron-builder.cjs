@@ -95,15 +95,30 @@ const azureSigning =
     : undefined;
 
 /**
- * The publisher names a signed Windows build accepts updates from. The updater checks
- * each downloaded installer is signed by one of these (by certificate CN), and refuses
- * it otherwise. Listing both lets Windows signing move from the individual identity to
- * the Casazium one without stranding installed copies: they must already accept the new
- * name before the first release signed with it. Remove a name only when no supported
- * version still needs to update to a build signed with it.
+ * Who a signed Windows build accepts updates from. The updater checks each downloaded
+ * installer's certificate and refuses it unless it matches one of these. An entry with
+ * `=` is a distinguished name, and every field in it must match (Windows writes the
+ * state as `S=`, not `ST=`). A plain name matches the certificate's CN alone, which any
+ * publicly trusted certificate with that CN would pass, so known identities are pinned
+ * by DN.
+ *
+ * Signing may move from the individual identity to the Casazium organization one, once
+ * Microsoft validates it. Installed copies must already accept the new identity before
+ * the first release signed with it, or they'll refuse that update. 'Casazium' below is a
+ * placeholder: the real certificate's CN is the validated legal name, which may differ.
+ * Before switching, replace it with the exact DN from a test-signed build and ship a
+ * release with it. Remove an entry only when no supported version still needs to update
+ * to a build signed with it.
  */
+const ROBERT_CASAZZA = 'CN=Robert Casazza, O=Robert Casazza, C=US';
 const windowsPublishers = azureSigning
-  ? [...new Set([env.AZURE_SIGNING_PUBLISHER, 'Robert Casazza', 'Casazium'])]
+  ? [
+      ...new Set([
+        env.AZURE_SIGNING_PUBLISHER === 'Robert Casazza' ? ROBERT_CASAZZA : env.AZURE_SIGNING_PUBLISHER,
+        ROBERT_CASAZZA,
+        'Casazium',
+      ]),
+    ]
   : undefined;
 
 /** @type {import('electron-builder').Configuration} */
