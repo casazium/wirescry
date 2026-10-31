@@ -42,6 +42,10 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
     );
     return;
   }
+  if (data?.type === 'shutdown') {
+    void shutdown();
+    return;
+  }
   if (data?.type !== 'start' || starting) return;
   starting = true;
   try {
@@ -78,9 +82,13 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', (reason as Error)?.stack ?? reason);
 });
 
-const shutdown = async (): Promise<void> => {
-  await backend?.stop().catch(() => undefined);
-  process.exit(0);
-};
+let stopping: Promise<void> | undefined;
+async function shutdown(): Promise<void> {
+  stopping ??= (async () => {
+    await backend?.stop().catch(() => undefined);
+    process.exit(0);
+  })();
+  return stopping;
+}
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);

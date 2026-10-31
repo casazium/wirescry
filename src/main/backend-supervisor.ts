@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto';
+import { rmSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { utilityProcess, type UtilityProcess } from 'electron';
@@ -9,6 +11,7 @@ import type {
   BackendState,
   CryptoReply,
   CryptoRequest,
+  BackendShutdownMessage,
   HarRequest,
 } from '../shared/ipc';
 
@@ -24,6 +27,10 @@ export interface SecureStorage {
 }
 import { lineSplitter, type FileLogger } from './logger';
 
+/** How long the backend gets to stop cleanly on quit before it's killed. */
+const SHUTDOWN_TIMEOUT_MS = 3000;
+/** How long to wait for a killed backend to exit. */
+const KILL_TIMEOUT_MS = 1000;
 const MAX_RESTARTS = 5;
 const RESTART_WINDOW_MS = 60_000;
 
@@ -135,7 +142,9 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
         return;
       }
       this.restarts.push(now);
-      setTimeout(() => this.start(), 500 * this.restarts.length);
+      setTimeout(() => {
+        if (!this.stopping) this.start();
+      }, 500 * this.restarts.length);
     });
 
     const start: BackendStartMessage = {
@@ -173,9 +182,54 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     }
   }
 
+  /** Kills the backend at once. Bodies on disk are left for the next start to clear. */
   stop(): void {
     this.stopping = true;
     this.child?.kill();
+  }
+
+  /**
+   * Asks the backend to stop, which deletes the bodies it stored on disk, and waits for
+   * it to exit. A backend that doesn't stop in time is killed. Then the bodies folder is
+   * deleted here as well, in case the backend couldn't.
+   */
+  async shutdown(): Promise<void> {
+    this.stopping = true;
+    const child = this.child;
+    if (child) {
+      const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+      const within = (ms: number): Promise<boolean> =>
+        Promise.race([
+          exited.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), ms).unref()),
+        ]);
+      try {
+        child.postMessage({ type: 'shutdown' } satisfies BackendShutdownMessage);
+      } catch {
+        // Already gone.
+      }
+      if (!(await within(SHUTDOWN_TIMEOUT_MS))) {
+        child.kill();
+        await within(KILL_TIMEOUT_MS);
+      }
+    }
+    // Windows may hold a file briefly after the process exits.
+    await rm(this.bodiesDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
+      () => undefined,
+    );
+  }
+
+  /** Deletes stored bodies at once, for when there's no time to stop the backend. */
+  removeBodiesSync(): void {
+    try {
+      rmSync(this.bodiesDir, { recursive: true, force: true });
+    } catch {
+      // Files the backend still has open; the next start empties the folder.
+    }
+  }
+
+  private get bodiesDir(): string {
+    return path.join(this.options.dataDir, 'bodies');
   }
 
   private async crypto(request: CryptoRequest): Promise<CryptoReply> {

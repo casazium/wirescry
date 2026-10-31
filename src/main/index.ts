@@ -63,7 +63,10 @@ const CSP = [
 
 registerAppSchemeAsPrivileged();
 
-if (!app.requestSingleInstanceLock()) {
+// A second copy only hands over to the first and quits. It must not touch the first
+// copy's files: the scratch folder at start, or the bodies folder on quit.
+const isFirstInstance = app.requestSingleInstanceLock();
+if (!isFirstInstance) {
   app.quit();
 }
 
@@ -147,6 +150,9 @@ function createWindow(): void {
     );
   });
   window.on('unresponsive', () => logger.write('renderer', 'warn', 'Window stopped responding'));
+  // Windows logging off or shutting down skips before-quit. Delete what we can now; the
+  // next start empties the rest.
+  window.on('session-end', () => backend.removeBodiesSync());
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined;
   });
@@ -196,6 +202,7 @@ app.whenReady().then(() => {
     runSelfTest(path.resolve(selfTestFile));
     return;
   }
+  if (!isFirstInstance) return;
   void clearScratch().catch(() => undefined);
   Menu.setApplicationMenu(
     buildMenu({
@@ -278,5 +285,25 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => backend.stop());
+// Quitting waits (a few seconds at most) for the backend to delete the bodies it stored on
+// disk, and clears HAR scratch files, so captured traffic doesn't outlast the session.
+// Installing an update quits at once, as before: the bodies are cleared when it restarts.
+let cleanedUp = false;
+app.on('before-quit', (event) => {
+  if (cleanedUp || !isFirstInstance) return;
+  if (updater.installing) {
+    cleanedUp = true;
+    backend.stop();
+    return;
+  }
+  event.preventDefault();
+  cleanedUp = true;
+  // Scratch files last: the backend may be writing an export until it stops.
+  void backend
+    .shutdown()
+    .catch(() => undefined)
+    .then(() => clearScratch())
+    .catch(() => undefined)
+    .finally(() => app.quit());
+});
 app.on('will-quit', () => logger.close());

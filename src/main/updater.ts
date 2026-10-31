@@ -1,7 +1,7 @@
 import { app, dialog, type BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import type { FileLogger } from './logger';
-import { FIRST_CHECK_DELAY_MS, UPDATE_INTERVAL_MS, updateDecision } from './update-policy';
+import { FIRST_CHECK_DELAY_MS, NO_STAGING_ID, UPDATE_INTERVAL_MS, updateDecision } from './update-policy';
 
 /**
  * Checks the public releases repo for new versions, downloads them in the
@@ -14,6 +14,8 @@ export class Updater {
   private readonly reason: string | undefined;
   private manualCheck = false;
   private prompting = false;
+  /** Set just before quitting to install an update, which must not be delayed. */
+  installing = false;
 
   constructor(
     private readonly logger: FileLogger,
@@ -32,6 +34,16 @@ export class Updater {
       warn: (message?: unknown) => logger.write('updater', 'warn', String(message)),
       error: (message?: unknown) => logger.write('updater', 'error', String(message)),
       debug: () => undefined,
+    };
+    // electron-updater sends a random ID, kept for the life of the install, with every
+    // request (x-user-staging-id), for staged rollouts. Wirescry doesn't stage rollouts,
+    // so every copy sends the same value and every copy is in every rollout.
+    autoUpdater.requestHeaders = { 'x-user-staging-id': NO_STAGING_ID };
+    autoUpdater.isUserWithinRollout = () => true;
+    // Nor make the ID at all: it would be saved in the data folder and written to the log.
+    // stagingUserIdPromise is protected, and only its `value` is read.
+    (autoUpdater as unknown as { stagingUserIdPromise: { value: Promise<string> } }).stagingUserIdPromise = {
+      value: Promise.resolve(NO_STAGING_ID),
     };
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
@@ -52,6 +64,7 @@ export class Updater {
       this.manualCheck = false;
     });
     autoUpdater.on('error', (error) => {
+      this.installing = false;
       // Background checks fail quietly (offline, GitHub unavailable); errors go to the log.
       if (this.manualCheck) void this.message('error', "Couldn't check for updates.", error.message);
       this.manualCheck = false;
@@ -93,7 +106,12 @@ export class Updater {
         'Restart now to update, or it will install the next time you quit.',
         ['Restart Now', 'Later'],
       );
-      if (result === 0) autoUpdater.quitAndInstall();
+      if (result === 0) {
+        this.installing = true;
+        // If the install doesn't go ahead (it can fail without quitting), later quits clean up again.
+        setTimeout(() => (this.installing = false), 15_000).unref();
+        autoUpdater.quitAndInstall();
+      }
     } finally {
       this.prompting = false;
     }
