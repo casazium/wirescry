@@ -2,7 +2,7 @@
 
 Wirescry is a desktop tool for seeing, debugging and rewriting HTTP traffic, in the same space as HTTP Toolkit. It's built with Electron and TypeScript, with Mockttp as the proxy engine.
 
-- **Repo:** `github.com/casazium/wirescry` (not created yet)
+- **Repo:** `github.com/casazium/wirescry` (private until launch)
 - **Team:** Bob, working full-time, with Claude
 - **Timings** are cumulative from the start of work. Double them if working about 20 hours a week.
 - **Pro** marks paid features. Everything else is free.
@@ -124,10 +124,8 @@ Everything that changes traffic, automates hard setup or explains APIs is Pro.
   - The free app is open source under AGPL-3.0. Bob owns all of its copyright, so it contains no AGPL code from anyone else (including HTTP Toolkit), and outside contributions need a contributor license agreement (CLA).
   - Pro features live in a separate private module under a commercial license. The released app includes both, with Pro locked until a license is active.
   - Pro protection: Pro ships as compiled V8 bytecode; licenses are signed by the server and checked offline with a grace period; Electron's integrity checks and code signing catch patched apps. Server-backed Pro features, such as team sharing, add value that can't be cracked.
-  - Before the repo goes public: a lawyer reviews the AGPL-plus-commercial builds and the CLA wording.
+- **No lawyer review (October 30, 2026).** Bob decided against a lawyer's review and a formal name clearance search; wirescry.com is registered. The repo goes public at launch.
 
 ## Open questions
-- When to make the repo public, after the lawyer's review.
 - CLA wording, and which tool collects signatures.
-- A trademark attorney's view on Wirescry (especially the SCRY mark), then file in the US (classes 9 and 42), and in the UK or EU within six months if selling there.
-- Register wirescry.com and wirescry.dev.
+- Whether to file a trademark for Wirescry: US classes 9 and 42, and the UK or EU within six months if selling there.
