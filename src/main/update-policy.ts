@@ -32,7 +32,12 @@ export const NO_STAGING_ID = '00000000-0000-0000-0000-000000000000';
 export function updateErrorDetail(error: { message?: string; code?: string }): string {
   const code = error.code ?? '';
   const message = error.message ?? '';
-  if (code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' || code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND') {
+  // An empty GitHub release feed comes back as ERR_XML_MISSED_ELEMENT, with this message.
+  if (
+    code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' ||
+    code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' ||
+    message.includes('No published versions')
+  ) {
     return 'No new version is available to download yet. Try again later.';
   }
   if (/net::ERR_|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN/.test(`${code} ${message}`)) {

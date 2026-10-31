@@ -40,6 +40,14 @@ describe('updateErrorDetail', () => {
     expect(detail).not.toMatch(/GitHub/);
   });
 
+  it('recognizes an empty release feed, as electron-updater reports it', () => {
+    const detail = updateErrorDetail({
+      message: 'No published versions on GitHub',
+      code: 'ERR_XML_MISSED_ELEMENT',
+    });
+    expect(detail).toMatch(/No new version/);
+  });
+
   it('explains network failures without the raw error code', () => {
     for (const error of [
       { message: 'net::ERR_CONNECTION_REFUSED' },
