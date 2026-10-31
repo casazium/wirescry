@@ -278,5 +278,19 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
-app.on('before-quit', () => backend.stop());
+// Quitting waits (a few seconds at most) for the backend to delete the bodies it stored on
+// disk, and clears HAR scratch files, so captured traffic doesn't outlast the session.
+// Installing an update quits at once, as before: the bodies are cleared when it restarts.
+let cleanedUp = false;
+app.on('before-quit', (event) => {
+  if (cleanedUp) return;
+  if (updater.installing) {
+    cleanedUp = true;
+    backend.stop();
+    return;
+  }
+  event.preventDefault();
+  cleanedUp = true;
+  void Promise.allSettled([backend.shutdown(), clearScratch()]).finally(() => app.quit());
+});
 app.on('will-quit', () => logger.close());

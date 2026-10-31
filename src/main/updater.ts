@@ -1,7 +1,7 @@
 import { app, dialog, type BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import type { FileLogger } from './logger';
-import { FIRST_CHECK_DELAY_MS, UPDATE_INTERVAL_MS, updateDecision } from './update-policy';
+import { FIRST_CHECK_DELAY_MS, NO_STAGING_ID, UPDATE_INTERVAL_MS, updateDecision } from './update-policy';
 
 /**
  * Checks the public releases repo for new versions, downloads them in the
@@ -14,6 +14,8 @@ export class Updater {
   private readonly reason: string | undefined;
   private manualCheck = false;
   private prompting = false;
+  /** Set just before quitting to install an update, which must not be delayed. */
+  installing = false;
 
   constructor(
     private readonly logger: FileLogger,
@@ -33,6 +35,11 @@ export class Updater {
       error: (message?: unknown) => logger.write('updater', 'error', String(message)),
       debug: () => undefined,
     };
+    // electron-updater sends a random ID, kept for the life of the install, with every
+    // request (x-user-staging-id), for staged rollouts. Wirescry doesn't stage rollouts,
+    // so every copy sends the same value and every copy is in every rollout.
+    autoUpdater.requestHeaders = { 'x-user-staging-id': NO_STAGING_ID };
+    autoUpdater.isUserWithinRollout = () => true;
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
 
@@ -93,7 +100,10 @@ export class Updater {
         'Restart now to update, or it will install the next time you quit.',
         ['Restart Now', 'Later'],
       );
-      if (result === 0) autoUpdater.quitAndInstall();
+      if (result === 0) {
+        this.installing = true;
+        autoUpdater.quitAndInstall();
+      }
     } finally {
       this.prompting = false;
     }

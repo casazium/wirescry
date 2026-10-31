@@ -25,7 +25,15 @@ export type BackendMessage =
   | HarReply;
 
 /** What the main process sends the backend. */
-export type MainToBackendMessage = BackendStartMessage | CryptoReply | HarRequest;
+export type MainToBackendMessage = BackendStartMessage | CryptoReply | HarRequest | BackendShutdownMessage;
+
+/**
+ * Main to backend: stop and delete stored bodies, then exit. Sent on quit instead of a
+ * signal, since on Windows killing the process gives it no chance to clean up.
+ */
+export interface BackendShutdownMessage {
+  type: 'shutdown';
+}
 
 /** Main to backend: write or read a HAR file at a path the user chose in a dialog. */
 export type HarRequest =
