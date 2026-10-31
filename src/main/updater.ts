@@ -1,7 +1,13 @@
 import { app, dialog, type BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import type { FileLogger } from './logger';
-import { FIRST_CHECK_DELAY_MS, NO_STAGING_ID, UPDATE_INTERVAL_MS, updateDecision } from './update-policy';
+import {
+  FIRST_CHECK_DELAY_MS,
+  NO_STAGING_ID,
+  UPDATE_INTERVAL_MS,
+  updateDecision,
+  updateErrorDetail,
+} from './update-policy';
 
 /**
  * Checks the public releases repo for new versions, downloads them in the
@@ -66,7 +72,13 @@ export class Updater {
     autoUpdater.on('error', (error) => {
       this.installing = false;
       // Background checks fail quietly (offline, GitHub unavailable); errors go to the log.
-      if (this.manualCheck) void this.message('error', "Couldn't check for updates.", error.message);
+      // A manual check shows a plain explanation; electron-updater has already logged the error.
+      if (this.manualCheck)
+        void this.message(
+          'error',
+          "Couldn't check for updates.",
+          updateErrorDetail(error as Error & { code?: string }),
+        );
       this.manualCheck = false;
     });
     autoUpdater.on('update-downloaded', (info) => void this.offerRestart(info.version));
