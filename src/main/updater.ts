@@ -40,6 +40,11 @@ export class Updater {
     // so every copy sends the same value and every copy is in every rollout.
     autoUpdater.requestHeaders = { 'x-user-staging-id': NO_STAGING_ID };
     autoUpdater.isUserWithinRollout = () => true;
+    // Nor make the ID at all: it would be saved in the data folder and written to the log.
+    // stagingUserIdPromise is protected, and only its `value` is read.
+    (autoUpdater as unknown as { stagingUserIdPromise: { value: Promise<string> } }).stagingUserIdPromise = {
+      value: Promise.resolve(NO_STAGING_ID),
+    };
     autoUpdater.autoDownload = true;
     autoUpdater.autoInstallOnAppQuit = true;
 
@@ -59,6 +64,7 @@ export class Updater {
       this.manualCheck = false;
     });
     autoUpdater.on('error', (error) => {
+      this.installing = false;
       // Background checks fail quietly (offline, GitHub unavailable); errors go to the log.
       if (this.manualCheck) void this.message('error', "Couldn't check for updates.", error.message);
       this.manualCheck = false;
@@ -102,6 +108,8 @@ export class Updater {
       );
       if (result === 0) {
         this.installing = true;
+        // If the install doesn't go ahead (it can fail without quitting), later quits clean up again.
+        setTimeout(() => (this.installing = false), 15_000).unref();
         autoUpdater.quitAndInstall();
       }
     } finally {

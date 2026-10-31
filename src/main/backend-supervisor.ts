@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { rmSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -141,7 +142,9 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
         return;
       }
       this.restarts.push(now);
-      setTimeout(() => this.start(), 500 * this.restarts.length);
+      setTimeout(() => {
+        if (!this.stopping) this.start();
+      }, 500 * this.restarts.length);
     });
 
     const start: BackendStartMessage = {
@@ -210,9 +213,23 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
         await within(KILL_TIMEOUT_MS);
       }
     }
-    await rm(path.join(this.options.dataDir, 'bodies'), { recursive: true, force: true }).catch(
+    // Windows may hold a file briefly after the process exits.
+    await rm(this.bodiesDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(
       () => undefined,
     );
+  }
+
+  /** Deletes stored bodies at once, for when there's no time to stop the backend. */
+  removeBodiesSync(): void {
+    try {
+      rmSync(this.bodiesDir, { recursive: true, force: true });
+    } catch {
+      // Files the backend still has open; the next start empties the folder.
+    }
+  }
+
+  private get bodiesDir(): string {
+    return path.join(this.options.dataDir, 'bodies');
   }
 
   private async crypto(request: CryptoRequest): Promise<CryptoReply> {
