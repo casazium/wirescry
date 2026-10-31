@@ -5,6 +5,7 @@ import {
   FIRST_CHECK_DELAY_MS,
   NO_STAGING_ID,
   UPDATE_INTERVAL_MS,
+  isNothingToDownload,
   updateDecision,
   updateErrorDetail,
 } from './update-policy';
@@ -73,12 +74,11 @@ export class Updater {
       this.installing = false;
       // Background checks fail quietly (offline, GitHub unavailable); errors go to the log.
       // A manual check shows a plain explanation; electron-updater has already logged the error.
-      if (this.manualCheck)
-        void this.message(
-          'error',
-          "Couldn't check for updates.",
-          updateErrorDetail(error as Error & { code?: string }),
-        );
+      const failure = error as Error & { code?: string };
+      if (this.manualCheck && isNothingToDownload(failure))
+        void this.message('info', 'Wirescry is up to date.', `You have version ${app.getVersion()}.`);
+      else if (this.manualCheck)
+        void this.message('error', "Couldn't check for updates.", updateErrorDetail(failure));
       this.manualCheck = false;
     });
     autoUpdater.on('update-downloaded', (info) => void this.offerRestart(info.version));

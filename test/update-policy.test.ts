@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { updateDecision, updateErrorDetail } from '../src/main/update-policy';
+import { isNothingToDownload, updateDecision, updateErrorDetail } from '../src/main/update-policy';
 
 describe('updateDecision', () => {
   it('checks in packaged builds on macOS and Windows', () => {
@@ -30,24 +30,24 @@ describe('updateDecision', () => {
   });
 });
 
+describe('isNothingToDownload', () => {
+  it('treats an unpublished or empty release feed as nothing to download', () => {
+    for (const error of [
+      { message: 'No published versions on GitHub', code: 'ERR_XML_MISSED_ELEMENT' },
+      { message: 'No published versions on GitHub', code: 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' },
+      { message: 'Cannot find latest-mac.yml', code: 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND' },
+    ]) {
+      expect(isNothingToDownload(error)).toBe(true);
+    }
+  });
+
+  it('leaves real failures alone', () => {
+    expect(isNothingToDownload({ message: 'net::ERR_CONNECTION_REFUSED' })).toBe(false);
+    expect(isNothingToDownload({ message: 'HttpError: 404 Not Found' })).toBe(false);
+  });
+});
+
 describe('updateErrorDetail', () => {
-  it('says no version is available when nothing is published', () => {
-    const detail = updateErrorDetail({
-      message: 'No published versions on GitHub',
-      code: 'ERR_UPDATER_NO_PUBLISHED_VERSIONS',
-    });
-    expect(detail).toMatch(/No new version/);
-    expect(detail).not.toMatch(/GitHub/);
-  });
-
-  it('recognizes an empty release feed, as electron-updater reports it', () => {
-    const detail = updateErrorDetail({
-      message: 'No published versions on GitHub',
-      code: 'ERR_XML_MISSED_ELEMENT',
-    });
-    expect(detail).toMatch(/No new version/);
-  });
-
   it('explains network failures without the raw error code', () => {
     for (const error of [
       { message: 'net::ERR_CONNECTION_REFUSED' },
