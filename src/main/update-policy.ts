@@ -23,3 +23,20 @@ export const FIRST_CHECK_DELAY_MS = 30 * 1000;
 
 /** Sent by every copy in place of electron-updater's per-install ID (the nil UUID). */
 export const NO_STAGING_ID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * What the "Couldn't check for updates" dialog says, in place of electron-updater's raw
+ * error (which can name GitHub, quote Chromium error codes, or include response headers).
+ * The full error is still written to the log.
+ */
+export function updateErrorDetail(error: { message?: string; code?: string }): string {
+  const code = error.code ?? '';
+  const message = error.message ?? '';
+  if (code === 'ERR_UPDATER_NO_PUBLISHED_VERSIONS' || code === 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND') {
+    return 'No new version is available to download yet. Try again later.';
+  }
+  if (/net::ERR_|ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN/.test(`${code} ${message}`)) {
+    return "Wirescry couldn't reach the update server. Check your internet connection, and any proxy or firewall, then try again.";
+  }
+  return 'Something went wrong while checking. The details are in the log (Help → Show Log File).';
+}
