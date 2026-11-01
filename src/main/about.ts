@@ -1,6 +1,8 @@
-/** The About box's text on Windows and Linux. No Electron imports, so it's testable. */
+/** The About box's text, the same on every system. No Electron imports, so it's testable. */
 
 export const WEBSITE = 'https://casazium.com/wirescry';
+// The year of first publication, as in electron-builder.cjs's copyright.
+const COPYRIGHT_YEAR = 2026;
 
 export function aboutDetail(info: {
   version: string;
@@ -14,6 +16,8 @@ export function aboutDetail(info: {
     `Electron ${info.electron}, ${system} ${info.arch}`,
     '',
     'See, debug and change HTTP traffic.',
+    'Free and open source (AGPL-3.0). Wirescry Pro is a paid add-on.',
+    `Copyright © ${COPYRIGHT_YEAR} Bob Casazza, Casazium`,
     WEBSITE,
   ].join('\n');
 }

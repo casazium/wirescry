@@ -116,7 +116,7 @@ function isFromOurUi(url: string): boolean {
   }
 }
 
-/** Help → About Wirescry on Windows and Linux, which have no app menu with a standard About. */
+/** About Wirescry: in the app menu on macOS, under Help on Windows and Linux. */
 async function showAbout(): Promise<void> {
   const options = {
     type: 'info' as const,

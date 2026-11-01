@@ -4,7 +4,7 @@ export function buildMenu(actions: {
   devTools: boolean;
   showLogFile(): void;
   checkForUpdates(): void;
-  /** Windows and Linux only; macOS uses the app menu's standard About. */
+  /** The same box on every system, so the version, copyright and website read alike. */
   showAbout(): void;
 }): Menu {
   const isMac = process.platform === 'darwin';
@@ -18,7 +18,7 @@ export function buildMenu(actions: {
           {
             label: app.name,
             submenu: [
-              { role: 'about' as const },
+              { label: 'About Wirescry', click: () => actions.showAbout() },
               checkForUpdates,
               { type: 'separator' as const },
               { role: 'services' as const },
