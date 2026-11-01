@@ -4,6 +4,8 @@ export function buildMenu(actions: {
   devTools: boolean;
   showLogFile(): void;
   checkForUpdates(): void;
+  /** Windows and Linux only; macOS uses the app menu's standard About. */
+  showAbout(): void;
 }): Menu {
   const isMac = process.platform === 'darwin';
   const checkForUpdates: MenuItemConstructorOptions = {
@@ -52,6 +54,9 @@ export function buildMenu(actions: {
       submenu: [
         ...(isMac ? [] : [checkForUpdates, { type: 'separator' as const }]),
         { label: 'Show Log File', click: () => actions.showLogFile() },
+        ...(isMac
+          ? []
+          : [{ type: 'separator' as const }, { label: 'About Wirescry', click: () => actions.showAbout() }]),
       ],
     },
   ];

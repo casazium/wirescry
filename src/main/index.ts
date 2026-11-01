@@ -8,6 +8,7 @@ import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './
 import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
+import { aboutDetail, WEBSITE } from './about';
 import { contextMenuItems } from './context-menu';
 import { clearScratch, exportHar, importHar } from './har-files';
 import { openTextFile, saveTextFile } from './text-files';
@@ -115,6 +116,28 @@ function isFromOurUi(url: string): boolean {
   }
 }
 
+/** Help → About Wirescry on Windows and Linux, which have no app menu with a standard About. */
+async function showAbout(): Promise<void> {
+  const options = {
+    type: 'info' as const,
+    title: 'About Wirescry',
+    message: 'Wirescry',
+    detail: aboutDetail({
+      version: app.getVersion(),
+      electron: process.versions.electron,
+      platform: process.platform,
+      arch: process.arch,
+    }),
+    buttons: ['OK', 'Open Website'],
+    defaultId: 0,
+    cancelId: 0,
+  };
+  const { response } = mainWindow
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  if (response === 1) void shell.openExternal(WEBSITE);
+}
+
 function createWindow(): void {
   const window = new BrowserWindow({
     width: 1200,
@@ -219,6 +242,7 @@ app.whenReady().then(() => {
         shell.showItemInFolder(logger.file);
       },
       checkForUpdates: () => updater.checkNow(),
+      showAbout: () => void showAbout(),
     }),
   );
 
