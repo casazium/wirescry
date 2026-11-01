@@ -7,5 +7,7 @@ describe('aboutDetail', () => {
     expect(text.split('\n')[0]).toBe('Version 0.1.2');
     expect(text).toContain('Electron 45.0.0, Windows arm64');
     expect(text).toContain(WEBSITE);
+    expect(text).toContain('Copyright © 2026 Bob Casazza, Casazium');
+    expect(text).toContain('AGPL-3.0');
   });
 });
