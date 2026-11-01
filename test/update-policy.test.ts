@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isNothingToDownload, updateDecision, updateErrorDetail } from '../src/main/update-policy';
+import {
+  isNothingToDownload,
+  quietUpdaterError,
+  updateDecision,
+  updateErrorDetail,
+} from '../src/main/update-policy';
 
 describe('updateDecision', () => {
   it('checks in packaged builds on macOS and Windows', () => {
@@ -64,5 +69,19 @@ describe('updateErrorDetail', () => {
     const detail = updateErrorDetail({ message: 'HttpError: 404 Not Found\nHeaders: {"server": "x"}' });
     expect(detail).toMatch(/Show Log File/);
     expect(detail).not.toMatch(/404|Headers/);
+  });
+});
+
+describe('quietUpdaterError', () => {
+  it('turns an empty release feed into one info line', () => {
+    const logged =
+      'Error: Error: No published versions on GitHub\n    at GitHubProvider.getLatestVersion (…)';
+    expect(quietUpdaterError(logged)).toBe('No release is published yet, so there is nothing to update to.');
+    expect(quietUpdaterError('Error: ERR_UPDATER_LATEST_VERSION_NOT_FOUND: …')).toBeDefined();
+  });
+
+  it('leaves real errors alone', () => {
+    expect(quietUpdaterError('Error: net::ERR_INTERNET_DISCONNECTED')).toBeUndefined();
+    expect(quietUpdaterError('Error: sha512 checksum mismatch')).toBeUndefined();
   });
 });

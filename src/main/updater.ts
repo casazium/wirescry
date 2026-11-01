@@ -6,6 +6,7 @@ import {
   NO_STAGING_ID,
   UPDATE_INTERVAL_MS,
   isNothingToDownload,
+  quietUpdaterError,
   updateDecision,
   updateErrorDetail,
 } from './update-policy';
@@ -39,7 +40,10 @@ export class Updater {
     autoUpdater.logger = {
       info: (message?: unknown) => logger.write('updater', 'info', String(message)),
       warn: (message?: unknown) => logger.write('updater', 'warn', String(message)),
-      error: (message?: unknown) => logger.write('updater', 'error', String(message)),
+      error: (message?: unknown) => {
+        const quiet = quietUpdaterError(String(message));
+        logger.write('updater', quiet ? 'info' : 'error', quiet ?? String(message));
+      },
       debug: () => undefined,
     };
     // electron-updater sends a random ID, kept for the life of the install, with every
