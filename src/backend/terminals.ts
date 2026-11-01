@@ -106,6 +106,18 @@ export function posixStartScript(env: Record<string, string>, proxyAddress: stri
   ].join('\n');
 }
 
+/**
+ * The cmd.exe `start` command that opens `terminal` in a new console window showing
+ * `banner`. The banner must not contain characters cmd.exe treats specially (& | < > ^ % ").
+ */
+export function windowsStartCommand(terminal: DetectedTerminal, banner: string): string {
+  const shellArgs =
+    terminal.id === 'cmd'
+      ? `/K echo ${banner}`
+      : `-NoExit -Command "Write-Host '${banner.replace(/'/g, "''")}'"`;
+  return `start "Wirescry" "${terminal.command}" ${shellArgs}`;
+}
+
 /** Opens a new terminal window whose programs send their traffic through Wirescry. */
 export async function launchTerminal(
   terminal: DetectedTerminal,
@@ -127,28 +139,31 @@ export async function launchTerminal(
 
   const spawnEnv = childEnv(process.env, env);
   if (process.platform === 'win32') {
-    // detached: true gives the new process its own console window.
-    if (terminal.id === 'cmd') {
-      await run(terminal.command, ['/K', `echo ${banner}`], spawnEnv, true);
-    } else {
-      await run(
-        terminal.command,
-        ['-NoExit', '-Command', `Write-Host '${banner.replace(/'/g, "''")}'`],
-        spawnEnv,
-        true,
-      );
-    }
+    // A detached process on Windows gets no console, so the shell ran with no window.
+    // `start` opens it in a new console window instead; the cmd.exe running `start`
+    // is hidden and exits at once.
+    await run('cmd.exe', ['/d', '/s', '/c', `"${windowsStartCommand(terminal, banner)}"`], spawnEnv, {
+      windowsVerbatimArguments: true,
+      windowsHide: true,
+    });
     return;
   }
 
   // Linux: the terminal inherits the environment; run a shell that prints the banner first.
   const shellCommand = `echo '${banner.replace(/'/g, `'\\''`)}'; exec "\${SHELL:-/bin/sh}" -l`;
-  await run(terminal.command, [...(terminal.execFlag ?? ['-e']), 'sh', '-c', shellCommand], spawnEnv, true);
+  await run(terminal.command, [...(terminal.execFlag ?? ['-e']), 'sh', '-c', shellCommand], spawnEnv, {
+    detached: true,
+  });
 }
 
-function run(command: string, args: string[], env: NodeJS.ProcessEnv, detached = false): Promise<void> {
+function run(
+  command: string,
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  options: { detached?: boolean; windowsVerbatimArguments?: boolean; windowsHide?: boolean } = {},
+): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { env, detached, stdio: 'ignore' });
+    const child = spawn(command, args, { ...options, env, stdio: 'ignore' });
     child.once('error', reject);
     child.once('spawn', () => {
       child.unref();
