@@ -21,7 +21,8 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 const releaseDir = join(root, 'release', version);
-const expectPro = existsSync(join(root, 'out/main/.pro-build'));
+// WIRESCRY_EXPECT_PRO=1 for a run that has only the installers, without the build's out/.
+const expectPro = existsSync(join(root, 'out/main/.pro-build')) || process.env.WIRESCRY_EXPECT_PRO === '1';
 
 /** The unpacked apps electron-builder leaves next to the installers. */
 function findApps() {
@@ -44,7 +45,9 @@ function findApps() {
 function installWindowsSetup() {
   if (process.platform !== 'win32') return [];
   // Built as "Wirescry Setup 0.1.0.exe"; the upload renames it to Wirescry-Setup-0.1.0.exe.
-  const name = readdirSync(releaseDir).find((f) => /^Wirescry[ -]Setup[ -][\d.]+\.exe$/.test(f));
+  const name = (existsSync(releaseDir) ? readdirSync(releaseDir) : []).find((f) =>
+    /^Wirescry[ -]Setup[ -][\d.]+\.exe$/.test(f),
+  );
   if (!name) {
     console.log(`installed setup: FAILED: no Wirescry Setup .exe in ${releaseDir}`);
     return [{ name: 'installed setup', exe: undefined }];
@@ -107,12 +110,11 @@ function run({ name, exe }) {
   });
 }
 
-const apps = findApps();
+const apps = [...findApps(), ...installWindowsSetup()];
 if (apps.length === 0) {
   console.error(`self-test: no packaged apps in ${releaseDir}`);
   process.exit(1);
 }
-apps.push(...installWindowsSetup());
 let ok = true;
 for (const app of apps) ok = (await run(app)) && ok;
 if (!ok) process.exitCode = 1;
