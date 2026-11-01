@@ -139,13 +139,10 @@ export async function launchTerminal(
 
   const spawnEnv = childEnv(process.env, env);
   if (process.platform === 'win32') {
-    // A detached process on Windows gets no console, so the shell ran with no window.
-    // `start` opens it in a new console window instead; the cmd.exe running `start`
-    // is hidden and exits at once.
-    await run('cmd.exe', ['/d', '/s', '/c', `"${windowsStartCommand(terminal, banner)}"`], spawnEnv, {
-      windowsVerbatimArguments: true,
-      windowsHide: true,
-    });
+    // 0.1.0's launch code, to show the test catches it.
+    const args =
+      terminal.id === 'cmd' ? ['/K', `echo ${banner}`] : ['-NoExit', '-Command', `Write-Host '${banner}'`];
+    await run(terminal.command, args, spawnEnv, { detached: true });
     return;
   }
 
