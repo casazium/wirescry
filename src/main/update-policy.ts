@@ -39,6 +39,17 @@ export function isNothingToDownload(error: { message?: string; code?: string }):
 }
 
 /**
+ * electron-updater logs an empty release feed as an error with a stack trace, on every
+ * check until the first release is published. That's a normal state, not a failure, so
+ * it's logged as one info line instead. Returns that line, or undefined for a real error.
+ */
+export function quietUpdaterError(message: string): string | undefined {
+  return isNothingToDownload({ message, code: /ERR_UPDATER_\w+/.exec(message)?.[0] })
+    ? 'No release is published yet, so there is nothing to update to.'
+    : undefined;
+}
+
+/**
  * What the "Couldn't check for updates" dialog says, in place of electron-updater's raw
  * error (which can name GitHub, quote Chromium error codes, or include response headers).
  * The full error is still written to the log.
