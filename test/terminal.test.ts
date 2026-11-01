@@ -1,11 +1,18 @@
 import { execFile, spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
-import { childEnv, detectTerminals, posixStartScript, windowsStartCommand } from '../src/backend/terminals';
+import {
+  childEnv,
+  detectTerminals,
+  launchTerminal,
+  posixStartScript,
+  windowsStartCommand,
+} from '../src/backend/terminals';
 import type { ProxyStatus } from '../src/shared/api';
 import { curlrcContent, phpIniContent, shellSnippet, terminalEnv } from '../src/shared/terminal-env';
 import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
@@ -333,4 +340,46 @@ describe('windowsStartCommand', () => {
       `start "Wirescry" "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoExit -Command "Write-Host 'it''s ready'"`,
     );
   });
+});
+
+// What the Setup page's Open buttons do. 0.1.0 started the shell detached, which on
+// Windows means no console at all: nothing opened, and no unit test could tell. This
+// opens each shell for real and checks it's still running with a console host of its own.
+describe.runIf(process.platform === 'win32')('opening a terminal on Windows', () => {
+  /** The shell started for `marker` (not the hidden cmd.exe running start), and whether a console hosts it. */
+  async function findShell(marker: string): Promise<{ pid: number; hosted: boolean } | undefined> {
+    const script = `
+      $shell = Get-CimInstance Win32_Process | Where-Object {
+        $_.ProcessId -ne $PID -and $_.CommandLine -like "*$env:WIRESCRY_MARKER*" -and $_.CommandLine -notlike '*/c "start*'
+      } | Select-Object -First 1
+      if ($shell) {
+        $hosts = @(Get-CimInstance Win32_Process -Filter "ParentProcessId = $($shell.ProcessId)" |
+          Where-Object { $_.Name -in 'conhost.exe', 'OpenConsole.exe' })
+        @{ pid = $shell.ProcessId; hosted = $hosts.Count -gt 0 } | ConvertTo-Json -Compress
+      }`;
+    const { stdout } = await promisify(execFile)('powershell.exe', ['-NoProfile', '-Command', script], {
+      env: { ...process.env, WIRESCRY_MARKER: marker },
+    });
+    return stdout.trim() ? JSON.parse(stdout) : undefined;
+  }
+
+  for (const id of ['cmd', 'powershell']) {
+    it(`opens ${id} with its own console`, async () => {
+      const terminal = (await detectTerminals('win32', process.env)).find((t) => t.id === id)!;
+      const marker = `wirescry-test-${randomBytes(6).toString('hex')}`;
+      // The marker rides in the banner, so it's on the shell's command line.
+      await launchTerminal(terminal, {}, { scriptDir: os.tmpdir(), proxyAddress: marker });
+      let shell: { pid: number; hosted: boolean } | undefined;
+      for (let i = 0; i < 20 && !shell?.hosted; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        shell = await findShell(marker);
+      }
+      try {
+        expect(shell, 'the shell is running').toBeDefined();
+        expect(shell!.hosted, 'a console window hosts it').toBe(true);
+      } finally {
+        if (shell) spawnSync('taskkill', ['/PID', String(shell.pid), '/T', '/F']);
+      }
+    }, 30_000);
+  }
 });

@@ -339,3 +339,34 @@ jobs:
         if: always() && runner.os == 'macOS' && env.SIGNING_KEYCHAIN != ''
         shell: bash
         run: security delete-keychain "$SIGNING_KEYCHAIN" || true
+
+  # The Windows build runs on Arm, so its installer test only ever unpacks the setup's
+  # arm64 package. This installs the same setup on an x64 runner, which unpacks the x64
+  # package, and starts the installed app; Pro's x64 bytecode runs natively here too.
+  install-x64:
+    name: Install on x64 Windows
+    needs: [pro, build]
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: Download the Windows installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n wirescry-Windows -D release
+
+      - name: Install the setup and start the installed app
+        shell: bash
+        env:
+          WIRESCRY_EXPECT_PRO: ${{ needs.pro.outputs.sha != '' && '1' || '' }}
+        run: node scripts/self-test-packaged.mjs
