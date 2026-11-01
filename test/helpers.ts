@@ -83,15 +83,23 @@ export async function apiClient(port: number) {
   const ws = connectApi(port, { token: TOKEN, origin: UI_ORIGIN });
   const messages: ServerMessage[] = [];
   const waiting = new Map<number, (m: Extract<ServerMessage, { type: 'result' }>) => void>();
+  // The server's first message (its status) can arrive after 'open'. Callers read
+  // messages[0] straight away, so wait for it; returning on 'open' made that a race.
+  let gotFirst: () => void = () => {};
+  const first = new Promise<void>((resolve) => (gotFirst = resolve));
   ws.on('message', (data) => {
     const message = JSON.parse(data.toString()) as ServerMessage;
     if (message.type === 'result') waiting.get(message.id)?.(message);
-    else messages.push(message);
+    else {
+      messages.push(message);
+      gotFirst();
+    }
   });
   await new Promise((resolve, reject) => {
     ws.once('open', resolve);
     ws.once('error', reject);
   });
+  await first;
   let nextId = 1;
   return {
     messages,
