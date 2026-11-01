@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isInstalledDownload,
   isNothingToDownload,
   quietUpdaterError,
   updateDecision,
   updateErrorDetail,
+  updaterCacheBase,
 } from '../src/main/update-policy';
 
 describe('updateDecision', () => {
@@ -83,5 +85,34 @@ describe('quietUpdaterError', () => {
   it('leaves real errors alone', () => {
     expect(quietUpdaterError('Error: net::ERR_INTERNET_DISCONNECTED')).toBeUndefined();
     expect(quietUpdaterError('Error: sha512 checksum mismatch')).toBeUndefined();
+  });
+});
+
+describe('isInstalledDownload', () => {
+  it('is true for the running version or older', () => {
+    expect(isInstalledDownload('Wirescry-0.1.3-arm64-mac.zip', '0.1.3')).toBe(true);
+    expect(isInstalledDownload('Wirescry-0.1.2-arm64-mac.zip', '0.1.3')).toBe(true);
+    expect(isInstalledDownload('Wirescry-Setup-0.1.3.exe', '0.1.3')).toBe(true);
+    expect(isInstalledDownload('Wirescry-0.1.0-rc.2-mac.zip', '0.1.0')).toBe(true);
+  });
+
+  it('keeps a newer download, waiting to be installed', () => {
+    expect(isInstalledDownload('Wirescry-0.1.4-arm64-mac.zip', '0.1.3')).toBe(false);
+    expect(isInstalledDownload('Wirescry-0.2.0-mac.zip', '0.1.10')).toBe(false);
+    expect(isInstalledDownload('Wirescry-0.1.0-mac.zip', '0.1.0-rc.2')).toBe(false);
+  });
+
+  it('leaves a file it cannot read a version from', () => {
+    expect(isInstalledDownload('update.zip', '0.1.3')).toBe(false);
+  });
+});
+
+describe('updaterCacheBase', () => {
+  it("matches electron-updater's cache folder on each system", () => {
+    expect(updaterCacheBase('darwin', {}, '/Users/me')).toBe('/Users/me/Library/Caches');
+    expect(
+      updaterCacheBase('win32', { LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local' }, 'C:\\Users\\me'),
+    ).toBe('C:\\Users\\me\\AppData\\Local');
+    expect(updaterCacheBase('linux', {}, '/home/me')).toBe('/home/me/.cache');
   });
 });
