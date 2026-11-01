@@ -5,7 +5,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
-import { childEnv, detectTerminals, posixStartScript } from '../src/backend/terminals';
+import { childEnv, detectTerminals, posixStartScript, windowsStartCommand } from '../src/backend/terminals';
 import type { ProxyStatus } from '../src/shared/api';
 import { curlrcContent, phpIniContent, shellSnippet, terminalEnv } from '../src/shared/terminal-env';
 import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
@@ -315,5 +315,22 @@ describe('terminal setup', () => {
       ]);
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('windowsStartCommand', () => {
+  const banner = 'This terminal sends HTTP and HTTPS traffic through Wirescry (127.0.0.1:8000).';
+
+  it('opens Command Prompt with the banner', () => {
+    expect(windowsStartCommand({ id: 'cmd', name: 'Command Prompt', command: 'cmd.exe' }, banner)).toBe(
+      `start "Wirescry" "cmd.exe" /K echo ${banner}`,
+    );
+  });
+
+  it('opens PowerShell from a path with spaces, quoting the banner for PowerShell', () => {
+    const pwsh = { id: 'pwsh', name: 'PowerShell', command: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' };
+    expect(windowsStartCommand(pwsh, "it's ready")).toBe(
+      `start "Wirescry" "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoExit -Command "Write-Host 'it''s ready'"`,
+    );
   });
 });

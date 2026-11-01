@@ -17,9 +17,23 @@ Releases are built by [`.github/workflows/release.yml`](../.github/workflows/rel
 
 3. The workflow builds on macOS, Windows and Linux with Pro included (from `wirescry-pro`'s `main`), signs what it has secrets for, and uploads everything to a **draft** release in `casazium/wirescry-releases`. The tag must match `package.json`, and Pro must be reachable, or the build stops.
 4. Write the release notes in the draft, using the headings below.
-5. Download and try the installers from the draft. When they're good, click **Publish release** on GitHub. Only published releases reach users.
+5. Download the installers from the draft and do [the hands-on check](#hands-on-check) on each system. When they pass, click **Publish release** on GitHub. Only published releases reach users.
 
 Pull requests that change packaging build Linux only; manual runs (**Actions → Release → Run workflow**) build all three. Neither publishes; they keep the installers as workflow artifacts for 3 days. Pull requests always build the free app, so a workflow change in a pull request can't read Pro. A manual run includes Pro, and can build in a different Pro branch or commit (**Pro branch, tag or commit**); its artifacts then contain that Pro, as bytecode.
+
+## Hands-on check
+
+CI starts each app and checks Pro loads, and on Windows installs the setup first, but it can't see windows or click buttons. Two 0.1.0 bugs got past it: the Windows setup installed no `Wirescry.exe` on ARM PCs, and **Open PowerShell** / **Open Command Prompt** showed no window. Both showed up in the first minute of using the app by hand. So before publishing, on **macOS, Windows and Linux** (a VM is fine; Parallels on an Apple silicon Mac is Windows on ARM):
+
+- [ ] Install from the draft's installer, over the previous release if one is installed (that's the upgrade customers get). The app starts from its normal shortcut or launcher.
+- [ ] The header says **Proxy on 127.0.0.1:8000**.
+- [ ] **Setup:** every **Open …** terminal button opens a window. In each, `curl -s https://example.com` (`curl.exe` on Windows) appears in **Traffic**.
+- [ ] **Setup:** the browser launch opens a browser, and an HTTPS page loads without a certificate warning and appears in **Traffic**.
+- [ ] Right-click in a text field shows **Cut**, **Copy**, **Paste**.
+- [ ] **Check for Updates…** says up to date (or offers the right version).
+- [ ] With a Pro license: a mock rule changes the response, and the License tab says Active after quitting and reopening.
+
+Write down anything odd, even if it's small, and fix it before publishing if it would confuse a first-time user.
 
 ## Release notes
 

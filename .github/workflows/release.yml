@@ -283,6 +283,11 @@ jobs:
         env:
           # Used only to upload to casazium/wirescry-releases; never built into the app.
           GH_TOKEN: ${{ env.PUBLISH == 'true' && secrets.RELEASES_TOKEN || '' }}
+          # The Windows setup unpacks with an NSIS 7-Zip plugin that can't read 7-Zip's
+          # ARM64 filter, which 7-Zip picks for ARM64 executables. It skipped every .exe
+          # and .dll, so ARM PCs got an app with no Wirescry.exe. BCJ2 is the filter the
+          # x64 package already used.
+          ELECTRON_BUILDER_7Z_FILTER: ${{ runner.os == 'Windows' && 'BCJ2' || '' }}
         run: |
           if [ "$PUBLISH" = "true" ]; then publish=always; else publish=never; fi
           npx electron-builder --publish "$publish"
