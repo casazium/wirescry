@@ -8,6 +8,7 @@ import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './
 import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
+import { contextMenuItems } from './context-menu';
 import { clearScratch, exportHar, importHar } from './har-files';
 import { openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
@@ -155,6 +156,12 @@ function createWindow(): void {
   window.on('session-end', () => backend.removeBodiesSync());
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined;
+  });
+
+  // Right-click: the usual edit menu in text fields, and Copy for selected text.
+  window.webContents.on('context-menu', (_event, params) => {
+    const items = contextMenuItems(params);
+    if (items.length > 0) Menu.buildFromTemplate(items).popup({ window });
   });
 
   // The UI never navigates or opens windows. Send links to the system browser instead.
