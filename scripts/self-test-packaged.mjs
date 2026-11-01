@@ -42,8 +42,14 @@ function findApps() {
 
 /** Installs the Windows setup silently into a temporary folder and returns the installed app. */
 function installWindowsSetup() {
-  const setup = join(releaseDir, `Wirescry-Setup-${version}.exe`);
-  if (process.platform !== 'win32' || !existsSync(setup)) return [];
+  if (process.platform !== 'win32') return [];
+  // Built as "Wirescry Setup 0.1.0.exe"; the upload renames it to Wirescry-Setup-0.1.0.exe.
+  const name = readdirSync(releaseDir).find((f) => /^Wirescry[ -]Setup[ -][\d.]+\.exe$/.test(f));
+  if (!name) {
+    console.log(`installed setup: FAILED: no Wirescry Setup .exe in ${releaseDir}`);
+    return [{ name: 'installed setup', exe: undefined }];
+  }
+  const setup = join(releaseDir, name);
   const dir = mkdtempSync(join(tmpdir(), 'wirescry-installed-'));
   // NSIS wants /D last and unquoted.
   const result = spawnSync(setup, ['/S', '/currentuser', `/D=${dir}`], { stdio: 'inherit' });
