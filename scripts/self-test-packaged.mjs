@@ -5,9 +5,14 @@
  * started. For a Pro build (out/main/.pro-build), Pro must have loaded and started too: the loader
  * otherwise falls back to the free app quietly, which would hide broken bytecode.
  *
+ * On Windows it also installs the setup .exe silently and starts the installed app. The
+ * unpacked app can be fine while the installer isn't: 0.1.0's first build installed no
+ * .exe or .dll files on ARM PCs, because its unpacker can't read the ARM64 compression
+ * filter (see ELECTRON_BUILDER_7Z_FILTER in release.yml).
+ *
  *   node scripts/self-test-packaged.mjs     (on Linux: xvfb-run -a node …)
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -35,7 +40,24 @@ function findApps() {
   return apps;
 }
 
+/** Installs the Windows setup silently into a temporary folder and returns the installed app. */
+function installWindowsSetup() {
+  const setup = join(releaseDir, `Wirescry-Setup-${version}.exe`);
+  if (process.platform !== 'win32' || !existsSync(setup)) return [];
+  const dir = mkdtempSync(join(tmpdir(), 'wirescry-installed-'));
+  // NSIS wants /D last and unquoted.
+  const result = spawnSync(setup, ['/S', '/currentuser', `/D=${dir}`], { stdio: 'inherit' });
+  const exe = join(dir, 'Wirescry.exe');
+  if (result.status !== 0 || !existsSync(exe)) {
+    const files = existsSync(dir) ? readdirSync(dir).join(', ') : 'nothing';
+    console.log(`installed setup: FAILED: exit ${result.status}, no Wirescry.exe (installed: ${files})`);
+    return [{ name: 'installed setup', exe: undefined }];
+  }
+  return [{ name: `installed setup (${process.arch})`, exe }];
+}
+
 function run({ name, exe }) {
+  if (!exe) return Promise.resolve(false);
   const work = mkdtempSync(join(tmpdir(), 'wirescry-self-test-'));
   const resultFile = join(work, 'result.json');
   const args = [`--user-data-dir=${join(work, 'data')}`, `--wirescry-self-test=${resultFile}`];
@@ -84,6 +106,7 @@ if (apps.length === 0) {
   console.error(`self-test: no packaged apps in ${releaseDir}`);
   process.exit(1);
 }
+apps.push(...installWindowsSetup());
 let ok = true;
 for (const app of apps) ok = (await run(app)) && ok;
 if (!ok) process.exitCode = 1;
