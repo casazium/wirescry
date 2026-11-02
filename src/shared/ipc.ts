@@ -42,7 +42,9 @@ export interface BackendShutdownMessage {
 /** Main to backend: write or read a HAR file at a path the user chose in a dialog. */
 export type HarRequest =
   | { type: 'har'; id: number; op: 'export'; file: string; exchangeIds: string[] }
-  | { type: 'har'; id: number; op: 'import'; file: string; name: string };
+  | { type: 'har'; id: number; op: 'import'; file: string; name: string }
+  /** Not a HAR file: one exchange's whole body, decoded where possible. */
+  | { type: 'har'; id: number; op: 'body'; file: string; exchangeId: string; side: 'request' | 'response' };
 
 /** Backend to main: how a HAR request went. */
 export type HarReply =
@@ -117,9 +119,37 @@ export const IPC = {
   exportHar: 'wirescry:export-har',
   importHar: 'wirescry:import-har',
   showMenu: 'wirescry:show-menu',
+  saveBody: 'wirescry:save-body',
+  menuCommand: 'wirescry:menu-command',
+  menuState: 'wirescry:menu-state',
   restartBackend: 'wirescry:restart-backend',
   showLog: 'wirescry:show-log',
 } as const;
+
+export interface SaveBodyRequest {
+  exchangeId: string;
+  side: 'request' | 'response';
+  /** Suggested file name, e.g. `users.json`. */
+  name: string;
+}
+
+/** The saved file's name and what was written, or nothing if the user canceled. */
+export interface SaveBodyResult {
+  name?: string;
+  size?: number;
+  /** Set when an encoded body couldn't be decoded, so it was saved as stored. */
+  decodeError?: string;
+}
+
+/** Commands from the app menu to the window. */
+export type MenuCommand = 'import-har' | 'export-har' | 'toggle-recording' | 'clear' | 'find';
+
+/** What the window tells the app menu, so its commands are enabled and ticked to match. */
+export interface MenuState {
+  connected: boolean;
+  canExport: boolean;
+  paused: boolean;
+}
 
 /** An item in a menu the UI shows with showMenu. */
 export type MenuChoice = { id: string; label: string; enabled?: boolean } | { separator: true };
@@ -167,6 +197,12 @@ export interface WirescryBridge {
   exportHar(exchangeIds: string[]): Promise<HarExportResult>;
   /** Asks the user to pick a HAR file, then adds its exchanges to the traffic list. */
   importHar(): Promise<HarImportResult>;
+  /** Listens for app menu commands. Returns a function that stops listening. */
+  onMenuCommand(callback: (command: MenuCommand) => void): () => void;
+  /** Tells the app menu what's possible now. */
+  setMenuState(state: MenuState): void;
+  /** Asks where to save one body of an exchange, then saves all of it. */
+  saveBody(request: SaveBodyRequest): Promise<SaveBodyResult>;
   /** Shows a native menu at the mouse, then resolves with the chosen item's id, or nothing. */
   showMenu(choices: MenuChoice[]): Promise<string | undefined>;
   /** Starts the backend again after it failed. */

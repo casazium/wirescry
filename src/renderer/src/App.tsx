@@ -1,7 +1,7 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
 import type { ExchangeSummary } from '../../shared/api';
-import type { MenuChoice } from '../../shared/ipc';
+import type { MenuChoice, MenuCommand } from '../../shared/ipc';
 import { fetchCurlCommand } from './curl-command';
 import { DetailPane, type ExchangeActionButton } from './DetailPane';
 import { FilterHelp } from './FilterHelp';
@@ -80,19 +80,6 @@ export function App(): React.JSX.Element {
 
   const browsers = status?.browsers ?? [];
   const browserId = selectedBrowser || browsers[0]?.id || '';
-
-  // Cmd/Ctrl+F focuses the search box.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
-        event.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
 
   const closeHelp = (returnFocus: boolean): void => {
     setShowHelp(false);
@@ -236,6 +223,45 @@ export function App(): React.JSX.Element {
   else stateLabel = `Proxy on 127.0.0.1:${status?.proxyPort}`;
 
   const filtered = search.trim() !== '' || quickFilter !== 'all';
+
+  const clearAll = (): void => {
+    setSelectedId(undefined);
+    void send({ command: 'clear' });
+  };
+
+  // Commands from the app menu (and their shortcuts), handled with the latest state.
+  const menuHandlers = useRef<(command: MenuCommand) => void>(() => {});
+  useEffect(() => {
+    menuHandlers.current = (command) => {
+      if (command === 'find') {
+        setView('traffic');
+        requestAnimationFrame(() => {
+          searchRef.current?.focus();
+          searchRef.current?.select();
+        });
+      } else if (!connected) {
+        return;
+      } else if (command === 'import-har') {
+        if (!harBusy) void importHar();
+      } else if (command === 'export-har') {
+        if (!harBusy && exportable.length > 0) void exportHar();
+      } else if (command === 'toggle-recording') {
+        void send({ command: 'setPaused', paused: !paused });
+      } else if (command === 'clear') {
+        // Not while typing: Cmd/Ctrl+K mustn't wipe the list from a text field.
+        const focused = document.activeElement as HTMLElement | null;
+        const typing =
+          focused?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(focused?.tagName ?? '');
+        if (!typing) clearAll();
+      }
+      // The menu ticks Pause Recording itself when clicked; put it back if nothing changed.
+      window.wirescry.setMenuState({ connected, canExport: exportable.length > 0 && !harBusy, paused });
+    };
+  });
+  useEffect(() => window.wirescry.onMenuCommand((command) => menuHandlers.current(command)), []);
+  useEffect(() => {
+    window.wirescry.setMenuState({ connected, canExport: exportable.length > 0 && !harBusy, paused });
+  }, [connected, exportable.length, harBusy, paused]);
 
   return (
     <div className="app">
@@ -422,15 +448,7 @@ export function App(): React.JSX.Element {
               >
                 {paused ? 'Resume recording' : 'Pause recording'}
               </button>
-              <button
-                type="button"
-                className="secondary"
-                onClick={() => {
-                  setSelectedId(undefined);
-                  void send({ command: 'clear' });
-                }}
-                disabled={!connected}
-              >
+              <button type="button" className="secondary" onClick={clearAll} disabled={!connected}>
                 Clear
               </button>
             </div>

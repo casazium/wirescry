@@ -1,6 +1,8 @@
 /** The About box's text, the same on every system. No Electron imports, so it's testable. */
 
 export const WEBSITE = 'https://casazium.com/wirescry';
+/** Where to report a problem: the open-source app's issues. */
+export const ISSUES_URL = 'https://github.com/casazium/wirescry/issues';
 // The year of first publication, as in electron-builder.cjs's copyright.
 const COPYRIGHT_YEAR = 2026;
 

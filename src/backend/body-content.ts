@@ -1,4 +1,7 @@
-import { Readable } from 'node:stream';
+import { createWriteStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { createDecodeStream } from 'http-encoding';
 import type { BodyContent, Header } from '../shared/api';
 
@@ -74,4 +77,63 @@ export async function toBodyContent(
 
   const { data, truncated } = await readUpTo(webStream(), limit);
   return { base64: data.toString('base64'), size, contentType, encoding, decodeError, truncated };
+}
+
+/** Saving a body decoded stops past this, and writes the stored bytes instead. */
+export const MAX_DECODED_SAVE = 2 * 1024 * 1024 * 1024;
+
+/** What writing a body to a file did. */
+export interface WrittenBody {
+  /** Bytes written. */
+  size: number;
+  /** True if it was decoded (e.g. from gzip); false if written as stored. */
+  decoded: boolean;
+  /** Why it wasn't decoded, if it was encoded. */
+  decodeError?: string;
+}
+
+/**
+ * Writes a whole stored body to `file`, decoded where possible, streaming so a large body
+ * is never held in memory. If decoding fails partway, the file is rewritten with the
+ * stored bytes.
+ */
+export async function writeBodyToFile(
+  open: () => Readable,
+  headers: Header[] | undefined,
+  file: string,
+  /** The most decoded bytes to write; past this, the stored bytes are written instead. */
+  maxDecoded = MAX_DECODED_SAVE,
+): Promise<WrittenBody> {
+  const encoding = headerValue(headers, 'content-encoding');
+  const write = async (stream: Readable, through?: Transform): Promise<number> => {
+    if (through) await pipeline(stream, through, createWriteStream(file));
+    else await pipeline(stream, createWriteStream(file));
+    return (await stat(file)).size;
+  };
+  let decodeError: string | undefined;
+  let decoder: ReturnType<typeof createDecodeStream> = null;
+  try {
+    decoder = createDecodeStream(encoding);
+  } catch {
+    decodeError = `Unsupported encoding: ${encoding}`;
+  }
+  if (decoder) {
+    try {
+      const web = (Readable.toWeb(open()) as ReadableStream<Uint8Array>).pipeThrough(decoder);
+      // A small compressed body can decode to something enormous; stop well before that.
+      let written = 0;
+      const cap = new Transform({
+        transform(chunk: Buffer, _encoding, done) {
+          written += chunk.length;
+          if (written > maxDecoded)
+            done(new Error(`it would be over ${Math.round(maxDecoded / 1024 / 1024)} MB decoded`));
+          else done(null, chunk);
+        },
+      });
+      return { size: await write(Readable.fromWeb(web as never), cap), decoded: true };
+    } catch (error) {
+      decodeError = `Couldn't decode ${encoding} body: ${(error as Error).message}`;
+    }
+  }
+  return { size: await write(open()), decoded: false, ...(decodeError ? { decodeError } : {}) };
 }

@@ -3,14 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { format } from 'node:util';
 import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session, shell } from 'electron';
-import { IPC, type BackendState, type ExportResult } from '../shared/ipc';
+import { IPC, type BackendState, type ExportResult, type MenuState } from '../shared/ipc';
 import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './app-protocol';
 import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
-import { buildMenu } from './menu';
-import { aboutDetail, WEBSITE } from './about';
+import { buildMenu, updateMenu } from './menu';
+import { aboutDetail, ISSUES_URL, WEBSITE } from './about';
 import { checkMenuChoices, contextMenuItems } from './context-menu';
-import { clearScratch, exportHar, importHar } from './har-files';
+import { clearScratch, exportHar, importHar, saveBody } from './har-files';
 import { openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
 
@@ -181,6 +181,9 @@ function createWindow(): void {
   window.on('session-end', () => backend.removeBodiesSync());
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined;
+    // Nothing for the menu's commands to act on until a window opens again.
+    const menu = Menu.getApplicationMenu();
+    if (menu) updateMenu(menu, { connected: false, canExport: false, paused: false });
   });
 
   // Right-click: the usual edit menu in text fields, and Copy for selected text.
@@ -246,17 +249,30 @@ app.whenReady().then(() => {
   }
   if (!isFirstInstance) return;
   void clearScratch().catch(() => undefined);
-  Menu.setApplicationMenu(
-    buildMenu({
-      devTools: isDevBuild,
-      showLogFile: () => {
-        logger.flush();
-        shell.showItemInFolder(logger.file);
-      },
-      checkForUpdates: () => updater.checkNow(),
-      showAbout: () => void showAbout(),
-    }),
-  );
+  const appMenu = buildMenu({
+    devTools: isDevBuild,
+    showLogFile: () => {
+      logger.flush();
+      shell.showItemInFolder(logger.file);
+    },
+    checkForUpdates: () => updater.checkNow(),
+    showAbout: () => void showAbout(),
+    command: (name) => mainWindow?.webContents.send(IPC.menuCommand, name),
+    openWebsite: () => void shell.openExternal(WEBSITE),
+    reportProblem: () => void shell.openExternal(ISSUES_URL),
+  });
+  Menu.setApplicationMenu(appMenu);
+  // The window says what's possible, so menu commands are enabled and ticked to match.
+  ipcMain.on(IPC.menuState, (event, state: unknown) => {
+    if (!isFromOurUi(event.senderFrame?.url ?? '')) return;
+    const s = state as Partial<MenuState> | null;
+    if (typeof s !== 'object' || s === null) return;
+    updateMenu(appMenu, {
+      connected: s.connected === true,
+      canExport: s.canExport === true,
+      paused: s.paused === true,
+    });
+  });
 
   // The UI may write to the clipboard (copy URL, copy as curl) and nothing else: no camera, notifications, etc.
   session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
@@ -307,6 +323,10 @@ app.whenReady().then(() => {
   ipcMain.handle(IPC.openTextFile, (event, request: unknown) => {
     if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
     return openTextFile(mainWindow, request);
+  });
+  ipcMain.handle(IPC.saveBody, (event, request: unknown) => {
+    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+    return saveBody(mainWindow, backend, request);
   });
   ipcMain.handle(IPC.restartBackend, (event) => {
     if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');

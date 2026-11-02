@@ -28,7 +28,9 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
       ? Promise.reject(new Error("Wirescry's backend is still starting."))
       : data.op === 'export'
         ? backend.exportHar(data.file, data.exchangeIds)
-        : backend.importHar(data.file, data.name);
+        : data.op === 'body'
+          ? backend.saveBody(data.file, data.exchangeId, data.side)
+          : backend.importHar(data.file, data.name);
     job.then(
       (value) => post({ type: 'har-result', id, ok: true, value }),
       (error: unknown) =>
