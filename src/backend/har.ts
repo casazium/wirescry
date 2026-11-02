@@ -54,6 +54,10 @@ const harHeaders = (headers: Header[] | undefined): Array<{ name: string; value:
 const harHttpVersion = (version: string): string =>
   version.startsWith('2') ? 'HTTP/2.0' : `HTTP/${version}`;
 
+/** Whether a Content-Type is an HTML form's default, whose fields HAR lists as postData.params. */
+const isFormEncoded = (type: string | undefined): boolean =>
+  type?.split(';')[0]?.trim().toLowerCase() === 'application/x-www-form-urlencoded';
+
 function queryString(url: string): Array<{ name: string; value: string }> {
   try {
     return [...new URL(url).searchParams].map(([name, value]) => ({ name, value }));
@@ -83,6 +87,11 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
       mimeType: requestType ?? '',
       text: body.text,
       ...(body.encoding ? { _encoding: body.encoding } : {}),
+      // A form's fields, decoded, as browsers' HAR files list them. Tools that read params
+      // rather than text otherwise see an empty form, e.g. an OAuth token request.
+      ...(isFormEncoded(requestType) && !body.encoding
+        ? { params: [...new URLSearchParams(body.text)].map(([name, value]) => ({ name, value })) }
+        : {}),
     };
     if (requestBody.truncated || detail.requestBody.stored < detail.requestBody.size)
       cut.push('request body');
