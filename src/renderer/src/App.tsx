@@ -129,9 +129,16 @@ export function App(): React.JSX.Element {
       { id: 'copy-url', label: 'Copy URL' },
       ...(exchange.websocket ? [] : [{ id: 'copy-curl', label: 'Copy as curl' }]),
       ...(actions.length > 0 ? [{ separator: true as const }] : []),
-      ...actions.map((a) => ({ id: a.key, label: a.label })),
+      // Within what a menu accepts: short labels, and at most 40 items.
+      ...actions.slice(0, 30).map((a) => ({ id: a.key, label: a.label.slice(0, 100) })),
     ];
-    const chosen = await window.wirescry.showMenu(choices);
+    let chosen: string | undefined;
+    try {
+      chosen = await window.wirescry.showMenu(choices);
+    } catch (error) {
+      setMessage(`Couldn't show the menu: ${(error as Error).message}`);
+      return;
+    }
     try {
       if (chosen === 'copy-url') await navigator.clipboard.writeText(exchange.url);
       else if (chosen === 'copy-curl')
