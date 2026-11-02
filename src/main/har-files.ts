@@ -111,7 +111,7 @@ export async function importHar(
 
 /** A safe file name from the UI's suggestion, e.g. `users.json`, or `body` if there's nothing usable. */
 export function bodyFileName(suggested: unknown): string {
-  const name = typeof suggested === 'string' ? path.basename(suggested) : '';
+  const name = typeof suggested === 'string' ? (suggested.split(/[\\/]/).pop() ?? '') : '';
   const clean = name
     .split('')
     .map((c) => (c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 || '<>:"/\\|?*'.includes(c) ? '_' : c))

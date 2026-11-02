@@ -75,6 +75,7 @@ describe('body file names', () => {
 
   it('cleans what the window suggests before using it as a default path', () => {
     expect(cleanName('../../etc/passwd')).toBe('passwd');
+    expect(cleanName('C:\\Windows\\evil.json')).toBe('evil.json');
     expect(cleanName('a:b\u0001.json')).toBe('a_b_.json');
     expect(cleanName('...')).toBe('body');
     expect(cleanName(42)).toBe('body');
