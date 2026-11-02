@@ -81,19 +81,6 @@ export function App(): React.JSX.Element {
   const browsers = status?.browsers ?? [];
   const browserId = selectedBrowser || browsers[0]?.id || '';
 
-  // Cmd/Ctrl+F focuses the search box.
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent): void => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'f') {
-        event.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
   const closeHelp = (returnFocus: boolean): void => {
     setShowHelp(false);
     if (returnFocus) helpButtonRef.current?.focus();
@@ -261,8 +248,14 @@ export function App(): React.JSX.Element {
       } else if (command === 'toggle-recording') {
         void send({ command: 'setPaused', paused: !paused });
       } else if (command === 'clear') {
-        clearAll();
+        // Not while typing: Cmd/Ctrl+K mustn't wipe the list from a text field.
+        const focused = document.activeElement as HTMLElement | null;
+        const typing =
+          focused?.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(focused?.tagName ?? '');
+        if (!typing) clearAll();
       }
+      // The menu ticks Pause Recording itself when clicked; put it back if nothing changed.
+      window.wirescry.setMenuState({ connected, canExport: exportable.length > 0 && !harBusy, paused });
     };
   });
   useEffect(() => window.wirescry.onMenuCommand((command) => menuHandlers.current(command)), []);

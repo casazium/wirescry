@@ -38,6 +38,20 @@ describe('writeBodyToFile', () => {
     expect(await readFile(file)).toEqual(stored);
   });
 
+  it('writes the stored bytes when the decoded body would be too large', async () => {
+    const file = path.join(dir, 'bomb.bin');
+    const stored = gzipSync(Buffer.alloc(200_000));
+    const result = await writeBodyToFile(
+      () => Readable.from([stored]),
+      [['content-encoding', 'gzip']],
+      file,
+      100_000,
+    );
+    expect(result.decoded).toBe(false);
+    expect(result.decodeError).toMatch(/over/);
+    expect(await readFile(file)).toEqual(stored);
+  });
+
   it('writes a plain body as it is', async () => {
     const file = path.join(dir, 'c.txt');
     const result = await writeBodyToFile(() => Readable.from([Buffer.from('plain')]), [], file);

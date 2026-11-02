@@ -27,21 +27,28 @@ function prettyJson(text: string): string | undefined {
 function FormattedCode({
   format,
   text,
+  onFormatted,
 }: {
   format: () => Promise<FormattedBody>;
   text: string;
+  /** Called with the formatted text, so Copy can copy what's shown. */
+  onFormatted(text: string | undefined): void;
 }): React.JSX.Element {
   const [result, setResult] = useState<FormattedBody>();
   useEffect(() => {
     let active = true;
     format().then(
-      (value) => active && setResult(value),
+      (value) => {
+        if (!active) return;
+        setResult(value);
+        onFormatted(value.ok ? value.text : undefined);
+      },
       (error: Error) => active && setResult({ ok: false, reason: error.message }),
     );
     return () => {
       active = false;
     };
-  }, [format]);
+  }, [format, onFormatted]);
 
   if (!result) return <p className="muted">Formatting…</p>;
   if (!result.ok) {
@@ -71,6 +78,8 @@ export function BodyView({
   onSave?: () => Promise<string | undefined>;
 }): React.JSX.Element {
   const [status, setStatus] = useState<string>();
+  // Code the backend formatted, once it has.
+  const [formattedCode, setFormattedCode] = useState<string>();
   const say = (text: string | undefined): void => {
     setStatus(text);
     if (text) setTimeout(() => setStatus((current) => (current === text ? undefined : current)), 4000);
@@ -94,10 +103,15 @@ export function BodyView({
   const [chosen, setMode] = useState<Mode>();
   const mode = chosen && modes.includes(chosen) ? chosen : modes[0]!;
 
-  // What Copy puts on the clipboard: what's shown, as text.
-  const copyText =
-    mode === 'hex' ? hexDump(bytes) : mode === 'formatted' && pretty !== undefined ? pretty : text;
+  // What Copy puts on the clipboard: what's shown, as text (the hex dump is made on click).
+  const canCopy = mode === 'hex' || (text !== undefined && !(mode === 'formatted' && imageUrl !== undefined));
   const copy = async (): Promise<void> => {
+    const copyText =
+      mode === 'hex'
+        ? hexDump(bytes)
+        : mode === 'formatted'
+          ? (pretty ?? (kind === 'code' ? (formattedCode ?? text) : text))
+          : text;
     if (copyText === undefined) return;
     try {
       await navigator.clipboard.writeText(copyText);
@@ -136,12 +150,7 @@ export function BodyView({
             {status}
           </span>
         )}
-        <button
-          type="button"
-          className="secondary small"
-          disabled={copyText === undefined || (mode === 'formatted' && imageUrl !== undefined)}
-          onClick={() => void copy()}
-        >
+        <button type="button" className="secondary small" disabled={!canCopy} onClick={() => void copy()}>
           Copy
         </button>
         {onSave && (
@@ -167,7 +176,7 @@ export function BodyView({
       {mode === 'formatted' && imageUrl && <img className="body-image" src={imageUrl} alt="Response body" />}
       {mode === 'formatted' && pretty !== undefined && <pre className="code">{pretty}</pre>}
       {mode === 'formatted' && kind === 'code' && text !== undefined && (
-        <FormattedCode format={formatOnce} text={text} />
+        <FormattedCode format={formatOnce} text={text} onFormatted={setFormattedCode} />
       )}
       {mode === 'text' && <pre className="code">{text}</pre>}
       {mode === 'hex' && <pre className="code hex">{hexDump(bytes)}</pre>}

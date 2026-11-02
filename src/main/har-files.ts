@@ -142,6 +142,8 @@ export async function saveBody(
   ) {
     throw new Error('Nothing to save.');
   }
+  // Check it can be saved before asking where: an empty file name only checks.
+  await backend.har({ op: 'body', file: '', exchangeId: r.exchangeId, side: r.side });
   const options = { defaultPath: path.join(app.getPath('downloads'), bodyFileName(r.name)) };
   const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
   if (result.canceled || !result.filePath) return {};

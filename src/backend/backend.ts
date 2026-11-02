@@ -274,8 +274,14 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     if (!exchange) throw new Error('That request is no longer in the list.');
     if (bodies.isReceiving(exchangeId, side)) throw new Error('That body is still arriving.');
     if (!bodies.read(exchangeId, side)) throw new Error('That request has no body to save.');
+    if (file === '') return { size: 0, decoded: false }; // Only checking it can be saved.
     return writeBodyToFile(
-      () => bodies.read(exchangeId, side) ?? Readable.from([]),
+      () => {
+        const stream = bodies.read(exchangeId, side);
+        // Cleared meanwhile: an empty file would look like a saved body.
+        if (!stream) throw new Error('That request is no longer in the list.');
+        return stream;
+      },
       decodingHeaders(exchange, side),
       file,
     );

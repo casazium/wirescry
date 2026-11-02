@@ -181,6 +181,9 @@ function createWindow(): void {
   window.on('session-end', () => backend.removeBodiesSync());
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined;
+    // Nothing for the menu's commands to act on until a window opens again.
+    const menu = Menu.getApplicationMenu();
+    if (menu) updateMenu(menu, { connected: false, canExport: false, paused: false });
   });
 
   // Right-click: the usual edit menu in text fields, and Copy for selected text.
