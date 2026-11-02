@@ -22,6 +22,10 @@ export default tseslint.config(
     languageOptions: { globals: globals.node },
   },
   {
+    // V8's linear-time regex flag, which the backend runs with (src/shared/backend-v8-flags.json).
+    rules: { 'no-invalid-regexp': ['error', { allowConstructorFlags: ['l'] }] },
+  },
+  {
     // Plain CommonJS: build config, and scripts that run in Electron as CommonJS.
     files: ['**/*.cjs'],
     languageOptions: { sourceType: 'commonjs', globals: globals.node },

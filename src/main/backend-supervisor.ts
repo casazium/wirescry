@@ -5,6 +5,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { utilityProcess, type UtilityProcess } from 'electron';
 import type { PluginStatus } from '../shared/api';
+import backendV8Flags from '../shared/backend-v8-flags.json';
 import type {
   BackendMessage,
   BackendStartMessage,
@@ -32,6 +33,15 @@ const SHUTDOWN_TIMEOUT_MS = 3000;
 /** How long to wait for a killed backend to exit. */
 const KILL_TIMEOUT_MS = 1000;
 const MAX_RESTARTS = 5;
+
+/**
+ * V8 flags for the backend, given when its process starts. The first lets Pro's rules use
+ * linear-time regexes (the `l` flag); the others are what Pro's bytecode was compiled with
+ * (scripts/pro-bytecode), or V8 rejects it. They must be set at launch: changing a V8 flag
+ * once the process is running breaks every V8 context made afterwards, so a worker thread
+ * or a decompression stream aborts the whole backend. Nothing may change them at run time.
+ */
+export const BACKEND_V8_FLAGS: readonly string[] = backendV8Flags;
 const RESTART_WINDOW_MS = 60_000;
 
 /**
@@ -54,6 +64,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private storage: SecureStorage | null | undefined;
   /** Plugins the backend loaded, as of its last start. */
   plugins: PluginStatus[] = [];
+  /** With the selfCheck option: the problems the backend's self-check found at its last start. */
+  selfCheckProblems: string[] | undefined;
 
   constructor(
     private readonly options: {
@@ -67,6 +79,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
        */
       secureStorage?: () => SecureStorage | undefined;
       app: { version: string; releaseDate: string };
+      /** For the packaged self-test: have the backend check itself before it reports ready. */
+      selfCheck?: boolean;
     },
   ) {
     super();
@@ -82,6 +96,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     const child = utilityProcess.fork(path.join(__dirname, 'backend.js'), [], {
       serviceName: 'Wirescry Backend',
       stdio: 'pipe',
+      execArgv: [`--js-flags=${BACKEND_V8_FLAGS.join(' ')}`],
     });
     this.child = child;
     // Send the backend's output to the log file, and to the terminal during development.
@@ -104,6 +119,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     child.on('message', (message: BackendMessage) => {
       if (message.type === 'ready') {
         this.plugins = message.plugins;
+        this.selfCheckProblems = message.selfCheck;
         this.setState({
           state: 'ready',
           connection: { apiUrl: `ws://127.0.0.1:${message.apiPort}/`, token: this.token },
@@ -154,6 +170,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       allowedOrigins: this.options.allowedOrigins,
       pluginsEnabled: this.options.pluginsEnabled,
       app: this.options.app,
+      selfCheck: this.options.selfCheck,
     };
     child.postMessage(start);
   }

@@ -2,12 +2,11 @@
  * Entry point for the backend, run by the main process as an Electron utility process.
  * It waits for a `start` message with its settings, then reports back the ports it's using.
  */
-// Must stay the first import: plugins may compile linear-time regexes as they load.
-import './v8-flags';
 import type { BackendMessage, MainToBackendMessage } from '../shared/ipc';
 import { backendPlugins } from '@wirescry/pro/backend';
 import { startBackend, type RunningBackend } from './backend';
 import { ipcEncryptor } from './secure-store';
+import { selfCheck } from './self-check';
 
 const parentPort = process.parentPort;
 let backend: RunningBackend | undefined;
@@ -65,6 +64,7 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
       apiPort: backend.apiPort,
       proxyPort: backend.proxyPort,
       plugins: backend.pluginStatuses(),
+      ...(data.selfCheck ? { selfCheck: await selfCheck() } : {}),
     });
   } catch (error) {
     post({ type: 'error', message: (error as Error).stack ?? String(error) });

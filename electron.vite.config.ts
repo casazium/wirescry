@@ -13,7 +13,6 @@ if (proDir && !existsSync(resolve(proDir, 'src/backend/index.ts'))) {
   throw new Error(`WIRESCRY_PRO_DIR is set, but ${proDir} doesn't look like a wirescry-pro checkout.`);
 }
 const pluginApi = resolve(__dirname, 'src/plugin-api');
-const v8Flags = resolve(__dirname, 'src/backend/v8-flags.ts');
 const proBackend = proDir
   ? resolve(proDir, 'src/backend/index.ts')
   : resolve(__dirname, 'src/pro-stub/backend.ts');
@@ -28,7 +27,6 @@ const idKey = (file: string): string => {
   return process.platform === 'win32' ? key.toLowerCase() : key;
 };
 const proRoot = proDir ? idKey(realpathSync(proDir)) + '/' : undefined;
-const v8FlagsKey = idKey(realpathSync(v8Flags));
 const isProModule = (id: string): boolean => proRoot !== undefined && idKey(id).startsWith(proRoot);
 
 /**
@@ -129,14 +127,10 @@ export default defineConfig(() => {
           // With Pro, put all of Pro's backend code in one chunk (chunks/pro-*.js), so that
           // scripts/pro-bytecode/compile.mjs can swap it for V8 bytecode before packaging.
           // electron-builder.cjs refuses to package a build where that hasn't happened.
-          // v8-flags gets its own chunk too, so it still runs before Pro's code loads.
           output: proDir
             ? {
                 codeSplitting: {
-                  groups: [
-                    { name: 'v8-flags', test: (id: string) => idKey(id) === v8FlagsKey, priority: 2 },
-                    { name: 'pro', test: isProModule, priority: 1 },
-                  ],
+                  groups: [{ name: 'pro', test: isProModule, priority: 1 }],
                 },
               }
             : undefined,

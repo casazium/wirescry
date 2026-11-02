@@ -26,9 +26,12 @@ export interface BackendView {
 export function useBackend(): BackendView {
   const [backendState, setBackendState] = useState<BackendState>({ state: 'starting' });
   const [connected, setConnected] = useState(false);
-  // Goes up when the backend (re)starts, so plugin views remount and load fresh state.
-  // A reconnect to the same backend doesn't count, so unsaved edits survive it.
+  // Goes up on the first hello from each backend start, so plugin views remount and load
+  // fresh state once they can reach it. A reconnect to the same backend doesn't count, so
+  // unsaved edits survive it.
   const [session, setSession] = useState(0);
+  // The backend connection that last said hello; a different one means a new backend.
+  const greeted = useRef<unknown>(undefined);
   const [status, setStatus] = useState<ProxyStatus>();
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
   const [paused, setPaused] = useState(false);
@@ -42,14 +45,7 @@ export function useBackend(): BackendView {
 
   useEffect(() => {
     let active = true;
-    const update = (state: BackendState): void => {
-      setBackendState(state);
-      if (state.state === 'ready') {
-        setSession((n) => n + 1);
-        // Plugin views remount and set their badges again.
-        setBadges({});
-      }
-    };
+    const update = (state: BackendState): void => setBackendState(state);
     void window.wirescry.getBackendState().then((state) => {
       if (active) update(state);
     });
@@ -83,6 +79,12 @@ export function useBackend(): BackendView {
           list.reset(message.exchanges);
           render();
           setConnected(true);
+          if (greeted.current !== connection) {
+            greeted.current = connection;
+            setSession((n) => n + 1);
+            // Plugin views remount and set their badges again.
+            setBadges({});
+          }
           break;
         case 'exchanges':
           list.apply(message.exchanges, message.removed);

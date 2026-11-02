@@ -32,6 +32,8 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const here = dirname(fileURLToPath(import.meta.url));
+/** The backend's V8 flags; the loader checks the backend was started with them. */
+const v8Flags = JSON.parse(readFileSync(join(here, '../../src/shared/backend-v8-flags.json'), 'utf8'));
 const root = resolve(here, '../..');
 const chunks = join(root, 'out/main/chunks');
 const LOADER_MARK = '/* wirescry-pro-bytecode-loader */';
@@ -181,7 +183,9 @@ async function main() {
   }
 
   // Last, so a failure above leaves the plain chunk to compile again.
-  const loader = readFileSync(join(here, 'loader.cjs'), 'utf8').replaceAll('__JSC_BASE__', base);
+  const loader = readFileSync(join(here, 'loader.cjs'), 'utf8')
+    .replaceAll('__JSC_BASE__', base)
+    .replaceAll('__V8_FLAGS__', JSON.stringify(v8Flags));
   writeFileSync(file, loader);
   console.log(`Pro backend is now bytecode for ${arches.join(', ')}: ${base}.<arch>.jsc`);
 }
