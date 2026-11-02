@@ -6,19 +6,21 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const v8 = require('node:v8');
 const Module = require('node:module');
 
-// Must match scripts/pro-bytecode/compile-worker.cjs, or V8 rejects the bytecode. The
-// first is the backend's own (src/backend/v8-flags.ts), set again in case of load order.
-v8.setFlagsFromString('--enable-experimental-regexp-engine');
-v8.setFlagsFromString('--no-lazy');
-v8.setFlagsFromString('--no-flush-bytecode');
+// The V8 flags the bytecode was compiled with (src/shared/backend-v8-flags.json, filled in
+// by compile.mjs). The backend gets them at launch. They can't be set here: changing a V8
+// flag in a running process makes it abort the next time it creates a V8 context.
+const V8_FLAGS = JSON.parse('__V8_FLAGS__');
 
 const MAGIC = 'WSBC0001';
 const HEADER = 28; // magic (8), source length (4), tag (16)
 
 function load() {
+  const given = process.execArgv.filter((arg) => arg.startsWith('--js-flags=')).join(' ');
+  const missing = V8_FLAGS.filter((flag) => !given.split(/[\s=]+/).includes(flag));
+  if (missing.length > 0)
+    throw new Error('the backend was started without the V8 flags ' + missing.join(' '));
   const filename = path.join(__dirname, '__JSC_BASE__.' + process.arch + '.jsc');
   let data;
   try {

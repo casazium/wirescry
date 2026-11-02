@@ -29,6 +29,7 @@ CI starts each app and checks Pro loads, and on Windows installs the setup first
 - [ ] The header says **Proxy on 127.0.0.1:8000**.
 - [ ] **Setup:** every **Open …** terminal button opens a window. In each, `curl -s https://example.com` (`curl.exe` on Windows) appears in **Traffic**.
 - [ ] **Setup:** the browser launch opens a browser, and an HTTPS page loads without a certificate warning and appears in **Traffic**.
+- [ ] Click that page's HTML response, then a script or stylesheet: each opens in **Formatted** view, and **Traffic** keeps its requests. (Up to 0.1.3, opening a compressed or HTML body crashed the backend and emptied the list.)
 - [ ] Right-click in a text field shows **Cut**, **Copy**, **Paste**.
 - [ ] **Check for Updates…** says up to date (or offers the right version).
 - [ ] With a Pro license: a mock rule changes the response, and the License tab says Active after quitting and reopening.

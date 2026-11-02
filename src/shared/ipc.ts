@@ -10,6 +10,8 @@ export interface BackendStartMessage {
   app: { version: string; releaseDate: string };
   /** Whether plugins such as Pro may run. Pro checks its own license. */
   pluginsEnabled: boolean;
+  /** For the packaged self-test: run src/backend/self-check.ts before reporting ready. */
+  selfCheck?: boolean;
 }
 
 export type BackendMessage =
@@ -19,6 +21,8 @@ export type BackendMessage =
       proxyPort: number;
       /** The plugins built into this copy, such as Pro, and whether each started. */
       plugins: PluginStatus[];
+      /** With selfCheck: the problems it found (none if all is well). */
+      selfCheck?: string[];
     }
   | { type: 'error'; message: string }
   | CryptoRequest

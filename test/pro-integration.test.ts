@@ -1,7 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { setFlagsFromString } from 'node:v8';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { BackendPlugin } from '../src/plugin-api/backend';
@@ -25,7 +24,6 @@ describe.skipIf(!proDir)('Pro in the backend', () => {
   });
 
   it('mocks matching requests and marks them with the rule', async () => {
-    setFlagsFromString('--enable-experimental-regexp-engine'); // As src/backend/index.ts does.
     const { backendPlugins } = (await import(path.resolve(proDir!, 'src/backend/index.ts'))) as {
       backendPlugins: BackendPlugin[];
     };

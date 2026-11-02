@@ -4,13 +4,10 @@
 'use strict';
 const { randomBytes } = require('node:crypto');
 const fs = require('node:fs');
-const v8 = require('node:v8');
 const vm = require('node:vm');
 
-// The backend's flags (src/backend/v8-flags.ts) and the loader's (./loader.cjs).
-v8.setFlagsFromString('--enable-experimental-regexp-engine');
-v8.setFlagsFromString('--no-lazy');
-v8.setFlagsFromString('--no-flush-bytecode');
+// electron-main.cjs starts this process with the backend's V8 flags
+// (src/shared/backend-v8-flags.json), which V8 bakes into the bytecode.
 
 const params = ['exports', 'require', 'module', '__filename', '__dirname'];
 const [source, out] = process.argv.slice(-2);

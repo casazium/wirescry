@@ -17,7 +17,8 @@ import { Updater } from './updater';
 /**
  * `--wirescry-self-test=<file>`: start the backend without a window, write what loaded
  * to <file> as JSON, and quit. The release workflow runs packaged builds this way to
- * check that Pro's bytecode loads on each platform. Use a throwaway --user-data-dir.
+ * check that Pro's bytecode loads on each platform, and that the backend survives its
+ * self-check (src/backend/self-check.ts). Use a throwaway --user-data-dir.
  */
 const selfTestFile = app.commandLine.getSwitchValue('wirescry-self-test');
 // A self-test's log goes in its throwaway data folder, not the user's real log.
@@ -102,6 +103,7 @@ const backend = new BackendSupervisor({
   // in its own code: this file is open source, so a check here could simply be removed.
   pluginsEnabled: true,
   logger,
+  selfCheck: !!selfTestFile,
 });
 logger.addSecret(backend.token);
 const updater = new Updater(logger, () => mainWindow);
@@ -218,11 +220,21 @@ function runSelfTest(file: string): void {
     () => void finish({ error: 'The backend took over 2 minutes to start.' }, 2),
     120_000,
   );
+  let starts = 0;
   backend.on('state', (state) => {
-    if (state.state === 'starting') return;
+    if (state.state === 'starting') {
+      // A second start means the backend died and the supervisor is restarting it.
+      if (++starts > 1) {
+        clearTimeout(timer);
+        void finish({ error: 'The backend stopped unexpectedly (see the log).' }, 1);
+      }
+      return;
+    }
     clearTimeout(timer);
-    if (state.state === 'ready') void finish({ plugins: backend.plugins }, 0);
-    else void finish({ error: state.message }, 1);
+    const problems = backend.selfCheckProblems ?? ['the backend ran no self-check'];
+    if (state.state !== 'ready') void finish({ error: state.message }, 1);
+    else if (problems.length > 0) void finish({ error: `Self-check: ${problems.join('; ')}` }, 1);
+    else void finish({ plugins: backend.plugins }, 0);
   });
   backend.start();
 }

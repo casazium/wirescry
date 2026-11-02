@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
+import backendV8Flags from './src/shared/backend-v8-flags.json' with { type: 'json' };
 
 export default defineConfig({
   resolve: {
@@ -15,6 +16,8 @@ export default defineConfig({
   test: {
     include: ['test/**/*.test.ts'],
     environment: 'node',
+    // Tests run the backend in-process, so give it the V8 flags it gets at launch.
+    execArgv: backendV8Flags,
     testTimeout: 20_000,
   },
 });
