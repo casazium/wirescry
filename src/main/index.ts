@@ -314,6 +314,8 @@ app.whenReady().then(() => {
   });
   ipcMain.handle(IPC.showLog, (event) => {
     if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+    // So the file has the latest lines, e.g. about a crash.
+    logger.flush();
     shell.showItemInFolder(logger.file);
   });
   // A menu the UI builds, such as the one on a traffic row. Resolves with the chosen id.

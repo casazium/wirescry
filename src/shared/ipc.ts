@@ -103,7 +103,8 @@ export interface BackendRestart {
 
 export type BackendState =
   | { state: 'starting'; restart?: BackendRestart }
-  | { state: 'ready'; connection: BackendConnection; restart?: BackendRestart }
+  /** `generation` counts backend starts, so a new backend can be told from the same one. */
+  | { state: 'ready'; connection: BackendConnection; generation: number; restart?: BackendRestart }
   /** `message` is for people; the details are in the log. */
   | { state: 'failed'; message: string };
 

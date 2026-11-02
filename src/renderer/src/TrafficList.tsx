@@ -156,6 +156,9 @@ export function TrafficList({
                     </span>
                   )}
                   {e.path}
+                  {staleIds.has(e.id) && (
+                    <span className="visually-hidden"> (from before the proxy restarted)</span>
+                  )}
                 </span>
                 <span role="cell" className="num col-size">
                   {e.responseSize !== undefined ? formatBytes(e.responseSize) : ''}

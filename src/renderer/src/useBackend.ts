@@ -74,7 +74,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
   // fresh state once they can reach it. A reconnect to the same backend doesn't count, so
   // unsaved edits survive it.
   const [session, setSession] = useState(0);
-  // The backend connection that last said hello; a different one means a new backend.
+  // The backend start that last said hello; a different one means a new backend.
   const greeted = useRef<unknown>(undefined);
   const [status, setStatus] = useState<ProxyStatus>();
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
@@ -114,6 +114,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
   }, []);
 
   const connection = backendState.state === 'ready' ? backendState.connection : undefined;
+  const generation = backendState.state === 'ready' ? backendState.generation : undefined;
 
   useEffect(() => {
     if (!connection) return;
@@ -133,7 +134,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
         case 'hello':
           setStatus(message.status);
           setPaused(message.paused);
-          if (greeted.current !== undefined && greeted.current !== connection) {
+          if (greeted.current !== undefined && greeted.current !== generation) {
             // A new backend: keep what the old one had captured, and say what happened.
             const before = latest.current;
             const kept = [...before.previous, ...before.exchanges].slice(-MAX_PREVIOUS);
@@ -160,8 +161,8 @@ export function useBackend(showView: (key: string) => void): BackendView {
           // same render, and mustn't be in both lists.
           setExchanges(list.snapshot());
           setConnected(true);
-          if (greeted.current !== connection) {
-            greeted.current = connection;
+          if (greeted.current !== generation) {
+            greeted.current = generation;
             setSession((n) => n + 1);
             // Plugin views remount and set their badges again.
             setBadges({});
@@ -205,11 +206,15 @@ export function useBackend(showView: (key: string) => void): BackendView {
     return () => {
       open = false;
       clearTimeout(retry);
-      if (frame !== undefined) cancelAnimationFrame(frame);
+      if (frame !== undefined) {
+        cancelAnimationFrame(frame);
+        // Rows that arrived in the last frame, so they're kept if this backend is gone.
+        setExchanges(list.snapshot());
+      }
       client.close();
       clientRef.current = undefined;
     };
-  }, [connection, attempt]);
+  }, [connection, generation, attempt]);
 
   const send = useCallback((command: Command) => {
     const client = clientRef.current;

@@ -152,6 +152,12 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
 
   const timing = detail?.timing;
 
+  // The backend that had a stale exchange's bodies is gone, so it can't format them.
+  const formatBody = (side: BodySide): Promise<FormattedBody> =>
+    stale
+      ? Promise.resolve({ ok: false, reason: 'the proxy that had this body restarted.' })
+      : (send({ command: 'formatBody', exchangeId: summary.id, side }) as Promise<FormattedBody>);
+
   return (
     <aside className="detail" id={DETAIL_PANE_ID} aria-label="Exchange details">
       <div className="detail-header">
@@ -263,7 +269,8 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
           </section>
         )}
 
-        {summary.websocket && (
+        {/* An old connection's messages can't be fetched; one that was open keeps what it showed. */}
+        {summary.websocket && (!stale || detail) && (
           <WebSocketMessagesView
             key={summary.id}
             exchangeId={summary.id}
@@ -274,22 +281,16 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
 
         <details open>
           <summary>Request headers</summary>
-          {detail ? <HeaderTable headers={detail.requestHeaders} /> : <p className="muted">Loading…</p>}
+          {detail ? (
+            <HeaderTable headers={detail.requestHeaders} />
+          ) : (
+            <p className="muted">{stale ? 'Lost when the proxy restarted.' : 'Loading…'}</p>
+          )}
         </details>
         {!!requestSize && (
           <details open>
             <summary>Request body</summary>
-            <Body
-              state={requestBody}
-              info={detail?.requestBody}
-              format={() =>
-                send({
-                  command: 'formatBody',
-                  exchangeId: summary.id,
-                  side: 'request',
-                }) as Promise<FormattedBody>
-              }
-            />
+            <Body state={requestBody} info={detail?.requestBody} format={() => formatBody('request')} />
           </details>
         )}
         {detail?.responseHeaders && (
@@ -301,17 +302,7 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
         {!!responseSize && (
           <details open>
             <summary>Response body</summary>
-            <Body
-              state={responseBody}
-              info={detail?.responseBody}
-              format={() =>
-                send({
-                  command: 'formatBody',
-                  exchangeId: summary.id,
-                  side: 'response',
-                }) as Promise<FormattedBody>
-              }
-            />
+            <Body state={responseBody} info={detail?.responseBody} format={() => formatBody('response')} />
           </details>
         )}
       </div>

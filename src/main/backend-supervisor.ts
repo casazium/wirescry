@@ -60,6 +60,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private lastRestart: BackendRestart | undefined;
   /** Set when the backend reports it couldn't start, so its exit isn't treated as a crash. */
   private startFailed = false;
+  /** Counts starts, reported with 'ready'. */
+  private generation = 0;
   private nextHarId = 0;
   private readonly harWaiting = new Map<
     number,
@@ -97,6 +99,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
 
   start(): void {
     this.startFailed = false;
+    this.generation += 1;
+    const generation = this.generation;
     this.setState({ state: 'starting', ...this.restartInfo() });
     this.storage = undefined;
     const child = utilityProcess.fork(path.join(__dirname, 'backend.js'), [], {
@@ -129,6 +133,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
         this.setState({
           state: 'ready',
           connection: { apiUrl: `ws://127.0.0.1:${message.apiPort}/`, token: this.token },
+          generation,
           ...this.restartInfo(),
         });
         console.log(
@@ -197,7 +202,10 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
 
   /** Starts the backend again after it failed. Does nothing while it's running. */
   restart(): void {
-    if (this.child || this.stopping || this.current.state !== 'failed') return;
+    if (this.child || this.stopping || this.current.state !== 'failed') {
+      console.warn('[wirescry] not restarting the backend: it is still running or Wirescry is quitting');
+      return;
+    }
     this.restarts = [];
     this.lastRestart = { at: Date.now(), byUser: true };
     this.start();
