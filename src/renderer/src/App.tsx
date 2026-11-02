@@ -29,6 +29,7 @@ export function App(): React.JSX.Element {
       plugin.views.map((v) => ({ key: `${plugin.name}:${v.id}`, plugin: plugin.name, view: v })),
     );
   const searchRef = useRef<HTMLInputElement>(null);
+  const helpButtonRef = useRef<HTMLButtonElement>(null);
 
   // Typing stays responsive while a large list is re-filtered.
   const deferredSearch = useDeferredValue(search);
@@ -52,6 +53,11 @@ export function App(): React.JSX.Element {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  const closeHelp = (returnFocus: boolean): void => {
+    setShowHelp(false);
+    if (returnFocus) helpButtonRef.current?.focus();
+  };
 
   const onListKey = (event: React.KeyboardEvent): void => {
     if (event.key === 'Escape') {
@@ -231,6 +237,8 @@ export function App(): React.JSX.Element {
               className="icon help-button"
               aria-label="Search syntax"
               aria-expanded={showHelp}
+              aria-controls={showHelp ? 'filter-help' : undefined}
+              ref={helpButtonRef}
               onClick={() => setShowHelp((v) => !v)}
             >
               ?
@@ -276,11 +284,11 @@ export function App(): React.JSX.Element {
             <button
               type="button"
               className="secondary"
-              aria-pressed={paused}
+              // Recording only: breakpoints, which pause requests, are a different thing.
               onClick={() => void send({ command: 'setPaused', paused: !paused })}
               disabled={!connected}
             >
-              {paused ? 'Resume' : 'Pause'}
+              {paused ? 'Resume recording' : 'Pause recording'}
             </button>
             <button
               type="button"
@@ -317,7 +325,8 @@ export function App(): React.JSX.Element {
                   setShowHelp(false);
                   searchRef.current?.focus();
                 }}
-                onClose={() => setShowHelp(false)}
+                onClose={closeHelp}
+                toggle={helpButtonRef}
               />
             </div>
           )}

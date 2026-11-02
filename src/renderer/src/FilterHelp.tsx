@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import { QUERY_FIELDS } from '../../shared/query';
 
 const EXAMPLES: Array<[string, string]> = [
@@ -13,19 +14,57 @@ const EXAMPLES: Array<[string, string]> = [
   ['-host=*.google.com', 'Everything except Google hosts'],
 ];
 
-/** A short guide to the search syntax, with examples that fill in the search box. */
+/**
+ * A short guide to the search syntax, with examples that fill in the search box.
+ * Takes focus when it opens. Escape or × closes it and gives focus back (`returnFocus`
+ * true); a click outside it (except on `toggle`), or Escape with focus elsewhere, just closes it.
+ */
 export function FilterHelp({
   onPick,
   onClose,
+  toggle,
 }: {
   onPick(query: string): void;
-  onClose(): void;
+  onClose(returnFocus: boolean): void;
+  /** The button that opens and closes this; clicking it isn't a click outside. */
+  toggle: React.RefObject<HTMLElement | null>;
 }): React.JSX.Element {
+  const ref = useRef<HTMLDivElement>(null);
+  // The latest callbacks, so the listeners below are added once, when it opens.
+  const latest = useRef({ onClose, toggle });
+  useEffect(() => {
+    latest.current = { onClose, toggle };
+  });
+
+  useEffect(() => {
+    ref.current?.querySelector<HTMLElement>('li button')?.focus();
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return;
+      // With focus elsewhere (tabbed out of it), close it but let Escape do its usual job there.
+      if (!ref.current?.contains(document.activeElement)) return latest.current.onClose(false);
+      event.preventDefault();
+      event.stopPropagation();
+      latest.current.onClose(true);
+    };
+    const onPointer = (event: PointerEvent): void => {
+      const target = event.target as Node;
+      if (ref.current?.contains(target) || latest.current.toggle.current?.contains(target)) return;
+      latest.current.onClose(false);
+    };
+    // Capture, so Escape doesn't also reach the search box or the traffic list.
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('pointerdown', onPointer);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('pointerdown', onPointer);
+    };
+  }, []);
+
   return (
-    <div className="filter-help" role="dialog" aria-label="Search syntax">
+    <div className="filter-help" role="dialog" aria-label="Search syntax" id="filter-help" ref={ref}>
       <div className="filter-help-head">
         <strong>Search and filters</strong>
-        <button type="button" className="icon" aria-label="Close" onClick={onClose}>
+        <button type="button" className="icon" aria-label="Close" onClick={() => onClose(true)}>
           ×
         </button>
       </div>
