@@ -460,6 +460,50 @@ describe('harEntry', () => {
     ...extra,
   });
 
+  it("lists a form's fields as postData.params, as browsers do", () => {
+    const form =
+      'grant_type=authorization_code&code=abc%2F123&redirect_uri=https%3A%2F%2Fapp.test%2Fcb&scope=a+b&empty=';
+    const entry = harEntry({
+      detail: detail({
+        requestHeaders: [['content-type', 'application/x-www-form-urlencoded; charset=UTF-8']],
+        requestBody: { size: form.length, stored: form.length },
+      }),
+      requestBody: body(form),
+      responseBody: null,
+    });
+    expect((entry.request as { postData: unknown }).postData).toEqual({
+      mimeType: 'application/x-www-form-urlencoded; charset=UTF-8',
+      text: form,
+      params: [
+        { name: 'grant_type', value: 'authorization_code' },
+        { name: 'code', value: 'abc/123' },
+        { name: 'redirect_uri', value: 'https://app.test/cb' },
+        { name: 'scope', value: 'a b' },
+        { name: 'empty', value: '' },
+      ],
+    });
+
+    // Other bodies, and a form that isn't text, keep only text.
+    const json = harEntry({
+      detail: detail({
+        requestHeaders: [['content-type', 'application/json']],
+        requestBody: { size: 2, stored: 2 },
+      }),
+      requestBody: body('{}'),
+      responseBody: null,
+    });
+    expect((json.request as { postData: Record<string, unknown> }).postData.params).toBeUndefined();
+    const binary = harEntry({
+      detail: detail({
+        requestHeaders: [['content-type', 'application/x-www-form-urlencoded']],
+        requestBody: { size: 2, stored: 2 },
+      }),
+      requestBody: { base64: Buffer.from([0, 255]).toString('base64'), size: 2, truncated: false },
+      responseBody: null,
+    });
+    expect((binary.request as { postData: Record<string, unknown> }).postData.params).toBeUndefined();
+  });
+
   it('says when a body is cut short or still encoded', () => {
     const cut = harEntry({
       detail: detail({ responseHeaders: [], responseBody: { size: 200, stored: 3 } }),
