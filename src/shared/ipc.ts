@@ -91,9 +91,21 @@ export interface BackendConnection {
   token: string;
 }
 
+/** The last time the backend was restarted: after it stopped unexpectedly, or by the user. */
+export interface BackendRestart {
+  /** When it stopped, in ms since the epoch. */
+  at: number;
+  /** Its exit code, if it crashed. */
+  exitCode?: number | null;
+  /** True if the user restarted it (after it failed). */
+  byUser?: true;
+}
+
 export type BackendState =
-  | { state: 'starting' }
-  | { state: 'ready'; connection: BackendConnection }
+  | { state: 'starting'; restart?: BackendRestart }
+  /** `generation` counts backend starts, so a new backend can be told from the same one. */
+  | { state: 'ready'; connection: BackendConnection; generation: number; restart?: BackendRestart }
+  /** `message` is for people; the details are in the log. */
   | { state: 'failed'; message: string };
 
 export const IPC = {
@@ -105,6 +117,8 @@ export const IPC = {
   exportHar: 'wirescry:export-har',
   importHar: 'wirescry:import-har',
   showMenu: 'wirescry:show-menu',
+  restartBackend: 'wirescry:restart-backend',
+  showLog: 'wirescry:show-log',
 } as const;
 
 /** An item in a menu the UI shows with showMenu. */
@@ -155,4 +169,8 @@ export interface WirescryBridge {
   importHar(): Promise<HarImportResult>;
   /** Shows a native menu at the mouse, then resolves with the chosen item's id, or nothing. */
   showMenu(choices: MenuChoice[]): Promise<string | undefined>;
+  /** Starts the backend again after it failed. */
+  restartBackend(): Promise<void>;
+  /** Shows Wirescry's log file in the Finder or Explorer. */
+  showLog(): Promise<void>;
 }

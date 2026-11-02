@@ -102,3 +102,69 @@ describe('BackendSupervisor.shutdown', () => {
     expect(forked).toHaveLength(1);
   });
 });
+
+describe('BackendSupervisor restarts', () => {
+  const dataDir = path.join(os.tmpdir(), 'wirescry-supervisor-restarts');
+  const supervisor = () =>
+    new BackendSupervisor({
+      dataDir,
+      allowedOrigins: [],
+      pluginsEnabled: false,
+      app: { version: '0.0.0', releaseDate: '' },
+    });
+  const ready = (child: FakeChild): void => {
+    child.emit('message', { type: 'ready', proxyPort: 8001, apiPort: 9000, plugins: [] });
+  };
+
+  beforeEach(() => {
+    forked.length = 0;
+    vi.useFakeTimers();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it('says when it restarted a crashed backend', async () => {
+    const s = supervisor();
+    s.start();
+    ready(forked[0]!);
+    expect(s.state).not.toHaveProperty('restart');
+    forked[0]!.emit('exit', 5);
+    await vi.runAllTimersAsync();
+    expect(forked).toHaveLength(2);
+    expect(s.state).toMatchObject({ state: 'starting', restart: { exitCode: 5 } });
+    ready(forked[1]!);
+    expect(s.state).toMatchObject({ state: 'ready', restart: { exitCode: 5 } });
+  });
+
+  it('doesn’t keep restarting a backend that couldn’t start, and gives a short reason', async () => {
+    const s = supervisor();
+    s.start();
+    forked[0]!.emit('message', {
+      type: 'error',
+      message: 'Error: listen EADDRINUSE\n    at Server.listen (x.js:1)',
+    });
+    forked[0]!.emit('exit', 1);
+    await vi.runAllTimersAsync();
+    expect(forked).toHaveLength(1);
+    expect(s.state).toEqual({
+      state: 'failed',
+      message: "Wirescry's proxy couldn't start: listen EADDRINUSE",
+    });
+  });
+
+  it('gives up after repeated crashes, then starts again when asked', async () => {
+    const s = supervisor();
+    s.start();
+    for (let i = 0; i < 6; i++) {
+      forked.at(-1)!.emit('exit', 9);
+      await vi.runAllTimersAsync();
+    }
+    expect(forked).toHaveLength(6);
+    expect(s.state).toMatchObject({ state: 'failed' });
+    s.restart();
+    expect(forked).toHaveLength(7);
+    expect(s.state).toMatchObject({ state: 'starting', restart: { byUser: true } });
+    // Not while one is running.
+    s.restart();
+    expect(forked).toHaveLength(7);
+  });
+});

@@ -27,6 +27,8 @@ interface Props {
   send(command: Command): Promise<unknown>;
   onClose(): void;
   actions: ExchangeActionButton[];
+  /** From before the backend restarted: only what was already loaded is left. */
+  stale: boolean;
 }
 
 type BodyState = { content: BodyContent | null } | { error: string };
@@ -81,13 +83,17 @@ function ms(from: number | undefined, to: number | undefined): string {
 }
 
 /** Headers, timing and bodies for the selected exchange. */
-export function DetailPane({ summary, send, onClose, actions }: Props): React.JSX.Element {
-  const [detail, setDetail] = useState<ExchangeDetail>();
+export function DetailPane({ summary, send, onClose, actions, stale }: Props): React.JSX.Element {
+  const [loaded, setDetail] = useState<ExchangeDetail>();
+  // Only this exchange's details, never the last one's while the next loads.
+  const detail = loaded?.summary.id === summary.id ? loaded : undefined;
   const [bodies, setBodies] = useState<Record<string, BodyState>>({});
   const [copied, setCopied] = useState<string>();
 
   // Refetch when the summary changes, e.g. when the response arrives.
   useEffect(() => {
+    // The backend that had it is gone; keep whatever was loaded.
+    if (stale) return;
     let active = true;
     send({ command: 'getExchange', exchangeId: summary.id }).then(
       (value) => active && setDetail(value as ExchangeDetail),
@@ -96,7 +102,7 @@ export function DetailPane({ summary, send, onClose, actions }: Props): React.JS
     return () => {
       active = false;
     };
-  }, [send, summary]);
+  }, [send, summary, stale]);
 
   const requestSize = detail?.requestBody?.size;
   const responseSize = detail?.responseBody?.size;
@@ -106,7 +112,7 @@ export function DetailPane({ summary, send, onClose, actions }: Props): React.JS
   useEffect(() => {
     let active = true;
     const load = (side: BodySide, size: number | undefined): void => {
-      if (!size) return;
+      if (!size || stale) return;
       const key = `${summary.id}:${side}:${size}`;
       // Keep only this exchange's bodies; they can be megabytes each.
       const keepCurrent = (b: Record<string, BodyState>): Record<string, BodyState> =>
@@ -124,7 +130,7 @@ export function DetailPane({ summary, send, onClose, actions }: Props): React.JS
     return () => {
       active = false;
     };
-  }, [send, summary.id, requestSize, responseSize]);
+  }, [send, summary.id, requestSize, responseSize, stale]);
   const requestBody = bodies[bodyKey('request', requestSize)];
   const responseBody = bodies[bodyKey('response', responseSize)];
 
@@ -145,6 +151,12 @@ export function DetailPane({ summary, send, onClose, actions }: Props): React.JS
   };
 
   const timing = detail?.timing;
+
+  // The backend that had a stale exchange's bodies is gone, so it can't format them.
+  const formatBody = (side: BodySide): Promise<FormattedBody> =>
+    stale
+      ? Promise.resolve({ ok: false, reason: 'the proxy that had this body restarted.' })
+      : (send({ command: 'formatBody', exchangeId: summary.id, side }) as Promise<FormattedBody>);
 
   return (
     <aside className="detail" id={DETAIL_PANE_ID} aria-label="Exchange details">
@@ -191,6 +203,12 @@ export function DetailPane({ summary, send, onClose, actions }: Props): React.JS
               )
             )}
           </div>
+        )}
+        {stale && !detail && (
+          <p className="note">
+            This request is from before Wirescry’s proxy restarted. Its headers and bodies were lost; only the
+            summary is left.
+          </p>
         )}
         <section>
           <h2>Overview</h2>
@@ -251,7 +269,8 @@ export function DetailPane({ summary, send, onClose, actions }: Props): React.JS
           </section>
         )}
 
-        {summary.websocket && (
+        {/* An old connection's messages can't be fetched; one that was open keeps what it showed. */}
+        {summary.websocket && (!stale || detail) && (
           <WebSocketMessagesView
             key={summary.id}
             exchangeId={summary.id}
@@ -262,22 +281,16 @@ export function DetailPane({ summary, send, onClose, actions }: Props): React.JS
 
         <details open>
           <summary>Request headers</summary>
-          {detail ? <HeaderTable headers={detail.requestHeaders} /> : <p className="muted">Loading…</p>}
+          {detail ? (
+            <HeaderTable headers={detail.requestHeaders} />
+          ) : (
+            <p className="muted">{stale ? 'Lost when the proxy restarted.' : 'Loading…'}</p>
+          )}
         </details>
         {!!requestSize && (
           <details open>
             <summary>Request body</summary>
-            <Body
-              state={requestBody}
-              info={detail?.requestBody}
-              format={() =>
-                send({
-                  command: 'formatBody',
-                  exchangeId: summary.id,
-                  side: 'request',
-                }) as Promise<FormattedBody>
-              }
-            />
+            <Body state={requestBody} info={detail?.requestBody} format={() => formatBody('request')} />
           </details>
         )}
         {detail?.responseHeaders && (
@@ -289,17 +302,7 @@ export function DetailPane({ summary, send, onClose, actions }: Props): React.JS
         {!!responseSize && (
           <details open>
             <summary>Response body</summary>
-            <Body
-              state={responseBody}
-              info={detail?.responseBody}
-              format={() =>
-                send({
-                  command: 'formatBody',
-                  exchangeId: summary.id,
-                  side: 'response',
-                }) as Promise<FormattedBody>
-              }
-            />
+            <Body state={responseBody} info={detail?.responseBody} format={() => formatBody('response')} />
           </details>
         )}
       </div>

@@ -13,6 +13,8 @@ const api: WirescryBridge = {
   exportHar: (exchangeIds) => ipcRenderer.invoke(IPC.exportHar, exchangeIds),
   importHar: () => ipcRenderer.invoke(IPC.importHar),
   showMenu: (choices) => ipcRenderer.invoke(IPC.showMenu, choices),
+  restartBackend: () => ipcRenderer.invoke(IPC.restartBackend),
+  showLog: () => ipcRenderer.invoke(IPC.showLog),
   onBackendStateChanged(callback) {
     const listener = (_event: IpcRendererEvent, state: BackendState): void => callback(state);
     ipcRenderer.on(IPC.backendStateChanged, listener);

@@ -978,3 +978,19 @@ button.help-button {
   white-space: nowrap;
   border: 0;
 }
+
+/* Requests from before the proxy restarted: only their summaries are left. */
+.traffic-scroll .row.stale > span {
+  opacity: 0.55;
+}
+
+/* A banner with buttons, e.g. Restart proxy and Show log. */
+.banner.actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.banner.actions span {
+  flex: 1;
+}

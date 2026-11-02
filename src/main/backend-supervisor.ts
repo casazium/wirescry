@@ -13,6 +13,7 @@ import type {
   CryptoReply,
   CryptoRequest,
   BackendShutdownMessage,
+  BackendRestart,
   HarRequest,
 } from '../shared/ipc';
 
@@ -55,6 +56,12 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   private stopping = false;
   private restarts: number[] = [];
   private current: BackendState = { state: 'starting' };
+  /** The last restart, reported with each state until the next one. */
+  private lastRestart: BackendRestart | undefined;
+  /** Set when the backend reports it couldn't start, so its exit isn't treated as a crash. */
+  private startFailed = false;
+  /** Counts starts, reported with 'ready'. */
+  private generation = 0;
   private nextHarId = 0;
   private readonly harWaiting = new Map<
     number,
@@ -91,7 +98,10 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   }
 
   start(): void {
-    this.setState({ state: 'starting' });
+    this.startFailed = false;
+    this.generation += 1;
+    const generation = this.generation;
+    this.setState({ state: 'starting', ...this.restartInfo() });
     this.storage = undefined;
     const child = utilityProcess.fork(path.join(__dirname, 'backend.js'), [], {
       serviceName: 'Wirescry Backend',
@@ -123,6 +133,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
         this.setState({
           state: 'ready',
           connection: { apiUrl: `ws://127.0.0.1:${message.apiPort}/`, token: this.token },
+          generation,
+          ...this.restartInfo(),
         });
         console.log(
           `[wirescry] backend ready: proxy on ${message.proxyPort}, api on ${message.apiPort}, ` +
@@ -141,8 +153,15 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
           if (this.child === child) child.postMessage(reply);
         });
       } else if (message.type === 'error') {
+        // The full error goes to the log; people get its first line.
         console.error('[wirescry] backend failed to start:', message.message);
-        this.setState({ state: 'failed', message: message.message });
+        this.startFailed = true;
+        const first =
+          message.message
+            .split('\n')[0]
+            ?.replace(/^Error: /, '')
+            .trim() || 'Unknown error';
+        this.setState({ state: 'failed', message: `Wirescry's proxy couldn't start: ${first}` });
       }
     });
 
@@ -151,13 +170,19 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       this.failHarJobs('The backend stopped while working on the file.');
       if (this.stopping) return;
       console.error(`[wirescry] backend exited with code ${code}`);
+      // It couldn't start, and said why: trying again would fail the same way.
+      if (this.startFailed) return;
       const now = Date.now();
       this.restarts = this.restarts.filter((t) => now - t < RESTART_WINDOW_MS);
       if (this.restarts.length >= MAX_RESTARTS) {
-        this.setState({ state: 'failed', message: `The backend keeps stopping (exit code ${code}).` });
+        this.setState({
+          state: 'failed',
+          message: `Wirescry's proxy keeps stopping (exit code ${code}), so it hasn't been restarted again.`,
+        });
         return;
       }
       this.restarts.push(now);
+      this.lastRestart = { at: now, exitCode: code };
       setTimeout(() => {
         if (!this.stopping) this.start();
       }, 500 * this.restarts.length);
@@ -173,6 +198,21 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       selfCheck: this.options.selfCheck,
     };
     child.postMessage(start);
+  }
+
+  /** Starts the backend again after it failed. Does nothing while it's running. */
+  restart(): void {
+    if (this.child || this.stopping || this.current.state !== 'failed') {
+      console.warn('[wirescry] not restarting the backend: it is still running or Wirescry is quitting');
+      return;
+    }
+    this.restarts = [];
+    this.lastRestart = { at: Date.now(), byUser: true };
+    this.start();
+  }
+
+  private restartInfo(): { restart?: BackendRestart } {
+    return this.lastRestart ? { restart: this.lastRestart } : {};
   }
 
   /** Asks the backend to export or import a HAR file at a path the user chose. */
