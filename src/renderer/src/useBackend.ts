@@ -5,6 +5,13 @@ import type { UiPluginApi } from '../../plugin-api/ui';
 import { ApiClient, type Command } from './api-client';
 import { ExchangeList } from './exchange-list';
 
+/** A badge on a plugin's tab. */
+export interface TabBadge {
+  text: string;
+  tag: boolean;
+  label?: string;
+}
+
 type PluginListener = (data: unknown) => void;
 
 export interface BackendView {
@@ -13,7 +20,7 @@ export interface BackendView {
   /** Counts connections to the backend; changes when it restarts. */
   session: number;
   /** Badges plugins put on their tabs, by `${plugin}:${viewId}`. */
-  badges: Record<string, string>;
+  badges: Record<string, TabBadge>;
   status?: ProxyStatus;
   exchanges: ExchangeSummary[];
   paused: boolean;
@@ -36,7 +43,7 @@ export function useBackend(): BackendView {
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
   const [paused, setPaused] = useState(false);
   // Badges plugins put on their tabs, by `${plugin}:${viewId}`.
-  const [badges, setBadges] = useState<Record<string, string>>({});
+  const [badges, setBadges] = useState<Record<string, TabBadge>>({});
   const clientRef = useRef<ApiClient | undefined>(undefined);
   // Bumped to reconnect when the API connection drops while the backend keeps running.
   const [attempt, setAttempt] = useState(0);
@@ -152,12 +159,23 @@ export function useBackend(): BackendView {
           },
           saveFile: (options) => window.wirescry.saveTextFile(options),
           openFile: (options) => window.wirescry.openTextFile(options),
-          setBadge: (viewId, text) => {
+          setBadge: (viewId, text, options) => {
             const key = `${plugin}:${String(viewId)}`;
             // Short text only: it sits on a tab.
-            const value = typeof text === 'string' && text !== '' ? text.slice(0, 6) : undefined;
+            const value: TabBadge | undefined =
+              typeof text === 'string' && text !== ''
+                ? {
+                    text: text.slice(0, 6),
+                    tag: options?.tag === true,
+                    ...(typeof options?.label === 'string' && options.label !== ''
+                      ? { label: options.label.slice(0, 80) }
+                      : {}),
+                  }
+                : undefined;
             setBadges((b) => {
-              if (b[key] === value) return b;
+              const old = b[key];
+              if (old?.text === value?.text && old?.tag === value?.tag && old?.label === value?.label)
+                return b;
               const next = { ...b };
               if (value === undefined) delete next[key];
               else next[key] = value;

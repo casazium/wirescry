@@ -168,9 +168,17 @@ export function App(): React.JSX.Element {
             >
               {p.view.label}
               {badges[p.key] && (
-                <span className="tab-badge" aria-label={`${badges[p.key]} waiting`}>
-                  {badges[p.key]}
-                </span>
+                <>
+                  <span className={`tab-badge ${badges[p.key]!.tag ? 'tag' : ''}`} aria-hidden="true">
+                    {badges[p.key]!.text}
+                  </span>
+                  {/* Read with the tab's name, e.g. "Breakpoints, 2 waiting". */}
+                  <span className="visually-hidden">
+                    {', '}
+                    {badges[p.key]!.label ??
+                      (badges[p.key]!.tag ? badges[p.key]!.text : `${badges[p.key]!.text} waiting`)}
+                  </span>
+                </>
               )}
             </button>
           ))}

@@ -18,10 +18,12 @@ export interface UiPluginApi {
   /** Asks the user to pick a file, then resolves with its name and text (or nothing). Up to 16 MB. */
   openFile(options: { extensions: string[] }): Promise<OpenTextFileResult>;
   /**
-   * Shows a short badge (e.g. a count) on one of this plugin's tabs, or clears it with
-   * undefined. For things that need attention while the tab isn't open.
+   * Shows a short badge on one of this plugin's tabs, or clears it with undefined. By
+   * default it's a count of things waiting (read out as "3 waiting"), for what needs
+   * attention while the tab isn't open. With `tag`, it's a quiet label instead, such as
+   * "PRO" on a locked feature, read out as `label` (or the text).
    */
-  setBadge(viewId: string, text: string | undefined): void;
+  setBadge(viewId: string, text: string | undefined, options?: BadgeOptions): void;
 }
 
 export interface UiPluginView {
@@ -37,4 +39,12 @@ export interface UiPlugin {
   /** The PLUGIN_API_VERSION this plugin was built against. */
   apiVersion: number;
   views: UiPluginView[];
+}
+
+/** How a tab badge looks and is read out; see UiPluginApi.setBadge. */
+export interface BadgeOptions {
+  /** A label rather than a count: outlined, not filled, and not read as "waiting". */
+  tag?: boolean;
+  /** What screen readers say for it, e.g. "Wirescry Pro feature". */
+  label?: string;
 }
