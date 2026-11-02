@@ -1,7 +1,7 @@
 {
   "name": "wirescry",
   "productName": "Wirescry",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Desktop tool for seeing, debugging and rewriting HTTP traffic",
   "private": true,
   "author": "casazium",
