@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
-import { IPC, type BackendState, type WirescryBridge } from '../shared/ipc';
+import { IPC, type BackendState, type MenuCommand, type WirescryBridge } from '../shared/ipc';
 
 /**
  * The only API the UI gets from Electron: how to reach the backend, and system dialogs
@@ -13,8 +13,15 @@ const api: WirescryBridge = {
   exportHar: (exchangeIds) => ipcRenderer.invoke(IPC.exportHar, exchangeIds),
   importHar: () => ipcRenderer.invoke(IPC.importHar),
   showMenu: (choices) => ipcRenderer.invoke(IPC.showMenu, choices),
+  saveBody: (request) => ipcRenderer.invoke(IPC.saveBody, request),
   restartBackend: () => ipcRenderer.invoke(IPC.restartBackend),
   showLog: () => ipcRenderer.invoke(IPC.showLog),
+  onMenuCommand(callback) {
+    const listener = (_event: IpcRendererEvent, command: MenuCommand): void => callback(command);
+    ipcRenderer.on(IPC.menuCommand, listener);
+    return () => ipcRenderer.removeListener(IPC.menuCommand, listener);
+  },
+  setMenuState: (state) => ipcRenderer.send(IPC.menuState, state),
   onBackendStateChanged(callback) {
     const listener = (_event: IpcRendererEvent, state: BackendState): void => callback(state);
     ipcRenderer.on(IPC.backendStateChanged, listener);

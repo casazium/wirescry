@@ -11,6 +11,7 @@ import type {
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
+import { bodyFileName } from './body-file-name';
 import { curlCommand } from './curl-command';
 import { WebSocketMessagesView } from './WebSocketMessagesView';
 import { DETAIL_PANE_ID } from './Splitter';
@@ -52,10 +53,12 @@ function Body({
   state,
   info,
   format,
+  onSave,
 }: {
   state: BodyState | undefined;
   info: BodyInfo | undefined;
   format: () => Promise<FormattedBody>;
+  onSave?: () => Promise<string | undefined>;
 }): React.JSX.Element {
   const notes = (
     <>
@@ -73,7 +76,7 @@ function Body({
   return (
     <>
       {notes}
-      <BodyView content={state.content} format={format} />
+      <BodyView content={state.content} format={format} onSave={onSave} />
     </>
   );
 }
@@ -151,6 +154,32 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
   };
 
   const timing = detail?.timing;
+
+  /** Saves a whole body to a file the user picks; not for a stale exchange, whose body is gone. */
+  const saveBody = (side: BodySide): (() => Promise<string | undefined>) | undefined =>
+    stale
+      ? undefined
+      : async () => {
+          const headers = side === 'request' ? detail?.requestHeaders : detail?.responseHeaders;
+          const contentType = headers?.find(([n]) => n.toLowerCase() === 'content-type')?.[1];
+          const result = await window.wirescry.saveBody({
+            exchangeId: summary.id,
+            side,
+            name: bodyFileName(summary.url, contentType, side),
+          });
+          if (!result.name) return undefined;
+          return result.decodeError
+            ? `Saved ${result.name} as stored: ${result.decodeError}`
+            : `Saved ${result.name} (${formatBytes(result.size ?? 0)})`;
+        };
+
+  // Query parameters, parsed, when the URL has any.
+  let query: Array<[string, string]> = [];
+  try {
+    query = [...new URL(summary.url).searchParams];
+  } catch {
+    // Not a URL we can parse; nothing to show.
+  }
 
   // The backend that had a stale exchange's bodies is gone, so it can't format them.
   const formatBody = (side: BodySide): Promise<FormattedBody> =>
@@ -279,6 +308,12 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
           />
         )}
 
+        {query.length > 0 && (
+          <details open>
+            <summary>Query</summary>
+            <HeaderTable headers={query} />
+          </details>
+        )}
         <details open>
           <summary>Request headers</summary>
           {detail ? (
@@ -290,7 +325,12 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
         {!!requestSize && (
           <details open>
             <summary>Request body</summary>
-            <Body state={requestBody} info={detail?.requestBody} format={() => formatBody('request')} />
+            <Body
+              state={requestBody}
+              info={detail?.requestBody}
+              format={() => formatBody('request')}
+              onSave={saveBody('request')}
+            />
           </details>
         )}
         {detail?.responseHeaders && (
@@ -302,7 +342,12 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
         {!!responseSize && (
           <details open>
             <summary>Response body</summary>
-            <Body state={responseBody} info={detail?.responseBody} format={() => formatBody('response')} />
+            <Body
+              state={responseBody}
+              info={detail?.responseBody}
+              format={() => formatBody('response')}
+              onSave={saveBody('response')}
+            />
           </details>
         )}
       </div>

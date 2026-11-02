@@ -59,14 +59,22 @@ function FormattedCode({
   );
 }
 
-/** Shows a body formatted for its type, as text, or as hex. */
+/** Shows a body formatted for its type, as text, or as hex, with Copy and Save. */
 export function BodyView({
   content,
   format,
+  onSave,
 }: {
   content: BodyContent;
   format: () => Promise<FormattedBody>;
+  /** Saves the whole body to a file; resolves with what to tell the user. Absent when it can't be saved. */
+  onSave?: () => Promise<string | undefined>;
 }): React.JSX.Element {
+  const [status, setStatus] = useState<string>();
+  const say = (text: string | undefined): void => {
+    setStatus(text);
+    if (text) setTimeout(() => setStatus((current) => (current === text ? undefined : current)), 4000);
+  };
   const bytes = useMemo(() => base64ToBytes(content.base64), [content.base64]);
   const text = useMemo(() => bytesToText(bytes), [bytes]);
   const kind = kindOf(content.contentType, text);
@@ -86,6 +94,27 @@ export function BodyView({
   const [chosen, setMode] = useState<Mode>();
   const mode = chosen && modes.includes(chosen) ? chosen : modes[0]!;
 
+  // What Copy puts on the clipboard: what's shown, as text.
+  const copyText =
+    mode === 'hex' ? hexDump(bytes) : mode === 'formatted' && pretty !== undefined ? pretty : text;
+  const copy = async (): Promise<void> => {
+    if (copyText === undefined) return;
+    try {
+      await navigator.clipboard.writeText(copyText);
+      say(content.truncated ? `Copied the first ${formatBytes(bytes.length)}` : 'Copied');
+    } catch {
+      say('Copy failed');
+    }
+  };
+  const save = async (): Promise<void> => {
+    if (!onSave) return;
+    try {
+      say(await onSave());
+    } catch (error) {
+      say(`Couldn't save: ${(error as Error).message}`);
+    }
+  };
+
   let decoded = '';
   if (content.encoding && content.decodedSize !== undefined) {
     decoded = ` ${content.encoding}, ${formatBytes(content.decodedSize)} decoded`;
@@ -102,12 +131,31 @@ export function BodyView({
           {decoded}
         </span>
         <span className="spacer" />
+        {status && (
+          <span className="muted" role="status">
+            {status}
+          </span>
+        )}
+        <button
+          type="button"
+          className="secondary small"
+          disabled={copyText === undefined || (mode === 'formatted' && imageUrl !== undefined)}
+          onClick={() => void copy()}
+        >
+          Copy
+        </button>
+        {onSave && (
+          <button type="button" className="secondary small" onClick={() => void save()}>
+            Save…
+          </button>
+        )}
         {modes.length > 1 &&
           modes.map((m) => (
             <button
               key={m}
               type="button"
               className={`tab ${m === mode ? 'active' : ''}`}
+              aria-pressed={m === mode}
               onClick={() => setMode(m)}
             >
               {m === 'formatted' ? (kind === 'image' ? 'Image' : 'Formatted') : m === 'text' ? 'Text' : 'Hex'}

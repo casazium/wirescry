@@ -19,7 +19,7 @@ import type {
 import { startApiServer } from './api';
 import { harEntry, harFrame, MAX_HAR_BODY_BYTES, MAX_HAR_IMPORT_BYTES, parseHar } from './har';
 import type { Encryptor } from './secure-store';
-import { headerValue, toBodyContent } from './body-content';
+import { headerValue, toBodyContent, writeBodyToFile, type WrittenBody } from './body-content';
 import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
 import { HybridBodyStore } from './body-store';
@@ -93,6 +93,8 @@ export interface RunningBackend {
    * show (the file may be a copy). `removed` counts older exchanges dropped to make room.
    */
   importHar(file: string, name?: string): Promise<HarImportCounts>;
+  /** Writes one whole body of an exchange to a file, decoded where possible. */
+  saveBody(file: string, exchangeId: string, side: BodySide): Promise<WrittenBody>;
   stop(): Promise<void>;
 }
 
@@ -265,6 +267,18 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       notes.push(`The ${side} body couldn't be read, so it was left out.`);
       return null;
     }
+  };
+
+  const saveBody = async (file: string, exchangeId: string, side: BodySide): Promise<WrittenBody> => {
+    const exchange = store.get(exchangeId);
+    if (!exchange) throw new Error('That request is no longer in the list.');
+    if (bodies.isReceiving(exchangeId, side)) throw new Error('That body is still arriving.');
+    if (!bodies.read(exchangeId, side)) throw new Error('That request has no body to save.');
+    return writeBodyToFile(
+      () => bodies.read(exchangeId, side) ?? Readable.from([]),
+      decodingHeaders(exchange, side),
+      file,
+    );
   };
 
   const exportHar = async (file: string, exchangeIds: string[]): Promise<{ count: number }> => {
@@ -541,6 +555,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     caCertPath: ca.certPath,
     pluginStatuses: () => pluginHost.statuses(),
     exportHar,
+    saveBody,
     importHar,
     async stop() {
       await pluginHost.stopAll();

@@ -3,7 +3,7 @@ import { copyFile, mkdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { app, dialog, type BrowserWindow } from 'electron';
 import { MAX_HAR_IMPORT_BYTES } from '../backend/har';
-import type { HarExportResult, HarImportResult } from '../shared/ipc';
+import type { HarExportResult, HarImportResult, SaveBodyRequest, SaveBodyResult } from '../shared/ipc';
 import type { BackendSupervisor } from './backend-supervisor';
 
 /** At most this many exchanges per export (the traffic list keeps 10,000). */
@@ -104,6 +104,68 @@ export async function importHar(
       Omit<HarImportResult, 'name'>
     >;
     return { name: path.basename(file), ...value };
+  } finally {
+    await rm(scratch, { force: true });
+  }
+}
+
+/** A safe file name from the UI's suggestion, e.g. `users.json`, or `body` if there's nothing usable. */
+export function bodyFileName(suggested: unknown): string {
+  const name = typeof suggested === 'string' ? path.basename(suggested) : '';
+  const clean = name
+    .split('')
+    .map((c) => (c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 || '<>:"/\\|?*'.includes(c) ? '_' : c))
+    .join('')
+    .replace(/^\.+/, '')
+    .trim()
+    .slice(0, 120);
+  return clean || 'body';
+}
+
+/**
+ * Asks where to save one body of an exchange, has the backend write all of it (decoded
+ * where possible) to a scratch file, then copies it into place. The UI only holds the
+ * first few megabytes of a body, so the backend writes it.
+ */
+export async function saveBody(
+  window: BrowserWindow | undefined,
+  backend: BackendSupervisor,
+  request: unknown,
+): Promise<SaveBodyResult> {
+  const r = request as Partial<SaveBodyRequest> | null;
+  if (
+    typeof r !== 'object' ||
+    r === null ||
+    typeof r.exchangeId !== 'string' ||
+    !EXCHANGE_ID.test(r.exchangeId) ||
+    (r.side !== 'request' && r.side !== 'response')
+  ) {
+    throw new Error('Nothing to save.');
+  }
+  const options = { defaultPath: path.join(app.getPath('downloads'), bodyFileName(r.name)) };
+  const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
+  if (result.canceled || !result.filePath) return {};
+  const scratch = await scratchFile();
+  try {
+    const written = (await backend.har({
+      op: 'body',
+      file: scratch,
+      exchangeId: r.exchangeId,
+      side: r.side,
+    })) as { size: number; decoded: boolean; decodeError?: string };
+    const temp = `${result.filePath}.${randomBytes(6).toString('hex')}.tmp`;
+    try {
+      await copyFile(scratch, temp);
+      await rename(temp, result.filePath);
+    } catch (error) {
+      await rm(temp, { force: true });
+      throw error;
+    }
+    return {
+      name: path.basename(result.filePath),
+      size: written.size,
+      ...(written.decodeError ? { decodeError: written.decodeError } : {}),
+    };
   } finally {
     await rm(scratch, { force: true });
   }
