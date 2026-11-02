@@ -3,7 +3,10 @@
  * plugins import these types.
  */
 import type { ComponentType } from 'react';
+import type { BodyContent, BodySide, ExchangeDetail, ExchangeSummary } from '../shared/api';
 import type { OpenTextFileResult, SaveTextFileResult } from '../shared/ipc';
+
+export type { BodyContent, BodySide, ExchangeDetail, ExchangeSummary };
 
 export interface UiPluginApi {
   /** Calls the plugin's backend half. */
@@ -24,6 +27,29 @@ export interface UiPluginApi {
    * "PRO" on a locked feature, read out as `label` (or the text).
    */
   setBadge(viewId: string, text: string | undefined, options?: BadgeOptions): void;
+  /** Switches the window to one of this plugin's tabs. */
+  showView(viewId: string): void;
+  /** A captured exchange's headers and timing. Rejects if it's no longer in the list. */
+  getExchange(exchangeId: string): Promise<ExchangeDetail>;
+  /**
+   * One body of a captured exchange, decoded where possible, or null if it has none.
+   * Large bodies are cut short (`truncated`). Rejects if the exchange is no longer in the list.
+   */
+  getBody(exchangeId: string, side: BodySide): Promise<BodyContent | null>;
+}
+
+/**
+ * Something a plugin offers to do with a captured exchange, such as "Mock…". It's shown
+ * in the exchange's details and in the right-click menu on its row in the traffic list.
+ */
+export interface UiExchangeAction {
+  id: string;
+  /** Short, e.g. "Mock…" (with an ellipsis when it opens something to finish first). */
+  label: string;
+  /** Whether to offer it for this exchange. Offered for every exchange if left out. */
+  appliesTo?(exchange: ExchangeSummary): boolean;
+  /** Runs it. A rejected promise's message is shown to the user. */
+  run(exchange: ExchangeSummary, api: UiPluginApi): void | Promise<void>;
 }
 
 export interface UiPluginView {
@@ -39,6 +65,8 @@ export interface UiPlugin {
   /** The PLUGIN_API_VERSION this plugin was built against. */
   apiVersion: number;
   views: UiPluginView[];
+  /** Actions on a captured exchange, offered in the order given. */
+  exchangeActions?: UiExchangeAction[];
 }
 
 /** How a tab badge looks and is read out; see UiPluginApi.setBadge. */

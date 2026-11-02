@@ -9,7 +9,7 @@ import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu } from './menu';
 import { aboutDetail, WEBSITE } from './about';
-import { contextMenuItems } from './context-menu';
+import { checkMenuChoices, contextMenuItems } from './context-menu';
 import { clearScratch, exportHar, importHar } from './har-files';
 import { openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
@@ -307,6 +307,30 @@ app.whenReady().then(() => {
   ipcMain.handle(IPC.openTextFile, (event, request: unknown) => {
     if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
     return openTextFile(mainWindow, request);
+  });
+  // A menu the UI builds, such as the one on a traffic row. Resolves with the chosen id.
+  ipcMain.handle(IPC.showMenu, (event, request: unknown) => {
+    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+    const choices = checkMenuChoices(request);
+    return new Promise<string | undefined>((resolve) => {
+      const menu = Menu.buildFromTemplate(
+        choices.map((choice) =>
+          'separator' in choice
+            ? { type: 'separator' as const }
+            : {
+                // A lone & would mark a Windows access key.
+                label: choice.label.replaceAll('&', '&&'),
+                enabled: choice.enabled !== false,
+                click: () => resolve(choice.id),
+              },
+        ),
+      );
+      // The close callback can come before the click handler, so give the click a moment.
+      menu.popup({
+        ...(mainWindow ? { window: mainWindow } : {}),
+        callback: () => setTimeout(() => resolve(undefined), 100),
+      });
+    });
   });
   backend.on('state', (state) => mainWindow?.webContents.send(IPC.backendStateChanged, state));
   backend.start();

@@ -27,11 +27,20 @@ interface Props {
   selectedId: string | undefined;
   onSelect(id: string | undefined): void;
   onKeyDown(event: React.KeyboardEvent): void;
+  /** Right-click on a row, for its menu. */
+  onContextMenu(exchange: ExchangeSummary): void;
   empty: React.ReactNode;
 }
 
 /** The traffic list. Only rows in view are in the DOM, so it stays fast with thousands of rows. */
-export function TrafficList({ rows, selectedId, onSelect, onKeyDown, empty }: Props): React.JSX.Element {
+export function TrafficList({
+  rows,
+  selectedId,
+  onSelect,
+  onKeyDown,
+  onContextMenu,
+  empty,
+}: Props): React.JSX.Element {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [height, setHeight] = useState(0);
@@ -109,6 +118,11 @@ export function TrafficList({ rows, selectedId, onSelect, onKeyDown, empty }: Pr
                 className={`row ${index % 2 ? 'odd' : ''} ${e.id === selectedId ? 'selected' : ''}`}
                 style={{ transform: `translateY(${index * ROW_HEIGHT}px)` }}
                 onClick={() => onSelect(e.id === selectedId ? undefined : e.id)}
+                onContextMenu={(event) => {
+                  // The row's own menu, instead of the window's.
+                  event.preventDefault();
+                  onContextMenu(e);
+                }}
               >
                 <span role="cell" className="method">
                   {e.method}
