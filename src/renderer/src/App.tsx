@@ -37,12 +37,12 @@ export function App(): React.JSX.Element {
   // The detail pane's size, remembered separately for side by side and stacked.
   const stacked = useStacked();
   const sizeKey = stacked ? 'wirescry.detailSize.stacked' : 'wirescry.detailSize.side';
-  const [detailSizes, setDetailSizes] = useState<Record<string, number>>({});
-  const detailSize = detailSizes[sizeKey] ?? loadDetailSize(sizeKey);
-  const resizeDetail = (size: number): void => {
-    setDetailSizes((sizes) => ({ ...sizes, [sizeKey]: size }));
-    saveDetailSize(sizeKey, size);
-  };
+  const [detailSizes, setDetailSizes] = useState<Record<string, number>>(() => ({
+    'wirescry.detailSize.side': loadDetailSize('wirescry.detailSize.side'),
+    'wirescry.detailSize.stacked': loadDetailSize('wirescry.detailSize.stacked'),
+  }));
+  const detailSize = detailSizes[sizeKey] ?? 0.5;
+  const resizeDetail = (size: number): void => setDetailSizes((sizes) => ({ ...sizes, [sizeKey]: size }));
 
   // Typing stays responsive while a large list is re-filtered.
   const deferredSearch = useDeferredValue(search);
@@ -212,7 +212,12 @@ export function App(): React.JSX.Element {
                   ))}
                 </select>
               )}
-              <button type="button" onClick={launch} disabled={!connected}>
+              <button
+                type="button"
+                onClick={launch}
+                disabled={!connected}
+                aria-label={`Launch ${browsers.find((b) => b.id === browserId)?.name ?? 'browser'}`}
+              >
                 {/* With a browser menu beside it, the menu already names the browser. */}
                 {browsers.length > 1 ? 'Launch' : `Launch ${browsers[0]?.name ?? 'browser'}`}
               </button>
@@ -408,7 +413,13 @@ export function App(): React.JSX.Element {
           />
           {selected && (
             <>
-              <Splitter stacked={stacked} size={detailSize} onChange={resizeDetail} container={mainRef} />
+              <Splitter
+                stacked={stacked}
+                size={detailSize}
+                onChange={resizeDetail}
+                onCommit={(size) => saveDetailSize(sizeKey, size ?? detailSize)}
+                container={mainRef}
+              />
               <DetailPane summary={selected} send={send} onClose={() => setSelectedId(undefined)} />
             </>
           )}

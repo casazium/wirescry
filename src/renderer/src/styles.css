@@ -79,7 +79,8 @@ body,
   margin: 0 8px 0 0;
 }
 
-/* Narrow windows: the title bar already names the app, so the toolbar keeps its room for controls. */
+/* Narrow windows: the title bar already names the app, so the toolbar keeps its room for controls.
+   Hidden the same way as .visually-hidden, so screen readers still read it. */
 @media (max-width: 999px) {
   .toolbar h1 {
     position: absolute;
@@ -341,8 +342,10 @@ button.chip.active {
   font-variant-numeric: tabular-nums;
 }
 
-/* As the list narrows, Type goes first, then Host, then Size. Time always stays. */
-@container (max-width: 579px) {
+/* As the list narrows, Type goes first, then Host, then Size. Time always stays.
+   Each threshold is the row's minimum width (columns + 12px gaps + 24px padding)
+   plus 16px for a scrollbar that takes up room (Windows, Linux, some macOS settings). */
+@container (max-width: 595px) {
   .traffic .row {
     grid-template-columns: 56px 60px minmax(110px, 0.8fr) minmax(80px, 1.4fr) 64px 64px;
   }
@@ -352,7 +355,7 @@ button.chip.active {
   }
 }
 
-@container (max-width: 519px) {
+@container (max-width: 535px) {
   .traffic .row {
     grid-template-columns: 56px 60px minmax(80px, 1fr) 64px 64px;
   }
@@ -362,7 +365,7 @@ button.chip.active {
   }
 }
 
-@container (max-width: 399px) {
+@container (max-width: 415px) {
   .traffic .row {
     grid-template-columns: 56px 60px minmax(80px, 1fr) 64px;
   }
@@ -375,14 +378,14 @@ button.chip.active {
 .detail {
   flex: 0 0 var(--detail-size, 50%);
   min-width: 300px;
-  max-width: calc(100% - 320px);
+  max-width: calc(100% - 336px);
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--border);
   min-height: 0;
 }
 
-/* Sits over the detail pane's border, with a wider grab area than the line itself. */
+/* Sits over the detail pane's border and its first 6px, with a wider grab area than the line itself. */
 .splitter {
   flex: 0 0 6px;
   margin-right: -6px;
@@ -402,7 +405,7 @@ button.chip.active {
   outline-offset: -2px;
 }
 
-/* Narrow windows: the detail pane goes under the list. Matches STACKED_QUERY in Splitter.tsx. */
+/* Narrow windows: the detail pane goes under the list. Matches STACKED_QUERY in detail-size.ts. */
 @media (max-width: 799px) {
   .main {
     flex-direction: column;
