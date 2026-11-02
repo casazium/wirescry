@@ -1,3 +1,6 @@
+import { readFile, rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
 import { app, dialog, type BrowserWindow } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import type { FileLogger } from './logger';
@@ -5,10 +8,12 @@ import {
   FIRST_CHECK_DELAY_MS,
   NO_STAGING_ID,
   UPDATE_INTERVAL_MS,
+  isInstalledDownload,
   isNothingToDownload,
   quietUpdaterError,
   updateDecision,
   updateErrorDetail,
+  updaterCacheBase,
 } from './update-policy';
 
 /**
@@ -94,8 +99,32 @@ export class Updater {
       this.logger.write('updater', 'info', `Update checks off: ${this.reason}`);
       return;
     }
+    void this.pruneInstalledDownload();
     setTimeout(() => this.check(), FIRST_CHECK_DELAY_MS).unref();
     setInterval(() => this.check(), UPDATE_INTERVAL_MS).unref();
+  }
+
+  /**
+   * Deletes the cache's pending download once its version is installed. The cache's other
+   * copy (update.zip on macOS) stays: the next differential download needs it.
+   */
+  private async pruneInstalledDownload(): Promise<void> {
+    // electron-builder writes this name into app-update.yml; it's "wirescry-updater".
+    const pending = path.join(
+      updaterCacheBase(process.platform, process.env, homedir()),
+      'wirescry-updater',
+      'pending',
+    );
+    try {
+      const info = JSON.parse(await readFile(path.join(pending, 'update-info.json'), 'utf8')) as {
+        fileName?: unknown;
+      };
+      if (typeof info.fileName !== 'string' || !isInstalledDownload(info.fileName, app.getVersion())) return;
+      await rm(pending, { recursive: true, force: true });
+      this.logger.write('updater', 'info', `Removed the installed update's download (${info.fileName})`);
+    } catch {
+      // No pending download, or one electron-updater will replace on its next download.
+    }
   }
 
   /** For the "Check for Updates…" menu item: reports the result either way. */

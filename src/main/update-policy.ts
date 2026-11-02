@@ -62,3 +62,36 @@ export function updateErrorDetail(error: { message?: string; code?: string }): s
   }
   return 'Something went wrong while checking. The details are in the log (Help → Show Log File).';
 }
+
+/**
+ * Whether the download kept in the updater cache's pending folder is for a version this
+ * copy already runs (or an older one). electron-updater keeps it after installing, beside
+ * a second copy (update.zip on macOS) that it does need for the next differential
+ * download, so one update left two copies of the app in the cache.
+ */
+export function isInstalledDownload(fileName: string, runningVersion: string): boolean {
+  // In a file name the version is followed by the arch or the extension ("-arm64-mac.zip"),
+  // so only a recognisable prerelease tag counts as one.
+  const downloaded = /(\d+)\.(\d+)\.(\d+)(-(?:alpha|beta|rc|pre)\.?\d*)?/.exec(fileName);
+  const running = /^(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?$/.exec(runningVersion);
+  if (!downloaded || !running) return false; // Unrecognised: leave it to electron-updater.
+  for (let i = 1; i <= 3; i++) {
+    const diff = Number(downloaded[i]) - Number(running[i]);
+    if (diff !== 0) return diff < 0;
+  }
+  // Same x.y.z: a release is newer than its prereleases.
+  if (!downloaded[4]) return !running[4]; // A release: installed only if the release runs.
+  if (!running[4]) return true; // A prerelease of the running release.
+  return downloaded[4] <= running[4];
+}
+
+/** Where electron-updater keeps its cache (its AppAdapter.getAppCacheDir), before the app's folder name. */
+export function updaterCacheBase(
+  platform: NodeJS.Platform,
+  env: Record<string, string | undefined>,
+  home: string,
+): string {
+  if (platform === 'win32') return env.LOCALAPPDATA || `${home}\\AppData\\Local`;
+  if (platform === 'darwin') return `${home}/Library/Caches`;
+  return env.XDG_CACHE_HOME || `${home}/.cache`;
+}
