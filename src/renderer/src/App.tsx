@@ -6,6 +6,8 @@ import { PluginView } from './PluginView';
 import { uiPlugins } from '@wirescry/pro/ui';
 import { PLUGIN_API_VERSION } from '../../plugin-api/version';
 import { SetupPage } from './SetupPage';
+import { loadDetailSize, saveDetailSize, useStacked } from './detail-size';
+import { Splitter } from './Splitter';
 import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
 
@@ -30,6 +32,17 @@ export function App(): React.JSX.Element {
     );
   const searchRef = useRef<HTMLInputElement>(null);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+
+  // The detail pane's size, remembered separately for side by side and stacked.
+  const stacked = useStacked();
+  const sizeKey = stacked ? 'wirescry.detailSize.stacked' : 'wirescry.detailSize.side';
+  const [detailSizes, setDetailSizes] = useState<Record<string, number>>({});
+  const detailSize = detailSizes[sizeKey] ?? loadDetailSize(sizeKey);
+  const resizeDetail = (size: number): void => {
+    setDetailSizes((sizes) => ({ ...sizes, [sizeKey]: size }));
+    saveDetailSize(sizeKey, size);
+  };
 
   // Typing stays responsive while a large list is re-filtered.
   const deferredSearch = useDeferredValue(search);
@@ -183,31 +196,33 @@ export function App(): React.JSX.Element {
             </button>
           ))}
         </nav>
-        <div className="spacer" />
-        {browsers.length > 0 ? (
-          <>
-            {browsers.length > 1 && (
-              <select
-                aria-label="Browser"
-                value={browserId}
-                onChange={(e) => setSelectedBrowser(e.target.value)}
-              >
-                {browsers.map((b) => (
-                  <option key={b.id} value={b.id}>
-                    {b.name}
-                  </option>
-                ))}
-              </select>
-            )}
-            <button type="button" onClick={launch} disabled={!connected}>
-              Launch {browsers.find((b) => b.id === browserId)?.name ?? 'browser'}
+        <div className="toolbar-actions">
+          {browsers.length > 0 ? (
+            <>
+              {browsers.length > 1 && (
+                <select
+                  aria-label="Browser"
+                  value={browserId}
+                  onChange={(e) => setSelectedBrowser(e.target.value)}
+                >
+                  {browsers.map((b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+              <button type="button" onClick={launch} disabled={!connected}>
+                {/* With a browser menu beside it, the menu already names the browser. */}
+                {browsers.length > 1 ? 'Launch' : `Launch ${browsers[0]?.name ?? 'browser'}`}
+              </button>
+            </>
+          ) : (
+            <button type="button" className="secondary" onClick={() => setView('setup')}>
+              Set up traffic
             </button>
-          </>
-        ) : (
-          <button type="button" className="secondary" onClick={() => setView('setup')}>
-            Set up traffic
-          </button>
-        )}
+          )}
+        </div>
       </header>
 
       {/* Plugin views stay mounted while hidden, so switching tabs keeps unsaved edits. */}
@@ -265,50 +280,64 @@ export function App(): React.JSX.Element {
                 </button>
               ))}
             </div>
-            <div className="spacer" />
-            <span className="muted count" data-testid="row-count">
-              {filtered
-                ? `${rows.length.toLocaleString()} of ${exchanges.length.toLocaleString()}`
-                : `${exchanges.length.toLocaleString()} ${exchanges.length === 1 ? 'request' : 'requests'}`}
-            </span>
-            <button
-              type="button"
-              className="secondary"
-              title="Open a HAR file, e.g. one saved from a browser's developer tools"
-              onClick={() => void importHar()}
-              disabled={!connected || harBusy}
+            {/* In narrower windows, the chips become a menu. */}
+            <select
+              className="quick-select"
+              aria-label="Quick filter"
+              value={quickFilter}
+              onChange={(e) => setQuickFilter(e.target.value as QuickFilter)}
             >
-              Import HAR
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              title={filtered ? 'Save the requests shown as a HAR file' : 'Save all requests as a HAR file'}
-              onClick={() => void exportHar()}
-              disabled={!connected || harBusy || rows.length === 0}
-            >
-              Export HAR
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              // Recording only: breakpoints, which pause requests, are a different thing.
-              onClick={() => void send({ command: 'setPaused', paused: !paused })}
-              disabled={!connected}
-            >
-              {paused ? 'Resume recording' : 'Pause recording'}
-            </button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => {
-                setSelectedId(undefined);
-                void send({ command: 'clear' });
-              }}
-              disabled={!connected}
-            >
-              Clear
-            </button>
+              {QUICK_FILTERS.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.id === 'all' ? 'All types' : f.label}
+                </option>
+              ))}
+            </select>
+            <div className="filter-actions">
+              <span className="muted count" data-testid="row-count">
+                {filtered
+                  ? `${rows.length.toLocaleString()} of ${exchanges.length.toLocaleString()}`
+                  : `${exchanges.length.toLocaleString()} ${exchanges.length === 1 ? 'request' : 'requests'}`}
+              </span>
+              <button
+                type="button"
+                className="secondary"
+                title="Open a HAR file, e.g. one saved from a browser's developer tools"
+                onClick={() => void importHar()}
+                disabled={!connected || harBusy}
+              >
+                Import HAR
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                title={filtered ? 'Save the requests shown as a HAR file' : 'Save all requests as a HAR file'}
+                onClick={() => void exportHar()}
+                disabled={!connected || harBusy || rows.length === 0}
+              >
+                Export HAR
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                // Recording only: breakpoints, which pause requests, are a different thing.
+                onClick={() => void send({ command: 'setPaused', paused: !paused })}
+                disabled={!connected}
+              >
+                {paused ? 'Resume recording' : 'Pause recording'}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setSelectedId(undefined);
+                  void send({ command: 'clear' });
+                }}
+                disabled={!connected}
+              >
+                Clear
+              </button>
+            </div>
           </div>
           {(compiled.errors.length > 0 || compiled.hints.length > 0) && (
             <div className="filter-notes" role="status">
@@ -353,7 +382,11 @@ export function App(): React.JSX.Element {
       )}
 
       {view === 'traffic' && (
-        <div className="main">
+        <div
+          className="main"
+          ref={mainRef}
+          style={{ '--detail-size': `${(detailSize * 100).toFixed(1)}%` } as React.CSSProperties}
+        >
           <TrafficList
             rows={rows}
             selectedId={selectedId}
@@ -373,7 +406,12 @@ export function App(): React.JSX.Element {
               )
             }
           />
-          {selected && <DetailPane summary={selected} send={send} onClose={() => setSelectedId(undefined)} />}
+          {selected && (
+            <>
+              <Splitter stacked={stacked} size={detailSize} onChange={resizeDetail} container={mainRef} />
+              <DetailPane summary={selected} send={send} onClose={() => setSelectedId(undefined)} />
+            </>
+          )}
         </div>
       )}
     </div>

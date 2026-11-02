@@ -71,10 +71,14 @@ export function TrafficList({ rows, selectedId, onSelect, onKeyDown, empty }: Pr
       <div className="row header" role="row" aria-rowindex={1}>
         <span role="columnheader">Method</span>
         <span role="columnheader">Status</span>
-        <span role="columnheader">Type</span>
-        <span role="columnheader">Host</span>
+        <span role="columnheader" className="col-type">
+          Type
+        </span>
+        <span role="columnheader" className="col-host">
+          Host
+        </span>
         <span role="columnheader">Path</span>
-        <span role="columnheader" className="num">
+        <span role="columnheader" className="num col-size">
           Size
         </span>
         <span role="columnheader" className="num">
@@ -112,10 +116,10 @@ export function TrafficList({ rows, selectedId, onSelect, onKeyDown, empty }: Pr
                 <span role="cell" className={statusClass(e)} title={e.failure?.message ?? e.statusMessage}>
                   {e.failure ? FAILURE_LABELS[e.failure.kind] : (e.status ?? '…')}
                 </span>
-                <span role="cell" className="muted" title={e.contentType}>
+                <span role="cell" className="muted col-type" title={e.contentType}>
                   {e.status !== undefined && !e.failure ? exchangeType(e) : ''}
                 </span>
-                <span role="cell" title={e.host}>
+                <span role="cell" className="col-host" title={e.host}>
                   {e.host}
                 </span>
                 <span role="cell" className="path" title={e.url}>
@@ -131,7 +135,7 @@ export function TrafficList({ rows, selectedId, onSelect, onKeyDown, empty }: Pr
                   )}
                   {e.path}
                 </span>
-                <span role="cell" className="num">
+                <span role="cell" className="num col-size">
                   {e.responseSize !== undefined ? formatBytes(e.responseSize) : ''}
                 </span>
                 <span role="cell" className="num">
