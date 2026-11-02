@@ -26,11 +26,22 @@ const exchangeActions = compatiblePlugins.flatMap((plugin) =>
 export function App(): React.JSX.Element {
   // 'traffic', 'setup', or `${plugin}:${viewId}` for a plugin's view.
   const [view, setView] = useState<string>('traffic');
-  const { backendState, connected, status, exchanges, paused, send, pluginApi, session, badges } = useBackend(
-    (key) => {
-      if (pluginViews.some((p) => p.key === key)) setView(key);
-    },
-  );
+  const {
+    backendState,
+    connected,
+    status,
+    exchanges,
+    paused,
+    send,
+    pluginApi,
+    session,
+    badges,
+    previous,
+    restartNotice,
+    dismissRestartNotice,
+  } = useBackend((key) => {
+    if (pluginViews.some((p) => p.key === key)) setView(key);
+  });
   const [message, setMessage] = useState<string>();
   /** The last HAR import or export, until dismissed. */
   const [notice, setNotice] = useState<string>();
@@ -57,8 +68,15 @@ export function App(): React.JSX.Element {
   const deferredSearch = useDeferredValue(search);
   const [showHelp, setShowHelp] = useState(false);
   const compiled = useMemo(() => compileFilter(deferredSearch, quickFilter), [deferredSearch, quickFilter]);
-  const rows = useMemo(() => exchanges.filter((e) => compiled.matches(e)), [exchanges, compiled]);
-  const selected = selectedId ? exchanges.find((e) => e.id === selectedId) : undefined;
+  // Requests from before a backend restart come first, read-only (only their summaries are left).
+  const staleIds = useMemo(() => new Set(previous.map((e) => e.id)), [previous]);
+  const allExchanges = useMemo(
+    () => (previous.length > 0 ? [...previous, ...exchanges] : exchanges),
+    [previous, exchanges],
+  );
+  const rows = useMemo(() => allExchanges.filter((e) => compiled.matches(e)), [allExchanges, compiled]);
+  const selected = selectedId ? allExchanges.find((e) => e.id === selectedId) : undefined;
+  const exportable = useMemo(() => rows.filter((e) => !staleIds.has(e.id)), [rows, staleIds]);
 
   const browsers = status?.browsers ?? [];
   const browserId = selectedBrowser || browsers[0]?.id || '';
@@ -96,38 +114,42 @@ export function App(): React.JSX.Element {
 
   /** Plugin actions offered for an exchange, from running plugins only. */
   const actionsFor = (exchange: ExchangeSummary): ExchangeActionButton[] =>
-    exchangeActions
-      .filter(({ plugin, action }) => {
-        if (!status?.plugins.find((s) => s.name === plugin)?.active) return false;
-        try {
-          return action.appliesTo?.(exchange) ?? true;
-        } catch {
-          return false;
-        }
-      })
-      .map(({ plugin, action }) => ({
-        key: `${plugin}:${action.id}`,
-        label: action.label,
-        run: () => {
-          setMessage(undefined);
-          // A plugin's failure is shown, not thrown at the app.
-          Promise.resolve()
-            .then(() => action.run(exchange, pluginApi(plugin)))
-            .catch((error: unknown) =>
-              setMessage(
-                `${action.label.replace(/…$/, '')} didn't work: ${(error as Error)?.message ?? error}`,
-              ),
-            );
-        },
-      }));
+    // A request from before a restart has nothing left for a plugin to work with.
+    staleIds.has(exchange.id)
+      ? []
+      : exchangeActions
+          .filter(({ plugin, action }) => {
+            if (!status?.plugins.find((s) => s.name === plugin)?.active) return false;
+            try {
+              return action.appliesTo?.(exchange) ?? true;
+            } catch {
+              return false;
+            }
+          })
+          .map(({ plugin, action }) => ({
+            key: `${plugin}:${action.id}`,
+            label: action.label,
+            run: () => {
+              setMessage(undefined);
+              // A plugin's failure is shown, not thrown at the app.
+              Promise.resolve()
+                .then(() => action.run(exchange, pluginApi(plugin)))
+                .catch((error: unknown) =>
+                  setMessage(
+                    `${action.label.replace(/…$/, '')} didn't work: ${(error as Error)?.message ?? error}`,
+                  ),
+                );
+            },
+          }));
 
   /** The right-click menu on a traffic row. */
   const showRowMenu = async (exchange: ExchangeSummary): Promise<void> => {
     setSelectedId(exchange.id);
     const actions = actionsFor(exchange);
+    const stale = staleIds.has(exchange.id);
     const choices: MenuChoice[] = [
       { id: 'copy-url', label: 'Copy URL' },
-      ...(exchange.websocket ? [] : [{ id: 'copy-curl', label: 'Copy as curl' }]),
+      ...(exchange.websocket || stale ? [] : [{ id: 'copy-curl', label: 'Copy as curl' }]),
       ...(actions.length > 0 ? [{ separator: true as const }] : []),
       // Within what a menu accepts: short labels, and at most 40 items.
       ...actions.slice(0, 30).map((a) => ({ id: a.key, label: a.label.slice(0, 100) })),
@@ -155,10 +177,14 @@ export function App(): React.JSX.Element {
     setNotice(undefined);
     setHarBusy(true);
     try {
-      const result = await window.wirescry.exportHar(rows.map((e) => e.id));
+      const result = await window.wirescry.exportHar(exportable.map((e) => e.id));
       if (result.name) {
+        const left = rows.length - exportable.length;
         setNotice(
-          `Exported ${result.count?.toLocaleString()} ${result.count === 1 ? 'request' : 'requests'} to ${result.name}.`,
+          `Exported ${result.count?.toLocaleString()} ${result.count === 1 ? 'request' : 'requests'} to ${result.name}.` +
+            (left > 0
+              ? ` ${left.toLocaleString()} from before the proxy restarted ${left === 1 ? 'wasn’t' : 'weren’t'} included: their details were lost.`
+              : ''),
         );
       }
     } catch (error) {
@@ -204,8 +230,9 @@ export function App(): React.JSX.Element {
   };
 
   let stateLabel: string;
-  if (backendState.state === 'failed') stateLabel = 'Backend failed';
-  else if (!connected) stateLabel = 'Connecting…';
+  if (backendState.state === 'failed') stateLabel = 'Proxy stopped';
+  // After the first connection, a gap means the backend is restarting.
+  else if (!connected) stateLabel = session > 0 ? 'Proxy restarting…' : 'Starting…';
   else stateLabel = `Proxy on 127.0.0.1:${status?.proxyPort}`;
 
   const filtered = search.trim() !== '' || quickFilter !== 'all';
@@ -365,8 +392,8 @@ export function App(): React.JSX.Element {
             <div className="filter-actions">
               <span className="muted count" data-testid="row-count">
                 {filtered
-                  ? `${rows.length.toLocaleString()} of ${exchanges.length.toLocaleString()}`
-                  : `${exchanges.length.toLocaleString()} ${exchanges.length === 1 ? 'request' : 'requests'}`}
+                  ? `${rows.length.toLocaleString()} of ${allExchanges.length.toLocaleString()}`
+                  : `${allExchanges.length.toLocaleString()} ${allExchanges.length === 1 ? 'request' : 'requests'}`}
               </span>
               <button
                 type="button"
@@ -382,7 +409,7 @@ export function App(): React.JSX.Element {
                 className="secondary"
                 title={filtered ? 'Save the requests shown as a HAR file' : 'Save all requests as a HAR file'}
                 onClick={() => void exportHar()}
-                disabled={!connected || harBusy || rows.length === 0}
+                disabled={!connected || harBusy || exportable.length === 0}
               >
                 Export HAR
               </button>
@@ -439,7 +466,38 @@ export function App(): React.JSX.Element {
         </>
       )}
 
-      {backendState.state === 'failed' && <div className="banner error">{backendState.message}</div>}
+      {backendState.state === 'failed' && (
+        <div className="banner error actions" role="alert">
+          <span>{backendState.message}</span>
+          <button type="button" onClick={() => void window.wirescry.restartBackend()}>
+            Restart proxy
+          </button>
+          <button type="button" className="secondary" onClick={() => void window.wirescry.showLog()}>
+            Show log
+          </button>
+        </div>
+      )}
+      {restartNotice && backendState.state !== 'failed' && (
+        <div className="banner notice restart-notice" role="status">
+          <span>
+            {restartNotice.crashed
+              ? `Wirescry's proxy stopped unexpectedly at ${new Date(restartNotice.at).toLocaleTimeString()} and restarted.`
+              : `Wirescry's proxy restarted.`}
+            {restartNotice.kept > 0 &&
+              ` The ${restartNotice.kept === 1 ? 'request' : `${restartNotice.kept.toLocaleString()} requests`} from before ${restartNotice.kept === 1 ? 'is' : 'are'} still listed, dimmed, but ${restartNotice.kept === 1 ? 'its' : 'their'} headers and bodies were lost.`}
+            {restartNotice.dropped > 0 &&
+              ` ${restartNotice.dropped === 1 ? 'One paused request was' : `${restartNotice.dropped} paused requests were`} let go.`}
+          </span>
+          {restartNotice.crashed && (
+            <button type="button" className="secondary" onClick={() => void window.wirescry.showLog()}>
+              Show log
+            </button>
+          )}
+          <button type="button" className="icon" aria-label="Dismiss" onClick={dismissRestartNotice}>
+            ×
+          </button>
+        </div>
+      )}
       {message && <div className="banner error">{message}</div>}
       {notice && (
         <div className="banner notice" role="status">
@@ -458,12 +516,13 @@ export function App(): React.JSX.Element {
         >
           <TrafficList
             rows={rows}
+            staleIds={staleIds}
             selectedId={selectedId}
             onSelect={setSelectedId}
             onKeyDown={onListKey}
             onContextMenu={(exchange) => void showRowMenu(exchange)}
             empty={
-              !connected ? null : exchanges.length === 0 ? (
+              !connected ? null : allExchanges.length === 0 ? (
                 <>
                   No traffic yet. Launch a browser, or see{' '}
                   <button type="button" className="link" onClick={() => setView('setup')}>
@@ -490,6 +549,7 @@ export function App(): React.JSX.Element {
                 send={send}
                 onClose={() => setSelectedId(undefined)}
                 actions={actionsFor(selected)}
+                stale={staleIds.has(selected.id)}
               />
             </>
           )}

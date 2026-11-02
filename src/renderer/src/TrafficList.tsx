@@ -24,6 +24,8 @@ function formatDuration(ms: number | undefined): string {
 
 interface Props {
   rows: ExchangeSummary[];
+  /** Requests from before the backend restarted: shown dimmed, details gone. */
+  staleIds: ReadonlySet<string>;
   selectedId: string | undefined;
   onSelect(id: string | undefined): void;
   onKeyDown(event: React.KeyboardEvent): void;
@@ -35,6 +37,7 @@ interface Props {
 /** The traffic list. Only rows in view are in the DOM, so it stays fast with thousands of rows. */
 export function TrafficList({
   rows,
+  staleIds,
   selectedId,
   onSelect,
   onKeyDown,
@@ -115,7 +118,12 @@ export function TrafficList({
                 aria-rowindex={index + 2}
                 aria-selected={e.id === selectedId}
                 data-testid="exchange-row"
-                className={`row ${index % 2 ? 'odd' : ''} ${e.id === selectedId ? 'selected' : ''}`}
+                className={`row ${index % 2 ? 'odd' : ''} ${e.id === selectedId ? 'selected' : ''} ${staleIds.has(e.id) ? 'stale' : ''}`}
+                title={
+                  staleIds.has(e.id)
+                    ? 'From before the proxy restarted: only this summary is left'
+                    : undefined
+                }
                 style={{ transform: `translateY(${index * ROW_HEIGHT}px)` }}
                 onClick={() => onSelect(e.id === selectedId ? undefined : e.id)}
                 onContextMenu={(event) => {

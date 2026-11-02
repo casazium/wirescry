@@ -33,7 +33,30 @@ export interface BackendView {
   send(command: Command): Promise<unknown>;
   /** The call and event channel for one plugin's UI. */
   pluginApi(plugin: string): UiPluginApi;
+  /**
+   * Requests captured before the backend restarted. Only their summaries are left: the
+   * backend that had their details and bodies is gone. Cleared with the list.
+   */
+  previous: ExchangeSummary[];
+  /** What the last restart cost, until dismissed. */
+  restartNotice?: RestartNotice;
+  dismissRestartNotice(): void;
 }
+
+/** Shown after the backend restarts, so nothing disappears without a word. */
+export interface RestartNotice {
+  /** When the old backend stopped. */
+  at: number;
+  /** False when the user restarted it after it failed. */
+  crashed: boolean;
+  /** Requests from before, now in `previous`. */
+  kept: number;
+  /** Things plugins had waiting (e.g. paused requests) that were let go. */
+  dropped: number;
+}
+
+/** Most rows kept from before restarts, oldest dropped first; the backend's own list holds 10,000. */
+const MAX_PREVIOUS = 10_000;
 
 /**
  * Connects to the backend and keeps a live list of exchanges, re-rendering at most once per frame.
@@ -58,6 +81,19 @@ export function useBackend(showView: (key: string) => void): BackendView {
   const [paused, setPaused] = useState(false);
   // Badges plugins put on their tabs, by `${plugin}:${viewId}`.
   const [badges, setBadges] = useState<Record<string, TabBadge>>({});
+  const [previous, setPrevious] = useState<ExchangeSummary[]>([]);
+  const [restartNotice, setRestartNotice] = useState<RestartNotice>();
+  // The latest values, for the message handler, which is made once per connection.
+  const latest = useRef({
+    exchanges,
+    paused,
+    badges,
+    previous,
+    backendState: undefined as BackendState | undefined,
+  });
+  useEffect(() => {
+    latest.current = { exchanges, paused, badges, previous, backendState };
+  });
   const clientRef = useRef<ApiClient | undefined>(undefined);
   // Bumped to reconnect when the API connection drops while the backend keeps running.
   const [attempt, setAttempt] = useState(0);
@@ -97,8 +133,32 @@ export function useBackend(showView: (key: string) => void): BackendView {
         case 'hello':
           setStatus(message.status);
           setPaused(message.paused);
+          if (greeted.current !== undefined && greeted.current !== connection) {
+            // A new backend: keep what the old one had captured, and say what happened.
+            const before = latest.current;
+            const kept = [...before.previous, ...before.exchanges].slice(-MAX_PREVIOUS);
+            setPrevious(kept);
+            const dropped = Object.values(before.badges)
+              .filter((b) => !b.tag)
+              .reduce((sum, b) => sum + (Number.parseInt(b.text, 10) || 0), 0);
+            const restart = before.backendState?.state === 'ready' ? before.backendState.restart : undefined;
+            setRestartNotice({
+              at: restart?.at ?? Date.now(),
+              crashed: !restart?.byUser,
+              // Everything from before, including rows kept through earlier restarts.
+              kept: kept.length,
+              dropped,
+            });
+            // Recording stays paused if it was.
+            if (before.paused && !message.paused) {
+              setPaused(true);
+              void client.send({ command: 'setPaused', paused: true }).catch(() => setPaused(false));
+            }
+          }
           list.reset(message.exchanges);
-          render();
+          // At once, not next frame: after a restart, the old rows move to `previous` in this
+          // same render, and mustn't be in both lists.
+          setExchanges(list.snapshot());
           setConnected(true);
           if (greeted.current !== connection) {
             greeted.current = connection;
@@ -114,6 +174,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
         case 'cleared':
           list.reset([]);
           render();
+          setPrevious([]);
           break;
         case 'paused':
           setPaused(message.paused);
@@ -213,5 +274,18 @@ export function useBackend(showView: (key: string) => void): BackendView {
     [send],
   );
 
-  return { backendState, connected, status, exchanges, paused, send, pluginApi, session, badges };
+  return {
+    backendState,
+    connected,
+    status,
+    exchanges,
+    paused,
+    send,
+    pluginApi,
+    session,
+    badges,
+    previous,
+    restartNotice,
+    dismissRestartNotice: useCallback(() => setRestartNotice(undefined), []),
+  };
 }
