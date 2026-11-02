@@ -2,13 +2,17 @@
   --bg: #ffffff;
   --bg-alt: #f5f6f8;
   --fg: #1d2129;
-  --muted: #6b7280;
+  /* Text colours keep 4.5:1 or more on every row background (white, striped, selected). */
+  --muted: #5f6672;
   --border: #e3e5e9;
-  --accent: #2f6fde;
+  /* Edges of fields you type in or pick from: 3:1 or more against the background. */
+  --field-border: #858c97;
+  --accent: #2962c5;
   --accent-fg: #ffffff;
-  --ok: #1f8a4c;
-  --warn: #b26a00;
-  --error: #c43333;
+  --danger-fg: #ffffff;
+  --ok: #187540;
+  --warn: #945700;
+  --error: #bc3030;
   --redirect: #6b4fc4;
   --selected: #dce7fb;
   color-scheme: light dark;
@@ -27,12 +31,16 @@
     --fg: #e6e8eb;
     --muted: #9aa1ac;
     --border: #2d3138;
-    --accent: #5b8ff0;
+    --field-border: #6b7280;
+    --accent: #6a9af2;
+    /* White on these is under 3:1. */
+    --accent-fg: #0b1220;
+    --danger-fg: #0b1220;
     --ok: #4cc27c;
     --warn: #e2a33c;
-    --error: #ef6b6b;
+    --error: #f47f7f;
     --redirect: #a28cf0;
-    --selected: #23395f;
+    --selected: #1f3354;
   }
 }
 
@@ -107,6 +115,10 @@ select {
   border-color: var(--border);
 }
 
+select {
+  border-color: var(--field-border);
+}
+
 button:disabled {
   opacity: 0.5;
   cursor: default;
@@ -163,7 +175,7 @@ input.search {
   width: 260px;
   padding: 4px 8px;
   border-radius: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   background: var(--bg);
   color: var(--fg);
 }
@@ -471,7 +483,7 @@ button.small {
 button.danger {
   background: var(--error);
   border-color: var(--error);
-  color: #fff;
+  color: var(--danger-fg);
 }
 
 .setup {
@@ -570,7 +582,7 @@ button.danger {
   width: 90px;
   padding: 3px 6px;
   border-radius: 6px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--field-border);
   background: var(--bg);
   color: var(--fg);
 }
@@ -793,12 +805,13 @@ button.help-button {
   line-height: 15px;
   vertical-align: 1px;
   background: color-mix(in srgb, var(--accent) 15%, transparent);
-  color: var(--accent);
+  /* Small text on a tint of its own colour: mixed toward --fg to stay at 4.5:1 or more. */
+  color: color-mix(in srgb, var(--accent) 60%, var(--fg));
 }
 
 .imported-badge {
   background: color-mix(in srgb, var(--muted) 18%, transparent);
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 60%, var(--fg));
 }
 
 .tab-badge {
