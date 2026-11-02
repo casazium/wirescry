@@ -66,8 +66,9 @@ body,
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-alt);
@@ -78,11 +79,33 @@ body,
   margin: 0 8px 0 0;
 }
 
+/* Narrow windows: the title bar already names the app, so the toolbar keeps its room for controls.
+   Hidden the same way as .visually-hidden, so screen readers still read it. */
+@media (max-width: 999px) {
+  .toolbar h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 .spacer {
   flex: 1;
 }
 
+/* The browser controls keep to the right, and move to their own line together when space runs out. */
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
 .pill {
+  white-space: nowrap;
   padding: 2px 8px;
   border-radius: 999px;
   border: 1px solid var(--border);
@@ -164,15 +187,18 @@ button:disabled {
 
 .filterbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
 }
 
 input.search {
   font: inherit;
-  width: 260px;
+  flex: 1 1 200px;
+  min-width: 140px;
+  max-width: 320px;
   padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid var(--field-border);
@@ -188,7 +214,30 @@ input.search:focus {
 .chips {
   display: flex;
   gap: 4px;
+}
+
+/* The chips' stand-in for narrower windows. */
+select.quick-select {
+  display: none;
+}
+
+/* The count and HAR, recording and Clear buttons stay together on the right. */
+.filter-actions {
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin-left: auto;
+}
+
+@media (max-width: 1359px) {
+  .chips {
+    display: none;
+  }
+
+  select.quick-select {
+    display: block;
+  }
 }
 
 button.chip {
@@ -222,8 +271,11 @@ button.chip.active {
 .traffic {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Columns drop out as the list narrows (below), whatever the window size. */
+  container-type: inline-size;
 }
 
 .traffic-scroll {
@@ -240,7 +292,7 @@ button.chip.active {
 
 .traffic .row {
   display: grid;
-  grid-template-columns: 56px 48px 48px minmax(60px, 0.6fr) minmax(80px, 1.4fr) 64px 64px;
+  grid-template-columns: 56px 60px 48px minmax(110px, 0.8fr) minmax(80px, 1.4fr) 64px 64px;
   align-items: center;
   height: 24px;
   padding: 0 12px;
@@ -290,13 +342,88 @@ button.chip.active {
   font-variant-numeric: tabular-nums;
 }
 
+/* As the list narrows, Type goes first, then Host, then Size. Time always stays.
+   Each threshold is the row's minimum width (columns + 12px gaps + 24px padding)
+   plus 16px for a scrollbar that takes up room (Windows, Linux, some macOS settings). */
+@container (max-width: 595px) {
+  .traffic .row {
+    grid-template-columns: 56px 60px minmax(110px, 0.8fr) minmax(80px, 1.4fr) 64px 64px;
+  }
+
+  .traffic .col-type {
+    display: none;
+  }
+}
+
+@container (max-width: 535px) {
+  .traffic .row {
+    grid-template-columns: 56px 60px minmax(80px, 1fr) 64px 64px;
+  }
+
+  .traffic .col-host {
+    display: none;
+  }
+}
+
+@container (max-width: 415px) {
+  .traffic .row {
+    grid-template-columns: 56px 60px minmax(80px, 1fr) 64px;
+  }
+
+  .traffic .col-size {
+    display: none;
+  }
+}
+
 .detail {
-  width: 50%;
-  min-width: 360px;
+  flex: 0 0 var(--detail-size, 50%);
+  min-width: 300px;
+  max-width: calc(100% - 336px);
   display: flex;
   flex-direction: column;
   border-left: 1px solid var(--border);
   min-height: 0;
+}
+
+/* Sits over the detail pane's border and its first 6px, with a wider grab area than the line itself. */
+.splitter {
+  flex: 0 0 6px;
+  margin-right: -6px;
+  position: relative;
+  z-index: 1;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.splitter:hover,
+.splitter:active {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.splitter:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* Narrow windows: the detail pane goes under the list. Matches STACKED_QUERY in detail-size.ts. */
+@media (max-width: 799px) {
+  .main {
+    flex-direction: column;
+  }
+
+  .detail {
+    min-width: 0;
+    max-width: none;
+    min-height: 140px;
+    max-height: calc(100% - 96px);
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+
+  .splitter {
+    margin: 0 0 -6px;
+    cursor: row-resize;
+  }
 }
 
 .detail-header {

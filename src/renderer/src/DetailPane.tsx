@@ -13,6 +13,7 @@ import type { Command } from './api-client';
 import { BodyView } from './BodyView';
 import { base64ToBytes, formatBytes } from './bytes';
 import { WebSocketMessagesView } from './WebSocketMessagesView';
+import { DETAIL_PANE_ID } from './Splitter';
 
 interface Props {
   summary: ExchangeSummary;
@@ -147,7 +148,7 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
   const timing = detail?.timing;
 
   return (
-    <aside className="detail" aria-label="Exchange details">
+    <aside className="detail" id={DETAIL_PANE_ID} aria-label="Exchange details">
       <div className="detail-header">
         <strong>{summary.method}</strong>
         <span className="detail-url" title={summary.url}>
