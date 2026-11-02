@@ -104,7 +104,11 @@ export const IPC = {
   openTextFile: 'wirescry:open-text-file',
   exportHar: 'wirescry:export-har',
   importHar: 'wirescry:import-har',
+  showMenu: 'wirescry:show-menu',
 } as const;
+
+/** An item in a menu the UI shows with showMenu. */
+export type MenuChoice = { id: string; label: string; enabled?: boolean } | { separator: true };
 
 export interface SaveTextFileRequest {
   text: string;
@@ -149,4 +153,6 @@ export interface WirescryBridge {
   exportHar(exchangeIds: string[]): Promise<HarExportResult>;
   /** Asks the user to pick a HAR file, then adds its exchanges to the traffic list. */
   importHar(): Promise<HarImportResult>;
+  /** Shows a native menu at the mouse, then resolves with the chosen item's id, or nothing. */
+  showMenu(choices: MenuChoice[]): Promise<string | undefined>;
 }

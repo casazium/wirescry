@@ -1,6 +1,9 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
-import { DetailPane } from './DetailPane';
+import type { ExchangeSummary } from '../../shared/api';
+import type { MenuChoice } from '../../shared/ipc';
+import { fetchCurlCommand } from './curl-command';
+import { DetailPane, type ExchangeActionButton } from './DetailPane';
 import { FilterHelp } from './FilterHelp';
 import { PluginView } from './PluginView';
 import { uiPlugins } from '@wirescry/pro/ui';
@@ -11,9 +14,23 @@ import { Splitter } from './Splitter';
 import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
 
+// A UI plugin built for another API version is left out; its backend half reports why.
+const compatiblePlugins = uiPlugins.filter((p) => p.apiVersion === PLUGIN_API_VERSION);
+const pluginViews = compatiblePlugins.flatMap((plugin) =>
+  plugin.views.map((v) => ({ key: `${plugin.name}:${v.id}`, plugin: plugin.name, view: v })),
+);
+const exchangeActions = compatiblePlugins.flatMap((plugin) =>
+  (plugin.exchangeActions ?? []).map((action) => ({ plugin: plugin.name, action })),
+);
+
 export function App(): React.JSX.Element {
-  const { backendState, connected, status, exchanges, paused, send, pluginApi, session, badges } =
-    useBackend();
+  // 'traffic', 'setup', or `${plugin}:${viewId}` for a plugin's view.
+  const [view, setView] = useState<string>('traffic');
+  const { backendState, connected, status, exchanges, paused, send, pluginApi, session, badges } = useBackend(
+    (key) => {
+      if (pluginViews.some((p) => p.key === key)) setView(key);
+    },
+  );
   const [message, setMessage] = useState<string>();
   /** The last HAR import or export, until dismissed. */
   const [notice, setNotice] = useState<string>();
@@ -22,14 +39,6 @@ export function App(): React.JSX.Element {
   const [selectedId, setSelectedId] = useState<string>();
   const [search, setSearch] = useState('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
-  // 'traffic', 'setup', or `${plugin}:${viewId}` for a plugin's view.
-  const [view, setView] = useState<string>('traffic');
-  // A UI plugin built for another API version is left out; its backend half reports why.
-  const pluginViews = uiPlugins
-    .filter((p) => p.apiVersion === PLUGIN_API_VERSION)
-    .flatMap((plugin) =>
-      plugin.views.map((v) => ({ key: `${plugin.name}:${v.id}`, plugin: plugin.name, view: v })),
-    );
   const searchRef = useRef<HTMLInputElement>(null);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
@@ -83,6 +92,61 @@ export function App(): React.JSX.Element {
     const step = event.key === 'ArrowDown' ? 1 : -1;
     const next = rows[Math.min(rows.length - 1, Math.max(0, current + step))];
     if (next) setSelectedId(next.id);
+  };
+
+  /** Plugin actions offered for an exchange, from running plugins only. */
+  const actionsFor = (exchange: ExchangeSummary): ExchangeActionButton[] =>
+    exchangeActions
+      .filter(({ plugin, action }) => {
+        if (!status?.plugins.find((s) => s.name === plugin)?.active) return false;
+        try {
+          return action.appliesTo?.(exchange) ?? true;
+        } catch {
+          return false;
+        }
+      })
+      .map(({ plugin, action }) => ({
+        key: `${plugin}:${action.id}`,
+        label: action.label,
+        run: () => {
+          setMessage(undefined);
+          // A plugin's failure is shown, not thrown at the app.
+          Promise.resolve()
+            .then(() => action.run(exchange, pluginApi(plugin)))
+            .catch((error: unknown) =>
+              setMessage(
+                `${action.label.replace(/…$/, '')} didn't work: ${(error as Error)?.message ?? error}`,
+              ),
+            );
+        },
+      }));
+
+  /** The right-click menu on a traffic row. */
+  const showRowMenu = async (exchange: ExchangeSummary): Promise<void> => {
+    setSelectedId(exchange.id);
+    const actions = actionsFor(exchange);
+    const choices: MenuChoice[] = [
+      { id: 'copy-url', label: 'Copy URL' },
+      ...(exchange.websocket ? [] : [{ id: 'copy-curl', label: 'Copy as curl' }]),
+      ...(actions.length > 0 ? [{ separator: true as const }] : []),
+      // Within what a menu accepts: short labels, and at most 40 items.
+      ...actions.slice(0, 30).map((a) => ({ id: a.key, label: a.label.slice(0, 100) })),
+    ];
+    let chosen: string | undefined;
+    try {
+      chosen = await window.wirescry.showMenu(choices);
+    } catch (error) {
+      setMessage(`Couldn't show the menu: ${(error as Error).message}`);
+      return;
+    }
+    try {
+      if (chosen === 'copy-url') await navigator.clipboard.writeText(exchange.url);
+      else if (chosen === 'copy-curl')
+        await navigator.clipboard.writeText(await fetchCurlCommand(exchange, send));
+      else actions.find((a) => a.key === chosen)?.run();
+    } catch (error) {
+      setMessage(`Couldn't copy: ${(error as Error).message}`);
+    }
   };
 
   /** Exports what the list shows (the filter applies), in list order. */
@@ -397,6 +461,7 @@ export function App(): React.JSX.Element {
             selectedId={selectedId}
             onSelect={setSelectedId}
             onKeyDown={onListKey}
+            onContextMenu={(exchange) => void showRowMenu(exchange)}
             empty={
               !connected ? null : exchanges.length === 0 ? (
                 <>
@@ -420,7 +485,12 @@ export function App(): React.JSX.Element {
                 onCommit={(size) => saveDetailSize(sizeKey, size ?? detailSize)}
                 container={mainRef}
               />
-              <DetailPane summary={selected} send={send} onClose={() => setSelectedId(undefined)} />
+              <DetailPane
+                summary={selected}
+                send={send}
+                onClose={() => setSelectedId(undefined)}
+                actions={actionsFor(selected)}
+              />
             </>
           )}
         </div>

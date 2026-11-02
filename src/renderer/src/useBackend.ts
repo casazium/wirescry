@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ExchangeSummary, ProxyStatus, ServerMessage } from '../../shared/api';
+import type {
+  BodyContent,
+  ExchangeDetail,
+  ExchangeSummary,
+  ProxyStatus,
+  ServerMessage,
+} from '../../shared/api';
 import type { BackendState } from '../../shared/ipc';
 import type { UiPluginApi } from '../../plugin-api/ui';
 import { ApiClient, type Command } from './api-client';
@@ -29,8 +35,16 @@ export interface BackendView {
   pluginApi(plugin: string): UiPluginApi;
 }
 
-/** Connects to the backend and keeps a live list of exchanges, re-rendering at most once per frame. */
-export function useBackend(): BackendView {
+/**
+ * Connects to the backend and keeps a live list of exchanges, re-rendering at most once per frame.
+ * `showView` switches tabs for a plugin, given `${plugin}:${viewId}`.
+ */
+export function useBackend(showView: (key: string) => void): BackendView {
+  // The latest callback, so the plugin channels made once per session always use it.
+  const showViewRef = useRef(showView);
+  useEffect(() => {
+    showViewRef.current = showView;
+  }, [showView]);
   const [backendState, setBackendState] = useState<BackendState>({ state: 'starting' });
   const [connected, setConnected] = useState(false);
   // Goes up on the first hello from each backend start, so plugin views remount and load
@@ -159,6 +173,15 @@ export function useBackend(): BackendView {
           },
           saveFile: (options) => window.wirescry.saveTextFile(options),
           openFile: (options) => window.wirescry.openTextFile(options),
+          showView: (viewId) => showViewRef.current(`${plugin}:${String(viewId)}`),
+          getExchange: async (exchangeId) =>
+            (await send({ command: 'getExchange', exchangeId: String(exchangeId) })) as ExchangeDetail,
+          getBody: async (exchangeId, side) =>
+            (await send({
+              command: 'getBody',
+              exchangeId: String(exchangeId),
+              side: side === 'request' ? 'request' : 'response',
+            })) as BodyContent | null,
           setBadge: (viewId, text, options) => {
             const key = `${plugin}:${String(viewId)}`;
             // Short text only: it sits on a tab.

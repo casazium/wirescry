@@ -8,17 +8,25 @@ import type {
   FormattedBody,
   Header,
 } from '../../shared/api';
-import { toCurl } from '../../shared/curl';
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
-import { base64ToBytes, formatBytes } from './bytes';
+import { formatBytes } from './bytes';
+import { curlCommand } from './curl-command';
 import { WebSocketMessagesView } from './WebSocketMessagesView';
 import { DETAIL_PANE_ID } from './Splitter';
+
+/** A plugin's action on this exchange, such as Pro's "Mock…". */
+export interface ExchangeActionButton {
+  key: string;
+  label: string;
+  run(): void;
+}
 
 interface Props {
   summary: ExchangeSummary;
   send(command: Command): Promise<unknown>;
   onClose(): void;
+  actions: ExchangeActionButton[];
 }
 
 type BodyState = { content: BodyContent | null } | { error: string };
@@ -73,7 +81,7 @@ function ms(from: number | undefined, to: number | undefined): string {
 }
 
 /** Headers, timing and bodies for the selected exchange. */
-export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element {
+export function DetailPane({ summary, send, onClose, actions }: Props): React.JSX.Element {
   const [detail, setDetail] = useState<ExchangeDetail>();
   const [bodies, setBodies] = useState<Record<string, BodyState>>({});
   const [copied, setCopied] = useState<string>();
@@ -132,17 +140,8 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
 
   const copyCurl = async (): Promise<void> => {
     if (!detail) return;
-    const request = requestBody;
-    let headers = detail.requestHeaders;
-    let body: Uint8Array | undefined;
-    if (request && 'content' in request && request.content) {
-      body = base64ToBytes(request.content.base64);
-      // The UI has the decoded body, so send it unencoded.
-      if (request.content.decodedSize !== undefined) {
-        headers = headers.filter(([name]) => name.toLowerCase() !== 'content-encoding');
-      }
-    }
-    await copy('curl', toCurl({ method: summary.method, url: summary.url, headers, body }));
+    const body = requestBody && 'content' in requestBody ? requestBody.content : undefined;
+    await copy('curl', curlCommand(summary, detail, body));
   };
 
   const timing = detail?.timing;
@@ -167,6 +166,11 @@ export function DetailPane({ summary, send, onClose }: Props): React.JSX.Element
             Copy as curl
           </button>
         )}
+        {actions.map((action) => (
+          <button key={action.key} type="button" className="secondary" onClick={action.run}>
+            {action.label}
+          </button>
+        ))}
         {copied && <span className="muted">{copied === 'Copy failed' ? copied : `Copied ${copied}`}</span>}
       </div>
       <div className="detail-body">

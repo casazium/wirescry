@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { contextMenuItems, type ContextMenuParams } from '../src/main/context-menu';
+import { checkMenuChoices, contextMenuItems, type ContextMenuParams } from '../src/main/context-menu';
 
 const flags = { canCut: false, canCopy: false, canPaste: true, canSelectAll: true };
 const roles = (params: ContextMenuParams): string[] =>
@@ -20,5 +20,33 @@ describe('contextMenuItems', () => {
 
   it('offers nothing when there is no text field or selection', () => {
     expect(contextMenuItems({ isEditable: false, selectionText: ' ', editFlags: flags })).toEqual([]);
+  });
+});
+
+describe('checkMenuChoices', () => {
+  it('keeps items and separators, and drops anything extra', () => {
+    expect(
+      checkMenuChoices([
+        { id: 'copy-url', label: 'Copy URL', extra: 1 },
+        { separator: true },
+        { id: 'pro:mock', label: 'Mock…', enabled: false },
+      ]),
+    ).toEqual([
+      { id: 'copy-url', label: 'Copy URL' },
+      { separator: true },
+      { id: 'pro:mock', label: 'Mock…', enabled: false },
+    ]);
+  });
+
+  it('refuses what isn’t a menu', () => {
+    expect(() => checkMenuChoices([])).toThrow();
+    expect(() => checkMenuChoices('Copy')).toThrow();
+    expect(() => checkMenuChoices([null])).toThrow();
+    expect(() => checkMenuChoices([{ id: '', label: 'x' }])).toThrow();
+    expect(() => checkMenuChoices([{ id: 'a', label: ' ' }])).toThrow();
+    expect(() => checkMenuChoices([{ id: 'a', label: 'x'.repeat(101) }])).toThrow();
+    expect(() =>
+      checkMenuChoices(Array.from({ length: 41 }, (_, i) => ({ id: `${i}`, label: 'x' }))),
+    ).toThrow();
   });
 });
