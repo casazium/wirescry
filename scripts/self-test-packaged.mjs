@@ -65,7 +65,7 @@ function installWindowsSetup() {
   return [{ name: `installed setup (${process.arch})`, exe }];
 }
 
-function run({ name, exe }) {
+function run({ name, exe, maxStartMs = MAX_BACKEND_START_MS }) {
   if (!exe) return Promise.resolve(false);
   const work = mkdtempSync(join(tmpdir(), 'wirescry-self-test-'));
   const resultFile = join(work, 'result.json');
@@ -76,6 +76,8 @@ function run({ name, exe }) {
   return new Promise((done) => {
     const child = spawn(exe, args, { stdio: 'inherit', env });
     // Past the app's own 10-minute limit, so a slow start is reported with its timings.
+    // On macOS that's at most 3 runs (Intel twice, arm64 once), 36 minutes: within the
+    // build job's 90, which reaches this step after about 17.
     const timer = setTimeout(() => child.kill(), 12 * 60_000);
     child.on('exit', (code) => {
       clearTimeout(timer);
@@ -88,8 +90,8 @@ function run({ name, exe }) {
       let problem;
       if (!result) problem = `exited (code ${code}) without a result`;
       else if (result.error) problem = result.error;
-      else if (result.backendStartMs > MAX_BACKEND_START_MS) {
-        problem = `the backend took ${Math.round(result.backendStartMs / 1000)} s to start (the limit is ${MAX_BACKEND_START_MS / 1000} s)`;
+      else if (result.backendStartMs > maxStartMs) {
+        problem = `the backend took ${Math.round(result.backendStartMs / 1000)} s to start (the limit is ${maxStartMs / 1000} s)`;
       } else if (expectPro) {
         // Unlicensed is fine: Pro still starts, and locks its features itself.
         const pro = result.plugins?.find((p) => p.name === 'pro');
@@ -136,13 +138,23 @@ if (apps.length === 0) {
  * time limits (0.1.4 and 0.1.11 each failed this way, then passed on another try).
  * Rosetta keeps what it translated, so that app gets one more try.
  */
-/** The slowest backend start that passes. The log's "Startup:" lines say where the time went. */
-const MAX_BACKEND_START_MS = 120_000;
-
 const underRosetta = (app) => process.platform === 'darwin' && process.arch === 'arm64' && app.name === 'mac';
+
+/**
+ * The slowest backend start that passes. The log's "Startup:" lines say where the time went.
+ *
+ * Under Rosetta it's 6 minutes. The same 0.1.14 code started there in 45 s in one build
+ * and took over 120 s in four tries across two others, with every "Startup:" step 40-70x
+ * slower than native (which starts in under 1 s): runner and Rosetta variance, not a
+ * regression. Real Intel Macs run the app natively. 6 minutes still fails a real hang,
+ * and the app gives up by itself at 10.
+ */
+const MAX_BACKEND_START_MS = 120_000;
+const MAX_ROSETTA_BACKEND_START_MS = 6 * 60_000;
 
 let ok = true;
 for (const app of apps) {
+  app.maxStartMs = underRosetta(app) ? MAX_ROSETTA_BACKEND_START_MS : MAX_BACKEND_START_MS;
   let passed = await run(app);
   if (!passed && underRosetta(app)) {
     console.log(`${app.name}: trying once more, now that Rosetta has translated it`);
