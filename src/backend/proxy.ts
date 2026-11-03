@@ -170,6 +170,9 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
 
   await server.on('response-initiated', (res) => {
     if (!store.get(res.id)) return;
+    // Mockttp writes its own error reply to a connection that has already gone: not what
+    // the client got, and the abort handler has finished with this exchange.
+    if (res.timingEvents.abortedTimestamp !== undefined) return;
     sentHeads.set(res.id, {
       statusCode: res.statusCode,
       statusMessage: res.statusMessage,
@@ -383,6 +386,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     setTimeout(() => {
       finishBody(req.id, 'response', false);
       brokenMidBody.delete(req.id);
+      sentHeads.delete(req.id);
     }, 5000).unref();
     update(req.id, (existing) => {
       const rule = handledBy(req.matchedRuleId) ?? existing.summary.handledBy;
