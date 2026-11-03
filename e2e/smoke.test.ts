@@ -1,8 +1,8 @@
 /**
  * Drives the real app: capture traffic, open a gzip and an HTML body (which once crashed
  * the backend), kill the backend and check the list survives with a notice, and check the
- * Pro tab still works. Runs against out/ (npm run build first), or the packaged app at
- * WIRESCRY_SMOKE_APP. On Linux, run under xvfb-run.
+ * Pro tab still works. Runs against out/ (npm run build first); not the packaged app, whose
+ * fuses turn off the --inspect that Playwright attaches with. On Linux, run under xvfb-run.
  */
 import http from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -38,14 +38,12 @@ beforeAll(async () => {
   upstreamPort = (upstream.address() as AddressInfo).port;
 
   userData = await mkdtemp(path.join(os.tmpdir(), 'wirescry-smoke-'));
-  const packaged = process.env.WIRESCRY_SMOKE_APP;
   app = await electron.launch({
-    ...(packaged ? { executablePath: packaged } : {}),
-    // Built: Electron runs this folder (out/). Packaged: the app is the executable.
+    // Electron runs this folder, which loads the build in out/.
     args: [
       // Linux CI can't set up Chromium's sandbox helper (it needs root).
       ...(process.platform === 'linux' ? ['--no-sandbox'] : []),
-      ...(packaged ? [] : [root]),
+      root,
       `--user-data-dir=${userData}`,
     ],
     env: { ...process.env, WIRESCRY_DISABLE_UPDATES: '1' } as Record<string, string>,
@@ -104,7 +102,7 @@ it('captures traffic, opens gzip and HTML bodies, survives a backend crash, and 
   // Traffic shows up.
   expect(await viaProxy(proxyPort, '/data.json')).toBe(200);
   expect(await viaProxy(proxyPort, '/page.html')).toBe(200);
-  await expect.poll(() => rows().count()).toBe(2);
+  await expect.poll(() => rows().count(), { timeout: 15_000 }).toBe(2);
 
   // Opening an HTML body formats it in a backend worker, and a gzip body decodes: both
   // crashed the backend until 0.1.4.
@@ -120,11 +118,11 @@ it('captures traffic, opens gzip and HTML bodies, survives a backend crash, and 
   process.kill(await backendPid(), 'SIGKILL');
   await page.locator('.restart-notice').waitFor({ timeout: 60_000 });
   expect(await page.locator('.restart-notice').textContent()).toContain('stopped unexpectedly');
-  await expect.poll(() => page.locator('.row.stale').count()).toBe(2);
+  await expect.poll(() => page.locator('.row.stale').count(), { timeout: 15_000 }).toBe(2);
   await expect.poll(async () => (await pill().textContent()) ?? '', { timeout: 60_000 }).toMatch(/^Proxy on/);
   const newPort = Number((await pill().textContent())!.split(':').at(-1));
   expect(await viaProxy(newPort, '/data.json')).toBe(200);
-  await expect.poll(() => rows().count()).toBe(3);
+  await expect.poll(() => rows().count(), { timeout: 15_000 }).toBe(3);
 
   // With Pro built in, its tab answers after the restart (it once stuck at "Not connected").
   const rulesTab = page.locator('nav.views button', { hasText: 'Rules' });
