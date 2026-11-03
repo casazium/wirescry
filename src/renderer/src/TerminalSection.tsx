@@ -30,7 +30,8 @@ export function TerminalSection({
   const [shell, setShell] = useState<ShellKind>(shells[0]!);
   const [error, setError] = useState<string>();
   const snippet = shellSnippet(status.terminalEnv, shell);
-  const line = sourceLine(shell, status.terminalScripts[shell]);
+  const script = status.terminalScripts[shell];
+  const line = script ? sourceLine(shell, script) : undefined;
 
   const launch = (terminalId: string): void => {
     setError(undefined);
@@ -74,20 +75,37 @@ export function TerminalSection({
           </button>
         ))}
       </div>
-      <p className="muted">
-        Paste this into the terminal. It lasts until that terminal closes, and covers only that terminal.
-      </p>
-      <div className="snippet">
-        <pre className="code">{line}</pre>
-        <CopyButton text={line} />
-      </div>
-      <details className="coverage">
-        <summary>Show what this sets</summary>
-        <div className="snippet">
-          <pre className="code">{snippet}</pre>
-          <CopyButton text={snippet} />
-        </div>
-      </details>
+      {line ? (
+        <>
+          <p className="muted">
+            Paste this into the terminal. It lasts until that terminal closes, and covers only that terminal.
+          </p>
+          <div className="snippet">
+            <pre className="code">{line}</pre>
+            <CopyButton text={line} />
+          </div>
+          <details className="coverage">
+            <summary>Show what this sets</summary>
+            <div className="snippet">
+              <pre className="code">{snippet}</pre>
+              <CopyButton text={snippet} />
+            </div>
+          </details>
+        </>
+      ) : shell === 'cmd' ? (
+        <p className="note">
+          Wirescry's folder has characters in its path that Command Prompt can't take here. Use PowerShell, or
+          open a Command Prompt with the button above.
+        </p>
+      ) : (
+        <>
+          <p className="muted">Paste these lines into the terminal. They last until that terminal closes.</p>
+          <div className="snippet">
+            <pre className="code">{snippet}</pre>
+            <CopyButton text={snippet} />
+          </div>
+        </>
+      )}
 
       <details className="coverage">
         <summary>What's covered</summary>

@@ -70,15 +70,26 @@ export function CertificateTrust({ platform, certPath, commonName, CopyButton }:
             Chrome and Firefox keep their own lists. For Chrome (needs libnss3-tools or nss-tools):
           </p>
           <Command
-            text={`certutil -d sql:$HOME/.pki/nssdb -A -t C,, -n Wirescry -i ${posixQuote(certPath)}`}
+            text={`certutil -d sql:$HOME/.pki/nssdb -A -t C,, -n ${posixQuote(commonName)} -i ${posixQuote(certPath)}`}
             CopyButton={CopyButton}
           />
           <p className="muted">
             For Firefox: in its settings, open Certificates, View Certificates, Authorities, and import the
             saved file.
           </p>
+          <p className="muted">
+            To remove it: on Debian and Ubuntu, delete{' '}
+            <code>/usr/local/share/ca-certificates/wirescry.crt</code> and run{' '}
+            <code>sudo update-ca-certificates --fresh</code>; with p11-kit, run{' '}
+            <code>sudo trust anchor --remove</code> with the same file; for Chrome, run{' '}
+            <code>certutil -d sql:$HOME/.pki/nssdb -D -n</code> with the name &quot;{commonName}&quot;.
+          </p>
         </>
       )}
+      <p className="muted">
+        Every Wirescry certificate is named &quot;Wirescry CA&quot; followed by a code. After Reset
+        certificate, remove the earlier one too: it&apos;s no longer used, but stays trusted until you do.
+      </p>
     </details>
   );
 }

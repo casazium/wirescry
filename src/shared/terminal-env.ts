@@ -154,8 +154,19 @@ export function shellScript(env: Record<string, string>, shell: ShellKind): stri
 }
 
 /**
+ * Whether a script for this shell can hold these values safely. Command Prompt reads
+ * .cmd files in the console's code page and treats % & ^ | < > as syntax even in
+ * values, so it only gets a script when every value is plain ASCII without them.
+ */
+export function shellScriptSupported(env: Record<string, string>, shell: ShellKind): boolean {
+  if (shell !== 'cmd') return true;
+  return Object.values(env).every((value) => /^[\x20-\x7e]*$/.test(value) && !/[%&^|<>!]/.test(value));
+}
+
+/**
  * One line to paste into a terminal that runs the script. PowerShell reads the file and
- * runs its text, because Windows' default execution policy refuses to run .ps1 scripts.
+ * runs its text, because Windows' default execution policy refuses to run .ps1 scripts;
+ * -Encoding UTF8 because Windows PowerShell 5.1 otherwise reads it in the ANSI code page.
  */
 export function sourceLine(shell: ShellKind, scriptPath: string): string {
   switch (shell) {
@@ -164,7 +175,7 @@ export function sourceLine(shell: ShellKind, scriptPath: string): string {
     case 'fish':
       return `source ${fishQuote(scriptPath)}`;
     case 'powershell':
-      return `Get-Content -Raw ${powershellQuote(scriptPath)} | Invoke-Expression`;
+      return `Get-Content -Raw -Encoding UTF8 -LiteralPath ${powershellQuote(scriptPath)} | Invoke-Expression`;
     case 'cmd':
       return `call "${scriptPath}"`;
   }

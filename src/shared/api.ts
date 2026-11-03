@@ -169,8 +169,8 @@ export interface ProxyStatus {
   terminals: TerminalInfo[];
   /** The variables those terminals get, for setting up an existing terminal by hand. */
   terminalEnv: Record<string, string>;
-  /** Scripts that set those variables, per shell, for the one-line setup. */
-  terminalScripts: Record<ShellKind, string>;
+  /** Scripts that set those variables, per shell, for the one-line setup. A shell is missing if its script couldn't be written. */
+  terminalScripts: Partial<Record<ShellKind, string>>;
   /** Plugins built into this copy of Wirescry, such as Pro. Empty in the free build. */
   plugins: PluginStatus[];
 }

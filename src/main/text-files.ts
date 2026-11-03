@@ -88,7 +88,9 @@ export async function chooseFilePath(
 ): Promise<ChooseFilePathResult> {
   if (!isObject(request)) throw new Error('Invalid request.');
   const raw = request.extensions;
-  const extensions = raw === undefined ? undefined : extensionsOf(raw);
+  // No extensions, or an empty list, means any file.
+  const extensions =
+    raw === undefined || (Array.isArray(raw) && raw.length === 0) ? undefined : extensionsOf(raw);
   const options = {
     properties: ['openFile' as const],
     filters: extensions ? [{ name: extensions.join(', ').toUpperCase(), extensions }] : [],

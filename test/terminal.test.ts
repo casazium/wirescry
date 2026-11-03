@@ -18,6 +18,7 @@ import {
   curlrcContent,
   phpIniContent,
   shellScript,
+  shellScriptSupported,
   shellSnippet,
   sourceLine,
   terminalEnv,
@@ -127,7 +128,7 @@ describe('terminal interception', () => {
     async () => {
       const status = (api.messages[0] as { status: ProxyStatus }).status;
       // The data folder has a space in it, so this also checks the quoting.
-      const line = sourceLine('posix', status.terminalScripts.posix);
+      const line = sourceLine('posix', status.terminalScripts.posix!);
       const { stdout } = await exec('/bin/sh', ['-c', `${line} && env`], {
         env: { PATH: process.env.PATH },
       });
@@ -144,7 +145,7 @@ describe('terminal interception', () => {
       const proxy = status.terminalEnv.HTTPS_PROXY!;
       const cmd = await exec(
         'cmd.exe',
-        ['/d', '/c', `${sourceLine('cmd', status.terminalScripts.cmd)} && set`],
+        ['/d', '/c', `${sourceLine('cmd', status.terminalScripts.cmd!)} && set`],
         {
           windowsVerbatimArguments: true,
         },
@@ -155,7 +156,7 @@ describe('terminal interception', () => {
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `${sourceLine('powershell', status.terminalScripts.powershell)}; Write-Output "proxy=$env:HTTPS_PROXY"`,
+        `${sourceLine('powershell', status.terminalScripts.powershell!)}; Write-Output "proxy=$env:HTTPS_PROXY"`,
       ]);
       expect(ps.stdout).toContain(`proxy=${proxy}`);
     },
@@ -338,9 +339,17 @@ describe('terminal setup', () => {
     expect(sourceLine('posix', "/a b/it's.sh")).toBe(`. '/a b/it'\\''s.sh'`);
     expect(sourceLine('fish', "/a b/it's.fish")).toBe(`source '/a b/it\\'s.fish'`);
     expect(sourceLine('powershell', "C:\\a b\\it's.ps1")).toBe(
-      `Get-Content -Raw 'C:\\a b\\it''s.ps1' | Invoke-Expression`,
+      `Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\a b\\it''s.ps1' | Invoke-Expression`,
     );
     expect(sourceLine('cmd', 'C:\\a b\\w.cmd')).toBe('call "C:\\a b\\w.cmd"');
+  });
+
+  it('gives Command Prompt a script only when its values are safe for it', () => {
+    expect(shellScriptSupported({ A: 'C:\\Users\\Bob\\x.pem', B: '-Dx="C:\\a b"' }, 'cmd')).toBe(true);
+    for (const value of ['C:\\Users\\José\\x.pem', 'C:\\100%\\x', 'C:\\R&D\\x', 'a^b', 'a!b']) {
+      expect(shellScriptSupported({ A: value }, 'cmd'), value).toBe(false);
+      expect(shellScriptSupported({ A: value }, 'powershell'), value).toBe(true);
+    }
   });
 
   it.skipIf(process.platform === 'win32')(

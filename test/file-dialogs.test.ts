@@ -87,7 +87,8 @@ describe('choosing a file path', () => {
     chosen = path.join(dir, 'does-not-exist.json');
     expect(await chooseFilePath(undefined, {})).toEqual({ path: chosen });
     expect(await chooseFilePath(undefined, { extensions: ['json'] })).toEqual({ path: chosen });
-    expect(dialogs.map((d) => d.kind)).toEqual(['open', 'open']);
+    expect(await chooseFilePath(undefined, { extensions: [] })).toEqual({ path: chosen });
+    expect(dialogs.map((d) => d.kind)).toEqual(['open', 'open', 'open']);
   });
 
   it('returns nothing when the user cancels', async () => {
@@ -95,7 +96,7 @@ describe('choosing a file path', () => {
   });
 
   it('refuses bad requests before showing a dialog', async () => {
-    for (const request of [null, 'x', { extensions: [] }, { extensions: ['../x'] }, { extensions: 'json' }]) {
+    for (const request of [null, 'x', { extensions: ['../x'] }, { extensions: 'json' }]) {
       await expect(chooseFilePath(undefined, request), JSON.stringify(request)).rejects.toThrow();
     }
     expect(dialogs).toEqual([]);
