@@ -110,7 +110,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     memoryLimit: options.bodyMemoryLimit,
     maxBodySize: options.maxBodySize,
   });
-  const browsers = await detectBrowsers();
+  let browsers = await detectBrowsers();
   const terminals = await detectTerminals();
   const platform: ProxyStatus['platform'] =
     process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux'
@@ -127,11 +127,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   let paused = false;
 
   const websockets = new WebSocketStore();
-  const store = new InMemoryRequestStore(STORE_LIMIT, (id) => {
+  // Everything kept about an exchange besides its store entry.
+  const forget = (id: string): void => {
     updates.remove(id);
     websockets.delete(id);
     void bodies.delete(id).catch(() => undefined);
-  });
+  };
+  const store = new InMemoryRequestStore(STORE_LIMIT, forget);
 
   const status = (): ProxyStatus => ({
     proxyPort: proxy.port,
@@ -450,7 +452,19 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         });
         return undefined;
       }
+      case 'rescanBrowsers':
+        browsers = await detectBrowsers();
+        broadcast({ type: 'status', status: status() });
+        return status().browsers;
       case 'clear':
+        if (command.ids) {
+          // Just these: the UI clears what it showed, and keeps what arrived since.
+          if (!Array.isArray(command.ids)) throw new Error('ids must be a list');
+          for (const id of command.ids) {
+            if (typeof id === 'string' && store.delete(id)) forget(id);
+          }
+          return undefined;
+        }
         clears += 1;
         updates.reset();
         store.clear();

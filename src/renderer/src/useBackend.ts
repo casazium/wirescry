@@ -38,6 +38,11 @@ export interface BackendView {
    * backend that had their details and bodies is gone. Cleared with the list.
    */
   previous: ExchangeSummary[];
+  /**
+   * Deletes these rows: from the list at once, and from the backend, which is asked again
+   * on reconnect if the request is lost.
+   */
+  removeExchanges(ids: ReadonlySet<string>): void;
   /** What the last restart cost, until dismissed. */
   restartNotice?: RestartNotice;
   dismissRestartNotice(): void;
@@ -95,6 +100,9 @@ export function useBackend(showView: (key: string) => void): BackendView {
     latest.current = { exchanges, paused, badges, previous, backendState };
   });
   const clientRef = useRef<ApiClient | undefined>(undefined);
+  const listRef = useRef<ExchangeList | undefined>(undefined);
+  // Ids asked to be deleted, until the backend confirms.
+  const deleting = useRef(new Set<string>());
   // Bumped to reconnect when the API connection drops while the backend keeps running.
   const [attempt, setAttempt] = useState(0);
   // plugin name -> event name -> listeners
@@ -121,6 +129,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
     let open = true;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const list = new ExchangeList();
+    listRef.current = list;
     let frame: number | undefined;
     const render = (): void => {
       frame ??= requestAnimationFrame(() => {
@@ -156,7 +165,19 @@ export function useBackend(showView: (key: string) => void): BackendView {
               void client.send({ command: 'setPaused', paused: true }).catch(() => setPaused(false));
             }
           }
-          list.reset(message.exchanges);
+          if (greeted.current !== generation) {
+            // A new backend: what the old one was deleting is gone with it.
+            deleting.current.clear();
+          } else {
+            // The same backend after a reconnect: finish deletes it may have missed.
+            const missed = message.exchanges.filter((e) => deleting.current.has(e.id)).map((e) => e.id);
+            if (missed.length > 0) void client.send({ command: 'clear', ids: missed }).catch(() => undefined);
+          }
+          list.reset(
+            deleting.current.size > 0
+              ? message.exchanges.filter((e) => !deleting.current.has(e.id))
+              : message.exchanges,
+          );
           // At once, not next frame: after a restart, the old rows move to `previous` in this
           // same render, and mustn't be in both lists.
           setExchanges(list.snapshot());
@@ -169,10 +190,20 @@ export function useBackend(showView: (key: string) => void): BackendView {
           }
           break;
         case 'exchanges':
-          list.apply(message.exchanges, message.removed);
+          if (deleting.current.size > 0) {
+            // Rows being deleted stay gone, even if an update for them was already on its way.
+            for (const id of message.removed) deleting.current.delete(id);
+            list.apply(
+              message.exchanges.filter((e) => !deleting.current.has(e.id)),
+              message.removed,
+            );
+          } else {
+            list.apply(message.exchanges, message.removed);
+          }
           render();
           break;
         case 'cleared':
+          deleting.current.clear();
           list.reset([]);
           render();
           setPrevious([]);
@@ -215,6 +246,22 @@ export function useBackend(showView: (key: string) => void): BackendView {
       clientRef.current = undefined;
     };
   }, [connection, generation, attempt]);
+
+  const removeExchanges = useCallback((ids: ReadonlySet<string>) => {
+    setPrevious((rows) => (rows.some((e) => ids.has(e.id)) ? rows.filter((e) => !ids.has(e.id)) : rows));
+    // Rows from before a restart exist only here.
+    const stale = new Set(latest.current.previous.map((e) => e.id));
+    const live = [...ids].filter((id) => !stale.has(id));
+    if (live.length === 0) return;
+    for (const id of live) deleting.current.add(id);
+    const list = listRef.current;
+    if (list) {
+      list.apply([], live);
+      setExchanges(list.snapshot());
+    }
+    // If this is lost, the next hello from the same backend sends it again.
+    clientRef.current?.send({ command: 'clear', ids: live }).catch(() => undefined);
+  }, []);
 
   const send = useCallback((command: Command) => {
     const client = clientRef.current;
@@ -291,6 +338,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
     session,
     badges,
     previous,
+    removeExchanges,
     restartNotice,
     dismissRestartNotice: useCallback(() => setRestartNotice(undefined), []),
   };

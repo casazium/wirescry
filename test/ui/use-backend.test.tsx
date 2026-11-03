@@ -136,3 +136,46 @@ describe('useBackend across backend restarts', () => {
     expect(result.current.previous).toEqual([]);
   });
 });
+
+describe('useBackend removeExchanges', () => {
+  const update = (ids: string[], removed: string[] = []): ServerMessage =>
+    ({ type: 'exchanges', exchanges: ids.map((id) => summary(id)), removed }) as ServerMessage;
+
+  it('drops the rows at once, keeps them gone until the backend confirms, and asks for just those', async () => {
+    const { result } = await started();
+    await act(async () => result.current.removeExchanges(new Set(['a'])));
+    expect(result.current.exchanges.map((e) => e.id)).toEqual(['b']);
+    expect(latest().send).toHaveBeenCalledWith({ command: 'clear', ids: ['a'] });
+    // An update for 'a' that was already on its way doesn't bring it back.
+    await act(async () => latest().onMessage(update(['a', 'c'])));
+    await act(async () => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))));
+    expect(result.current.exchanges.map((e) => e.id)).toEqual(['b', 'c']);
+    await act(async () => latest().onMessage(update([], ['a'])));
+    // Once confirmed, the id is no longer filtered.
+    await act(async () => latest().onMessage(update(['a'])));
+    await act(async () => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))));
+    expect(result.current.exchanges.map((e) => e.id)).toEqual(['b', 'c', 'a']);
+  });
+
+  it('asks again after a reconnect if the delete was lost', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const { result } = await started();
+    await act(async () => result.current.removeExchanges(new Set(['a'])));
+    const first = latest();
+    await act(async () => first.onClose());
+    await act(async () => vi.advanceTimersByTime(1000));
+    await act(async () => latest().onMessage(hello(['a', 'b'])));
+    expect(result.current.exchanges.map((e) => e.id)).toEqual(['b']);
+    expect(latest().send).toHaveBeenCalledWith({ command: 'clear', ids: ['a'] });
+  });
+
+  it('drops rows from before a restart without asking the new backend', async () => {
+    const { result } = await started();
+    await act(async () => changeState(ready(2, { at: 1, exitCode: 9 })));
+    await act(async () => latest().onMessage(hello(['c'])));
+    await act(async () => result.current.removeExchanges(new Set(['a', 'c'])));
+    expect(result.current.previous.map((e) => e.id)).toEqual(['b']);
+    expect(result.current.exchanges).toEqual([]);
+    expect(latest().send).toHaveBeenCalledWith({ command: 'clear', ids: ['c'] });
+  });
+});

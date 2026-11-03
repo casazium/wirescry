@@ -165,6 +165,42 @@ describe('backend', () => {
     api.close();
   });
 
+  it('clears only the exchanges it is given, and their bodies', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/large?clear=gone`, ca);
+    const gone = await api.completed('/large?clear=gone');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/hello?clear=kept`, ca);
+    const kept = await api.completed('/hello?clear=kept');
+    const bodiesDir = path.join(dataDir, 'bodies');
+    await expect.poll(() => readdir(bodiesDir)).toContain(`${gone}.response`);
+
+    await api.send({ command: 'clear', ids: [gone, 'no-such-id'] });
+    await expect(api.send({ command: 'getExchange', exchangeId: gone })).rejects.toThrow(
+      'Exchange not found',
+    );
+    await expect(api.send({ command: 'getExchange', exchangeId: kept })).resolves.toBeDefined();
+    await expect.poll(() => readdir(bodiesDir)).not.toContain(`${gone}.response`);
+    await expect
+      .poll(() =>
+        api.messages.some(
+          (m) => m.type === 'exchanges' && m.removed.includes(gone) && !m.removed.includes(kept),
+        ),
+      )
+      .toBe(true);
+    expect(api.messages.some((m) => m.type === 'cleared')).toBe(false);
+    api.close();
+  });
+
+  it('looks for browsers again on rescan', async () => {
+    const api = await apiClient(backend.apiPort);
+    await expect.poll(() => api.messages.some((m) => m.type === 'hello')).toBe(true);
+    const found = await api.send<unknown[]>({ command: 'rescanBrowsers' });
+    expect(Array.isArray(found)).toBe(true);
+    await expect.poll(() => api.messages.some((m) => m.type === 'status')).toBe(true);
+    api.close();
+  });
+
   it('sends a burst of requests in a few batched messages', async () => {
     const api = await apiClient(backend.apiPort);
     const ca = await readFile(backend.caCertPath, 'utf8');

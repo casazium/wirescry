@@ -192,7 +192,10 @@ export type ServerMessage =
 /** Commands the UI sends to the backend. Each gets a `result` reply. */
 export type ClientCommand =
   | { id: number; command: 'launchBrowser'; browserId: string }
-  | { id: number; command: 'clear' }
+  /** Deletes the exchanges with these ids, or every exchange when `ids` is left out. */
+  | { id: number; command: 'clear'; ids?: string[] }
+  /** Looks for installed browsers again. Replies with the BrowserInfo list, and sends a status. */
+  | { id: number; command: 'rescanBrowsers' }
   | { id: number; command: 'setPaused'; paused: boolean }
   /** A port from 1024 to 65535, or null to pick one automatically. */
   | { id: number; command: 'setProxyPort'; port: number | null }
