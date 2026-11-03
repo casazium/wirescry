@@ -112,9 +112,29 @@ async function assertLoopbackPortFree(port: number): Promise<void> {
   await new Promise<void>((resolve) => probe.close(() => resolve()));
 }
 
+interface ResponseHead {
+  statusCode?: number;
+  statusMessage?: string;
+  rawHeaders: mockttp.RawHeaders;
+}
+
+/** What Mockttp's passthrough rule events carry, as far as the proxy uses it. */
+interface PassthroughEventData {
+  statusCode?: number;
+  statusMessage?: string;
+  rawHeaders?: mockttp.RawHeaders;
+  /** On 'passthrough-abort': Mockttp dropped the upstream request because the client went away. */
+  downstreamAborted?: boolean;
+  error?: { code?: string; message?: string };
+}
+
 function mediaType(header: string | string[] | undefined): string | undefined {
   const value = Array.isArray(header) ? header[0] : header;
   return value?.split(';')[0]?.trim().toLowerCase() || undefined;
+}
+
+function rawHeader(headers: mockttp.RawHeaders, name: string): string | undefined {
+  return headers.find(([key]) => key.toLowerCase() === name)?.[1];
 }
 
 export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
@@ -138,26 +158,36 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
 
   // Mockttp reports an upstream error's message in a rule event, over HTTP/1.1 only.
   const upstreamErrors = new Map<string, { code?: string; message?: string }>();
-  // Exchanges whose server had sent response headers (HTTP/1.1 rule event).
-  const answered = new Set<string>();
-  // Responses that broke part way through. Mockttp then writes its error text
-  // after the real bytes; the value is that text, when known, so it can be removed.
+  // Exchanges whose server had sent response headers (rule event), with those headers.
+  const answered = new Map<string, ResponseHead>();
+  // Responses that broke part way through, or whose client went away. Mockttp then
+  // writes its error text after the real bytes; the value is that text, when known,
+  // so it can be removed.
   const brokenMidBody = new Map<string, string | undefined>();
 
-  await server.on(
-    'rule-event',
-    (event: mockttp.RuleEvent<{ error?: { code?: string; message?: string } }>) => {
-      const id = event.requestId;
-      if (!store.get(id)) return;
-      if (event.eventType === 'passthrough-response-head') answered.add(id);
-      if (event.eventType !== 'passthrough-abort') return;
-      const error = event.eventData.error ?? {};
-      upstreamErrors.set(id, error);
-      if (answered.has(id)) {
-        brokenMidBody.set(id, error.message ? `Error: ${error.message}` : undefined);
-      }
-    },
-  );
+  await server.on('rule-event', (event: mockttp.RuleEvent<PassthroughEventData>) => {
+    const id = event.requestId;
+    if (!store.get(id)) return;
+    const data = event.eventData;
+    if (event.eventType === 'passthrough-response-head') {
+      answered.set(id, {
+        statusCode: data.statusCode,
+        statusMessage: data.statusMessage,
+        rawHeaders: data.rawHeaders ?? [],
+      });
+    }
+    if (event.eventType !== 'passthrough-abort') return;
+    const error = data.error ?? {};
+    const tail = error.message ? `Error: ${error.message}` : undefined;
+    if (data.downstreamAborted) {
+      // The client went away and Mockttp dropped the upstream request: not the server's
+      // fault, and the 'abort' event records it. Only Mockttp's error text is left to remove.
+      if (answered.has(id) || brokenMidBody.has(id)) brokenMidBody.set(id, tail);
+      return;
+    }
+    upstreamErrors.set(id, error);
+    if (answered.has(id)) brokenMidBody.set(id, tail);
+  });
 
   // Bodies stream into the store chunk by chunk, so large ones never sit in memory whole.
   const writers = new Map<string, BodyWriter>();
@@ -306,13 +336,37 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   });
 
   await server.on('abort', (req) => {
-    finishBody(req.id, 'request', false);
-    finishBody(req.id, 'response', false);
+    const { startTimestamp, headersSentTimestamp, abortedTimestamp } = req.timingEvents;
     const upstream = upstreamErrors.get(req.id);
     upstreamErrors.delete(req.id);
-    const partial = answered.has(req.id);
+    const head = answered.get(req.id);
     answered.delete(req.id);
-    brokenMidBody.delete(req.id);
+    // Whether the server's response had started. Rules other than pass-through send no
+    // rule events, so fall back to the timing (unless the upstream failed, when the
+    // headers may be Mockttp's 502). Mockttp also sets headersSentTimestamp just after
+    // an abort, when it writes its error reply to the closed connection.
+    const partial =
+      head !== undefined ||
+      (!upstream?.code &&
+        headersSentTimestamp !== undefined &&
+        abortedTimestamp !== undefined &&
+        headersSentTimestamp < abortedTimestamp);
+    const clientLeftMidBody = partial && !upstream?.code;
+    finishBody(req.id, 'request', false);
+    // When the client left mid-body, the last chunk is still to come, with Mockttp's
+    // error text after it: the body-data handler stores it as incomplete, minus that text.
+    // Its bytes can come after this event even if none have yet, so make sure they're kept.
+    const responseKey = `${req.id}:response`;
+    if (!clientLeftMidBody) finishBody(req.id, 'response', false);
+    else if (!writers.has(responseKey) && store.get(req.id)) {
+      writers.set(responseKey, bodies.open(req.id, 'response'));
+    }
+    // Either way, ignore what Mockttp writes to the closed connection from here on.
+    if (!brokenMidBody.has(req.id)) brokenMidBody.set(req.id, undefined);
+    setTimeout(() => {
+      finishBody(req.id, 'response', false);
+      brokenMidBody.delete(req.id);
+    }, 5000).unref();
     update(req.id, (existing) => {
       const rule = handledBy(req.matchedRuleId) ?? existing.summary.handledBy;
       return {
@@ -324,11 +378,25 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
             ? // A close or timeout rule ends here too; say so instead of "client closed".
               rule && options.ruleEndsWithoutResponse?.(req.matchedRuleId)
               ? describeRuleEnded(rule.label)
-              : describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
+              : partial
+                ? describePartialFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
+                : describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
             : partial
               ? describePartialFailure(upstream.code, existing.summary.host, upstream.message)
               : describeFailure(upstream.code, existing.summary.host, upstream.message),
+          ...(clientLeftMidBody
+            ? {
+                status: head?.statusCode ?? existing.summary.status,
+                statusMessage: head?.statusMessage ?? existing.summary.statusMessage,
+                contentType: head
+                  ? mediaType(rawHeader(head.rawHeaders, 'content-type'))
+                  : existing.summary.contentType,
+                durationMs:
+                  abortedTimestamp !== undefined ? Math.round(abortedTimestamp - startTimestamp) : undefined,
+              }
+            : {}),
         },
+        ...(clientLeftMidBody && head ? { responseHeaders: head.rawHeaders } : {}),
         timing: timingOf(req.timingEvents),
       };
     });

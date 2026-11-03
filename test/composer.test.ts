@@ -361,9 +361,20 @@ describe('composer', () => {
       // The proxy records the status once the response is complete, so until then it's pending.
       expect(exchangesIn(api.messages).find((e) => e.id === exchangeId)?.durationMs).toBeUndefined();
       expect(await api.send({ command: 'composeCancel', exchangeId })).toBe(true);
-      // The connection is gone: there's nothing left to cancel. (The proxy doesn't mark a
-      // response cut off mid-body as failed, for any client; the UI hides Cancel itself.)
+      // The connection is gone: there's nothing left to cancel.
       expect(await api.send({ command: 'composeCancel', exchangeId })).toBe(false);
+      // The proxy marks the response as cut off by the client, with what had arrived.
+      await expect
+        .poll(() =>
+          exchangesIn(api.messages).find((e) => e.id === exchangeId && e.responseSize !== undefined),
+        )
+        .toMatchObject({
+          status: 200,
+          responseSize: 'first part '.length,
+          failure: { kind: 'client-closed', partial: true },
+        });
+      const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId });
+      expect(detail.responseBody).toMatchObject({ incomplete: true });
     } finally {
       api.close();
       streaming.closeAllConnections();
