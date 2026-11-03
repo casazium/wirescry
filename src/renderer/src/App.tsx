@@ -164,6 +164,14 @@ export function App(): React.JSX.Element {
 
   /** Sends from the Compose tab: plugins get to change it first (e.g. fill in variables). */
   const sendComposed = async (request: ComposerRequest): Promise<void> => {
+    // A plugin that's about to start may want to change it (e.g. fill in variables): wait for it.
+    const starting = composerExtensions.find(
+      ({ plugin }) => status?.plugins.find((s) => s.name === plugin)?.starting,
+    );
+    if (starting) {
+      const name = starting.plugin === 'pro' ? 'Wirescry Pro' : `The ${starting.plugin} plugin`;
+      throw new Error(`${name} is still starting. Try again in a moment.`);
+    }
     const next = await runBeforeSend(activeComposerExtensions, request, pluginApi);
     checkSendSize(next);
     const sent = draft;

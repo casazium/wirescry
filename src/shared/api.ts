@@ -167,6 +167,8 @@ export interface PluginStatus {
   active: boolean;
   /** Why it isn't active. */
   reason?: string;
+  /** True while it's still starting, so not active yet but about to be. */
+  starting?: true;
 }
 
 export interface ProxyStatus {

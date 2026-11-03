@@ -79,7 +79,9 @@ export class PluginHost {
       const { name } = plugin;
       const state = this.states.get(plugin)!;
       if (state.state === 'running') return { name, active: true };
-      return { name, active: false, reason: state.state === 'starting' ? 'Starting…' : state.reason };
+      return state.state === 'starting'
+        ? { name, active: false, reason: 'Starting…', starting: true }
+        : { name, active: false, reason: state.reason };
     });
   }
 
