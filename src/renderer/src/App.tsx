@@ -13,6 +13,7 @@ import { loadDetailSize, saveDetailSize, useStacked } from './detail-size';
 import { Splitter } from './Splitter';
 import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
+import { useUndoableClear } from './useUndoableClear';
 
 // A UI plugin built for another API version is left out; its backend half reports why.
 const compatiblePlugins = uiPlugins.filter((p) => p.apiVersion === PLUGIN_API_VERSION);
@@ -37,6 +38,7 @@ export function App(): React.JSX.Element {
     session,
     badges,
     previous,
+    removeExchanges,
     restartNotice,
     dismissRestartNotice,
   } = useBackend((key) => {
@@ -71,16 +73,20 @@ export function App(): React.JSX.Element {
   const compiled = useMemo(() => compileFilter(deferredSearch, quickFilter), [deferredSearch, quickFilter]);
   // Requests from before a backend restart come first, read-only (only their summaries are left).
   const staleIds = useMemo(() => new Set(previous.map((e) => e.id)), [previous]);
-  const allExchanges = useMemo(
-    () => (previous.length > 0 ? [...previous, ...exchanges] : exchanges),
-    [previous, exchanges],
-  );
+  // Clear hides rows first, so it can be undone, and deletes them after.
+  const clearing = useUndoableClear(removeExchanges);
+  const hidden = clearing.pending?.ids;
+  const allExchanges = useMemo(() => {
+    const all = previous.length > 0 ? [...previous, ...exchanges] : exchanges;
+    return hidden ? all.filter((e) => !hidden.has(e.id)) : all;
+  }, [previous, exchanges, hidden]);
   const rows = useMemo(() => allExchanges.filter((e) => compiled.matches(e)), [allExchanges, compiled]);
   const selected = selectedId ? allExchanges.find((e) => e.id === selectedId) : undefined;
   const exportable = useMemo(() => rows.filter((e) => !staleIds.has(e.id)), [rows, staleIds]);
 
   const browsers = status?.browsers ?? [];
-  const browserId = selectedBrowser || browsers[0]?.id || '';
+  // The one picked, unless a rescan no longer finds it.
+  const browserId = browsers.some((b) => b.id === selectedBrowser) ? selectedBrowser : browsers[0]?.id || '';
 
   const closeHelp = (returnFocus: boolean): void => {
     setShowHelp(false);
@@ -252,7 +258,7 @@ export function App(): React.JSX.Element {
 
   const clearAll = (): void => {
     setSelectedId(undefined);
-    void send({ command: 'clear' });
+    clearing.clear(allExchanges.map((e) => e.id));
   };
 
   // Commands from the app menu (and their shortcuts), handled with the latest state.
@@ -565,6 +571,31 @@ export function App(): React.JSX.Element {
         <div className="banner error" role="alert">
           <span>{message}</span>
           <button type="button" className="icon" aria-label="Dismiss" onClick={() => setMessage(undefined)}>
+            ×
+          </button>
+        </div>
+      )}
+      {clearing.pending && (
+        <div
+          className="banner notice"
+          role="status"
+          // Undo stays offered while the pointer or focus is on it.
+          onMouseEnter={() => clearing.hold(true)}
+          onMouseLeave={() => clearing.hold(false)}
+          onFocus={() => clearing.hold(true)}
+          onBlur={() => clearing.hold(false)}
+        >
+          <span>
+            Cleared{' '}
+            {clearing.pending.ids.size === 1
+              ? 'one request'
+              : `${clearing.pending.ids.size.toLocaleString()} requests`}
+            .
+          </span>
+          <button type="button" className="secondary" onClick={clearing.undo}>
+            Undo
+          </button>
+          <button type="button" className="icon" aria-label="Dismiss" onClick={clearing.dismiss}>
             ×
           </button>
         </div>

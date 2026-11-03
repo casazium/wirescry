@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { ProxyStatus } from '../../shared/api';
+import type { BrowserInfo, ProxyStatus } from '../../shared/api';
 import type { Command } from './api-client';
 import { CertificateTrust } from './CertificateTrust';
 import { TerminalSection } from './TerminalSection';
@@ -34,7 +34,13 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }):
   );
 }
 
+/** "A", "A and B", "A, B and C". */
+function listNames(names: string[]): string {
+  return names.length < 2 ? (names[0] ?? '') : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+}
+
 /** Runs a task, keeping its error, or the message it resolves with, for display. */
+
 function useAction(): [string | undefined, string | undefined, (task: () => Promise<string | void>) => void] {
   const [error, setError] = useState<string>();
   const [note, setNote] = useState<string>();
@@ -61,6 +67,8 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
   const [portText, setPortText] = useState(String(status.proxyPortSetting ?? status.proxyPort));
   const [portError, portNote, runPort] = useAction();
   const [launchError, , runLaunch] = useAction();
+  const [rescanError, rescanNote, runRescan] = useAction();
+  const [rescanning, setRescanning] = useState(false);
   const [certError, certNote, runCert] = useAction();
   const [exportError, exportNote, runExport] = useAction();
   const [confirmReset, setConfirmReset] = useState(false);
@@ -82,6 +90,21 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
       onLaunched();
     });
 
+  const rescan = (): void => {
+    const before = new Set(status.browsers.map((b) => b.id));
+    setRescanning(true);
+    runRescan(async () => {
+      try {
+        const found = (await send({ command: 'rescanBrowsers' })) as BrowserInfo[];
+        const added = found.filter((b) => !before.has(b.id)).map((b) => b.name);
+        if (added.length > 0) return `Found ${listNames(added)}.`;
+        return found.length === before.size ? 'No new browsers found.' : 'Updated the list.';
+      } finally {
+        setRescanning(false);
+      }
+    });
+  };
+
   const curlOnce = `curl --proxy ${proxyUrl} --cacert ${quote(certPath)} https://example.com/`;
 
   return (
@@ -89,7 +112,9 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
       <section>
         <h2>Browsers</h2>
         <p className="muted">Opens a separate browser window with its own profile, sent through Wirescry.</p>
-        {status.browsers.length === 0 && <p>No supported browser found. Use manual setup below.</p>}
+        {status.browsers.length === 0 && (
+          <p>No supported browser found. Install one and click Rescan, or use manual setup below.</p>
+        )}
         <ul className="browser-list">
           {chromium.map((b) => (
             <li key={b.id}>
@@ -103,7 +128,7 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
           {!firefox && (
             <li>
               <span>Firefox</span>
-              <span className="muted">Not found. Install Firefox, then restart Wirescry.</span>
+              <span className="muted">Not found. Install Firefox, then click Rescan.</span>
               <span />
             </li>
           )}
@@ -121,9 +146,22 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
             </li>
           )}
         </ul>
+        <button type="button" className="secondary" onClick={rescan} disabled={!connected || rescanning}>
+          {rescanning ? 'Rescanning…' : 'Rescan'}
+        </button>
         {launchError && (
           <p className="note error" role="alert">
             {launchError}
+          </p>
+        )}
+        {rescanError && (
+          <p className="note error" role="alert">
+            {rescanError}
+          </p>
+        )}
+        {rescanNote && (
+          <p className="note" role="status">
+            {rescanNote}
           </p>
         )}
       </section>

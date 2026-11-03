@@ -8,6 +8,8 @@ export interface RequestStore {
   upsert(exchange: ExchangeDetail): void;
   get(id: string): ExchangeDetail | undefined;
   list(): ExchangeSummary[];
+  /** Returns whether there was such an exchange. */
+  delete(id: string): boolean;
   clear(): void;
 }
 
@@ -38,6 +40,10 @@ export class InMemoryRequestStore implements RequestStore {
 
   list(): ExchangeSummary[] {
     return [...this.exchanges.values()].map((e) => e.summary);
+  }
+
+  delete(id: string): boolean {
+    return this.exchanges.delete(id);
   }
 
   get size(): number {
