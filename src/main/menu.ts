@@ -9,6 +9,7 @@ export function buildMenu(actions: {
   showAbout(): void;
   /** Sends a menu command to the window, e.g. Clear. */
   command(name: MenuCommand): void;
+  openDocumentation(): void;
   openWebsite(): void;
   reportProblem(): void;
 }): Menu {
@@ -96,6 +97,7 @@ export function buildMenu(actions: {
       role: 'help',
       submenu: [
         ...(isMac ? [] : [checkForUpdates, { type: 'separator' as const }]),
+        { label: 'Documentation', click: () => actions.openDocumentation() },
         { label: 'Wirescry Website', click: () => actions.openWebsite() },
         { label: 'Report a Problem…', click: () => actions.reportProblem() },
         { type: 'separator' },

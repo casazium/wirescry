@@ -18,7 +18,7 @@ import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './
 import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
 import { FileLogger, type LogLevel } from './logger';
 import { buildMenu, updateMenu } from './menu';
-import { aboutDetail, ISSUES_URL, WEBSITE } from './about';
+import { aboutDetail, DOCS_URL, ISSUES_URL, WEBSITE } from './about';
 import { checkMenuChoices, contextMenuItems } from './context-menu';
 import { guarded, isOnOrigin } from './ipc-guard';
 import { clearScratch, exportHar, importHar, saveBody } from './har-files';
@@ -267,6 +267,7 @@ app.whenReady().then(() => {
     checkForUpdates: () => updater.checkNow(),
     showAbout: () => void showAbout(),
     command: (name) => mainWindow?.webContents.send(IPC.menuCommand, name),
+    openDocumentation: () => void shell.openExternal(DOCS_URL),
     openWebsite: () => void shell.openExternal(WEBSITE),
     reportProblem: () => void shell.openExternal(ISSUES_URL),
   });
