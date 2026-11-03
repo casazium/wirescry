@@ -101,6 +101,13 @@ function run({ name, exe, maxStartMs = MAX_BACKEND_START_MS }) {
       console.log(
         `${name}: ${problem ? `FAILED: ${problem}` : 'ok'} ${result ? JSON.stringify(result) : ''}`,
       );
+      // A pass under the longer Rosetta limit that would have failed the usual one, so a
+      // slowdown stands out in the log instead of passing unnoticed.
+      if (!problem && result?.backendStartMs > MAX_BACKEND_START_MS) {
+        console.log(
+          `${name}: WARNING: passed, but the backend took ${Math.round(result.backendStartMs / 1000)} s to start (over the usual ${MAX_BACKEND_START_MS / 1000} s)`,
+        );
+      }
       const logs = join(work, 'data/logs');
       const logFiles = existsSync(logs) ? readdirSync(logs) : [];
       // How long each step of the backend's start took, pass or fail: from the ready
@@ -134,9 +141,9 @@ if (apps.length === 0) {
 }
 /**
  * The Intel Mac app on an Apple silicon runner runs under Rosetta, whose first start
- * translates everything and can take over a minute: long enough to trip the app's own
- * time limits (0.1.4 and 0.1.11 each failed this way, then passed on another try).
- * Rosetta keeps what it translated, so that app gets one more try.
+ * translates everything and can take minutes; it once failed outright that way (0.1.4,
+ * 0.1.11). Rosetta keeps what it translated, so that app gets one more try, and a longer
+ * start limit (below).
  */
 const underRosetta = (app) => process.platform === 'darwin' && process.arch === 'arm64' && app.name === 'mac';
 
