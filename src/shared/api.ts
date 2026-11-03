@@ -38,6 +38,20 @@ export interface ExchangeSummary {
   handledBy?: HandledBy;
   /** True for an exchange loaded from a HAR file rather than captured. */
   imported?: true;
+  /** True for a request sent from Wirescry's composer. */
+  composed?: true;
+}
+
+/**
+ * A request written in the composer. Text bodies only. Headers are sent as written, except
+ * that Content-Length, Transfer-Encoding, Connection and Host are set by Wirescry.
+ */
+export interface ComposerRequest {
+  method: string;
+  /** An absolute http:// or https:// URL. */
+  url: string;
+  headers: Header[];
+  body: string;
 }
 
 /** A plugin rule that handled a request. */
@@ -196,6 +210,10 @@ export type ClientCommand =
   | { id: number; command: 'clear'; ids?: string[] }
   /** Looks for installed browsers again. Replies with the BrowserInfo list, and sends a status. */
   | { id: number; command: 'rescanBrowsers' }
+  /** Sends a request from the composer through the proxy. Replies with `{ exchangeId }` once it's recorded. */
+  | { id: number; command: 'composeSend'; request: ComposerRequest }
+  /** Stops a composed request still waiting for its response. Replies with whether there was one. */
+  | { id: number; command: 'composeCancel'; exchangeId: string }
   | { id: number; command: 'setPaused'; paused: boolean }
   /** A port from 1024 to 65535, or null to pick one automatically. */
   | { id: number; command: 'setProxyPort'; port: number | null }

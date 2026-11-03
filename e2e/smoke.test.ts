@@ -92,7 +92,7 @@ async function backendPid(): Promise<number> {
   return backend.pid;
 }
 
-it('captures traffic, opens gzip and HTML bodies, survives a backend crash, and keeps Pro working', async () => {
+it('captures traffic, opens gzip and HTML bodies, survives a backend crash, composes, and keeps Pro working', async () => {
   // Started, with the proxy listening.
   await expect
     .poll(async () => (await pill().textContent()) ?? '', { timeout: 60_000 })
@@ -123,6 +123,16 @@ it('captures traffic, opens gzip and HTML bodies, survives a backend crash, and 
   const newPort = Number((await pill().textContent())!.split(':').at(-1));
   expect(await viaProxy(newPort, '/data.json')).toBe(200);
   await expect.poll(() => rows().count(), { timeout: 15_000 }).toBe(3);
+
+  // The composer sends through the (restarted) proxy, and the request shows in Traffic.
+  await page.locator('nav.views button', { hasText: 'Compose' }).click();
+  await page.getByLabel('URL').fill(`http://127.0.0.1:${upstreamPort}/data.json`);
+  await page.getByRole('button', { name: 'Send' }).click();
+  await page
+    .locator('.composer-response pre.code', { hasText: '"hello": "smoke test"' })
+    .waitFor({ timeout: 30_000 });
+  await page.locator('nav.views button', { hasText: 'Traffic' }).click();
+  await expect.poll(() => rows().filter({ hasText: 'Sent' }).count(), { timeout: 15_000 }).toBe(1);
 
   // With Pro built in, its tab answers after the restart (it once stuck at "Not connected").
   const rulesTab = page.locator('nav.views button', { hasText: 'Rules' });

@@ -3,10 +3,17 @@
  * plugins import these types.
  */
 import type { ComponentType } from 'react';
-import type { BodyContent, BodySide, ExchangeDetail, ExchangeSummary } from '../shared/api';
+import type {
+  BodyContent,
+  BodySide,
+  ComposerRequest,
+  ExchangeDetail,
+  ExchangeSummary,
+  Header,
+} from '../shared/api';
 import type { ChooseFilePathResult, OpenTextFileResult, SaveTextFileResult } from '../shared/ipc';
 
-export type { BodyContent, BodySide, ExchangeDetail, ExchangeSummary };
+export type { BodyContent, BodySide, ComposerRequest, ExchangeDetail, ExchangeSummary, Header };
 
 export interface UiPluginApi {
   /** Calls the plugin's backend half. */
@@ -64,6 +71,24 @@ export interface UiPluginView {
   component: ComponentType<{ api: UiPluginApi }>;
 }
 
+/** What a plugin adds to the Compose tab. */
+export interface UiComposerExtension {
+  /**
+   * Shown beside the request editor, e.g. a list of saved requests. `request` is what's
+   * being edited; `setRequest` replaces it.
+   */
+  panel?: ComponentType<{
+    api: UiPluginApi;
+    request: ComposerRequest;
+    setRequest(request: ComposerRequest): void;
+  }>;
+  /**
+   * Called on Send, before anything is sent: returns the request to send, e.g. with
+   * variables filled in. Throw to stop the send; the message is shown to the user.
+   */
+  beforeSend?(request: ComposerRequest, api: UiPluginApi): ComposerRequest | Promise<ComposerRequest>;
+}
+
 export interface UiPlugin {
   /** Must match the backend plugin's name. */
   name: string;
@@ -72,6 +97,8 @@ export interface UiPlugin {
   views: UiPluginView[];
   /** Actions on a captured exchange, offered in the order given. */
   exchangeActions?: UiExchangeAction[];
+  /** Additions to the Compose tab. */
+  composer?: UiComposerExtension;
 }
 
 /** How a tab badge looks and is read out; see UiPluginApi.setBadge. */

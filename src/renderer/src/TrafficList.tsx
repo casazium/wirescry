@@ -150,6 +150,11 @@ export function TrafficList({
                       HAR
                     </span>
                   )}
+                  {e.composed && (
+                    <span className="rule-badge imported-badge" title="Sent from the Compose tab">
+                      Sent
+                    </span>
+                  )}
                   {e.handledBy && (
                     <span className="rule-badge" title={`Handled by the rule "${e.handledBy.label}"`}>
                       Rule

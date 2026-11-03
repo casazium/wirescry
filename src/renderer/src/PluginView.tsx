@@ -3,7 +3,10 @@ import type { PluginStatus } from '../../shared/api';
 import type { UiPluginApi, UiPluginView } from '../../plugin-api/ui';
 
 /** Keeps a crashing plugin view from taking the rest of the app down with it. */
-class PluginErrorBoundary extends Component<{ label: string; children: ReactNode }, { error?: Error }> {
+export class PluginErrorBoundary extends Component<
+  { label: string; children: ReactNode },
+  { error?: Error }
+> {
   override state: { error?: Error } = {};
 
   static getDerivedStateFromError(error: Error): { error: Error } {
