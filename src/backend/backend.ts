@@ -48,6 +48,8 @@ import { WebSocketStore } from './websocket-store';
 export interface BackendOptions {
   /** Folder for this install's data, e.g. the CA. */
   dataDir: string;
+  /** Called as each step of starting up finishes, to log how long they take. */
+  onStartupStep?: (step: string) => void;
   /** Per-launch secret the UI must present. */
   token: string;
   allowedOrigins: string[];
@@ -104,15 +106,19 @@ export interface RunningBackend {
 /** Starts the proxy and the local API. Runs without Electron, so tests can use it directly. */
 export async function startBackend(options: BackendOptions): Promise<RunningBackend> {
   const { dataDir } = options;
+  const step = options.onStartupStep ?? (() => undefined);
   let ca: CertificateAuthority = await loadOrCreateCA(dataDir);
+  step('certificate');
   let settings: Settings = await loadSettings(dataDir);
   const firefoxProfile = path.join(dataDir, FIREFOX_PROFILE_DIR);
   const bodies = await HybridBodyStore.open(path.join(dataDir, 'bodies'), {
     memoryLimit: options.bodyMemoryLimit,
     maxBodySize: options.maxBodySize,
   });
+  step('settings and body store');
   let browsers = await detectBrowsers();
   const terminals = await detectTerminals();
+  step('browsers and terminals');
   const platform: ProxyStatus['platform'] =
     process.platform === 'darwin' || process.platform === 'win32' || process.platform === 'linux'
       ? process.platform
@@ -120,6 +126,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   let terminalConfig: TerminalConfig = await writeTerminalConfig(dataDir, ca.cert);
   const formatter = new Formatter();
   let firefoxTrusted = await isProfileTrusted(firefoxProfile, ca.spkiFingerprint);
+  step('terminal config and Firefox profile');
 
   // The API needs the proxy port and the proxy needs somewhere to send events,
   // so events go through this indirection until the API is up.
@@ -213,6 +220,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     });
 
   let proxy = await openProxy(options.proxyPort ?? settings.proxyPort);
+  step('proxy');
   // Rewritten whenever the port or certificate changes, so the one-line setup stays current.
   let terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
 
@@ -580,8 +588,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
   });
   broadcast = api.broadcast;
+  step('API');
 
   await pluginHost.startAll();
+  step('plugins');
 
   return {
     apiPort: api.port,

@@ -8,6 +8,11 @@ import { startBackend, type RunningBackend } from './backend';
 import { ipcEncryptor } from './secure-store';
 import { selfCheck } from './self-check';
 
+// Everything above (this bundle and Pro, compiled eagerly: see backend-v8-flags.json) has
+// loaded by now. Logged with each startup step, as milliseconds since the process began.
+const loadedAt = performance.now();
+const elapsed = (): string => `${Math.round(performance.now())} ms`;
+
 const parentPort = process.parentPort;
 let backend: RunningBackend | undefined;
 let starting = false;
@@ -49,6 +54,7 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
   }
   if (data?.type !== 'start' || starting) return;
   starting = true;
+  console.log(`Startup: code loaded at ${Math.round(loadedAt)} ms, start requested at ${elapsed()}`);
   try {
     backend = await startBackend({
       dataDir: data.dataDir,
@@ -60,13 +66,16 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
       encryptor:
         backendPlugins.length > 0 && (await encryptor.available().catch(() => false)) ? encryptor : undefined,
       app: data.app,
+      onStartupStep: (name) => console.log(`Startup: ${name} done at ${elapsed()}`),
     });
+    const checked = data.selfCheck ? await selfCheck() : undefined;
+    if (checked) console.log(`Startup: self-check done at ${elapsed()}`);
     post({
       type: 'ready',
       apiPort: backend.apiPort,
       proxyPort: backend.proxyPort,
       plugins: backend.pluginStatuses(),
-      ...(data.selfCheck ? { selfCheck: await selfCheck() } : {}),
+      ...(checked ? { selfCheck: checked } : {}),
     });
   } catch (error) {
     post({ type: 'error', message: (error as Error).stack ?? String(error) });

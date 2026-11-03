@@ -228,9 +228,12 @@ function runSelfTest(file: string): void {
       app.exit(code);
     }
   };
+  // Generous, so a slow start (an Intel build under Rosetta) is measured rather than cut
+  // off; scripts/self-test-packaged.mjs decides what's too slow from backendStartMs.
+  const startedAt = Date.now();
   const timer = setTimeout(
-    () => void finish({ error: 'The backend took over 2 minutes to start.' }, 2),
-    120_000,
+    () => void finish({ error: 'The backend took over 10 minutes to start.' }, 2),
+    600_000,
   );
   let starts = 0;
   backend.on('state', (state) => {
@@ -246,7 +249,7 @@ function runSelfTest(file: string): void {
     const problems = backend.selfCheckProblems ?? ['the backend ran no self-check'];
     if (state.state !== 'ready') void finish({ error: state.message }, 1);
     else if (problems.length > 0) void finish({ error: `Self-check: ${problems.join('; ')}` }, 1);
-    else void finish({ plugins: backend.plugins }, 0);
+    else void finish({ plugins: backend.plugins, backendStartMs: Date.now() - startedAt }, 0);
   });
   backend.start();
 }

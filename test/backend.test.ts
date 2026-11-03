@@ -22,6 +22,7 @@ describe('backend', () => {
   let dataDir: string;
   let upstream: Mockttp;
   let backend: RunningBackend;
+  const startupSteps: string[] = [];
 
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-test-'));
@@ -57,6 +58,7 @@ describe('backend', () => {
       allowedOrigins: [UI_ORIGIN],
       upstreamCAs: [upstreamCA.cert],
       bodyMemoryLimit: 64 * 1024,
+      onStartupStep: (step) => startupSteps.push(step),
     });
   });
 
@@ -64,6 +66,18 @@ describe('backend', () => {
     await backend?.stop();
     await upstream?.stop();
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('reports each step of starting up, in order', () => {
+    expect(startupSteps).toEqual([
+      'certificate',
+      'settings and body store',
+      'browsers and terminals',
+      'terminal config and Firefox profile',
+      'proxy',
+      'API',
+      'plugins',
+    ]);
   });
 
   it('creates a CA in the data folder with a private key only the user can read', async () => {
