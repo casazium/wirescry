@@ -3,6 +3,8 @@
 export const WEBSITE = 'https://casazium.com/wirescry';
 /** Where to report a problem: the open-source app's issues. */
 export const ISSUES_URL = 'https://github.com/casazium/wirescry/issues';
+/** Wirescry's user documentation, on the Casazium docs site. */
+export const DOCS_URL = 'https://docs.casazium.com/docs/wirescry/intro';
 // The year of first publication, as in electron-builder.cjs's copyright.
 const COPYRIGHT_YEAR = 2026;
 
