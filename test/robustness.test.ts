@@ -4,12 +4,13 @@ import http2 from 'node:http2';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import tls from 'node:tls';
 import { generateCACertificate, getLocal, type Mockttp } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
-import type { ExchangeSummary } from '../src/shared/api';
+import type { BodyContent, ExchangeDetail, ExchangeSummary } from '../src/shared/api';
 import { describeFailure, upstreamErrorCode } from '../src/shared/failure';
 import { apiClient, exchangesIn, httpViaProxy, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
@@ -157,6 +158,84 @@ describe('upstream failures and WebSockets', () => {
     const exchange = await failureFor(api, (e) => e.path === '/slow');
     expect(exchange.failure?.kind).toBe('client-closed');
     api.close();
+  });
+
+  /** An upstream response that sends its headers and part of its body, then never ends. */
+  const stalling = async (urlPath: string): Promise<PassThrough> => {
+    const body = new PassThrough();
+    body.write('first part ');
+    await upstream.forGet(urlPath).thenStream(200, body, { 'content-type': 'text/plain' });
+    return body;
+  };
+
+  const expectClosedMidBody = async (
+    api: Awaited<ReturnType<typeof apiClient>>,
+    urlPath: string,
+    httpVersion: string,
+  ): Promise<void> => {
+    const exchange = await failureFor(api, (e) => e.path === urlPath && e.responseSize !== undefined);
+    expect(exchange).toMatchObject({
+      httpVersion,
+      status: 200,
+      contentType: 'text/plain',
+      responseSize: 'first part '.length,
+      failure: {
+        kind: 'client-closed',
+        partial: true,
+        message: 'The client closed the connection part way through the response.',
+      },
+    });
+    expect(exchange.durationMs).toBeGreaterThanOrEqual(0);
+    const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: exchange.id });
+    expect(detail.responseHeaders).toContainEqual(['content-type', 'text/plain']);
+    expect(detail.responseBody).toMatchObject({ incomplete: true });
+    // What the server sent, without the error text Mockttp writes to the closed connection.
+    const body = await api.send<BodyContent>({
+      command: 'getBody',
+      exchangeId: exchange.id,
+      side: 'response',
+    });
+    expect(Buffer.from(body.base64, 'base64').toString()).toBe('first part ');
+  };
+
+  it('marks a response the client closed part way through', async () => {
+    const api = await apiClient(backend.apiPort);
+    const body = await stalling('/closed-mid-body');
+    const req = http.request({
+      host: '127.0.0.1',
+      port: backend.proxyPort,
+      path: `http://localhost:${upstream.port}/closed-mid-body`,
+    });
+    req.on('error', () => undefined);
+    req.on('response', (res) => res.once('data', () => req.destroy()));
+    req.end();
+    try {
+      await expectClosedMidBody(api, '/closed-mid-body', '1.1');
+    } finally {
+      body.destroy();
+      api.close();
+    }
+  });
+
+  it('marks an HTTP/2 response the client cancelled part way through', async () => {
+    const api = await apiClient(backend.apiPort);
+    const body = await stalling('/closed-mid-body-h2');
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    const socket = await tunnel(backend.proxyPort, `localhost:${upstream.port}`);
+    const secure = tls.connect({ socket, servername: 'localhost', ca, ALPNProtocols: ['h2'] });
+    const session = http2.connect(`https://localhost:${upstream.port}`, { createConnection: () => secure });
+    session.on('error', () => undefined);
+    const req = session.request({ ':path': '/closed-mid-body-h2' });
+    req.on('error', () => undefined);
+    req.once('data', () => req.close(http2.constants.NGHTTP2_CANCEL));
+    req.end();
+    try {
+      await expectClosedMidBody(api, '/closed-mid-body-h2', '2.0');
+    } finally {
+      session.destroy();
+      body.destroy();
+      api.close();
+    }
   });
 
   it.each(['ws', 'wss'] as const)('passes %s:// WebSockets through and records them', async (scheme) => {

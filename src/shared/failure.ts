@@ -89,11 +89,17 @@ function usefulDetail(detail: string | undefined, code: string): string | undefi
   return text;
 }
 
-/** For a response that started arriving and then broke off. */
+/**
+ * For a response that started arriving and then broke off: the server's connection
+ * broke, or (`CLIENT_CLOSED`) the client closed its own.
+ */
 export function describePartialFailure(code: string, target: string, detail?: string): ExchangeFailure {
   return {
     ...describeFailure(code, target, detail),
-    message: `The connection to ${target} broke part way through the response (${code}).`,
+    message:
+      code === 'CLIENT_CLOSED'
+        ? 'The client closed the connection part way through the response.'
+        : `The connection to ${target} broke part way through the response (${code}).`,
     partial: true,
   };
 }
