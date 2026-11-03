@@ -1,7 +1,15 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import tls from 'node:tls';
-import { curlrcContent, JAVA_TRUST_STORE_PASSWORD, phpIniContent } from '../shared/terminal-env';
+import {
+  curlrcContent,
+  JAVA_TRUST_STORE_PASSWORD,
+  phpIniContent,
+  SHELL_SCRIPT_NAMES,
+  shellScript,
+  shellScriptSupported,
+  type ShellKind,
+} from '../shared/terminal-env';
 import { pemToDer, trustStoreJks } from './jks';
 
 export const CA_BUNDLE_FILE = 'ca-bundle.pem';
@@ -49,4 +57,35 @@ export async function writeTerminalConfig(dir: string, caCert: string): Promise<
   const javaTrustStore = path.join(javaDir, 'wirescry-truststore.jks');
   await writeFile(javaTrustStore, trustStoreJks(pemToDer(pem), JAVA_TRUST_STORE_PASSWORD));
   return { bundlePath, phpIniDir, curlHome, javaTrustStore };
+}
+
+/**
+ * Writes a script per shell that sets `env`, so an open terminal can be set up with one
+ * line. Returns the path of each script written; a shell whose script can't be written
+ * (or can't hold these values) is left out, and the Setup page falls back for it.
+ */
+export async function writeShellScripts(
+  dir: string,
+  env: Record<string, string>,
+): Promise<Partial<Record<ShellKind, string>>> {
+  const scriptDir = path.join(dir, 'terminal-config', 'env');
+  const paths: Partial<Record<ShellKind, string>> = {};
+  try {
+    await mkdir(scriptDir, { recursive: true });
+  } catch (error) {
+    console.error('[wirescry] could not create the terminal scripts folder:', error);
+    return paths;
+  }
+  for (const shell of Object.keys(SHELL_SCRIPT_NAMES) as ShellKind[]) {
+    if (!shellScriptSupported(env, shell)) continue;
+    const file = path.join(scriptDir, SHELL_SCRIPT_NAMES[shell]);
+    try {
+      await writeFile(file, shellScript(env, shell), { mode: 0o644 });
+      paths[shell] = file;
+    } catch (error) {
+      // E.g. antivirus holding the file. Not worth failing a proxy restart over.
+      console.error(`[wirescry] could not write ${file}:`, error);
+    }
+  }
+  return paths;
 }

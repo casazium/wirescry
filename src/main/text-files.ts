@@ -2,6 +2,7 @@ import { readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { app, dialog, type BrowserWindow } from 'electron';
 import type {
+  ChooseFilePathResult,
   OpenTextFileRequest,
   OpenTextFileResult,
   SaveTextFileRequest,
@@ -75,4 +76,26 @@ export async function openTextFile(
     throw new Error(`That file is larger than ${MAX_TEXT_FILE_BYTES / 1024 / 1024} MB.`);
   }
   return { name: path.basename(file), text: await readFile(file, 'utf8') };
+}
+
+/**
+ * Asks the user to pick a file and returns its full path, e.g. for a rule that replies
+ * with a file. Nothing is read; the user picked the file in a system dialog.
+ */
+export async function chooseFilePath(
+  window: BrowserWindow | undefined,
+  request: unknown,
+): Promise<ChooseFilePathResult> {
+  if (!isObject(request)) throw new Error('Invalid request.');
+  const raw = request.extensions;
+  // No extensions, or an empty list, means any file.
+  const extensions =
+    raw === undefined || (Array.isArray(raw) && raw.length === 0) ? undefined : extensionsOf(raw);
+  const options = {
+    properties: ['openFile' as const],
+    filters: extensions ? [{ name: extensions.join(', ').toUpperCase(), extensions }] : [],
+  };
+  const result = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options);
+  const file = result.filePaths[0];
+  return result.canceled || !file ? {} : { path: file };
 }

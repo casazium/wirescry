@@ -30,6 +30,12 @@ export const status = (): ProxyStatus =>
     browsers: [],
     terminals: [],
     terminalEnv: {},
+    terminalScripts: {
+      posix: '/data/wirescry.sh',
+      fish: '/data/wirescry.fish',
+      powershell: 'C:\\data\\wirescry.ps1',
+      cmd: 'C:\\data\\wirescry.cmd',
+    },
     plugins: [],
     platform: 'darwin',
     firefoxTrusted: false,

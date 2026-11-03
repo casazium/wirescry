@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ProxyStatus } from '../../shared/api';
-import { SHELL_LABELS, shellSnippet, type ShellKind } from '../../shared/terminal-env';
+import { SHELL_LABELS, shellSnippet, sourceLine, type ShellKind } from '../../shared/terminal-env';
 import type { Command } from './api-client';
 
 interface Props {
@@ -30,6 +30,8 @@ export function TerminalSection({
   const [shell, setShell] = useState<ShellKind>(shells[0]!);
   const [error, setError] = useState<string>();
   const snippet = shellSnippet(status.terminalEnv, shell);
+  const script = status.terminalScripts[shell];
+  const line = script ? sourceLine(shell, script) : undefined;
 
   const launch = (terminalId: string): void => {
     setError(undefined);
@@ -54,7 +56,11 @@ export function TerminalSection({
       ) : (
         <p>No supported terminal found. Use the setup below in your own terminal.</p>
       )}
-      {error && <p className="note error">{error}</p>}
+      {error && (
+        <p className="note error" role="alert">
+          {error}
+        </p>
+      )}
 
       <h3>Set up a terminal that's already open</h3>
       <div className="body-meta">
@@ -69,10 +75,37 @@ export function TerminalSection({
           </button>
         ))}
       </div>
-      <div className="snippet">
-        <pre className="code">{snippet}</pre>
-        <CopyButton text={snippet} />
-      </div>
+      {line ? (
+        <>
+          <p className="muted">
+            Paste this into the terminal. It lasts until that terminal closes, and covers only that terminal.
+          </p>
+          <div className="snippet">
+            <pre className="code">{line}</pre>
+            <CopyButton text={line} />
+          </div>
+          <details className="coverage">
+            <summary>Show what this sets</summary>
+            <div className="snippet">
+              <pre className="code">{snippet}</pre>
+              <CopyButton text={snippet} />
+            </div>
+          </details>
+        </>
+      ) : shell === 'cmd' ? (
+        <p className="note">
+          Wirescry's folder has characters in its path that Command Prompt can't take here. Use PowerShell, or
+          open a Command Prompt with the button above.
+        </p>
+      ) : (
+        <>
+          <p className="muted">Paste these lines into the terminal. They last until that terminal closes.</p>
+          <div className="snippet">
+            <pre className="code">{snippet}</pre>
+            <CopyButton text={snippet} />
+          </div>
+        </>
+      )}
 
       <details className="coverage">
         <summary>What's covered</summary>

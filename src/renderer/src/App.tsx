@@ -45,6 +45,7 @@ export function App(): React.JSX.Element {
   const [message, setMessage] = useState<string>();
   /** The last HAR import or export, until dismissed. */
   const [notice, setNotice] = useState<string>();
+  const [pillCopied, setPillCopied] = useState(false);
   const [harBusy, setHarBusy] = useState(false);
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string>();
@@ -224,6 +225,31 @@ export function App(): React.JSX.Element {
 
   const filtered = search.trim() !== '' || quickFilter !== 'all';
 
+  /** Arrow keys, Home and End move between the quick-filter chips, as in any radio group. */
+  const onChipKey = (event: React.KeyboardEvent<HTMLDivElement>): void => {
+    const index = QUICK_FILTERS.findIndex((f) => f.id === quickFilter);
+    const last = QUICK_FILTERS.length - 1;
+    const next =
+      event.key === 'ArrowRight' || event.key === 'ArrowDown'
+        ? index === last
+          ? 0
+          : index + 1
+        : event.key === 'ArrowLeft' || event.key === 'ArrowUp'
+          ? index === 0
+            ? last
+            : index - 1
+          : event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? last
+              : undefined;
+    if (next === undefined) return;
+    event.preventDefault();
+    setQuickFilter(QUICK_FILTERS[next]!.id);
+    const chips = event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]');
+    chips[next]?.focus();
+  };
+
   const clearAll = (): void => {
     setSelectedId(undefined);
     void send({ command: 'clear' });
@@ -267,9 +293,26 @@ export function App(): React.JSX.Element {
     <div className="app">
       <header className="toolbar">
         <h1>Wirescry</h1>
-        <span className={`pill ${connected ? 'live' : ''}`} data-testid="proxy-status">
-          {stateLabel}
-        </span>
+        {connected && status ? (
+          <button
+            type="button"
+            className="pill live"
+            data-testid="proxy-status"
+            title="Copy the proxy address"
+            onClick={() => {
+              void navigator.clipboard.writeText(`127.0.0.1:${status.proxyPort}`).then(() => {
+                setPillCopied(true);
+                setTimeout(() => setPillCopied(false), 1500);
+              });
+            }}
+          >
+            {pillCopied ? 'Copied' : stateLabel}
+          </button>
+        ) : (
+          <span className="pill" data-testid="proxy-status">
+            {stateLabel}
+          </span>
+        )}
         {paused && <span className="pill paused">Recording paused</span>}
         <nav className="views" aria-label="View">
           <button
@@ -388,13 +431,15 @@ export function App(): React.JSX.Element {
             >
               ?
             </button>
-            <div className="chips" role="radiogroup" aria-label="Quick filter">
+            <div className="chips" role="radiogroup" aria-label="Quick filter" onKeyDown={onChipKey}>
               {QUICK_FILTERS.map((f) => (
                 <button
                   key={f.id}
                   type="button"
                   role="radio"
                   aria-checked={quickFilter === f.id}
+                  // One Tab stop for the group; arrow keys move between chips.
+                  tabIndex={quickFilter === f.id ? 0 : -1}
                   className={`chip ${quickFilter === f.id ? 'active' : ''}`}
                   onClick={() => setQuickFilter(f.id)}
                 >
@@ -516,7 +561,14 @@ export function App(): React.JSX.Element {
           </button>
         </div>
       )}
-      {message && <div className="banner error">{message}</div>}
+      {message && (
+        <div className="banner error" role="alert">
+          <span>{message}</span>
+          <button type="button" className="icon" aria-label="Dismiss" onClick={() => setMessage(undefined)}>
+            ×
+          </button>
+        </div>
+      )}
       {notice && (
         <div className="banner notice" role="status">
           <span>{notice}</span>

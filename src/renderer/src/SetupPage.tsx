@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { ProxyStatus } from '../../shared/api';
 import type { Command } from './api-client';
+import { CertificateTrust } from './CertificateTrust';
 import { TerminalSection } from './TerminalSection';
 
 interface Props {
@@ -120,7 +121,11 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
             </li>
           )}
         </ul>
-        {launchError && <p className="note error">{launchError}</p>}
+        {launchError && (
+          <p className="note error" role="alert">
+            {launchError}
+          </p>
+        )}
       </section>
 
       <TerminalSection
@@ -162,8 +167,18 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
             </span>
           </dd>
         </dl>
-        {exportError && <p className="note error">{exportError}</p>}
+        {exportError && (
+          <p className="note error" role="alert">
+            {exportError}
+          </p>
+        )}
         {exportNote && <p className="note">{exportNote}</p>}
+        <CertificateTrust
+          platform={status.platform}
+          certPath={certPath}
+          commonName={status.certificate.commonName}
+          CopyButton={CopyButton}
+        />
         <h3>curl, one request</h3>
         <div className="snippet">
           <pre className="code">{curlOnce}</pre>
@@ -204,7 +219,11 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
           Now using port {status.proxyPort}. Changing it restarts the proxy, so relaunch any browsers you
           opened.
         </p>
-        {portError && <p className="note error">{portError}</p>}
+        {portError && (
+          <p className="note error" role="alert">
+            {portError}
+          </p>
+        )}
         {portNote && <p className="note">{portNote}</p>}
       </section>
 
@@ -259,7 +278,11 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
             </button>
           )}
         </div>
-        {certError && <p className="note error">{certError}</p>}
+        {certError && (
+          <p className="note error" role="alert">
+            {certError}
+          </p>
+        )}
         {certNote && <p className="note">{certNote}</p>}
       </section>
     </div>

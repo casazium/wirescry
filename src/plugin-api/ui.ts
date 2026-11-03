@@ -4,7 +4,7 @@
  */
 import type { ComponentType } from 'react';
 import type { BodyContent, BodySide, ExchangeDetail, ExchangeSummary } from '../shared/api';
-import type { OpenTextFileResult, SaveTextFileResult } from '../shared/ipc';
+import type { ChooseFilePathResult, OpenTextFileResult, SaveTextFileResult } from '../shared/ipc';
 
 export type { BodyContent, BodySide, ExchangeDetail, ExchangeSummary };
 
@@ -20,6 +20,11 @@ export interface UiPluginApi {
   saveFile(options: { text: string; defaultName: string; extensions: string[] }): Promise<SaveTextFileResult>;
   /** Asks the user to pick a file, then resolves with its name and text (or nothing). Up to 16 MB. */
   openFile(options: { extensions: string[] }): Promise<OpenTextFileResult>;
+  /**
+   * Asks the user to pick a file, then resolves with its full path (or nothing), without
+   * reading it. For settings that point at a file, such as a rule's reply file.
+   */
+  chooseFile(options?: { extensions?: string[] }): Promise<ChooseFilePathResult>;
   /**
    * Shows a short badge on one of this plugin's tabs, or clears it with undefined. By
    * default it's a count of things waiting (read out as "3 waiting"), for what needs

@@ -130,3 +130,53 @@ export function shellSnippet(env: Record<string, string>, shell: ShellKind): str
         .join('\n');
   }
 }
+
+/** File name of the script that sets up a terminal, per shell, in the terminal-config/env folder. */
+export const SHELL_SCRIPT_NAMES: Record<ShellKind, string> = {
+  posix: 'wirescry.sh',
+  fish: 'wirescry.fish',
+  powershell: 'wirescry.ps1',
+  cmd: 'wirescry.cmd',
+};
+
+/** The script's contents: the snippet with a comment, and for cmd, no echoing. */
+export function shellScript(env: Record<string, string>, shell: ShellKind): string {
+  const note = "Written by Wirescry. Sends this terminal's HTTP and HTTPS traffic through it.";
+  const body = shellSnippet(env, shell);
+  switch (shell) {
+    case 'cmd':
+      return `@echo off\r\nrem ${note}\r\n${body.replace(/\n/g, '\r\n')}\r\n`;
+    case 'powershell':
+      return `# ${note}\r\n${body.replace(/\n/g, '\r\n')}\r\n`;
+    default:
+      return `# ${note}\n${body}\n`;
+  }
+}
+
+/**
+ * Whether a script for this shell can hold these values safely. Command Prompt reads
+ * .cmd files in the console's code page and treats % & ^ | < > as syntax even in
+ * values, so it only gets a script when every value is plain ASCII without them.
+ */
+export function shellScriptSupported(env: Record<string, string>, shell: ShellKind): boolean {
+  if (shell !== 'cmd') return true;
+  return Object.values(env).every((value) => /^[\x20-\x7e]*$/.test(value) && !/[%&^|<>!]/.test(value));
+}
+
+/**
+ * One line to paste into a terminal that runs the script. PowerShell reads the file and
+ * runs its text, because Windows' default execution policy refuses to run .ps1 scripts;
+ * -Encoding UTF8 because Windows PowerShell 5.1 otherwise reads it in the ANSI code page.
+ */
+export function sourceLine(shell: ShellKind, scriptPath: string): string {
+  switch (shell) {
+    case 'posix':
+      return `. ${posixQuote(scriptPath)}`;
+    case 'fish':
+      return `source ${fishQuote(scriptPath)}`;
+    case 'powershell':
+      return `Get-Content -Raw -Encoding UTF8 -LiteralPath ${powershellQuote(scriptPath)} | Invoke-Expression`;
+    case 'cmd':
+      return `call "${scriptPath}"`;
+  }
+}

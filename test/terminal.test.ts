@@ -14,7 +14,15 @@ import {
   windowsStartCommand,
 } from '../src/backend/terminals';
 import type { ProxyStatus } from '../src/shared/api';
-import { curlrcContent, phpIniContent, shellSnippet, terminalEnv } from '../src/shared/terminal-env';
+import {
+  curlrcContent,
+  phpIniContent,
+  shellScript,
+  shellScriptSupported,
+  shellSnippet,
+  sourceLine,
+  terminalEnv,
+} from '../src/shared/terminal-env';
 import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
 
 const exec = promisify(execFile);
@@ -114,6 +122,45 @@ describe('terminal interception', () => {
       )
       .toBe(true);
   };
+
+  it.skipIf(process.platform === 'win32')(
+    'writes a script that sets up an open terminal in one line',
+    async () => {
+      const status = (api.messages[0] as { status: ProxyStatus }).status;
+      // The data folder has a space in it, so this also checks the quoting.
+      const line = sourceLine('posix', status.terminalScripts.posix!);
+      const { stdout } = await exec('/bin/sh', ['-c', `${line} && env`], {
+        env: { PATH: process.env.PATH },
+      });
+      for (const [key, value] of Object.entries(status.terminalEnv)) {
+        expect(stdout, key).toContain(`${key}=${value}\n`);
+      }
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'sets up an open Command Prompt or PowerShell in one line',
+    async () => {
+      const status = (api.messages[0] as { status: ProxyStatus }).status;
+      const proxy = status.terminalEnv.HTTPS_PROXY!;
+      const cmd = await exec(
+        'cmd.exe',
+        ['/d', '/c', `${sourceLine('cmd', status.terminalScripts.cmd!)} && set`],
+        {
+          windowsVerbatimArguments: true,
+        },
+      );
+      expect(cmd.stdout).toContain(`HTTPS_PROXY=${proxy}`);
+      expect(cmd.stdout).toContain(`JAVA_TOOL_OPTIONS=${status.terminalEnv.JAVA_TOOL_OPTIONS}`);
+      const ps = await exec('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `${sourceLine('powershell', status.terminalScripts.powershell!)}; Write-Output "proxy=$env:HTTPS_PROXY"`,
+      ]);
+      expect(ps.stdout).toContain(`proxy=${proxy}`);
+    },
+  );
 
   it('writes a CA bundle with Wirescry first, then the usual roots', async () => {
     const status = (api.messages[0] as { status: ProxyStatus }).status;
@@ -283,6 +330,26 @@ describe('terminal setup', () => {
     const cmd = shellSnippet(env, 'cmd');
     expect(cmd).toContain(`set "HTTP_PROXY=http://127.0.0.1:8123"`);
     expect(cmd).not.toContain('set "http_proxy='); // Same variable on Windows.
+  });
+
+  it('writes each shell a script, and a line that runs it', () => {
+    expect(shellScript(env, 'posix')).toMatch(/^# Written by Wirescry.*\nexport HTTP_PROXY=/);
+    expect(shellScript(env, 'cmd')).toMatch(/^@echo off\r\nrem .*\r\nset "HTTP_PROXY=/);
+    expect(shellScript(env, 'cmd')).not.toMatch(/[^\r]\n/);
+    expect(sourceLine('posix', "/a b/it's.sh")).toBe(`. '/a b/it'\\''s.sh'`);
+    expect(sourceLine('fish', "/a b/it's.fish")).toBe(`source '/a b/it\\'s.fish'`);
+    expect(sourceLine('powershell', "C:\\a b\\it's.ps1")).toBe(
+      `Get-Content -Raw -Encoding UTF8 -LiteralPath 'C:\\a b\\it''s.ps1' | Invoke-Expression`,
+    );
+    expect(sourceLine('cmd', 'C:\\a b\\w.cmd')).toBe('call "C:\\a b\\w.cmd"');
+  });
+
+  it('gives Command Prompt a script only when its values are safe for it', () => {
+    expect(shellScriptSupported({ A: 'C:\\Users\\Bob\\x.pem', B: '-Dx="C:\\a b"' }, 'cmd')).toBe(true);
+    for (const value of ['C:\\Users\\José\\x.pem', 'C:\\100%\\x', 'C:\\R&D\\x', 'a^b', 'a!b']) {
+      expect(shellScriptSupported({ A: value }, 'cmd'), value).toBe(false);
+      expect(shellScriptSupported({ A: value }, 'powershell'), value).toBe(true);
+    }
   });
 
   it.skipIf(process.platform === 'win32')(

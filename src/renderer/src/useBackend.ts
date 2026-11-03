@@ -239,6 +239,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
           },
           saveFile: (options) => window.wirescry.saveTextFile(options),
           openFile: (options) => window.wirescry.openTextFile(options),
+          chooseFile: (options) => window.wirescry.chooseFilePath(options ?? {}),
           showView: (viewId) => showViewRef.current(`${plugin}:${String(viewId)}`),
           getExchange: async (exchangeId) =>
             (await send({ command: 'getExchange', exchangeId: String(exchangeId) })) as ExchangeDetail,

@@ -24,7 +24,7 @@ import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
 import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
-import { writeTerminalConfig, type TerminalConfig } from './ca-bundle';
+import { writeShellScripts, writeTerminalConfig, type TerminalConfig } from './ca-bundle';
 import { detectTerminals, launchTerminal } from './terminals';
 import { terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
@@ -147,6 +147,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     platform,
     terminals: terminals.map(({ id, name }) => ({ id, name })),
     terminalEnv: currentTerminalEnv(),
+    terminalScripts,
     plugins: pluginHost.statuses(),
   });
 
@@ -205,6 +206,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     });
 
   let proxy = await openProxy(options.proxyPort ?? settings.proxyPort);
+  // Rewritten whenever the port or certificate changes, so the one-line setup stays current.
+  let terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
 
   /** Restarts the proxy, going back to the old port if the new one can't be used. */
   const restartProxy = async (port: number | undefined): Promise<void> => {
@@ -219,6 +222,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     }
     // Plugins may have changed their rules while the new proxy was starting; reapply.
     await proxy.refreshRules();
+    terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
   };
 
   // Commands that restart the proxy run one at a time.

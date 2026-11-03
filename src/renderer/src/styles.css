@@ -147,6 +147,15 @@ button:disabled {
   cursor: default;
 }
 
+/* The proxy pill copies the address when clicked, but still looks like a pill. */
+button.pill {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: var(--ok);
+}
+
 .muted {
   color: var(--muted);
 }
@@ -157,8 +166,16 @@ button:disabled {
 }
 
 .banner.error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: var(--error);
   border-bottom: 1px solid var(--border);
+}
+
+.banner.error span,
+.banner.notice span {
+  flex: 1;
 }
 
 .banner.notice {
@@ -166,10 +183,6 @@ button:disabled {
   align-items: center;
   gap: 8px;
   border-bottom: 1px solid var(--border);
-}
-
-.banner.notice span {
-  flex: 1;
 }
 
 .empty {

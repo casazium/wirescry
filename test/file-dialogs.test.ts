@@ -21,7 +21,8 @@ vi.mock('electron', () => ({
   },
 }));
 
-const { openTextFile, saveTextFile, MAX_TEXT_FILE_BYTES } = await import('../src/main/text-files');
+const { chooseFilePath, openTextFile, saveTextFile, MAX_TEXT_FILE_BYTES } =
+  await import('../src/main/text-files');
 const { exportHar, saveBody } = await import('../src/main/har-files');
 
 /** A stand-in for the backend supervisor that must never be reached by refused requests. */
@@ -78,6 +79,27 @@ describe('saving and opening text files', () => {
   it('returns nothing when the user cancels', async () => {
     expect(await saveTextFile(undefined, { text: 'x', extensions: ['json'] })).toEqual({});
     expect(await openTextFile(undefined, { extensions: ['json'] })).toEqual({});
+  });
+});
+
+describe('choosing a file path', () => {
+  it('returns the chosen path without reading the file', async () => {
+    chosen = path.join(dir, 'does-not-exist.json');
+    expect(await chooseFilePath(undefined, {})).toEqual({ path: chosen });
+    expect(await chooseFilePath(undefined, { extensions: ['json'] })).toEqual({ path: chosen });
+    expect(await chooseFilePath(undefined, { extensions: [] })).toEqual({ path: chosen });
+    expect(dialogs.map((d) => d.kind)).toEqual(['open', 'open', 'open']);
+  });
+
+  it('returns nothing when the user cancels', async () => {
+    expect(await chooseFilePath(undefined, {})).toEqual({});
+  });
+
+  it('refuses bad requests before showing a dialog', async () => {
+    for (const request of [null, 'x', { extensions: ['../x'] }, { extensions: 'json' }]) {
+      await expect(chooseFilePath(undefined, request), JSON.stringify(request)).rejects.toThrow();
+    }
+    expect(dialogs).toEqual([]);
   });
 });
 
