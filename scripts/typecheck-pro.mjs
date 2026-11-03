@@ -22,6 +22,7 @@ try {
     ['tsconfig.web.json', { '@wirescry/pro/ui': [path.join(pro, 'src/ui/index.ts')] }],
   ]) {
     const config = path.join(dir, name);
+    const original = JSON.parse(readFileSync(path.join(root, name), 'utf8'));
     writeFileSync(
       config,
       JSON.stringify({
@@ -32,9 +33,8 @@ try {
           typeRoots: [path.join(root, 'node_modules/@types')],
         },
         // The app's own files, as in the original config; Pro's come in through the paths above.
-        include: JSON.parse(readFileSync(path.join(root, name), 'utf8')).include.map((p) =>
-          path.join(root, p),
-        ),
+        include: original.include.map((p) => path.join(root, p)),
+        ...(original.exclude ? { exclude: original.exclude.map((p) => path.join(root, p)) } : {}),
       }),
     );
     const result = spawnSync(path.join(root, 'node_modules/.bin/tsc'), ['-p', config, '--noEmit'], {

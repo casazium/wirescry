@@ -16,6 +16,5 @@
     "src/shared/**/*",
     "test/**/*"
   ],
-  // The component tests are checked with the window's code (tsconfig.test-ui.json).
   "exclude": ["test/ui/**/*"]
 }
