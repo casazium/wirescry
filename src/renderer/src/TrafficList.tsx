@@ -162,7 +162,12 @@ export function TrafficList({
                   {e.annotations?.slice(0, MAX_BADGES).map((a) => (
                     <span key={a.plugin} className={`rule-badge plugin-badge tone-${a.tone}`} title={a.title}>
                       {a.label}
-                      {a.title && <span className="visually-hidden">: {a.title}.</span>}
+                      {a.title && (
+                        <span className="visually-hidden">
+                          : {a.title}
+                          {/[.!?]$/.test(a.title) ? '' : '.'}
+                        </span>
+                      )}
                     </span>
                   ))}
                   {e.handledBy && (

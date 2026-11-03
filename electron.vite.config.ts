@@ -28,6 +28,13 @@ const idKey = (file: string): string => {
 };
 const proRoot = proDir ? idKey(realpathSync(proDir)) + '/' : undefined;
 const isProModule = (id: string): boolean => proRoot !== undefined && idKey(id).startsWith(proRoot);
+/**
+ * Packages only Pro uses, bundled into its chunk with it (and compiled to bytecode). They
+ * resolve from the app's node_modules in CI and from Pro's own when developing.
+ */
+const PRO_ONLY_PACKAGES = /[\\/]node_modules[\\/]yaml[\\/]/;
+const inProChunk = (id: string): boolean =>
+  isProModule(id) || (proDir !== undefined && PRO_ONLY_PACKAGES.test(id));
 
 /**
  * A second opinion for checkProChunk: resolves the module's file on disk, so a Pro file
@@ -113,7 +120,7 @@ export default defineConfig(() => {
           '@wirescry/plugin-api': pluginApi,
         },
         // Pro's files sit outside this repo; make sure they use this app's Mockttp.
-        dedupe: ['mockttp', '@casazium/license-sdk'],
+        dedupe: ['mockttp', '@casazium/license-sdk', 'yaml'],
       },
       build: {
         rolldownOptions: {
@@ -135,7 +142,7 @@ export default defineConfig(() => {
                 ? 'globalThis.__wirescryBackendFirstLineAt = performance.now();'
                 : '',
             ...(proDir
-              ? { codeSplitting: { groups: [{ name: 'pro', test: isProModule, priority: 1 }] } }
+              ? { codeSplitting: { groups: [{ name: 'pro', test: inProChunk, priority: 1 }] } }
               : {}),
           },
         },

@@ -91,6 +91,17 @@ describe('TrafficList plugin badges', () => {
     expect(second!.querySelector('.plugin-badge')).toBeNull();
   });
 
+  it('doesn’t double the full stop of a title that has one', () => {
+    list({
+      rows: [
+        summary('a', {
+          annotations: [{ plugin: 'pro', label: 'Spec', tone: 'ok', title: 'Matches getPet.' }],
+        }),
+      ],
+    });
+    expect(document.querySelector('.plugin-badge .visually-hidden')!.textContent).toBe(': Matches getPet.');
+  });
+
   it('shows at most three badges on a row, so the path stays visible', () => {
     list({
       rows: [
