@@ -115,6 +115,21 @@ if (apps.length === 0) {
   console.error(`self-test: no packaged apps in ${releaseDir}`);
   process.exit(1);
 }
+/**
+ * The Intel Mac app on an Apple silicon runner runs under Rosetta, whose first start
+ * translates everything and can take over a minute: long enough to trip the app's own
+ * time limits (0.1.4 and 0.1.11 each failed this way, then passed on another try).
+ * Rosetta keeps what it translated, so that app gets one more try.
+ */
+const underRosetta = (app) => process.platform === 'darwin' && process.arch === 'arm64' && app.name === 'mac';
+
 let ok = true;
-for (const app of apps) ok = (await run(app)) && ok;
+for (const app of apps) {
+  let passed = await run(app);
+  if (!passed && underRosetta(app)) {
+    console.log(`${app.name}: trying once more, now that Rosetta has translated it`);
+    passed = await run(app);
+  }
+  ok = passed && ok;
+}
 if (!ok) process.exitCode = 1;
