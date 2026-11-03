@@ -15,7 +15,8 @@ const EXTENSION = /^[a-z0-9]{1,10}$/;
 
 /** A suggested file name without folders, control characters or characters Windows forbids. */
 function safeFileName(name: string): string {
-  return [...path.basename(name)]
+  // Split on both kinds of slash, so this works the same on every system.
+  return [...(name.split(/[\\/]/).pop() ?? '')]
     .filter((ch) => ch.charCodeAt(0) > 0x1f && ch !== '\x7f' && !'<>:"/\\|?*'.includes(ch))
     .join('')
     .slice(0, 100);

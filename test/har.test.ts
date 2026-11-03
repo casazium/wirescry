@@ -7,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { loadOrCreateCA } from '../src/backend/ca';
 import { harEntry, MAX_HAR_IMPORT_BYTES, parseHar } from '../src/backend/har';
-import type { BodyContent, ExchangeDetail, WebSocketMessages } from '../src/shared/api';
+import type { BodyContent, ExchangeDetail, ServerMessage, WebSocketMessages } from '../src/shared/api';
 import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
 const JSON_BODY = JSON.stringify({ users: [{ id: 1, name: 'Ada' }], note: 'héllo ✓' });
@@ -213,9 +213,11 @@ describe('HAR export and import', () => {
     await expect(importing).rejects.toThrow('the list was cleared');
     await expect(cleared).resolves.toBeUndefined();
     api.close();
-    // A fresh client sees an empty list.
+    // A fresh client sees an empty list: in its first message, and in the backend's store.
     const after = await apiClient(backend.apiPort);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    const hello = after.messages[0] as Extract<ServerMessage, { type: 'hello' }>;
+    expect(hello.type).toBe('hello');
+    expect(hello.exchanges).toEqual([]);
     expect(exchangesIn(after.messages)).toEqual([]);
     after.close();
   });
