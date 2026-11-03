@@ -72,6 +72,13 @@ export function App(): React.JSX.Element {
   const [composedId, setComposedId] = useState<string>();
   // What was last sent or loaded, so Edit and resend only asks before replacing other edits.
   const [settledDraft, setSettledDraft] = useState<ComposerDraft>(EMPTY_DRAFT);
+  // The request Edit and resend replaced, while Undo is offered.
+  const [replacedDraft, setReplacedDraft] = useState<ComposerDraft>();
+  // The latest draft, for code that runs after an await.
+  const draftRef = useRef(draft);
+  useEffect(() => {
+    draftRef.current = draft;
+  });
   // Sends that could no longer be cancelled (e.g. the backend restarted).
   const [uncancellable, setUncancellable] = useState<ReadonlySet<string>>(new Set());
   const [search, setSearch] = useState('');
@@ -140,16 +147,17 @@ export function App(): React.JSX.Element {
       ? ((await send({ command: 'getBody', exchangeId: exchange.id, side: 'request' })) as BodyContent | null)
       : null;
     const filled = draftFromExchange(exchange, detail, body);
-    if (
-      !sameDraft(draft, EMPTY_DRAFT) &&
-      !sameDraft(draft, settledDraft) &&
-      !window.confirm('Replace the request in Compose? Your changes to it will be lost.')
-    ) {
-      return;
-    }
+    const current = draftRef.current;
+    // Unsent edits can come back with Undo.
+    const unsent = !sameDraft(current, EMPTY_DRAFT) && !sameDraft(current, settledDraft);
+    setReplacedDraft(unsent ? current : undefined);
     setDraft(filled.draft);
     setSettledDraft(filled.draft);
-    setDraftNote(filled.note);
+    setDraftNote(
+      [filled.note, unsent ? 'Replaced the request you were writing.' : undefined]
+        .filter(Boolean)
+        .join(' ') || undefined,
+    );
     setComposedId(undefined);
     setView('compose');
   };
@@ -497,7 +505,28 @@ export function App(): React.JSX.Element {
           draft={draft}
           onChange={setDraft}
           note={draftNote}
-          onDismissNote={() => setDraftNote(undefined)}
+          onDismissNote={() => {
+            setDraftNote(undefined);
+            setReplacedDraft(undefined);
+          }}
+          onUndo={
+            replacedDraft
+              ? () => {
+                  setDraft(replacedDraft);
+                  setReplacedDraft(undefined);
+                  setDraftNote(undefined);
+                }
+              : undefined
+          }
+          announcement={
+            !composed
+              ? undefined
+              : composed.failure
+                ? 'The request failed.'
+                : composed.status !== undefined
+                  ? `Response: ${composed.status} ${composed.statusMessage ?? ''}`.trim()
+                  : 'Waiting for the response…'
+          }
           connected={connected}
           onSend={sendComposed}
           onCancel={
@@ -506,11 +535,9 @@ export function App(): React.JSX.Element {
               ? () => {
                   const id = composed.id;
                   void send({ command: 'composeCancel', exchangeId: id })
-                    .then((cancelled) => cancelled !== true)
-                    .catch(() => true)
-                    .then((gone) => {
-                      if (gone) setUncancellable((ids) => new Set(ids).add(id));
-                    });
+                    .catch(() => undefined)
+                    // Cancelled, or nothing left to cancel: either way Cancel has done its job.
+                    .then(() => setUncancellable((ids) => new Set(ids).add(id)));
                 }
               : undefined
           }
@@ -538,6 +565,7 @@ export function App(): React.JSX.Element {
                     setDraft(loaded);
                     setSettledDraft(loaded);
                     setDraftNote(undefined);
+                    setReplacedDraft(undefined);
                   }}
                 />
               </PluginErrorBoundary>,

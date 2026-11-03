@@ -57,7 +57,8 @@ export function validateComposerRequest(input: unknown): ComposerRequest & { par
   if (!Array.isArray(request.headers)) throw new Error('Headers must be a list.');
   if (request.headers.length > MAX_COMPOSER_HEADERS) throw new Error('Too many headers.');
   const headers: Header[] = [];
-  let headerBytes = 0;
+  // The proxy's parser limits the request line and headers together.
+  let headerBytes = method.length + parsedUrl.href.length + parsedUrl.host.length + 32;
   for (const header of request.headers as unknown[]) {
     if (!Array.isArray(header) || typeof header[0] !== 'string' || typeof header[1] !== 'string') {
       throw new Error('Each header needs a name and a value.');
@@ -71,8 +72,9 @@ export function validateComposerRequest(input: unknown): ComposerRequest & { par
     }
     if (MANAGED_HEADERS.has(name.toLowerCase())) continue;
     headerBytes += name.length + value.length + 4;
-    if (headerBytes > MAX_HEADER_BYTES)
-      throw new Error(`Headers can be at most ${MAX_HEADER_BYTES / 1024} KB in all.`);
+    if (headerBytes > MAX_HEADER_BYTES) {
+      throw new Error(`The URL and headers can be at most ${MAX_HEADER_BYTES / 1024} KB together.`);
+    }
     headers.push([name, value]);
   }
 

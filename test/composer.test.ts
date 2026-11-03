@@ -91,6 +91,15 @@ describe('validateComposerRequest', () => {
     expect(() => validateComposerRequest(request(overrides as Partial<ComposerRequest>))).toThrow(message);
   });
 
+  it('limits the URL and headers together, as the proxy does', () => {
+    const half = 'v'.repeat(9 * 1024);
+    expect(() => validateComposerRequest(request({ url: `https://a.example/?q=${half}` }))).not.toThrow();
+    expect(() => validateComposerRequest(request({ headers: [['X-Big', half]] }))).not.toThrow();
+    expect(() =>
+      validateComposerRequest(request({ url: `https://a.example/?q=${half}`, headers: [['X-Big', half]] })),
+    ).toThrow('URL and headers can be at most 16 KB together');
+  });
+
   it('refuses things that aren’t a request', () => {
     expect(() => validateComposerRequest(null)).toThrow();
     expect(() => validateComposerRequest({ method: 'GET', url: 'https://a.example/', headers: 'x' })).toThrow(
@@ -330,6 +339,35 @@ describe('composer', () => {
     } finally {
       await api.send({ command: 'setPaused', paused: false });
       api.close();
+    }
+  });
+
+  it('cancels a response still streaming in', async () => {
+    let streamed = false;
+    const streaming = (await import('node:http')).createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.write('first part ', () => (streamed = true));
+      // ...and never finishes.
+    });
+    await new Promise<void>((resolve) => streaming.listen(0, '127.0.0.1', resolve));
+    const port = (streaming.address() as net.AddressInfo).port;
+    const api = await apiClient(backend.apiPort);
+    try {
+      const { exchangeId } = await api.send<{ exchangeId: string }>({
+        command: 'composeSend',
+        request: request({ url: `http://127.0.0.1:${port}/stream` }),
+      });
+      await expect.poll(() => streamed).toBe(true);
+      // The proxy records the status once the response is complete, so until then it's pending.
+      expect(exchangesIn(api.messages).find((e) => e.id === exchangeId)?.durationMs).toBeUndefined();
+      expect(await api.send({ command: 'composeCancel', exchangeId })).toBe(true);
+      // The connection is gone: there's nothing left to cancel. (The proxy doesn't mark a
+      // response cut off mid-body as failed, for any client; the UI hides Cancel itself.)
+      expect(await api.send({ command: 'composeCancel', exchangeId })).toBe(false);
+    } finally {
+      api.close();
+      streaming.closeAllConnections();
+      streaming.close();
     }
   });
 

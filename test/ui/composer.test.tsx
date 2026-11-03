@@ -136,7 +136,7 @@ describe('ComposerView', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect((await screen.findByRole('alert')).textContent).toBe('No value for {{token}}');
     await waitFor(() =>
-      expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(false),
+      expect(screen.getByRole('button', { name: 'Send' }).getAttribute('aria-disabled')).toBeNull(),
     );
   });
 
@@ -293,7 +293,8 @@ describe('ComposerView states', () => {
 
   it('can’t send while disconnected', () => {
     const onSend = view({ connected: false });
-    expect((screen.getByRole('button', { name: 'Send' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Send' }).getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     fireEvent.keyDown(screen.getByLabelText('URL'), { key: 'Enter', ctrlKey: true });
     expect(onSend).not.toHaveBeenCalled();
   });
@@ -314,7 +315,7 @@ describe('ComposerView states', () => {
   it('shows the note about what couldn’t be copied, with a way to dismiss it', () => {
     const onDismissNote = vi.fn();
     view({ note: 'The body isn’t text, so it was left out.', onDismissNote });
-    expect(screen.getByRole('status').textContent).toContain('left out');
+    expect(screen.getByText(/left out/).getAttribute('role')).toBe('status');
     fireEvent.click(screen.getByRole('button', { name: 'OK' }));
     expect(onDismissNote).toHaveBeenCalled();
   });

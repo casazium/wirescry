@@ -31,7 +31,16 @@ export function sameDraft(a: ComposerDraft, b: ComposerDraft): boolean {
 }
 
 /** Headers the composer leaves out of a copied request: Wirescry sets them when it sends. */
-const MANAGED = new Set(['host', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
+const MANAGED = new Set([
+  'host',
+  'content-length',
+  'transfer-encoding',
+  'connection',
+  'keep-alive',
+  'proxy-connection',
+  'upgrade',
+  'te',
+]);
 
 export function headersToText(headers: Header[]): string {
   return headers.map(([name, value]) => `${name}: ${value}`).join('\n');
@@ -90,8 +99,8 @@ export function draftFromExchange(
   detail: ExchangeDetail,
   body: BodyContent | null,
 ): { draft: ComposerDraft; note?: string } {
-  let headers = detail.requestHeaders.filter(
-    ([name]) => !name.startsWith(':') && !MANAGED.has(name.toLowerCase()),
+  let headers = joinCookies(
+    detail.requestHeaders.filter(([name]) => !name.startsWith(':') && !MANAGED.has(name.toLowerCase())),
   );
   let text = '';
   let note: string | undefined;
@@ -152,4 +161,18 @@ export function canCancel(
     !stale &&
     !uncancellable.has(summary.id)
   );
+}
+
+/** HTTP/2 can split Cookie into several headers; HTTP/1.1 servers expect one, joined with "; ". */
+function joinCookies(headers: Header[]): Header[] {
+  const cookies = headers.filter(([name]) => name.toLowerCase() === 'cookie');
+  if (cookies.length < 2) return headers;
+  const joined: Header = [cookies[0]![0], cookies.map(([, value]) => value).join('; ')];
+  let placed = false;
+  return headers.flatMap((header) => {
+    if (header[0].toLowerCase() !== 'cookie') return [header];
+    if (placed) return [];
+    placed = true;
+    return [joined];
+  });
 }

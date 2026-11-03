@@ -10,6 +10,10 @@ interface Props {
   /** Something about how the draft was filled in, e.g. a body that couldn't be copied. */
   note?: string;
   onDismissNote(): void;
+  /** Offered with the note, e.g. to bring back a request Edit and resend replaced. */
+  onUndo?: () => void;
+  /** Read out by screen readers, e.g. when the response arrives. */
+  announcement?: string;
   connected: boolean;
   /** Sends it: plugins first, then the backend. Rejects with a message for the user. */
   onSend(request: ComposerRequest): Promise<void>;
@@ -27,6 +31,8 @@ export function ComposerView({
   onChange,
   note,
   onDismissNote,
+  onUndo,
+  announcement,
   connected,
   onSend,
   onCancel,
@@ -38,6 +44,7 @@ export function ComposerView({
   const set = (change: Partial<ComposerDraft>): void => onChange({ ...draft, ...change });
 
   const send = (): void => {
+    if (!connected || sending || onCancel) return;
     setError(undefined);
     const url = draft.url.trim();
     if (!/^https?:\/\/[^/?#]/i.test(url)) {
@@ -61,7 +68,8 @@ export function ComposerView({
       body: draft.body,
     })
       .catch((e: unknown) => setError((e as Error)?.message ?? String(e)))
-      .finally(() => setSending(false));
+      // A frame later, once the new row is listed and Cancel has taken Send's place.
+      .finally(() => requestAnimationFrame(() => setSending(false)));
   };
 
   return (
@@ -118,15 +126,19 @@ export function ComposerView({
               spellCheck={false}
               onChange={(e) => set({ url: e.target.value })}
             />
-            {onCancel ? (
-              <button type="button" className="secondary" onClick={onCancel}>
-                Cancel
-              </button>
-            ) : (
-              <button type="submit" disabled={!connected || sending}>
-                {sending ? 'Sending…' : 'Send'}
-              </button>
-            )}
+            {/* One button, so focus stays on it as it turns from Send into Cancel and back. */}
+            <button
+              type={onCancel ? 'button' : 'submit'}
+              className={onCancel ? 'secondary' : undefined}
+              aria-disabled={!onCancel && (!connected || sending) ? true : undefined}
+              onClick={(event) => {
+                if (!onCancel) return;
+                event.preventDefault();
+                onCancel();
+              }}
+            >
+              {onCancel ? 'Cancel' : sending ? 'Sending…' : 'Send'}
+            </button>
           </div>
           <label className="composer-field">
             <span>Headers</span>
@@ -154,11 +166,21 @@ export function ComposerView({
           {note && (
             <p className="note composer-note" role="status">
               {note}{' '}
+              {onUndo && (
+                <>
+                  <button type="button" className="link" onClick={onUndo}>
+                    Undo
+                  </button>{' '}
+                </>
+              )}
               <button type="button" className="link" onClick={onDismissNote}>
                 OK
               </button>
             </p>
           )}
+          <p className="visually-hidden" role="status" aria-live="polite">
+            {announcement}
+          </p>
           {error && (
             <p className="note error" role="alert">
               {error}
