@@ -8,6 +8,18 @@ import { startBackend, type RunningBackend } from './backend';
 import { ipcEncryptor } from './secure-store';
 import { selfCheck } from './self-check';
 
+// Everything above (this bundle and Pro, compiled eagerly: see backend-v8-flags.json) has
+// loaded by now. Logged with each startup step, as milliseconds since the process began.
+const loadedAt = performance.now();
+/** Set by the bundle's first line (see electron.vite.config.ts), before its imports run. */
+const firstLineAt = (globalThis as { __wirescryBackendFirstLineAt?: number }).__wirescryBackendFirstLineAt;
+/** Each step and when it finished, also sent with `ready`: the log can lag behind it. */
+const startup: Array<[step: string, ms: number]> = [];
+const mark = (step: string, at = performance.now()): void => {
+  startup.push([step, Math.round(at)]);
+  console.log(`Startup: ${step} at ${Math.round(at)} ms`);
+};
+
 const parentPort = process.parentPort;
 let backend: RunningBackend | undefined;
 let starting = false;
@@ -49,6 +61,9 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
   }
   if (data?.type !== 'start' || starting) return;
   starting = true;
+  if (firstLineAt !== undefined) mark('first line of the backend ran', firstLineAt);
+  mark('dependencies and Pro loaded', loadedAt);
+  mark('start requested');
   try {
     backend = await startBackend({
       dataDir: data.dataDir,
@@ -60,13 +75,17 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
       encryptor:
         backendPlugins.length > 0 && (await encryptor.available().catch(() => false)) ? encryptor : undefined,
       app: data.app,
+      onStartupStep: (name) => mark(`${name} done`),
     });
+    const checked = data.selfCheck ? await selfCheck() : undefined;
+    if (checked) mark('self-check done');
     post({
       type: 'ready',
       apiPort: backend.apiPort,
       proxyPort: backend.proxyPort,
       plugins: backend.pluginStatuses(),
-      ...(data.selfCheck ? { selfCheck: await selfCheck() } : {}),
+      ...(checked ? { selfCheck: checked } : {}),
+      startup,
     });
   } catch (error) {
     post({ type: 'error', message: (error as Error).stack ?? String(error) });

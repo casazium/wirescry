@@ -75,7 +75,8 @@ function run({ name, exe }) {
   const env = { ...process.env, WIRESCRY_DISABLE_UPDATES: '1' };
   return new Promise((done) => {
     const child = spawn(exe, args, { stdio: 'inherit', env });
-    const timer = setTimeout(() => child.kill(), 180_000);
+    // Past the app's own 10-minute limit, so a slow start is reported with its timings.
+    const timer = setTimeout(() => child.kill(), 12 * 60_000);
     child.on('exit', (code) => {
       clearTimeout(timer);
       let result;
@@ -87,7 +88,9 @@ function run({ name, exe }) {
       let problem;
       if (!result) problem = `exited (code ${code}) without a result`;
       else if (result.error) problem = result.error;
-      else if (expectPro) {
+      else if (result.backendStartMs > MAX_BACKEND_START_MS) {
+        problem = `the backend took ${Math.round(result.backendStartMs / 1000)} s to start (the limit is ${MAX_BACKEND_START_MS / 1000} s)`;
+      } else if (expectPro) {
         // Unlicensed is fine: Pro still starts, and locks its features itself.
         const pro = result.plugins?.find((p) => p.name === 'pro');
         if (!pro) problem = 'Pro did not load; see the log';
@@ -96,10 +99,22 @@ function run({ name, exe }) {
       console.log(
         `${name}: ${problem ? `FAILED: ${problem}` : 'ok'} ${result ? JSON.stringify(result) : ''}`,
       );
+      const logs = join(work, 'data/logs');
+      const logFiles = existsSync(logs) ? readdirSync(logs) : [];
+      // How long each step of the backend's start took, pass or fail: from the ready
+      // message when there was one, or else from the log (which can lag behind it).
+      if (result?.startup) {
+        for (const [step, ms] of result.startup) console.log(`${name}: Startup: ${step} at ${ms} ms`);
+      } else {
+        for (const f of logFiles) {
+          for (const line of readFileSync(join(logs, f), 'utf8').split('\n')) {
+            if (line.includes('Startup: ')) console.log(`${name}: ${line.slice(line.indexOf('Startup: '))}`);
+          }
+        }
+      }
       // Windows doesn't show a GUI app's output, so print the end of its log on failure.
       if (problem) {
-        const logs = join(work, 'data/logs');
-        for (const f of existsSync(logs) ? readdirSync(logs) : []) {
+        for (const f of logFiles) {
           console.log(`--- ${f} (last 40 lines) ---`);
           console.log(readFileSync(join(logs, f), 'utf8').split('\n').slice(-40).join('\n'));
         }
@@ -121,6 +136,9 @@ if (apps.length === 0) {
  * time limits (0.1.4 and 0.1.11 each failed this way, then passed on another try).
  * Rosetta keeps what it translated, so that app gets one more try.
  */
+/** The slowest backend start that passes. The log's "Startup:" lines say where the time went. */
+const MAX_BACKEND_START_MS = 120_000;
+
 const underRosetta = (app) => process.platform === 'darwin' && process.arch === 'arm64' && app.name === 'mac';
 
 let ok = true;

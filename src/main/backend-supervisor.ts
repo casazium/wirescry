@@ -73,6 +73,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
   plugins: PluginStatus[] = [];
   /** With the selfCheck option: the problems the backend's self-check found at its last start. */
   selfCheckProblems: string[] | undefined;
+  /** The last start's steps, from its ready message. */
+  startupSteps: Array<[step: string, ms: number]> | undefined;
 
   constructor(
     private readonly options: {
@@ -130,6 +132,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       if (message.type === 'ready') {
         this.plugins = message.plugins;
         this.selfCheckProblems = message.selfCheck;
+        this.startupSteps = message.startup;
         this.setState({
           state: 'ready',
           connection: { apiUrl: `ws://127.0.0.1:${message.apiPort}/`, token: this.token },
