@@ -31,6 +31,8 @@ on:
       - 'scripts/pro-bytecode/**'
       - 'scripts/third-party-notices.mjs'
       - 'scripts/self-test-packaged.mjs'
+      - 'scripts/smoke-packaged.mjs'
+      - 'e2e/**'
       - 'scripts/notarize-dmg.cjs'
       - 'src/main/**'
   workflow_dispatch:
@@ -304,6 +306,18 @@ jobs:
             xvfb-run -a node scripts/self-test-packaged.mjs
           else
             node scripts/self-test-packaged.mjs
+          fi
+
+      # Drives the packaged app for this runner's CPU end to end, with Pro in a Pro build:
+      # captures traffic, opens gzip and HTML bodies, kills the backend and checks the list
+      # and the Pro tab survive (e2e/smoke.test.ts). Same rule as above if it fails.
+      - name: Smoke test the packaged app
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a node scripts/smoke-packaged.mjs
+          else
+            node scripts/smoke-packaged.mjs
           fi
 
       - name: Keep the installers
