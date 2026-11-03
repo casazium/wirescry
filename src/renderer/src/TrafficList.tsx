@@ -35,6 +35,9 @@ interface Props {
 }
 
 /** The traffic list. Only rows in view are in the DOM, so it stays fast with thousands of rows. */
+/** Plugin badges shown on one row. */
+const MAX_BADGES = 3;
+
 export function TrafficList({
   rows,
   staleIds,
@@ -155,9 +158,11 @@ export function TrafficList({
                       Sent
                     </span>
                   )}
-                  {e.annotations?.map((a) => (
+                  {/* At most a few, so the path stays visible; each says what it means. */}
+                  {e.annotations?.slice(0, MAX_BADGES).map((a) => (
                     <span key={a.plugin} className={`rule-badge plugin-badge tone-${a.tone}`} title={a.title}>
                       {a.label}
+                      {a.title && <span className="visually-hidden">: {a.title}.</span>}
                     </span>
                   ))}
                   {e.handledBy && (

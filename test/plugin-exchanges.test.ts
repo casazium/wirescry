@@ -1,3 +1,5 @@
+import { PassThrough } from 'node:stream';
+import * as mockttpModule from 'mockttp';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
@@ -5,10 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { getLocal, type Mockttp } from 'mockttp';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
-import { validateAnnotation } from '../src/backend/plugin-host';
+import { PluginHost, validateAnnotation } from '../src/backend/plugin-host';
 import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import type { ExchangeSummary } from '../src/shared/api';
@@ -59,8 +61,104 @@ describe('validateAnnotation', () => {
     [{ label: 'Spec', tone: 'ok', title: 'x'.repeat(201) }, 'at most 200'],
     [{ label: 'Spec', tone: 'ok', title: 'a\u0007b' }, 'at most 200'],
     [{ label: 'Spec', tone: 'ok', title: 5 }, 'at most 200'],
+    // Characters that could disguise the path beside the badge.
+    [{ label: '\u202eSpec', tone: 'ok' }, '1 to 16'],
+    [{ label: '\u200b', tone: 'ok' }, '1 to 16'],
+    [{ label: 'Spec\u2028', tone: 'ok' }, '1 to 16'],
+    [{ label: 'Spec\u0085', tone: 'ok' }, '1 to 16'],
+    [{ label: 'Spec', tone: 'ok', title: 'ok\u2066hidden' }, 'at most 200'],
+    [{ label: 'Spec', tone: 'ok', title: 'a\u2029b' }, 'at most 200'],
   ])('refuses %j', (annotation, message) => {
     expect(() => validateAnnotation(annotation)).toThrow(message);
+  });
+});
+
+describe('validateAnnotation and getters', () => {
+  it('reads each field once, so a getter can’t change its answer after the check', () => {
+    let reads = 0;
+    const sneaky = {
+      get label() {
+        reads += 1;
+        return reads === 1 ? 'Spec' : '\u202eevil';
+      },
+      tone: 'ok',
+    };
+    expect(validateAnnotation(sneaky)).toEqual({ label: 'Spec', tone: 'ok' });
+    expect(reads).toBe(1);
+  });
+});
+
+describe('PluginHost and a plugin’s lifetime', () => {
+  const host = (plugin: BackendPlugin) =>
+    new PluginHost({
+      plugins: [plugin],
+      enabled: true,
+      disabledReason: 'off',
+      dataDir: os.tmpdir(),
+      app: { version: '1', releaseDate: new Date().toISOString() },
+      refreshRules: async () => undefined,
+      passThroughStep: () => ({}) as never,
+      emit: () => undefined,
+      onStatusChange: () => undefined,
+      getExchange: () => ({ summary: summary, requestHeaders: [], timing: {} }) as never,
+      getBody: async () => ({ base64: '', size: 0, truncated: false }),
+      annotate: (...args) => annotated.push(args),
+      clearAnnotations: () => undefined,
+    });
+  const summary = {
+    id: 'x',
+    method: 'GET',
+    protocol: 'http',
+    httpVersion: '1.1',
+    host: 'a',
+    path: '/',
+    url: 'http://a/',
+    startedAt: 0,
+  };
+  let annotated: unknown[][] = [];
+  beforeEach(() => {
+    annotated = [];
+  });
+
+  it('isn’t told about exchanges until it has started, nor after it has stopped', async () => {
+    const plugin = watcher();
+    let finishStart: () => void = () => undefined;
+    plugin.start = (h) => {
+      plugin.host = h;
+      return new Promise<void>((resolve) => (finishStart = resolve));
+    };
+    const pluginHost = host(plugin);
+    const starting = pluginHost.startAll();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    pluginHost.exchangeCompleted(summary);
+    expect(plugin.completed).toEqual([]);
+    finishStart();
+    await starting;
+    pluginHost.exchangeCompleted(summary);
+    expect(plugin.completed).toHaveLength(1);
+
+    await pluginHost.stopAll();
+    pluginHost.exchangeCompleted(summary);
+    expect(plugin.completed).toHaveLength(1);
+    // Nor can it read or badge anything once stopped.
+    expect(plugin.host!.getExchange('x')).toBeUndefined();
+    expect(await plugin.host!.getBody('x', 'response')).toBeNull();
+    plugin.host!.annotate('x', { label: 'Late', tone: 'ok' });
+    expect(annotated).toEqual([]);
+    expect(pluginHost.statuses()[0]).toMatchObject({ active: false, reason: 'Stopped.' });
+  });
+
+  it('logs only the first few of a plugin’s repeated errors', async () => {
+    const plugin = watcher();
+    plugin.exchangeCompleted = () => {
+      throw new Error('again');
+    };
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const pluginHost = host(plugin);
+    await pluginHost.startAll();
+    for (let i = 0; i < 50; i++) pluginHost.exchangeCompleted(summary);
+    expect(errors.mock.calls.filter(([m]) => String(m).includes('exchangeCompleted'))).toHaveLength(5);
+    errors.mockRestore();
   });
 });
 
@@ -132,6 +230,76 @@ describe('plugins and finished exchanges', () => {
       .toEqual(['/empty', '/gone']);
     expect(plugin.completed.find((e) => e.path === '/empty')?.status).toBe(204);
     expect(plugin.completed.find((e) => e.path === '/gone')?.failure).toBeDefined();
+  });
+
+  it('tells it at once about a response with no body', async () => {
+    const plugin = watcher();
+    const b = await start([plugin]);
+    const sent = Date.now();
+    await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/empty`);
+    await expect.poll(() => plugin.completed.length).toBe(1);
+    // Not after the 10 s wait for a body that never comes.
+    expect(Date.now() - sent).toBeLessThan(3000);
+  });
+
+  it('tells it once about a mocked response and a composed request, and not while paused', async () => {
+    const plugin = watcher();
+    plugin.start = async (host) => {
+      plugin.host = host;
+      await host.setProxyRules([
+        {
+          id: 'mock',
+          label: 'Mock',
+          matchers: [new mockttpModule.matchers.HostnameMatcher('mocked.test')],
+          steps: [new mockttpModule.requestSteps.FixedResponseStep(418, undefined, 'tea')],
+        },
+      ]);
+    };
+    const b = await start([plugin]);
+    const api = await apiClient(b.apiPort);
+    await httpViaProxy(b.proxyPort, 'http://mocked.test/brew');
+    const { exchangeId } = await api.send<{ exchangeId: string }>({
+      command: 'composeSend',
+      request: { method: 'POST', url: `http://localhost:${upstream.port}/echo`, headers: [], body: 'hi' },
+    });
+    await expect.poll(() => plugin.completed.map((e) => e.path).sort()).toEqual(['/brew', '/echo']);
+    expect(plugin.completed.find((e) => e.id === exchangeId)?.composed).toBe(true);
+    expect(plugin.completed.find((e) => e.path === '/brew')?.status).toBe(418);
+
+    await api.send({ command: 'setPaused', paused: true });
+    await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json?paused=1`);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(plugin.completed.some((e) => e.path.includes('paused'))).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(plugin.completed).toHaveLength(2);
+    api.close();
+  });
+
+  it('tells it once about a response the client cut off, with what arrived', async () => {
+    const plugin = watcher();
+    const b = await start([plugin]);
+    const stalling = new PassThrough();
+    stalling.write('first part ');
+    await upstream.forGet('/stalls').thenStream(200, stalling, { 'content-type': 'text/plain' });
+    const req = http.request({
+      host: '127.0.0.1',
+      port: b.proxyPort,
+      path: `http://localhost:${upstream.port}/stalls`,
+    });
+    req.on('error', () => undefined);
+    req.on('response', (res) => res.once('data', () => req.destroy()));
+    req.end();
+    try {
+      await expect.poll(() => plugin.completed.length, { timeout: 12_000 }).toBe(1);
+      expect(plugin.completed[0]).toMatchObject({
+        status: 200,
+        failure: { kind: 'client-closed', partial: true },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(plugin.completed).toHaveLength(1);
+    } finally {
+      stalling.destroy();
+    }
   });
 
   it('tells it about exchanges imported from a HAR file', async () => {

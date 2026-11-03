@@ -147,11 +147,27 @@ describe('Plugin sections in the detail pane', () => {
     expect(screen.getByText('Request headers')).toBeTruthy();
   });
 
+  it('shows a section once its badge arrives, while the exchange is open', async () => {
+    await started(true, [plain]);
+    await open('/plain');
+    expect(screen.queryByText('API spec')).toBeNull();
+    await act(async () =>
+      client().onMessage({
+        type: 'exchanges',
+        exchanges: [{ ...plain, annotations: [{ plugin: 'pro', label: 'Spec', tone: 'ok' }] }],
+        removed: [],
+      } as ServerMessage),
+    );
+    await act(async () => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))));
+    expect(screen.getByText('API spec')).toBeTruthy();
+    expect(screen.getByText('Spec result for /plain')).toBeTruthy();
+  });
+
   it('shows no sections while the plugin isn’t running', async () => {
     await started(false);
     await open('/users/1');
     expect(screen.queryByText('API spec')).toBeNull();
     // The badge from before is still in the list.
-    expect(screen.getByText('Spec')).toBeTruthy();
+    expect(document.querySelector('.plugin-badge')?.textContent).toBe('Spec');
   });
 });

@@ -63,7 +63,10 @@ describe('TrafficList', () => {
 });
 
 describe('TrafficList plugin badges', () => {
-  it('shows each plugin’s badge with its tone and title', () => {
+  const badge = (label: string) =>
+    [...document.querySelectorAll('.plugin-badge')].find((b) => b.firstChild?.textContent === label)!;
+
+  it('shows each plugin’s badge with its tone, and its title to the mouse and to screen readers', () => {
     list({
       rows: [
         summary('a', {
@@ -75,12 +78,31 @@ describe('TrafficList plugin badges', () => {
         summary('b'),
       ],
     });
-    const [first, second] = screen.getAllByTestId('exchange-row');
-    const spec = screen.getByText('Spec');
+    const [, second] = screen.getAllByTestId('exchange-row');
+    const spec = badge('Spec');
     expect(spec.className).toContain('tone-warn');
     expect(spec.getAttribute('title')).toBe('Response 200 is missing "email"');
-    expect(screen.getByText('Seen').className).toContain('tone-info');
-    expect(first!.textContent).toContain('Spec');
+    expect(spec.querySelector('.visually-hidden')!.textContent).toBe(': Response 200 is missing "email".');
+    // No title: no tooltip, and nothing extra read out.
+    const seen = badge('Seen');
+    expect(seen.className).toContain('tone-info');
+    expect(seen.hasAttribute('title')).toBe(false);
+    expect(seen.querySelector('.visually-hidden')).toBeNull();
     expect(second!.querySelector('.plugin-badge')).toBeNull();
+  });
+
+  it('shows at most three badges on a row, so the path stays visible', () => {
+    list({
+      rows: [
+        summary('a', {
+          annotations: ['p1', 'p2', 'p3', 'p4', 'p5'].map((plugin) => ({
+            plugin,
+            label: plugin,
+            tone: 'ok' as const,
+          })),
+        }),
+      ],
+    });
+    expect(document.querySelectorAll('.plugin-badge')).toHaveLength(3);
   });
 });

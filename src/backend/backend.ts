@@ -105,6 +105,9 @@ export interface RunningBackend {
 }
 
 /** Starts the proxy and the local API. Runs without Electron, so tests can use it directly. */
+/** How long a finished exchange's body may take to be stored before plugins are told anyway. */
+const COMPLETION_GRACE_MS = 10_000;
+
 export async function startBackend(options: BackendOptions): Promise<RunningBackend> {
   const { dataDir } = options;
   const step = options.onStartupStep ?? (() => undefined);
@@ -210,7 +213,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   /** Tells plugins once that an exchange has finished: its response (body included) recorded, or failed. */
   const noteCompleted = (summary: ExchangeSummary): void => {
     if (summary.websocket || completed.has(summary.id)) return;
-    const finished = summary.failure !== undefined || summary.durationMs !== undefined;
+    const finished =
+      summary.failure !== undefined ||
+      summary.durationMs !== undefined ||
+      (summary.status !== undefined && summary.responseSize !== undefined);
     if (!finished) return;
     const tell = (latest: ExchangeSummary): void => {
       clearTimeout(completionTimers.get(latest.id));
@@ -218,14 +224,16 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       completed.add(latest.id);
       pluginHost.exchangeCompleted(latest);
     };
-    // The body is stored just after the response; wait for it, but not for ever.
-    if (summary.failure !== undefined || summary.responseSize !== undefined || summary.imported) {
+    // The body is stored just after the response (or the part that came, if it broke off):
+    // wait for it, but not for ever. A failure before any response has no body to wait for.
+    const noBodyComing = summary.failure !== undefined && summary.status === undefined;
+    if (summary.responseSize !== undefined || summary.imported || noBodyComing) {
       tell(summary);
     } else if (!completionTimers.has(summary.id)) {
       const timer = setTimeout(() => {
         const latest = store.get(summary.id)?.summary;
         if (latest && !completed.has(latest.id)) tell(latest);
-      }, 2000);
+      }, COMPLETION_GRACE_MS);
       timer.unref?.();
       completionTimers.set(summary.id, timer);
     }
@@ -668,6 +676,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     importHar,
     async stop() {
       composer.close();
+      for (const timer of completionTimers.values()) clearTimeout(timer);
+      completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
       await Promise.all([api.stop(), proxy.stop(), formatter.close()]);

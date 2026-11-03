@@ -119,8 +119,11 @@ export interface BackendPlugin {
   handle(name: string, args: unknown): Promise<unknown>;
   /**
    * Called once for each HTTP exchange when it has finished: its response recorded (body
-   * included), or failed. Not for WebSockets. Includes exchanges imported from HAR files.
-   * Don't block: do slow work asynchronously. Errors are logged and otherwise ignored.
+   * included), or failed. Not for WebSockets, and not while the plugin is still starting.
+   * Includes exchanges imported from HAR files, which can be thousands at once: don't block,
+   * do slow work asynchronously, and read only a few bodies at a time. If a body takes over
+   * 10 s to be stored, this is called without it (getBody returns null). Errors are logged
+   * and otherwise ignored.
    */
   exchangeCompleted?(exchange: ExchangeSummary): void;
   stop?(): Promise<void> | void;
