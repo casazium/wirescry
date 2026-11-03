@@ -39,6 +39,14 @@ describe('backend', () => {
         'content-encoding': encoding,
       });
     }
+    // Says it's gzip, but isn't.
+    await upstream.forGet('/corrupt-gzip').thenReply(200, Buffer.from('definitely not gzip'), {
+      'content-type': 'application/json',
+      'content-encoding': 'gzip',
+    });
+    await upstream.forGet('/odd-encoding').thenReply(200, Buffer.from('raw bytes'), {
+      'content-encoding': 'x-made-up',
+    });
     await upstream
       .forGet('/large')
       .thenReply(200, Buffer.alloc(200 * 1024, 'x'), { 'content-type': 'text/plain' });
@@ -204,8 +212,67 @@ describe('backend', () => {
     api.close();
   });
 
+  it('shows the stored bytes, and why, for a body that can’t be decoded, and keeps working', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    for (const [route, expected, error] of [
+      ['/corrupt-gzip', 'definitely not gzip', /Couldn't decode gzip/],
+      ['/odd-encoding', 'raw bytes', /Unsupported encoding: x-made-up/],
+    ] as const) {
+      await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}${route}`, ca);
+      const id = await api.completed(route);
+      const body = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'response' });
+      expect(body.decodeError).toMatch(error);
+      expect(Buffer.from(body.base64, 'base64').toString()).toBe(expected);
+    }
+    // The backend is still serving.
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/hello?after=corrupt`, ca);
+    await api.completed('/hello?after=corrupt');
+    api.close();
+  });
+
+  it('survives bad API messages: ignores junk, answers unknown commands with an error', async () => {
+    const api = await apiClient(backend.apiPort);
+    const raw = connectApi(backend.apiPort, { token: TOKEN, origin: UI_ORIGIN });
+    await new Promise((resolve) => raw.once('open', resolve));
+    const replies: unknown[] = [];
+    raw.on('message', (data) => {
+      const message = JSON.parse(data.toString()) as ServerMessage;
+      if (message.type === 'result') replies.push(message);
+    });
+    raw.send('this is not JSON');
+    raw.send(JSON.stringify({ command: 'getStatus' })); // No id: nothing to answer.
+    raw.send(JSON.stringify(null));
+    raw.send(JSON.stringify({ id: 7, command: 'noSuchCommand' }));
+    await expect
+      .poll(() => replies)
+      .toEqual([{ type: 'result', id: 7, ok: false, error: 'Unknown command' }]);
+    await expect(api.send({ command: 'getExchange', exchangeId: 'no-such-id' })).rejects.toThrow(
+      'Exchange not found',
+    );
+    raw.close();
+    api.close();
+  });
+
+  it('closes only the connection that sends an oversized message', async () => {
+    const api = await apiClient(backend.apiPort);
+    const big = connectApi(backend.apiPort, { token: TOKEN, origin: UI_ORIGIN });
+    await new Promise((resolve) => big.once('open', resolve));
+    const closed = new Promise<number>((resolve) => big.once('close', (code) => resolve(code)));
+    big.on('error', () => undefined);
+    big.send(JSON.stringify({ id: 1, command: 'getStatus', pad: 'x'.repeat(1100 * 1024) }));
+    // Cut off: 1009 (message too big), or 1006 since the server terminates the socket.
+    expect([1006, 1009]).toContain(await closed);
+    // Others carry on: this connection still gets answers.
+    await expect(api.send({ command: 'getExchange', exchangeId: 'no-such-id' })).rejects.toThrow(
+      'Exchange not found',
+    );
+    api.close();
+  });
+
   it('rejects API connections without the right token', async () => {
     expect(await rejectedStatus(connectApi(backend.apiPort, { origin: UI_ORIGIN }))).toBe(401);
+    expect(await rejectedStatus(connectApi(backend.apiPort))).toBe(401);
     expect(await rejectedStatus(connectApi(backend.apiPort, { token: 'wrong', origin: UI_ORIGIN }))).toBe(
       401,
     );

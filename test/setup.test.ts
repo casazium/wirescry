@@ -133,7 +133,11 @@ describe('setup', () => {
     expect(backend.proxyPort).toBe(port);
     expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
 
-    await expect(api.send({ command: 'setProxyPort', port: 80 })).rejects.toThrow('1024 to 65535');
+    for (const port of [80, 1023, 65536, 8080.5, '8080', -1]) {
+      await expect(api.send({ command: 'setProxyPort', port: port as number }), String(port)).rejects.toThrow(
+        '1024 to 65535',
+      );
+    }
 
     await api.send({ command: 'setProxyPort', port: null });
     expect(await loadSettings(dataDir)).toEqual({});

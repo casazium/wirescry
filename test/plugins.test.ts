@@ -42,6 +42,7 @@ describe('plugin host', () => {
     plugins: BackendPlugin[],
     pluginsEnabled = true,
     pluginStartTimeoutMs?: number,
+    pluginCallTimeoutMs?: number,
   ): Promise<RunningBackend> => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-plugin-test-'));
     backend = await startBackend({
@@ -51,6 +52,7 @@ describe('plugin host', () => {
       plugins,
       pluginsEnabled,
       pluginStartTimeoutMs,
+      pluginCallTimeoutMs,
     });
     return backend;
   };
@@ -59,6 +61,23 @@ describe('plugin host', () => {
     await backend?.stop();
     backend = undefined;
     await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('gives up on a call the plugin never answers, and keeps answering others', async () => {
+    const plugin = fakePlugin();
+    plugin.handle = async (callName, args) => {
+      if (callName === 'hang') return new Promise(() => undefined);
+      return { callName, args };
+    };
+    const running = await start([plugin], true, undefined, 200);
+    const api = await apiClient(running.apiPort);
+    await expect(api.send({ command: 'plugin', plugin: 'fake', name: 'hang' })).rejects.toThrow(
+      'fake took too long to answer hang.',
+    );
+    await expect(api.send({ command: 'plugin', plugin: 'fake', name: 'ping' })).resolves.toEqual({
+      callName: 'ping',
+    });
+    api.close();
   });
 
   /** The latest status the backend has pushed, waiting for the first one if needed. */

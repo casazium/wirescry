@@ -12,17 +12,37 @@ export function registerAppSchemeAsPrivileged(): void {
   ]);
 }
 
+/**
+ * The file a wirescry:// request asks for, inside `root`, or the status to refuse it with:
+ * 404 for another host, 400 for a malformed path, 403 for anything outside `root`.
+ */
+export function resolveAppFile(root: string, requestUrl: string): { file: string } | { status: number } {
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    return { status: 400 };
+  }
+  if (url.host !== 'app') return { status: 404 };
+  let relative: string;
+  try {
+    relative = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
+  } catch {
+    return { status: 400 };
+  }
+  if (relative.includes('\0')) return { status: 400 };
+  const file = path.resolve(root, `.${relative}`);
+  if (file === root || !file.startsWith(root + path.sep)) return { status: 403 };
+  return { file };
+}
+
 /** Serves files from `rootDir`, refusing anything outside it. Call after app is ready. */
 export function handleAppProtocol(rootDir: string, csp: string): void {
   const root = path.resolve(rootDir);
   protocol.handle(APP_SCHEME, async (request) => {
-    const url = new URL(request.url);
-    if (url.host !== 'app') return new Response(null, { status: 404 });
-    const relative = decodeURIComponent(url.pathname === '/' ? '/index.html' : url.pathname);
-    const file = path.resolve(root, `.${relative}`);
-    if (file !== root && !file.startsWith(root + path.sep)) {
-      return new Response(null, { status: 403 });
-    }
+    const resolved = resolveAppFile(root, request.url);
+    if ('status' in resolved) return new Response(null, { status: resolved.status });
+    const file = resolved.file;
     const response = await net.fetch(pathToFileURL(file).toString());
     const headers = new Headers(response.headers);
     headers.set('Content-Security-Policy', csp);

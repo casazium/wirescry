@@ -64,6 +64,8 @@ export interface BackendOptions {
   pluginsEnabled?: boolean;
   /** How long a plugin may take to start. */
   pluginStartTimeoutMs?: number;
+  /** How long one plugin call from the UI may take (default 2 minutes). */
+  pluginCallTimeoutMs?: number;
   /** Encrypts plugins' secure stores; leave out where the OS has no keychain to use. */
   encryptor?: Encryptor;
   /** This Wirescry's version and build date, for plugins. Defaults suit tests. */
@@ -172,6 +174,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     emit: (plugin, event, data) => broadcast({ type: 'plugin', plugin, event, data }),
     onStatusChange: () => broadcast({ type: 'status', status: status() }),
     startTimeoutMs: options.pluginStartTimeoutMs,
+    callTimeoutMs: options.pluginCallTimeoutMs,
   });
 
   const openProxy = (port: number | undefined): Promise<RunningProxy> =>

@@ -2,7 +2,17 @@ import { copyFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { format } from 'node:util';
-import { app, BrowserWindow, dialog, ipcMain, Menu, safeStorage, session, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  dialog,
+  ipcMain,
+  Menu,
+  safeStorage,
+  session,
+  shell,
+  type IpcMainInvokeEvent,
+} from 'electron';
 import { IPC, type BackendState, type ExportResult, type MenuState } from '../shared/ipc';
 import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './app-protocol';
 import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
@@ -10,6 +20,7 @@ import { FileLogger, type LogLevel } from './logger';
 import { buildMenu, updateMenu } from './menu';
 import { aboutDetail, ISSUES_URL, WEBSITE } from './about';
 import { checkMenuChoices, contextMenuItems } from './context-menu';
+import { guarded, isOnOrigin } from './ipc-guard';
 import { clearScratch, exportHar, importHar, saveBody } from './har-files';
 import { openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
@@ -108,15 +119,13 @@ const backend = new BackendSupervisor({
 logger.addSecret(backend.token);
 const updater = new Updater(logger, () => mainWindow);
 
-function isFromOurUi(url: string): boolean {
-  try {
-    // Not URL.origin: Node returns "null" for custom schemes like wirescry://.
-    const { protocol, host } = new URL(url);
-    return `${protocol}//${host}` === uiOrigin;
-  } catch {
-    return false;
-  }
-}
+const isFromOurUi = (url: string): boolean => isOnOrigin(url, uiOrigin);
+/** Registers an IPC handler that only Wirescry's own UI can call. */
+const handle = <A extends unknown[], R>(
+  channel: string,
+  handler: (event: IpcMainInvokeEvent, ...args: A) => R,
+): void =>
+  ipcMain.handle(channel, guarded(uiOrigin, handler) as (event: IpcMainInvokeEvent, ...args: unknown[]) => R);
 
 /** About Wirescry: in the app menu on macOS, under Help on Windows and Linux. */
 async function showAbout(): Promise<void> {
@@ -289,12 +298,10 @@ app.whenReady().then(() => {
     handleAppProtocol(path.join(__dirname, '../renderer'), CSP);
   }
 
-  ipcMain.handle(IPC.getBackendState, (event): BackendState => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.getBackendState, (): BackendState => {
     return backend.state;
   });
-  ipcMain.handle(IPC.exportCertificate, async (event): Promise<ExportResult> => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.exportCertificate, async (): Promise<ExportResult> => {
     const options = {
       title: 'Save Wirescry certificate',
       defaultPath: path.join(app.getPath('downloads'), 'Wirescry CA.pem'),
@@ -308,39 +315,31 @@ app.whenReady().then(() => {
     await copyFile(path.join(app.getPath('userData'), 'ca.pem'), result.filePath);
     return { path: result.filePath };
   });
-  ipcMain.handle(IPC.saveTextFile, (event, request: unknown) => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.saveTextFile, (_event, request: unknown) => {
     return saveTextFile(mainWindow, request);
   });
-  ipcMain.handle(IPC.exportHar, (event, request: unknown) => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.exportHar, (_event, request: unknown) => {
     return exportHar(mainWindow, backend, request);
   });
-  ipcMain.handle(IPC.importHar, (event) => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.importHar, () => {
     return importHar(mainWindow, backend);
   });
-  ipcMain.handle(IPC.openTextFile, (event, request: unknown) => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.openTextFile, (_event, request: unknown) => {
     return openTextFile(mainWindow, request);
   });
-  ipcMain.handle(IPC.saveBody, (event, request: unknown) => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.saveBody, (_event, request: unknown) => {
     return saveBody(mainWindow, backend, request);
   });
-  ipcMain.handle(IPC.restartBackend, (event) => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.restartBackend, () => {
     backend.restart();
   });
-  ipcMain.handle(IPC.showLog, (event) => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.showLog, () => {
     // So the file has the latest lines, e.g. about a crash.
     logger.flush();
     shell.showItemInFolder(logger.file);
   });
   // A menu the UI builds, such as the one on a traffic row. Resolves with the chosen id.
-  ipcMain.handle(IPC.showMenu, (event, request: unknown) => {
-    if (!isFromOurUi(event.senderFrame?.url ?? '')) throw new Error('Not allowed');
+  handle(IPC.showMenu, (_event, request: unknown) => {
     const choices = checkMenuChoices(request);
     return new Promise<string | undefined>((resolve) => {
       const menu = Menu.buildFromTemplate(

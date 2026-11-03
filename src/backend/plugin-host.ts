@@ -29,6 +29,8 @@ export interface PluginHostOptions {
   /** Called when a plugin's status changes. */
   onStatusChange(): void;
   startTimeoutMs?: number;
+  /** How long one call from the UI may take; a plugin that never answers mustn't hang the UI. */
+  callTimeoutMs?: number;
 }
 
 type State = { state: 'starting' } | { state: 'running' } | { state: 'failed'; reason: string };
@@ -143,7 +145,21 @@ export class PluginHost {
     const state = this.states.get(plugin)!;
     if (state.state === 'failed') throw new Error(state.reason);
     if (state.state === 'starting') throw new Error(`${name} is still starting.`);
-    return plugin.handle(callName, args);
+    const timeoutMs = this.options.callTimeoutMs ?? 120_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        plugin.handle(callName, args),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error(`${name} took too long to answer ${callName}.`)),
+            timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async stopAll(): Promise<void> {
