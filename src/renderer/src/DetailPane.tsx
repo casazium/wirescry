@@ -109,6 +109,8 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
 
   const requestSize = detail?.requestBody?.size;
   const responseSize = detail?.responseBody?.size;
+  // The server never answered, so the response shown is the error reply Wirescry sent.
+  const byWirescry = !!summary.failure && !summary.failure.partial && summary.status !== undefined;
 
   // Loaded bodies, keyed by exchange, side and size so a changed body is fetched again.
   const bodyKey = (side: BodySide, size: number | undefined): string => `${summary.id}:${side}:${size}`;
@@ -274,6 +276,7 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
             <dt>Protocol</dt>
             <dd>
               {summary.protocol.toUpperCase()}, HTTP/{summary.httpVersion}
+              {byWirescry && ', between the client and Wirescry'}
             </dd>
             <dt>Request body</dt>
             <dd>{requestSize !== undefined ? formatBytes(requestSize) : '–'}</dd>
@@ -335,13 +338,13 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
         )}
         {detail?.responseHeaders && (
           <details open>
-            <summary>Response headers</summary>
+            <summary>Response headers{byWirescry && ' (sent by Wirescry)'}</summary>
             <HeaderTable headers={detail.responseHeaders} />
           </details>
         )}
         {!!responseSize && (
           <details open>
-            <summary>Response body</summary>
+            <summary>Response body{byWirescry && ' (sent by Wirescry)'}</summary>
             <Body
               state={responseBody}
               info={detail?.responseBody}

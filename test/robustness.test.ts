@@ -210,6 +210,16 @@ describe('describeFailure', () => {
     );
   });
 
+  it('keeps error text only when it says more than the code', () => {
+    // Node's error when every address of a host failed is a bare "AggregateError".
+    expect(describeFailure('ETIMEDOUT', 'a.example', 'AggregateError').detail).toBeUndefined();
+    expect(describeFailure('ECONNRESET', 'a.example', ' ECONNRESET ').detail).toBeUndefined();
+    expect(describeFailure('ECONNRESET', 'a.example', '').detail).toBeUndefined();
+    expect(describeFailure('EPROTO', 'a.example', 'wrong version number').detail).toBe(
+      'wrong version number',
+    );
+  });
+
   it('reads the error code from Mockttp tags', () => {
     expect(upstreamErrorCode(['x', 'passthrough-error:ENOTFOUND'])).toBe('ENOTFOUND');
     expect(upstreamErrorCode(['x'])).toBeUndefined();

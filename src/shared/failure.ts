@@ -43,7 +43,12 @@ const TLS_EXPLANATIONS: Record<string, string> = {
  * `target` is the host (and port) the proxy tried to reach.
  */
 export function describeFailure(code: string, target: string, detail?: string): ExchangeFailure {
-  const make = (kind: FailureKind, message: string): ExchangeFailure => ({ kind, code, message, detail });
+  const make = (kind: FailureKind, message: string): ExchangeFailure => ({
+    kind,
+    code,
+    message,
+    detail: usefulDetail(detail, code),
+  });
   switch (code) {
     case 'ENOTFOUND':
       return make('dns', `Couldn't find ${target}: the DNS lookup found no such host.`);
@@ -72,6 +77,16 @@ export function describeFailure(code: string, target: string, detail?: string): 
     return make('tls', `TLS failed with ${target}.`);
   }
   return make('other', `The request to ${target} failed (${code}).`);
+}
+
+/**
+ * Drops error text that says nothing more than the code, e.g. a bare "AggregateError"
+ * (Node's error when every address of a host failed) or the code itself.
+ */
+function usefulDetail(detail: string | undefined, code: string): string | undefined {
+  const text = detail?.trim();
+  if (!text || text === code || /^[A-Za-z]*Error$/.test(text)) return undefined;
+  return text;
 }
 
 /** For a response that started arriving and then broke off. */

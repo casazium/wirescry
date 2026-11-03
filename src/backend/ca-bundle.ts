@@ -1,7 +1,14 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import tls from 'node:tls';
-import { curlrcContent, JAVA_TRUST_STORE_PASSWORD, phpIniContent } from '../shared/terminal-env';
+import {
+  curlrcContent,
+  JAVA_TRUST_STORE_PASSWORD,
+  phpIniContent,
+  SHELL_SCRIPT_NAMES,
+  shellScript,
+  type ShellKind,
+} from '../shared/terminal-env';
 import { pemToDer, trustStoreJks } from './jks';
 
 export const CA_BUNDLE_FILE = 'ca-bundle.pem';
@@ -49,4 +56,23 @@ export async function writeTerminalConfig(dir: string, caCert: string): Promise<
   const javaTrustStore = path.join(javaDir, 'wirescry-truststore.jks');
   await writeFile(javaTrustStore, trustStoreJks(pemToDer(pem), JAVA_TRUST_STORE_PASSWORD));
   return { bundlePath, phpIniDir, curlHome, javaTrustStore };
+}
+
+/**
+ * Writes a script per shell that sets `env`, so an open terminal can be set up with one
+ * line. Returns each script's path.
+ */
+export async function writeShellScripts(
+  dir: string,
+  env: Record<string, string>,
+): Promise<Record<ShellKind, string>> {
+  const scriptDir = path.join(dir, 'terminal-config', 'env');
+  await mkdir(scriptDir, { recursive: true });
+  const paths = {} as Record<ShellKind, string>;
+  for (const shell of Object.keys(SHELL_SCRIPT_NAMES) as ShellKind[]) {
+    const file = path.join(scriptDir, SHELL_SCRIPT_NAMES[shell]);
+    await writeFile(file, shellScript(env, shell), { mode: 0o644 });
+    paths[shell] = file;
+  }
+  return paths;
 }

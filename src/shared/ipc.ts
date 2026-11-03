@@ -116,6 +116,7 @@ export const IPC = {
   exportCertificate: 'wirescry:export-certificate',
   saveTextFile: 'wirescry:save-text-file',
   openTextFile: 'wirescry:open-text-file',
+  chooseFilePath: 'wirescry:choose-file-path',
   exportHar: 'wirescry:export-har',
   importHar: 'wirescry:import-har',
   showMenu: 'wirescry:show-menu',
@@ -177,6 +178,16 @@ export interface OpenTextFileResult {
   text?: string;
 }
 
+export interface ChooseFilePathRequest {
+  /** Limits the dialog to these extensions; any file if left out. */
+  extensions?: string[];
+}
+
+/** The chosen file's full path, or nothing if the user canceled. */
+export interface ChooseFilePathResult {
+  path?: string;
+}
+
 /** Where the certificate was saved, or undefined if the user canceled. */
 export interface ExportResult {
   path?: string;
@@ -193,6 +204,8 @@ export interface WirescryBridge {
   saveTextFile(request: SaveTextFileRequest): Promise<SaveTextFileResult>;
   /** Asks the user to pick a text file and returns it. */
   openTextFile(request: OpenTextFileRequest): Promise<OpenTextFileResult>;
+  /** Asks the user to pick a file and returns its full path, without reading it. */
+  chooseFilePath(request: ChooseFilePathRequest): Promise<ChooseFilePathResult>;
   /** Asks where to save, then writes these exchanges (in this order) as a HAR file. */
   exportHar(exchangeIds: string[]): Promise<HarExportResult>;
   /** Asks the user to pick a HAR file, then adds its exchanges to the traffic list. */

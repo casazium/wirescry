@@ -2,6 +2,7 @@ import { act, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ExchangeDetail } from '../../src/shared/api';
 import { DetailPane } from '../../src/renderer/src/DetailPane';
+import { describeFailure } from '../../src/shared/failure';
 import { deferred, detail, summary } from './fixtures';
 
 const pane = (
@@ -75,5 +76,36 @@ describe('DetailPane', () => {
     expect(screen.getByText('2')).toBeTruthy();
     screen.getByText('Mock…').click();
     expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('labels the reply Wirescry sent when the server never answered', async () => {
+    const failed = summary('f', {
+      status: 502,
+      failure: describeFailure('ETIMEDOUT', 'api.test', 'AggregateError'),
+    });
+    const send = vi.fn((command: { command: string }) =>
+      command.command === 'getExchange' ? Promise.resolve(detail(failed, 'm')) : Promise.resolve(null),
+    );
+    await act(async () => {
+      render(pane({ summary: failed, send }));
+    });
+    expect(screen.getByText('Timed out connecting to api.test.')).toBeTruthy();
+    expect(screen.queryByText('AggregateError')).toBeNull();
+    expect(screen.getByText('Response headers (sent by Wirescry)')).toBeTruthy();
+    expect(screen.getByText(/between the client and Wirescry/)).toBeTruthy();
+  });
+
+  it('doesn’t label a partial response as Wirescry’s', async () => {
+    const partial = summary('p', {
+      status: 200,
+      failure: { ...describeFailure('ECONNRESET', 'api.test'), partial: true },
+    });
+    const send = vi.fn((command: { command: string }) =>
+      command.command === 'getExchange' ? Promise.resolve(detail(partial, 'm')) : Promise.resolve(null),
+    );
+    await act(async () => {
+      render(pane({ summary: partial, send }));
+    });
+    expect(screen.getByText('Response headers')).toBeTruthy();
   });
 });

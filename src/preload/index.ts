@@ -10,6 +10,7 @@ const api: WirescryBridge = {
   exportCertificate: () => ipcRenderer.invoke(IPC.exportCertificate),
   saveTextFile: (request) => ipcRenderer.invoke(IPC.saveTextFile, request),
   openTextFile: (request) => ipcRenderer.invoke(IPC.openTextFile, request),
+  chooseFilePath: (request) => ipcRenderer.invoke(IPC.chooseFilePath, request),
   exportHar: (exchangeIds) => ipcRenderer.invoke(IPC.exportHar, exchangeIds),
   importHar: () => ipcRenderer.invoke(IPC.importHar),
   showMenu: (choices) => ipcRenderer.invoke(IPC.showMenu, choices),

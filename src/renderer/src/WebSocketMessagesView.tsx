@@ -118,7 +118,11 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
-      {error && <p className="note error">{error}</p>}
+      {error && (
+        <p className="note error" role="alert">
+          {error}
+        </p>
+      )}
       {hidden > 0 && (
         <p className="note">
           {hidden.toLocaleString()} earlier {hidden === 1 ? 'message isn’t' : 'messages aren’t'} shown, to

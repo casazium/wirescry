@@ -22,7 +22,7 @@ import { aboutDetail, ISSUES_URL, WEBSITE } from './about';
 import { checkMenuChoices, contextMenuItems } from './context-menu';
 import { guarded, isOnOrigin } from './ipc-guard';
 import { clearScratch, exportHar, importHar, saveBody } from './har-files';
-import { openTextFile, saveTextFile } from './text-files';
+import { chooseFilePath, openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
 
 /**
@@ -326,6 +326,9 @@ app.whenReady().then(() => {
   });
   handle(IPC.openTextFile, (_event, request: unknown) => {
     return openTextFile(mainWindow, request);
+  });
+  handle(IPC.chooseFilePath, (_event, request: unknown) => {
+    return chooseFilePath(mainWindow, request);
   });
   handle(IPC.saveBody, (_event, request: unknown) => {
     return saveBody(mainWindow, backend, request);
