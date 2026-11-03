@@ -1,4 +1,5 @@
 import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { PassThrough } from 'node:stream';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
-import type { ProxyStatus, ServerMessage } from '../src/shared/api';
+import type { ExchangeDetail, ProxyStatus, ServerMessage } from '../src/shared/api';
 import { apiClient, httpViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
 /** A plugin that mocks one hostname, echoes calls and remembers its host. */
@@ -238,6 +239,59 @@ describe('plugin host', () => {
         .toMatchObject({ composed: true, handledBy: { ruleId: 'teapot' } });
     }
     api.close();
+  });
+
+  it('keeps the status and headers of a streaming mock the client cut off', async () => {
+    const stream = new PassThrough();
+    stream.write('mock part ');
+    const plugin: BackendPlugin = {
+      name: 'fake',
+      apiVersion: PLUGIN_API_VERSION,
+      async start(host) {
+        await host.setProxyRules([
+          {
+            id: 'stream',
+            label: 'Streaming mock',
+            matchers: [new mockttp.matchers.HostnameMatcher('stream.test')],
+            steps: [
+              new mockttp.requestSteps.StreamStep(207, stream, { 'content-type': 'text/event-stream' }),
+            ],
+          },
+        ]);
+      },
+      async handle() {
+        return undefined;
+      },
+    };
+    const b = await start([plugin]);
+    const api = await apiClient(b.apiPort);
+    const req = http.request({ host: '127.0.0.1', port: b.proxyPort, path: 'http://stream.test/events' });
+    req.on('error', () => undefined);
+    req.on('response', (res) => res.once('data', () => req.destroy()));
+    req.end();
+    try {
+      let id: string | undefined;
+      await expect
+        .poll(() => {
+          const e = api.messages
+            .flatMap((m) => (m.type === 'exchanges' ? m.exchanges : []))
+            .filter((x) => x.path === '/events' && x.failure)
+            .at(-1);
+          id = e?.id;
+          return e;
+        })
+        .toMatchObject({
+          status: 207,
+          contentType: 'text/event-stream',
+          handledBy: { ruleId: 'stream' },
+          failure: { kind: 'client-closed', partial: true },
+        });
+      const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: id! });
+      expect(detail.responseHeaders).toContainEqual(['content-type', 'text/event-stream']);
+    } finally {
+      stream.destroy();
+      api.close();
+    }
   });
 
   it('describes a request a rule closed without answering', async () => {
