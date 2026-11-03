@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { guarded, isOnOrigin } from '../src/main/ipc-guard';
@@ -36,13 +36,26 @@ describe('IPC guard', () => {
   });
 
   it('is used by every IPC handler in the main process', () => {
-    const source = readFileSync(path.join(import.meta.dirname, '../src/main/index.ts'), 'utf8');
-    // The one ipcMain.handle is inside the guarded `handle` helper.
-    expect(source.match(/ipcMain\.handle\(/g)).toHaveLength(1);
-    expect(source).toMatch(/ipcMain\.handle\(channel, guarded\(uiOrigin, handler\)/);
-    // Listeners (ipcMain.on) check the sender themselves.
-    for (const listener of source.split('ipcMain.on(').slice(1)) {
-      expect(listener.slice(0, 200)).toMatch(/isFromOurUi\(event\.senderFrame/);
+    const dir = path.join(import.meta.dirname, '../src/main');
+    const uses: string[] = [];
+    for (const file of readdirSync(dir).filter((f) => f.endsWith('.ts'))) {
+      const source = readFileSync(path.join(dir, file), 'utf8')
+        // Comments don't count, either way.
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/^\s*\/\/.*$/gm, '');
+      for (const match of source.matchAll(/ipcMain\.(handle|handleOnce|on|once)\b/g)) {
+        uses.push(`${file}: ${source.slice(match.index, match.index + 160)}`);
+      }
+    }
+    const handles = uses.filter((u) => /ipcMain\.(handle|handleOnce)\b/.test(u));
+    // The only one is inside the guarded `handle` helper in index.ts.
+    expect(handles).toHaveLength(1);
+    expect(handles[0]).toMatch(/^index\.ts: ipcMain\.handle\(channel, guarded\(uiOrigin, handler\)/);
+    // Listeners check the sender as their first statement.
+    const listeners = uses.filter((u) => /ipcMain\.(on|once)\b/.test(u));
+    expect(listeners.length).toBeGreaterThan(0);
+    for (const listener of listeners) {
+      expect(listener).toMatch(/=> \{\s*if \(!isFromOurUi\(event\.senderFrame\?\.url \?\? ''\)\) return;/);
     }
   });
 });
@@ -70,6 +83,15 @@ describe('wirescry:// files', () => {
       if ('file' in result) expect(result.file.startsWith(root + path.sep), url).toBe(true);
       else expect([400, 403], url).toContain(result.status);
     }
+    // The parser turns /%2e%2e/ into / before the check: harmless, it stays inside.
+    expect(ok('wirescry://app/%2e%2e/secret.txt')).toEqual({ file: path.join(root, 'secret.txt') });
+    // These survive the parser, so the folder check itself must refuse them.
+    expect(ok('wirescry://app/assets/..%2f..%2fsecret.txt')).toEqual({ status: 403 });
+    // A sibling whose name starts with the folder's: a startsWith check without the
+    // separator would let this through.
+    expect(ok('wirescry://app/..%2frenderer-evil%2fx.js')).toEqual({ status: 403 });
+    // The folder itself.
+    expect(ok('wirescry://app/assets/..%2f')).toEqual({ status: 403 });
   });
 
   it('refuses other hosts, malformed escapes and NUL bytes', () => {

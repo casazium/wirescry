@@ -62,7 +62,7 @@ describe('saving and opening text files', () => {
     chosen = path.join(dir, 'rules.json');
     const result = await saveTextFile(undefined, {
       text: '{}',
-      defaultName: '..\\..\\evil<>:|?.json',
+      defaultName: '..\\..\\ev\u0001il<>:|?\u007f.json',
       extensions: ['json'],
     });
     expect(dialogs[0]!.options.defaultPath).toBe(path.join('/Users/test/Downloads', 'evil.json'));
