@@ -1,6 +1,6 @@
 # Releasing Wirescry
 
-Releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) and published to the public [casazium/wirescry-releases](https://github.com/casazium/wirescry-releases) repo, which the app's updater reads. The source repo stays private.
+Releases are built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) and published to the public [casazium/wirescry-releases](https://github.com/casazium/wirescry-releases) repo, which the app's updater reads. The source is public at [casazium/wirescry](https://github.com/casazium/wirescry); Pro's stays private.
 
 ## Cutting a release
 
@@ -55,6 +55,14 @@ Write each release's notes in the draft release on `casazium/wirescry-releases`,
 ```
 
 One line per change, written for users: what they can now do or what was wrong, not how it was done. Mark Pro-only changes with **(Pro)** at the start of the line.
+
+End every release's notes with its source, replacing `vX.Y.Z` with the tag. The "Source code" files GitHub adds to each release are of `casazium/wirescry-releases` (only a README), not of Wirescry, and can't be removed, so this points people at the source the release was built from, as the AGPL expects:
+
+```markdown
+### Source code
+
+The open-source Wirescry app (AGPL-3.0) as built for this release: [vX.Y.Z source (zip)](https://github.com/casazium/wirescry/archive/refs/tags/vX.Y.Z.zip), [tar.gz](https://github.com/casazium/wirescry/archive/refs/tags/vX.Y.Z.tar.gz), or [browse it on GitHub](https://github.com/casazium/wirescry/tree/vX.Y.Z). The "Source code" files GitHub lists below are of this downloads page, not of Wirescry. Wirescry Pro, built into the app, is not open source.
+```
 
 ## Secrets and variables
 
