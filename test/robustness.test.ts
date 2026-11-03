@@ -157,6 +157,12 @@ describe('upstream failures and WebSockets', () => {
     req.destroy();
     const exchange = await failureFor(api, (e) => e.path === '/slow');
     expect(exchange.failure?.kind).toBe('client-closed');
+    // Nothing had arrived: not partial, and no status or body.
+    expect(exchange.failure?.partial).toBeFalsy();
+    expect(exchange.status).toBeUndefined();
+    const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: exchange.id });
+    expect(detail.responseHeaders).toBeUndefined();
+    expect(detail.responseBody?.size ?? 0).toBe(0);
     api.close();
   });
 

@@ -164,6 +164,21 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   // writes its error text after the real bytes; the value is that text, when known,
   // so it can be removed.
   const brokenMidBody = new Map<string, string | undefined>();
+  // Response heads as sent to the client, for every rule (pass-through or not). Only used
+  // to describe a response the client cut off: Mockttp's own 502 is sent this way too.
+  const sentHeads = new Map<string, ResponseHead>();
+
+  await server.on('response-initiated', (res) => {
+    if (!store.get(res.id)) return;
+    // Mockttp writes its own error reply to a connection that has already gone: not what
+    // the client got, and the abort handler has finished with this exchange.
+    if (res.timingEvents.abortedTimestamp !== undefined) return;
+    sentHeads.set(res.id, {
+      statusCode: res.statusCode,
+      statusMessage: res.statusMessage,
+      rawHeaders: res.rawHeaders,
+    });
+  });
 
   await server.on('rule-event', (event: mockttp.RuleEvent<PassthroughEventData>) => {
     const id = event.requestId;
@@ -294,6 +309,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     // HTTP/2 there are none, but a status other than 502 must have come from the server.
     const partial = errorCode !== undefined && (answered.has(res.id) || res.statusCode !== 502);
     answered.delete(res.id);
+    sentHeads.delete(res.id);
     if (partial && !brokenMidBody.has(res.id)) {
       // HTTP/2: the body may already be recorded as complete.
       brokenMidBody.set(res.id, undefined);
@@ -341,6 +357,8 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     upstreamErrors.delete(req.id);
     const head = answered.get(req.id);
     answered.delete(req.id);
+    const sent = sentHeads.get(req.id);
+    sentHeads.delete(req.id);
     // Whether the server's response had started. Rules other than pass-through send no
     // rule events, so fall back to the timing (unless the upstream failed, when the
     // headers may be Mockttp's 502). Mockttp also sets headersSentTimestamp just after
@@ -352,6 +370,8 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
         abortedTimestamp !== undefined &&
         headersSentTimestamp < abortedTimestamp);
     const clientLeftMidBody = partial && !upstream?.code;
+    // What the client got: the server's head, or a non-pass-through rule's (a streaming mock).
+    const shown = head ?? sent;
     finishBody(req.id, 'request', false);
     // When the client left mid-body, the last chunk is still to come, with Mockttp's
     // error text after it: the body-data handler stores it as incomplete, minus that text.
@@ -366,6 +386,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     setTimeout(() => {
       finishBody(req.id, 'response', false);
       brokenMidBody.delete(req.id);
+      sentHeads.delete(req.id);
     }, 5000).unref();
     update(req.id, (existing) => {
       const rule = handledBy(req.matchedRuleId) ?? existing.summary.handledBy;
@@ -386,17 +407,17 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
               : describeFailure(upstream.code, existing.summary.host, upstream.message),
           ...(clientLeftMidBody
             ? {
-                status: head?.statusCode ?? existing.summary.status,
-                statusMessage: head?.statusMessage ?? existing.summary.statusMessage,
-                contentType: head
-                  ? mediaType(rawHeader(head.rawHeaders, 'content-type'))
+                status: shown?.statusCode ?? existing.summary.status,
+                statusMessage: shown?.statusMessage ?? existing.summary.statusMessage,
+                contentType: shown
+                  ? mediaType(rawHeader(shown.rawHeaders, 'content-type'))
                   : existing.summary.contentType,
                 durationMs:
                   abortedTimestamp !== undefined ? Math.round(abortedTimestamp - startTimestamp) : undefined,
               }
             : {}),
         },
-        ...(clientLeftMidBody && head ? { responseHeaders: head.rawHeaders } : {}),
+        ...(clientLeftMidBody && shown ? { responseHeaders: shown.rawHeaders } : {}),
         timing: timingOf(req.timingEvents),
       };
     });
