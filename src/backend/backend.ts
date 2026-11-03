@@ -26,6 +26,7 @@ import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
 import { writeShellScripts, writeTerminalConfig, type TerminalConfig } from './ca-bundle';
 import { detectTerminals, launchTerminal } from './terminals';
+import { Composer } from './composer';
 import { terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
 import {
@@ -180,6 +181,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     callTimeoutMs: options.pluginCallTimeoutMs,
   });
 
+  // Declared before the proxy, which asks it about each request; `proxy` is set below.
+  const composer = new Composer({ proxyPort: () => proxy.port, caCert: () => ca.cert });
+
   const openProxy = (port: number | undefined): Promise<RunningProxy> =>
     startProxy({
       ca,
@@ -193,6 +197,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       describeRule: (ruleId) => pluginHost.describeRule(ruleId),
       ruleEndsWithoutResponse: (ruleId) => pluginHost.endsWithoutResponse(ruleId),
       isPaused: () => paused,
+      isComposed: (remotePort, remoteAddress, id) => composer.claim(remotePort, remoteAddress, id),
       onCATrusted: (userAgent) => {
         if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;
         firefoxTrusted = true;
@@ -452,6 +457,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         });
         return undefined;
       }
+      case 'composeSend':
+        return composer.send(command.request);
+      case 'composeCancel':
+        return composer.cancel(String(command.exchangeId));
       case 'rescanBrowsers':
         browsers = await detectBrowsers();
         broadcast({ type: 'status', status: status() });
@@ -585,6 +594,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     saveBody,
     importHar,
     async stop() {
+      composer.close();
       await pluginHost.stopAll();
       updates.reset();
       await Promise.all([api.stop(), proxy.stop(), formatter.close()]);

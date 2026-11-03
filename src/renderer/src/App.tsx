@@ -1,11 +1,19 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
-import type { ExchangeSummary } from '../../shared/api';
+import type { ComposerRequest, ExchangeDetail, BodyContent, ExchangeSummary } from '../../shared/api';
 import type { MenuChoice, MenuCommand } from '../../shared/ipc';
 import { fetchCurlCommand } from './curl-command';
 import { DetailPane, type ExchangeActionButton } from './DetailPane';
 import { FilterHelp } from './FilterHelp';
-import { PluginView } from './PluginView';
+import { PluginErrorBoundary, PluginView } from './PluginView';
+import { ComposerView } from './ComposerView';
+import {
+  draftFromExchange,
+  draftToRequest,
+  EMPTY_DRAFT,
+  requestToDraft,
+  type ComposerDraft,
+} from './composer-request';
 import { uiPlugins } from '@wirescry/pro/ui';
 import { PLUGIN_API_VERSION } from '../../plugin-api/version';
 import { SetupPage } from './SetupPage';
@@ -19,6 +27,9 @@ import { useUndoableClear } from './useUndoableClear';
 const compatiblePlugins = uiPlugins.filter((p) => p.apiVersion === PLUGIN_API_VERSION);
 const pluginViews = compatiblePlugins.flatMap((plugin) =>
   plugin.views.map((v) => ({ key: `${plugin.name}:${v.id}`, plugin: plugin.name, view: v })),
+);
+const composerExtensions = compatiblePlugins.flatMap((plugin) =>
+  plugin.composer ? [{ plugin: plugin.name, extension: plugin.composer }] : [],
 );
 const exchangeActions = compatiblePlugins.flatMap((plugin) =>
   (plugin.exchangeActions ?? []).map((action) => ({ plugin: plugin.name, action })),
@@ -51,6 +62,10 @@ export function App(): React.JSX.Element {
   const [harBusy, setHarBusy] = useState(false);
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string>();
+  // The Compose tab: what's being written, and the last request it sent.
+  const [draft, setDraft] = useState<ComposerDraft>(EMPTY_DRAFT);
+  const [draftNote, setDraftNote] = useState<string>();
+  const [composedId, setComposedId] = useState<string>();
   const [search, setSearch] = useState('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   const searchRef = useRef<HTMLInputElement>(null);
@@ -106,35 +121,80 @@ export function App(): React.JSX.Element {
     if (next) setSelectedId(next.id);
   };
 
-  /** Plugin actions offered for an exchange, from running plugins only. */
-  const actionsFor = (exchange: ExchangeSummary): ExchangeActionButton[] =>
-    // A request from before a restart has nothing left for a plugin to work with.
-    staleIds.has(exchange.id)
+  const composed = composedId ? allExchanges.find((e) => e.id === composedId) : undefined;
+  const pluginActive = (plugin: string): boolean => !!status?.plugins.find((s) => s.name === plugin)?.active;
+  const activeComposerExtensions = composerExtensions.filter(({ plugin }) => pluginActive(plugin));
+
+  /** Opens a captured request in the Compose tab. */
+  const editAndResend = async (exchange: ExchangeSummary): Promise<void> => {
+    const detail = (await send({ command: 'getExchange', exchangeId: exchange.id })) as ExchangeDetail;
+    const body = detail.requestBody?.size
+      ? ((await send({ command: 'getBody', exchangeId: exchange.id, side: 'request' })) as BodyContent | null)
+      : null;
+    const filled = draftFromExchange(exchange, detail, body);
+    setDraft(filled.draft);
+    setDraftNote(filled.note);
+    setComposedId(undefined);
+    setView('compose');
+  };
+
+  /** Sends from the Compose tab: plugins get to change it first (e.g. fill in variables). */
+  const sendComposed = async (request: ComposerRequest): Promise<void> => {
+    let next = request;
+    for (const { plugin, extension } of activeComposerExtensions) {
+      if (extension.beforeSend) next = await extension.beforeSend(next, pluginApi(plugin));
+    }
+    const { exchangeId } = (await send({ command: 'composeSend', request: next })) as { exchangeId: string };
+    setComposedId(exchangeId);
+  };
+
+  /** Wirescry's own actions for an exchange. */
+  const builtInActions = (exchange: ExchangeSummary): ExchangeActionButton[] =>
+    exchange.websocket
       ? []
-      : exchangeActions
-          .filter(({ plugin, action }) => {
-            if (!status?.plugins.find((s) => s.name === plugin)?.active) return false;
-            try {
-              return action.appliesTo?.(exchange) ?? true;
-            } catch {
-              return false;
-            }
-          })
-          .map(({ plugin, action }) => ({
-            key: `${plugin}:${action.id}`,
-            label: action.label,
+      : [
+          {
+            key: 'wirescry:edit-and-resend',
+            label: 'Edit and resend…',
             run: () => {
               setMessage(undefined);
-              // A plugin's failure is shown, not thrown at the app.
-              Promise.resolve()
-                .then(() => action.run(exchange, pluginApi(plugin)))
-                .catch((error: unknown) =>
-                  setMessage(
-                    `${action.label.replace(/…$/, '')} didn't work: ${(error as Error)?.message ?? error}`,
-                  ),
-                );
+              editAndResend(exchange).catch((error: unknown) =>
+                setMessage(`Couldn't open it in Compose: ${(error as Error)?.message ?? error}`),
+              );
             },
-          }));
+          },
+        ];
+
+  /** Actions offered for an exchange: Wirescry's own, then those of running plugins. */
+  const actionsFor = (exchange: ExchangeSummary): ExchangeActionButton[] =>
+    // A request from before a restart has nothing left to work with.
+    staleIds.has(exchange.id) ? [] : [...builtInActions(exchange), ...pluginExchangeActions(exchange)];
+
+  const pluginExchangeActions = (exchange: ExchangeSummary): ExchangeActionButton[] =>
+    exchangeActions
+      .filter(({ plugin, action }) => {
+        if (!pluginActive(plugin)) return false;
+        try {
+          return action.appliesTo?.(exchange) ?? true;
+        } catch {
+          return false;
+        }
+      })
+      .map(({ plugin, action }) => ({
+        key: `${plugin}:${action.id}`,
+        label: action.label,
+        run: () => {
+          setMessage(undefined);
+          // A plugin's failure is shown, not thrown at the app.
+          Promise.resolve()
+            .then(() => action.run(exchange, pluginApi(plugin)))
+            .catch((error: unknown) =>
+              setMessage(
+                `${action.label.replace(/…$/, '')} didn't work: ${(error as Error)?.message ?? error}`,
+              ),
+            );
+        },
+      }));
 
   /** The right-click menu on a traffic row. */
   const showRowMenu = async (exchange: ExchangeSummary): Promise<void> => {
@@ -331,6 +391,14 @@ export function App(): React.JSX.Element {
           </button>
           <button
             type="button"
+            className={`tab ${view === 'compose' ? 'active' : ''}`}
+            aria-current={view === 'compose' ? 'page' : undefined}
+            onClick={() => setView('compose')}
+          >
+            Compose
+          </button>
+          <button
+            type="button"
             className={`tab ${view === 'setup' ? 'active' : ''}`}
             aria-current={view === 'setup' ? 'page' : undefined}
             onClick={() => setView('setup')}
@@ -406,6 +474,50 @@ export function App(): React.JSX.Element {
           />
         </div>
       ))}
+
+      {/* Kept mounted while hidden, so plugin panels keep their state. */}
+      <div hidden={view !== 'compose'} className="plugin-view-host">
+        <ComposerView
+          draft={draft}
+          onChange={setDraft}
+          note={draftNote}
+          onDismissNote={() => setDraftNote(undefined)}
+          connected={connected}
+          onSend={sendComposed}
+          onCancel={
+            composed && composed.status === undefined && !composed.failure
+              ? () => void send({ command: 'composeCancel', exchangeId: composed.id }).catch(() => undefined)
+              : undefined
+          }
+          response={
+            composed && (
+              <DetailPane
+                summary={composed}
+                send={send}
+                onClose={() => setComposedId(undefined)}
+                actions={actionsFor(composed)}
+                stale={staleIds.has(composed.id)}
+              />
+            )
+          }
+          panels={activeComposerExtensions.flatMap(({ plugin, extension }) => {
+            const Panel = extension.panel;
+            if (!Panel) return [];
+            return [
+              <PluginErrorBoundary key={`${plugin}:${session}`} label="Compose panel">
+                <Panel
+                  api={pluginApi(plugin)}
+                  request={draftToRequest(draft)}
+                  setRequest={(request) => {
+                    setDraft(requestToDraft(request));
+                    setDraftNote(undefined);
+                  }}
+                />
+              </PluginErrorBoundary>,
+            ];
+          })}
+        />
+      </div>
 
       {view === 'setup' && status && (
         <SetupPage status={status} connected={connected} send={send} onLaunched={() => setView('traffic')} />

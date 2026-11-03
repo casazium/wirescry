@@ -1007,3 +1007,119 @@ button.help-button {
 .banner.actions span {
   flex: 1;
 }
+
+/* Compose tab */
+.composer {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.composer-panels {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+}
+
+.composer-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.composer-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  max-height: 60%;
+  overflow: auto;
+}
+
+.composer-line {
+  display: flex;
+  gap: 8px;
+}
+
+.composer input,
+.composer textarea {
+  font: inherit;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--field-border);
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.composer input:focus,
+.composer textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.composer-method,
+.composer-url,
+.composer textarea {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+.composer-method {
+  width: 8em;
+}
+
+.composer-url {
+  flex: 1;
+  min-width: 0;
+}
+
+.composer-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.composer textarea {
+  resize: vertical;
+}
+
+.composer-hint,
+.composer-note {
+  margin: 0;
+}
+
+.composer-response {
+  flex: 1;
+  display: flex;
+  min-height: 120px;
+  border-top: 1px solid var(--border);
+}
+
+.composer-response .detail {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  border-left: none;
+}
+
+.composer-empty {
+  margin: 16px;
+}
+
+@media (max-width: 799px) {
+  .composer {
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .composer-panels {
+    flex: 0 0 auto;
+    max-height: 40%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+}

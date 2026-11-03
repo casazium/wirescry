@@ -29,6 +29,12 @@ export interface ProxyOptions {
   onExchange: (exchange: ExchangeDetail) => void;
   /** While this returns true, new exchanges pass through but aren't recorded. */
   isPaused?: () => boolean;
+  /** Whether a new request came from Wirescry's composer: it's then recorded even while paused. */
+  isComposed?: (
+    remotePort: number | undefined,
+    remoteAddress: string | undefined,
+    exchangeId: string,
+  ) => boolean;
   /** Fixed port. Picks a free one if omitted. */
   port?: number;
   /** Extra CAs to trust for upstream servers (PEM). */
@@ -218,9 +224,11 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   await server.on('response-body-data', (data) => onBodyData('response', data));
 
   await server.on('request-initiated', (req) => {
-    if (options.isPaused?.()) return;
+    const composed = options.isComposed?.(req.remotePort, req.remoteIpAddress, req.id) ?? false;
+    if (!composed && options.isPaused?.()) return;
     save({
       summary: {
+        ...(composed ? { composed: true as const } : {}),
         id: req.id,
         method: req.method,
         protocol: req.protocol,
