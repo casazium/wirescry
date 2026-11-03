@@ -1,13 +1,43 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import * as mockttp from 'mockttp';
-import type { HandledBy, PluginStatus } from '../shared/api';
+import type {
+  BodyContent,
+  BodySide,
+  ExchangeAnnotation,
+  ExchangeDetail,
+  ExchangeSummary,
+  HandledBy,
+  PluginStatus,
+} from '../shared/api';
 import type { BackendPlugin, PassThroughTransforms, PluginRule } from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
 import { MOCKTTP_BUFFER_LIMIT } from './proxy';
 import { createSecureStore, type Encryptor } from './secure-store';
 
 const NAME = /^[a-z0-9-]{1,32}$/;
+const TONES = new Set(['ok', 'warn', 'info']);
+// eslint-disable-next-line no-control-regex -- refusing control characters is the point
+const CONTROL = /[\x00-\x1f\x7f]/;
+
+/** Checks a badge from a plugin, and returns a clean copy. */
+export function validateAnnotation(annotation: unknown): ExchangeAnnotation {
+  const a = annotation as Partial<ExchangeAnnotation> | null;
+  if (!a || typeof a !== 'object') throw new Error('An annotation must be an object.');
+  if (typeof a.label !== 'string' || a.label.trim() === '' || a.label.length > 16 || CONTROL.test(a.label)) {
+    throw new Error('An annotation label must be 1 to 16 characters of plain text.');
+  }
+  if (typeof a.tone !== 'string' || !TONES.has(a.tone)) {
+    throw new Error("An annotation's tone must be ok, warn or info.");
+  }
+  if (
+    a.title !== undefined &&
+    (typeof a.title !== 'string' || a.title.length > 200 || CONTROL.test(a.title))
+  ) {
+    throw new Error('An annotation title must be at most 200 characters of plain text.');
+  }
+  return { label: a.label, tone: a.tone, ...(a.title !== undefined ? { title: a.title } : {}) };
+}
 /** Mockttp steps that end a request without a response. */
 const SILENT_STEPS = new Set(['close-connection', 'reset-connection', 'timeout']);
 
@@ -28,6 +58,12 @@ export interface PluginHostOptions {
   emit(plugin: string, event: string, data: unknown): void;
   /** Called when a plugin's status changes. */
   onStatusChange(): void;
+  getExchange(exchangeId: string): ExchangeDetail | undefined;
+  getBody(exchangeId: string, side: BodySide): Promise<BodyContent | null>;
+  /** Sets or removes a plugin's badge on an exchange (already validated). */
+  annotate(plugin: string, exchangeId: string, annotation: ExchangeAnnotation | undefined): void;
+  /** Removes all of a plugin's badges, e.g. when it fails. */
+  clearAnnotations(plugin: string): void;
   startTimeoutMs?: number;
   /** How long one call from the UI may take; a plugin that never answers mustn't hang the UI. */
   callTimeoutMs?: number;
@@ -107,6 +143,21 @@ export class PluginHost {
             emit: (event, data) => {
               if (this.isRunning(plugin)) this.options.emit(plugin.name, event, data);
             },
+            // Copies, so a plugin can't change what the rest of Wirescry sees.
+            getExchange: (exchangeId) => {
+              const detail = this.options.getExchange(String(exchangeId));
+              return detail ? structuredClone(detail) : undefined;
+            },
+            getBody: async (exchangeId, side) => {
+              if (side !== 'request' && side !== 'response')
+                throw new Error('side must be request or response');
+              return this.options.getBody(String(exchangeId), side);
+            },
+            annotate: (exchangeId, annotation) => {
+              if (!this.isRunning(plugin)) return;
+              const clean = annotation === undefined ? undefined : validateAnnotation(annotation);
+              this.options.annotate(plugin.name, String(exchangeId), clean);
+            },
             log,
           }))();
         await Promise.race([
@@ -134,6 +185,21 @@ export class PluginHost {
       }
     }
     this.options.onStatusChange();
+  }
+
+  /** Tells running plugins an exchange has finished. Their errors are logged, never thrown. */
+  exchangeCompleted(summary: ExchangeSummary): void {
+    for (const plugin of this.options.plugins) {
+      if (!plugin.exchangeCompleted || !this.isRunning(plugin)) continue;
+      const report = (error: unknown): void =>
+        console.error(`[wirescry] plugin ${plugin.name} exchangeCompleted:`, error);
+      try {
+        const result: unknown = plugin.exchangeCompleted(structuredClone(summary));
+        if (result instanceof Promise) result.catch(report);
+      } catch (error) {
+        report(error);
+      }
+    }
   }
 
   async call(name: string, callName: string, args: unknown): Promise<unknown> {
@@ -217,6 +283,7 @@ export class PluginHost {
     this.states.set(plugin, { state: 'failed', reason });
     this.rulesByPlugin.delete(name);
     for (const key of [...this.labels.keys()]) if (key.startsWith(`${name}/`)) this.labels.delete(key);
+    this.options.clearAnnotations(name);
     await this.options.refreshRules().catch(() => undefined);
   }
 }

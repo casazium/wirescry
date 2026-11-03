@@ -3,7 +3,7 @@ import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/fil
 import type { ComposerRequest, ExchangeDetail, BodyContent, ExchangeSummary } from '../../shared/api';
 import type { MenuChoice, MenuCommand } from '../../shared/ipc';
 import { fetchCurlCommand } from './curl-command';
-import { DetailPane, type ExchangeActionButton } from './DetailPane';
+import { DetailPane, type DetailSection, type ExchangeActionButton } from './DetailPane';
 import { FilterHelp } from './FilterHelp';
 import { PluginErrorBoundary, PluginView } from './PluginView';
 import { ComposerView } from './ComposerView';
@@ -34,6 +34,9 @@ const pluginViews = compatiblePlugins.flatMap((plugin) =>
 );
 const composerExtensions = compatiblePlugins.flatMap((plugin) =>
   plugin.composer ? [{ plugin: plugin.name, extension: plugin.composer }] : [],
+);
+const exchangeSections = compatiblePlugins.flatMap((plugin) =>
+  (plugin.exchangeSections ?? []).map((section) => ({ plugin: plugin.name, section })),
 );
 const exchangeActions = compatiblePlugins.flatMap((plugin) =>
   (plugin.exchangeActions ?? []).map((action) => ({ plugin: plugin.name, action })),
@@ -171,6 +174,34 @@ export function App(): React.JSX.Element {
     setComposedId(exchangeId);
     setSettledDraft(sent);
   };
+
+  /** Plugins' sections for an exchange's detail pane, from running plugins only. */
+  const sectionsFor = (exchange: ExchangeSummary): DetailSection[] =>
+    // A request from before a restart has nothing left for a plugin to look up.
+    staleIds.has(exchange.id)
+      ? []
+      : exchangeSections
+          .filter(({ plugin, section }) => {
+            if (!pluginActive(plugin)) return false;
+            try {
+              return section.appliesTo?.(exchange) ?? true;
+            } catch {
+              return false;
+            }
+          })
+          .map(({ plugin, section }) => {
+            const Section = section.component;
+            return {
+              key: `${plugin}:${section.id}`,
+              label: section.label,
+              content: (
+                // Reset per exchange, so one that broke doesn't stay broken for the next.
+                <PluginErrorBoundary key={`${plugin}:${session}:${exchange.id}`} label={section.label}>
+                  <Section exchange={exchange} api={pluginApi(plugin)} />
+                </PluginErrorBoundary>
+              ),
+            };
+          });
 
   /** Wirescry's own actions for an exchange. */
   const builtInActions = (exchange: ExchangeSummary): ExchangeActionButton[] =>
@@ -549,6 +580,7 @@ export function App(): React.JSX.Element {
                 onClose={() => setComposedId(undefined)}
                 actions={actionsFor(composed)}
                 stale={staleIds.has(composed.id)}
+                sections={sectionsFor(composed)}
               />
             )
           }
@@ -818,6 +850,7 @@ export function App(): React.JSX.Element {
                 onClose={() => setSelectedId(undefined)}
                 actions={actionsFor(selected)}
                 stale={staleIds.has(selected.id)}
+                sections={sectionsFor(selected)}
               />
             </>
           )}

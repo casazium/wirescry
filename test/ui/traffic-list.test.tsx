@@ -61,3 +61,26 @@ describe('TrafficList', () => {
     expect(screen.getByText('Nothing here')).toBeTruthy();
   });
 });
+
+describe('TrafficList plugin badges', () => {
+  it('shows each plugin’s badge with its tone and title', () => {
+    list({
+      rows: [
+        summary('a', {
+          annotations: [
+            { plugin: 'pro', label: 'Spec', tone: 'warn', title: 'Response 200 is missing "email"' },
+            { plugin: 'other', label: 'Seen', tone: 'info' },
+          ],
+        }),
+        summary('b'),
+      ],
+    });
+    const [first, second] = screen.getAllByTestId('exchange-row');
+    const spec = screen.getByText('Spec');
+    expect(spec.className).toContain('tone-warn');
+    expect(spec.getAttribute('title')).toBe('Response 200 is missing "email"');
+    expect(screen.getByText('Seen').className).toContain('tone-info');
+    expect(first!.textContent).toContain('Spec');
+    expect(second!.querySelector('.plugin-badge')).toBeNull();
+  });
+});

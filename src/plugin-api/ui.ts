@@ -64,6 +64,17 @@ export interface UiExchangeAction {
   run(exchange: ExchangeSummary, api: UiPluginApi): void | Promise<void>;
 }
 
+/** A section a plugin adds to the detail pane of an exchange, below Wirescry's own. */
+export interface UiExchangeSection {
+  id: string;
+  /** Its heading. */
+  label: string;
+  /** Whether to show it for this exchange. Shown for every exchange if left out. */
+  appliesTo?(exchange: ExchangeSummary): boolean;
+  /** Rendered again when the exchange changes (e.g. its response arrives). */
+  component: ComponentType<{ exchange: ExchangeSummary; api: UiPluginApi }>;
+}
+
 export interface UiPluginView {
   id: string;
   /** Shown as a tab in the toolbar, next to Traffic and Setup. */
@@ -99,6 +110,8 @@ export interface UiPlugin {
   exchangeActions?: UiExchangeAction[];
   /** Additions to the Compose tab. */
   composer?: UiComposerExtension;
+  /** Sections in an exchange's detail pane. */
+  exchangeSections?: UiExchangeSection[];
 }
 
 /** How a tab badge looks and is read out; see UiPluginApi.setBadge. */

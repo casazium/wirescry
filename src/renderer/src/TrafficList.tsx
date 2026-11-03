@@ -155,6 +155,11 @@ export function TrafficList({
                       Sent
                     </span>
                   )}
+                  {e.annotations?.map((a) => (
+                    <span key={a.plugin} className={`rule-badge plugin-badge tone-${a.tone}`} title={a.title}>
+                      {a.label}
+                    </span>
+                  ))}
                   {e.handledBy && (
                     <span className="rule-badge" title={`Handled by the rule "${e.handledBy.label}"`}>
                       Rule
