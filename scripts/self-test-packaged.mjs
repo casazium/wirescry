@@ -101,10 +101,15 @@ function run({ name, exe }) {
       );
       const logs = join(work, 'data/logs');
       const logFiles = existsSync(logs) ? readdirSync(logs) : [];
-      // How long each step of the backend's start took, pass or fail.
-      for (const f of logFiles) {
-        for (const line of readFileSync(join(logs, f), 'utf8').split('\n')) {
-          if (line.includes('Startup: ')) console.log(`${name}: ${line.slice(line.indexOf('Startup: '))}`);
+      // How long each step of the backend's start took, pass or fail: from the ready
+      // message when there was one, or else from the log (which can lag behind it).
+      if (result?.startup) {
+        for (const [step, ms] of result.startup) console.log(`${name}: Startup: ${step} at ${ms} ms`);
+      } else {
+        for (const f of logFiles) {
+          for (const line of readFileSync(join(logs, f), 'utf8').split('\n')) {
+            if (line.includes('Startup: ')) console.log(`${name}: ${line.slice(line.indexOf('Startup: '))}`);
+          }
         }
       }
       // Windows doesn't show a GUI app's output, so print the end of its log on failure.

@@ -23,6 +23,8 @@ export type BackendMessage =
       plugins: PluginStatus[];
       /** With selfCheck: the problems it found (none if all is well). */
       selfCheck?: string[];
+      /** Each startup step and when it finished, in ms since the backend process began. */
+      startup?: Array<[step: string, ms: number]>;
     }
   | { type: 'error'; message: string }
   | CryptoRequest

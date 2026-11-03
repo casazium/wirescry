@@ -249,7 +249,11 @@ function runSelfTest(file: string): void {
     const problems = backend.selfCheckProblems ?? ['the backend ran no self-check'];
     if (state.state !== 'ready') void finish({ error: state.message }, 1);
     else if (problems.length > 0) void finish({ error: `Self-check: ${problems.join('; ')}` }, 1);
-    else void finish({ plugins: backend.plugins, backendStartMs: Date.now() - startedAt }, 0);
+    else
+      void finish(
+        { plugins: backend.plugins, backendStartMs: Date.now() - startedAt, startup: backend.startupSteps },
+        0,
+      );
   });
   backend.start();
 }

@@ -127,13 +127,17 @@ export default defineConfig(() => {
           // With Pro, put all of Pro's backend code in one chunk (chunks/pro-*.js), so that
           // scripts/pro-bytecode/compile.mjs can swap it for V8 bytecode before packaging.
           // electron-builder.cjs refuses to package a build where that hasn't happened.
-          output: proDir
-            ? {
-                codeSplitting: {
-                  groups: [{ name: 'pro', test: isProModule, priority: 1 }],
-                },
-              }
-            : undefined,
+          output: {
+            // The backend's first line notes the time, before its dependencies and Pro load,
+            // so its startup log can tell loading this file from loading those.
+            banner: (chunk) =>
+              chunk.isEntry && chunk.name === 'backend'
+                ? 'globalThis.__wirescryBackendFirstLineAt = performance.now();'
+                : '',
+            ...(proDir
+              ? { codeSplitting: { groups: [{ name: 'pro', test: isProModule, priority: 1 }] } }
+              : {}),
+          },
         },
       },
     },
