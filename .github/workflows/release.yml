@@ -31,6 +31,7 @@ on:
       - 'scripts/pro-bytecode/**'
       - 'scripts/third-party-notices.mjs'
       - 'scripts/self-test-packaged.mjs'
+      - 'e2e/**'
       - 'scripts/notarize-dmg.cjs'
       - 'src/main/**'
   workflow_dispatch:
@@ -198,6 +199,20 @@ jobs:
             run=""
             if [ "$RUNNER_OS" = "Linux" ]; then run="xvfb-run -a"; fi
             $run node scripts/pro-bytecode/compile.mjs --arch "$arches"
+          fi
+
+      # Drives the built app end to end, with Pro in a Pro build, on this runner's OS and CPU:
+      # captures traffic, opens gzip and HTML bodies, kills the backend and checks the list and
+      # the Pro tab survive (e2e/smoke.test.ts). It runs the build in out/ before packaging:
+      # Playwright attaches with --inspect, which the packaged app's fuses turn off on purpose.
+      # The packaged apps get the self-test below instead.
+      - name: Smoke test the built app
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a npm run smoke
+          else
+            npm run smoke
           fi
 
       - name: Set up macOS signing

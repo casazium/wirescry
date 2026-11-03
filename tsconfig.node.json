@@ -7,11 +7,14 @@
   "include": [
     "electron.vite.config.ts",
     "vitest.config.mts",
+    "vitest.smoke.config.mts",
+    "e2e/**/*",
 
     "src/main/**/*",
     "src/preload/**/*",
     "src/backend/**/*",
     "src/shared/**/*",
     "test/**/*"
-  ]
+  ],
+  "exclude": ["test/ui/**/*"]
 }

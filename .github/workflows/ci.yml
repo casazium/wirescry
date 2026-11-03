@@ -33,3 +33,21 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
+
+  smoke:
+    # The free app, built and driven end to end (e2e/smoke.test.ts). Release builds run the
+    # same test against each packaged app, with Pro.
+    name: Smoke test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          # Electron 45 runs Node 24.
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      # Electron needs a display; the hosted runners have Xvfb.
+      - run: xvfb-run -a npm run smoke
