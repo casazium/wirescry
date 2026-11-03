@@ -1,4 +1,5 @@
 import type { BodyContent, ComposerRequest, ExchangeDetail, ExchangeSummary, Header } from '../../shared/api';
+import type { UiComposerExtension, UiPluginApi } from '../../plugin-api/ui';
 import { base64ToBytes } from './bytes';
 
 /** What the composer's fields hold: headers as typed, one `Name: value` per line. */
@@ -13,6 +14,21 @@ export const EMPTY_DRAFT: ComposerDraft = { method: 'GET', url: '', headersText:
 
 /** The largest body the composer sends (as the backend's MAX_COMPOSER_BODY). */
 export const MAX_DRAFT_BODY = 512 * 1024;
+
+/** The most a request can take as JSON: each message to the backend is capped at 1 MB. */
+export const MAX_SEND_JSON = 900 * 1024;
+
+/** Throws if the request is too large to send in one message to the backend. */
+export function checkSendSize(request: ComposerRequest): void {
+  if (new TextEncoder().encode(JSON.stringify(request)).length > MAX_SEND_JSON) {
+    throw new Error('This request is too large to send. Make the body or headers smaller.');
+  }
+}
+
+/** Whether two drafts would send the same request. */
+export function sameDraft(a: ComposerDraft, b: ComposerDraft): boolean {
+  return a.method === b.method && a.url === b.url && a.headersText === b.headersText && a.body === b.body;
+}
 
 /** Headers the composer leaves out of a copied request: Wirescry sets them when it sends. */
 const MANAGED = new Set(['host', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
@@ -99,4 +115,41 @@ export function draftFromExchange(
     draft: { method: summary.method, url: summary.url, headersText: headersToText(headers), body: text },
     ...(note ? { note } : {}),
   };
+}
+
+/** Runs each plugin's beforeSend in order, each getting the last one's result. */
+export async function runBeforeSend(
+  extensions: Array<{ plugin: string; extension: UiComposerExtension }>,
+  request: ComposerRequest,
+  apiFor: (plugin: string) => UiPluginApi,
+): Promise<ComposerRequest> {
+  let next = request;
+  for (const { plugin, extension } of extensions) {
+    if (!extension.beforeSend) continue;
+    try {
+      next = await extension.beforeSend(next, apiFor(plugin));
+    } catch (error) {
+      throw new Error(error instanceof Error ? error.message : `It couldn't be sent: ${String(error)}`, {
+        cause: error,
+      });
+    }
+    if (!next || typeof next !== 'object')
+      throw new Error('It couldn’t be sent: a plugin returned no request.');
+  }
+  return next;
+}
+
+/** Whether Cancel can still stop this sent request: until its response has fully arrived. */
+export function canCancel(
+  summary: ExchangeSummary | undefined,
+  stale: boolean,
+  uncancellable: ReadonlySet<string>,
+): boolean {
+  return (
+    !!summary &&
+    summary.durationMs === undefined &&
+    !summary.failure &&
+    !stale &&
+    !uncancellable.has(summary.id)
+  );
 }

@@ -8,6 +8,10 @@ import { FilterHelp } from './FilterHelp';
 import { PluginErrorBoundary, PluginView } from './PluginView';
 import { ComposerView } from './ComposerView';
 import {
+  canCancel,
+  checkSendSize,
+  runBeforeSend,
+  sameDraft,
   draftFromExchange,
   draftToRequest,
   EMPTY_DRAFT,
@@ -66,6 +70,10 @@ export function App(): React.JSX.Element {
   const [draft, setDraft] = useState<ComposerDraft>(EMPTY_DRAFT);
   const [draftNote, setDraftNote] = useState<string>();
   const [composedId, setComposedId] = useState<string>();
+  // What was last sent or loaded, so Edit and resend only asks before replacing other edits.
+  const [settledDraft, setSettledDraft] = useState<ComposerDraft>(EMPTY_DRAFT);
+  // Sends that could no longer be cancelled (e.g. the backend restarted).
+  const [uncancellable, setUncancellable] = useState<ReadonlySet<string>>(new Set());
   const [search, setSearch] = useState('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   const searchRef = useRef<HTMLInputElement>(null);
@@ -132,7 +140,15 @@ export function App(): React.JSX.Element {
       ? ((await send({ command: 'getBody', exchangeId: exchange.id, side: 'request' })) as BodyContent | null)
       : null;
     const filled = draftFromExchange(exchange, detail, body);
+    if (
+      !sameDraft(draft, EMPTY_DRAFT) &&
+      !sameDraft(draft, settledDraft) &&
+      !window.confirm('Replace the request in Compose? Your changes to it will be lost.')
+    ) {
+      return;
+    }
     setDraft(filled.draft);
+    setSettledDraft(filled.draft);
     setDraftNote(filled.note);
     setComposedId(undefined);
     setView('compose');
@@ -140,12 +156,12 @@ export function App(): React.JSX.Element {
 
   /** Sends from the Compose tab: plugins get to change it first (e.g. fill in variables). */
   const sendComposed = async (request: ComposerRequest): Promise<void> => {
-    let next = request;
-    for (const { plugin, extension } of activeComposerExtensions) {
-      if (extension.beforeSend) next = await extension.beforeSend(next, pluginApi(plugin));
-    }
+    const next = await runBeforeSend(activeComposerExtensions, request, pluginApi);
+    checkSendSize(next);
+    const sent = draft;
     const { exchangeId } = (await send({ command: 'composeSend', request: next })) as { exchangeId: string };
     setComposedId(exchangeId);
+    setSettledDraft(sent);
   };
 
   /** Wirescry's own actions for an exchange. */
@@ -485,8 +501,17 @@ export function App(): React.JSX.Element {
           connected={connected}
           onSend={sendComposed}
           onCancel={
-            composed && composed.status === undefined && !composed.failure
-              ? () => void send({ command: 'composeCancel', exchangeId: composed.id }).catch(() => undefined)
+            // Until the response has fully arrived, so a stream or long download can be stopped too.
+            composed && canCancel(composed, staleIds.has(composed.id), uncancellable)
+              ? () => {
+                  const id = composed.id;
+                  void send({ command: 'composeCancel', exchangeId: id })
+                    .then((cancelled) => cancelled !== true)
+                    .catch(() => true)
+                    .then((gone) => {
+                      if (gone) setUncancellable((ids) => new Set(ids).add(id));
+                    });
+                }
               : undefined
           }
           response={
@@ -509,7 +534,9 @@ export function App(): React.JSX.Element {
                   api={pluginApi(plugin)}
                   request={draftToRequest(draft)}
                   setRequest={(request) => {
-                    setDraft(requestToDraft(request));
+                    const loaded = requestToDraft(request);
+                    setDraft(loaded);
+                    setSettledDraft(loaded);
                     setDraftNote(undefined);
                   }}
                 />

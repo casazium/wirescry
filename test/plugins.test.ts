@@ -221,6 +221,25 @@ describe('plugin host', () => {
     api.close();
   });
 
+  it('applies plugin rules to requests sent from the composer, over HTTP and HTTPS', async () => {
+    const b = await start([fakePlugin()]);
+    const api = await apiClient(b.apiPort);
+    for (const url of ['http://mocked.test/composed', 'https://mocked.test/composed']) {
+      const { exchangeId } = await api.send<{ exchangeId: string }>({
+        command: 'composeSend',
+        request: { method: 'GET', url, headers: [], body: '' },
+      });
+      await expect
+        .poll(() =>
+          api.messages
+            .flatMap((m) => (m.type === 'exchanges' ? m.exchanges : []))
+            .find((e) => e.id === exchangeId && e.status === 418),
+        )
+        .toMatchObject({ composed: true, handledBy: { ruleId: 'teapot' } });
+    }
+    api.close();
+  });
+
   it('describes a request a rule closed without answering', async () => {
     const plugin: BackendPlugin = {
       name: 'closer',
