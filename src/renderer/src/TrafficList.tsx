@@ -34,6 +34,9 @@ interface Props {
   empty: React.ReactNode;
 }
 
+/** Plugin badges shown on one row. */
+const MAX_BADGES = 3;
+
 /** The traffic list. Only rows in view are in the DOM, so it stays fast with thousands of rows. */
 export function TrafficList({
   rows,
@@ -155,6 +158,18 @@ export function TrafficList({
                       Sent
                     </span>
                   )}
+                  {/* At most a few, so the path stays visible; each says what it means. */}
+                  {e.annotations?.slice(0, MAX_BADGES).map((a) => (
+                    <span key={a.plugin} className={`rule-badge plugin-badge tone-${a.tone}`} title={a.title}>
+                      {a.label}
+                      {a.title && (
+                        <span className="visually-hidden">
+                          : {a.title}
+                          {/[.!?]$/.test(a.title) ? '' : '.'}
+                        </span>
+                      )}
+                    </span>
+                  ))}
                   {e.handledBy && (
                     <span className="rule-badge" title={`Handled by the rule "${e.handledBy.label}"`}>
                       Rule

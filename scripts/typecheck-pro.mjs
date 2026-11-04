@@ -18,7 +18,13 @@ const dir = mkdtempSync(path.join(tmpdir(), 'wirescry-typecheck-pro-'));
 let failed = false;
 try {
   for (const [name, extra] of [
-    ['tsconfig.node.json', { '@wirescry/pro/backend': [path.join(pro, 'src/backend/index.ts')] }],
+    [
+      'tsconfig.node.json',
+      {
+        '@wirescry/pro/backend': [path.join(pro, 'src/backend/index.ts')],
+        '@wirescry/pro/check-worker': [path.join(pro, 'src/backend/openapi/check-worker.ts')],
+      },
+    ],
     ['tsconfig.web.json', { '@wirescry/pro/ui': [path.join(pro, 'src/ui/index.ts')] }],
   ]) {
     const config = path.join(dir, name);

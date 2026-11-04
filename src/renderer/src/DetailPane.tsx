@@ -30,6 +30,15 @@ interface Props {
   actions: ExchangeActionButton[];
   /** From before the backend restarted: only what was already loaded is left. */
   stale: boolean;
+  /** Sections from plugins, shown after the timing. */
+  sections?: DetailSection[];
+}
+
+/** A plugin's section in the detail pane. */
+export interface DetailSection {
+  key: string;
+  label: string;
+  content: React.ReactNode;
 }
 
 type BodyState = { content: BodyContent | null } | { error: string };
@@ -86,7 +95,14 @@ function ms(from: number | undefined, to: number | undefined): string {
 }
 
 /** Headers, timing and bodies for the selected exchange. */
-export function DetailPane({ summary, send, onClose, actions, stale }: Props): React.JSX.Element {
+export function DetailPane({
+  summary,
+  send,
+  onClose,
+  actions,
+  stale,
+  sections = [],
+}: Props): React.JSX.Element {
   const [loaded, setDetail] = useState<ExchangeDetail>();
   // Only this exchange's details, never the last one's while the next loads.
   const detail = loaded?.summary.id === summary.id ? loaded : undefined;
@@ -300,6 +316,13 @@ export function DetailPane({ summary, send, onClose, actions, stale }: Props): R
             </dl>
           </section>
         )}
+
+        {sections.map((section) => (
+          <details open key={section.key} className="plugin-section">
+            <summary>{section.label}</summary>
+            {section.content}
+          </details>
+        ))}
 
         {/* An old connection's messages can't be fetched; one that was open keeps what it showed. */}
         {summary.websocket && (!stale || detail) && (

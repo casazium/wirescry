@@ -950,6 +950,27 @@ button.help-button {
   color: color-mix(in srgb, var(--accent) 60%, var(--fg));
 }
 
+/* A plugin's badge, e.g. whether a request matches an API spec. Isolated, so its text
+   can't change the direction of the path beside it. */
+.plugin-badge {
+  unicode-bidi: isolate;
+}
+
+.plugin-badge.tone-ok {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+  color: color-mix(in srgb, var(--ok) 70%, var(--fg));
+}
+
+.plugin-badge.tone-warn {
+  background: color-mix(in srgb, var(--warn) 18%, transparent);
+  color: color-mix(in srgb, var(--warn) 70%, var(--fg));
+}
+
+.plugin-badge.tone-info {
+  background: color-mix(in srgb, var(--muted) 18%, transparent);
+  color: color-mix(in srgb, var(--muted) 60%, var(--fg));
+}
+
 .imported-badge {
   background: color-mix(in srgb, var(--muted) 18%, transparent);
   color: color-mix(in srgb, var(--muted) 60%, var(--fg));

@@ -1,13 +1,57 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import * as mockttp from 'mockttp';
-import type { HandledBy, PluginStatus } from '../shared/api';
+import type {
+  BodyContent,
+  BodySide,
+  ExchangeAnnotation,
+  ExchangeDetail,
+  ExchangeSummary,
+  HandledBy,
+  PluginStatus,
+} from '../shared/api';
 import type { BackendPlugin, PassThroughTransforms, PluginRule } from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
 import { MOCKTTP_BUFFER_LIMIT } from './proxy';
 import { createSecureStore, type Encryptor } from './secure-store';
 
 const NAME = /^[a-z0-9-]{1,32}$/;
+const TONES = new Set(['ok', 'warn', 'info']);
+// Characters that could disguise the request's path beside a badge, or break its line:
+// control characters, line and paragraph separators, bidi controls, and invisible spaces
+// and marks. Joiners (U+200C, U+200D), which emoji and many scripts need, are fine.
+const UNSAFE_TEXT =
+  /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+const UNSAFE_TEXT_ALL = new RegExp(UNSAFE_TEXT.source, 'gu');
+/** Characters as people count them (code points), not UTF-16 units. */
+const length = (text: string): number => [...text].length;
+
+/** Checks a badge from a plugin, and returns a clean copy. */
+export function validateAnnotation(annotation: unknown): ExchangeAnnotation {
+  if (!annotation || typeof annotation !== 'object') throw new Error('An annotation must be an object.');
+  // Each field read once, so a getter can't pass the checks and then return something else.
+  const { label, tone, title } = annotation as Partial<Record<keyof ExchangeAnnotation, unknown>>;
+  if (typeof label !== 'string' || label.trim() === '' || length(label) > 16 || UNSAFE_TEXT.test(label)) {
+    throw new Error(
+      'An annotation label must be 1 to 16 characters, without control characters, bidi controls or invisible spaces.',
+    );
+  }
+  if (typeof tone !== 'string' || !TONES.has(tone)) {
+    throw new Error("An annotation's tone must be ok, warn or info.");
+  }
+  if (title !== undefined && typeof title !== 'string') throw new Error('An annotation title must be text.');
+  // A title is shown only on hover and read out: tidied rather than refused, so a stray
+  // newline from a spec or a request doesn't lose the badge.
+  const cleanTitle =
+    typeof title === 'string'
+      ? [...title.replace(UNSAFE_TEXT_ALL, ' ').replace(/\s+/g, ' ').trim()].slice(0, 200).join('')
+      : '';
+  return {
+    label,
+    tone: tone as ExchangeAnnotation['tone'],
+    ...(cleanTitle ? { title: cleanTitle } : {}),
+  };
+}
 /** Mockttp steps that end a request without a response. */
 const SILENT_STEPS = new Set(['close-connection', 'reset-connection', 'timeout']);
 
@@ -28,6 +72,12 @@ export interface PluginHostOptions {
   emit(plugin: string, event: string, data: unknown): void;
   /** Called when a plugin's status changes. */
   onStatusChange(): void;
+  getExchange(exchangeId: string): ExchangeDetail | undefined;
+  getBody(exchangeId: string, side: BodySide): Promise<BodyContent | null>;
+  /** Sets or removes a plugin's badge on an exchange (already validated). */
+  annotate(plugin: string, exchangeId: string, annotation: ExchangeAnnotation | undefined): void;
+  /** Removes all of a plugin's badges, e.g. when it fails. */
+  clearAnnotations(plugin: string): void;
   startTimeoutMs?: number;
   /** How long one call from the UI may take; a plugin that never answers mustn't hang the UI. */
   callTimeoutMs?: number;
@@ -45,6 +95,8 @@ export class PluginHost {
   private readonly labels = new Map<string, HandledBy>();
   // Rules that end a request without answering (close or time out), by Mockttp rule id.
   private readonly silentRules = new Set<string>();
+  // How often each plugin's exchangeCompleted has failed, to keep the log readable.
+  private readonly completionErrors = new Map<string, number>();
 
   constructor(private readonly options: PluginHostOptions) {
     const seen = new Set<string>();
@@ -107,6 +159,23 @@ export class PluginHost {
             emit: (event, data) => {
               if (this.isRunning(plugin)) this.options.emit(plugin.name, event, data);
             },
+            // Copies, so a plugin can't change what the rest of Wirescry sees.
+            getExchange: (exchangeId) => {
+              if (!this.hasStarted(plugin)) return undefined;
+              const detail = this.options.getExchange(String(exchangeId));
+              return detail ? structuredClone(detail) : undefined;
+            },
+            getBody: async (exchangeId, side) => {
+              if (side !== 'request' && side !== 'response')
+                throw new Error('side must be request or response');
+              if (!this.hasStarted(plugin)) return null;
+              return this.options.getBody(String(exchangeId), side);
+            },
+            annotate: (exchangeId, annotation) => {
+              if (!this.hasStarted(plugin)) return;
+              const clean = annotation === undefined ? undefined : validateAnnotation(annotation);
+              this.options.annotate(plugin.name, String(exchangeId), clean);
+            },
             log,
           }))();
         await Promise.race([
@@ -134,6 +203,28 @@ export class PluginHost {
       }
     }
     this.options.onStatusChange();
+  }
+
+  /** Tells running plugins an exchange has finished. Their errors are logged, never thrown. */
+  exchangeCompleted(summary: ExchangeSummary): void {
+    for (const plugin of this.options.plugins) {
+      // Only once it has finished starting, and never once it has stopped.
+      if (!plugin.exchangeCompleted || !this.hasStarted(plugin)) continue;
+      const report = (error: unknown): void => {
+        // A plugin failing on every exchange mustn't flood the log: the first few, then now and then.
+        const count = (this.completionErrors.get(plugin.name) ?? 0) + 1;
+        this.completionErrors.set(plugin.name, count);
+        if (count <= 5 || count % 1000 === 0) {
+          console.error(`[wirescry] plugin ${plugin.name} exchangeCompleted (error ${count}):`, error);
+        }
+      };
+      try {
+        const result: unknown = plugin.exchangeCompleted(structuredClone(summary));
+        if (result instanceof Promise) result.catch(report);
+      } catch (error) {
+        report(error);
+      }
+    }
   }
 
   async call(name: string, callName: string, args: unknown): Promise<unknown> {
@@ -165,11 +256,18 @@ export class PluginHost {
   async stopAll(): Promise<void> {
     for (const plugin of this.options.plugins) {
       if (!this.isRunning(plugin)) continue;
+      // From now on it hears and does nothing more: no completions, badges or body reads.
+      this.states.set(plugin, { state: 'failed', reason: 'Stopped.' });
       // An async wrapper catches synchronous throws too.
       await (async () => plugin.stop?.())().catch((error: unknown) => {
         console.error(`[wirescry] plugin ${plugin.name} failed to stop:`, error);
       });
     }
+  }
+
+  /** Finished starting, and not stopped: what reading and badging exchanges need. */
+  private hasStarted(plugin: BackendPlugin): boolean {
+    return this.states.get(plugin)?.state === 'running';
   }
 
   private isRunning(plugin: BackendPlugin): boolean {
@@ -217,6 +315,7 @@ export class PluginHost {
     this.states.set(plugin, { state: 'failed', reason });
     this.rulesByPlugin.delete(name);
     for (const key of [...this.labels.keys()]) if (key.startsWith(`${name}/`)) this.labels.delete(key);
+    this.options.clearAnnotations(name);
     await this.options.refreshRules().catch(() => undefined);
   }
 }

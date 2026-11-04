@@ -4,6 +4,15 @@
  * PLUGIN_API_VERSION (./version.ts) for breaking changes.
  */
 import type { RequestRuleData, RequestStep, requestSteps } from 'mockttp';
+import type {
+  BodyContent,
+  BodySide,
+  ExchangeAnnotation,
+  ExchangeDetail,
+  ExchangeSummary,
+} from '../shared/api';
+
+export type { BodyContent, BodySide, ExchangeAnnotation, ExchangeDetail, ExchangeSummary };
 
 /** A proxy rule from a plugin. `id` should be stable; `label` names it in the traffic list. */
 export interface PluginRule extends Pick<RequestRuleData, 'matchers' | 'steps'> {
@@ -80,6 +89,20 @@ export interface BackendPluginHost {
   maxBufferedRequestBody: number;
   /** Sends an event to this plugin's UI. */
   emit(event: string, data: unknown): void;
+  /** A recorded exchange's details (headers, timing, body sizes), or undefined once it's gone. */
+  getExchange(exchangeId: string): ExchangeDetail | undefined;
+  /**
+   * A body as the UI sees it: decoded where Wirescry can, and cut short past a size limit
+   * (`truncated`). Null if there's none, or the exchange is gone.
+   */
+  getBody(exchangeId: string, side: BodySide): Promise<BodyContent | null>;
+  /**
+   * Puts this plugin's badge on an exchange, replacing its previous one, or removes it
+   * (undefined). Ignored for an exchange that's gone, and until the plugin has started.
+   * Throws if the label isn't 1 to 16 characters, or has control characters, bidi controls
+   * or invisible spaces; the title is tidied (those become spaces) and cut to 200.
+   */
+  annotate(exchangeId: string, annotation: ExchangeAnnotation | undefined): void;
   /** Writes to Wirescry's log. */
   log(message: string): void;
 }
@@ -96,5 +119,14 @@ export interface BackendPlugin {
    * Throw to send an error back.
    */
   handle(name: string, args: unknown): Promise<unknown>;
+  /**
+   * Called once for each HTTP exchange when it has finished: its response recorded (body
+   * included), or failed. Not for WebSockets, and not while the plugin is still starting.
+   * Includes exchanges imported from HAR files, which can be thousands at once: don't block,
+   * do slow work asynchronously, and read only a few bodies at a time. If a body takes over
+   * 10 s to be stored, this is called without it (getBody returns null). Errors are logged
+   * and otherwise ignored.
+   */
+  exchangeCompleted?(exchange: ExchangeSummary): void;
   stop?(): Promise<void> | void;
 }

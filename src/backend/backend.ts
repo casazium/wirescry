@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import type {
   BodyContent,
+  ExchangeAnnotation,
   BodySide,
   ClientCommand,
   ExchangeDetail,
@@ -103,6 +104,9 @@ export interface RunningBackend {
   stop(): Promise<void>;
 }
 
+/** How long a finished exchange's body may take to be stored before plugins are told anyway. */
+const COMPLETION_GRACE_MS = 10_000;
+
 /** Starts the proxy and the local API. Runs without Electron, so tests can use it directly. */
 export async function startBackend(options: BackendOptions): Promise<RunningBackend> {
   const { dataDir } = options;
@@ -135,8 +139,15 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   let paused = false;
 
   const websockets = new WebSocketStore();
+  // Exchanges plugins have been told have finished, and ones waiting a moment for their body.
+  const completed = new Set<string>();
+  const completionTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   // Everything kept about an exchange besides its store entry.
   const forget = (id: string): void => {
+    completed.delete(id);
+    clearTimeout(completionTimers.get(id));
+    completionTimers.delete(id);
     updates.remove(id);
     websockets.delete(id);
     void bodies.delete(id).catch(() => undefined);
@@ -184,9 +195,62 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       }),
     emit: (plugin, event, data) => broadcast({ type: 'plugin', plugin, event, data }),
     onStatusChange: () => broadcast({ type: 'status', status: status() }),
+    getExchange: (id) => store.get(id),
+    getBody: async (id, side) => {
+      const exchange = store.get(id);
+      return exchange ? readBody(exchange, side) : null;
+    },
+    annotate: (plugin, id, annotation) => annotate(plugin, id, annotation),
+    clearAnnotations: (plugin) => {
+      for (const summary of store.list()) {
+        if (summary.annotations?.some((a) => a.plugin === plugin)) annotate(plugin, summary.id, undefined);
+      }
+    },
     startTimeoutMs: options.pluginStartTimeoutMs,
     callTimeoutMs: options.pluginCallTimeoutMs,
   });
+
+  /** Tells plugins once that an exchange has finished: its response (body included) recorded, or failed. */
+  const noteCompleted = (summary: ExchangeSummary): void => {
+    if (summary.websocket || completed.has(summary.id)) return;
+    const finished =
+      summary.failure !== undefined ||
+      summary.durationMs !== undefined ||
+      (summary.status !== undefined && summary.responseSize !== undefined);
+    if (!finished) return;
+    const tell = (latest: ExchangeSummary): void => {
+      clearTimeout(completionTimers.get(latest.id));
+      completionTimers.delete(latest.id);
+      completed.add(latest.id);
+      pluginHost.exchangeCompleted(latest);
+    };
+    // The body is stored just after the response (or the part that came, if it broke off):
+    // wait for it, but not for ever. A failure before any response has no body to wait for.
+    const noBodyComing = summary.failure !== undefined && summary.status === undefined;
+    if (summary.responseSize !== undefined || summary.imported || noBodyComing) {
+      tell(summary);
+    } else if (!completionTimers.has(summary.id)) {
+      const timer = setTimeout(() => {
+        const latest = store.get(summary.id)?.summary;
+        if (latest && !completed.has(latest.id)) tell(latest);
+      }, COMPLETION_GRACE_MS);
+      timer.unref?.();
+      completionTimers.set(summary.id, timer);
+    }
+  };
+
+  /** A plugin's badge on an exchange, replacing its last; kept with the exchange's summary. */
+  const annotate = (plugin: string, id: string, annotation: ExchangeAnnotation | undefined): void => {
+    const exchange = store.get(id);
+    if (!exchange) return;
+    const others = (exchange.summary.annotations ?? []).filter((a) => a.plugin !== plugin);
+    const annotations = annotation ? [...others, { ...annotation, plugin }] : others;
+    const { annotations: _old, ...rest } = exchange.summary;
+    void _old;
+    const summary: ExchangeSummary = annotations.length > 0 ? { ...rest, annotations } : rest;
+    store.upsert({ ...exchange, summary });
+    updates.change(summary);
+  };
 
   // Declared before the proxy, which asks it about each request; `proxy` is set below.
   const composer = new Composer({ proxyPort: () => proxy.port, caCert: () => ca.cert });
@@ -199,7 +263,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       websockets,
       port,
       upstreamCAs: options.upstreamCAs,
-      onExchange: (exchange) => updates.change(exchange.summary),
+      onExchange: (exchange) => {
+        updates.change(exchange.summary);
+        noteCompleted(exchange.summary);
+      },
       extraRules: () => pluginHost.rules(),
       describeRule: (ruleId) => pluginHost.describeRule(ruleId),
       ruleEndsWithoutResponse: (ruleId) => pluginHost.endsWithoutResponse(ruleId),
@@ -434,6 +501,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       };
       store.upsert(detail);
       updates.change(summary);
+      noteCompleted(summary);
       imported += 1;
     }
     if (cleared()) throw new Error('The import stopped because the list was cleared.');
@@ -485,6 +553,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         clears += 1;
         updates.reset();
         store.clear();
+        completed.clear();
+        for (const timer of completionTimers.values()) clearTimeout(timer);
+        completionTimers.clear();
         websockets.clear();
         await importWrite;
         await bodies.clear();
@@ -605,6 +676,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     importHar,
     async stop() {
       composer.close();
+      for (const timer of completionTimers.values()) clearTimeout(timer);
+      completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
       await Promise.all([api.stop(), proxy.stop(), formatter.close()]);

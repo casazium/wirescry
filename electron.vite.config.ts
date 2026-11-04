@@ -27,7 +27,32 @@ const idKey = (file: string): string => {
   return process.platform === 'win32' ? key.toLowerCase() : key;
 };
 const proRoot = proDir ? idKey(realpathSync(proDir)) + '/' : undefined;
-const isProModule = (id: string): boolean => proRoot !== undefined && idKey(id).startsWith(proRoot);
+/**
+ * Pro's worker that reads and parses API specs (out/main/pro-spec-worker.js). It's plain
+ * parsing with nothing to protect, so it's left out of the bytecode chunk: a worker thread
+ * then needn't load Pro's bytecode.
+ */
+const proSpecWorker = proDir ? resolve(proDir, 'src/backend/openapi/parse-worker.mts') : undefined;
+/**
+ * Pro's worker that checks traffic against API specs (out/main/pro-check-worker.js). Unlike
+ * the parse worker it's Pro's own logic, so it stays in the bytecode chunk: its entry is
+ * src/backend/pro-check-worker.ts, which only imports it (an entry's own modules would
+ * stay in the entry, readable).
+ */
+const proCheckWorker = proDir ? resolve(proDir, 'src/backend/openapi/check-worker.ts') : undefined;
+// A Pro with OpenAPI support needs both workers: without them YAML specs would fail, and
+// checking would fall back to running on the backend's event loop.
+if (proDir && existsSync(resolve(proDir, 'src/backend/openapi'))) {
+  for (const worker of [proSpecWorker!, proCheckWorker!]) {
+    if (!existsSync(worker)) throw new Error(`Pro has src/backend/openapi but no ${worker}.`);
+  }
+}
+const proSpecWorkerKey =
+  proSpecWorker && existsSync(proSpecWorker) ? idKey(realpathSync(proSpecWorker)) : undefined;
+const isProSpecWorker = (id: string): boolean =>
+  proSpecWorkerKey !== undefined && idKey(id) === proSpecWorkerKey;
+const isProModule = (id: string): boolean =>
+  proRoot !== undefined && idKey(id).startsWith(proRoot) && !isProSpecWorker(id);
 
 /**
  * A second opinion for checkProChunk: resolves the module's file on disk, so a Pro file
@@ -58,7 +83,9 @@ function checkProChunk(): Plugin {
       let found = false;
       for (const chunk of Object.values(bundle)) {
         if (chunk.type !== 'chunk') continue;
-        const pro = Object.keys(chunk.modules).filter((id) => isProModule(id) || isProFile(id));
+        const pro = Object.keys(chunk.modules).filter(
+          (id) => (isProModule(id) || isProFile(id)) && !isProSpecWorker(id),
+        );
         if (chunk.name === 'pro') found = true;
         else if (pro.length > 0) {
           this.error(`Pro code would ship readable in ${chunk.fileName}: ${pro.slice(0, 3).join(', ')}`);
@@ -110,10 +137,14 @@ export default defineConfig(() => {
       resolve: {
         alias: {
           '@wirescry/pro/backend': proBackend,
+          '@wirescry/pro/check-worker':
+            proCheckWorker && existsSync(proCheckWorker)
+              ? proCheckWorker
+              : resolve(__dirname, 'src/pro-stub/check-worker.ts'),
           '@wirescry/plugin-api': pluginApi,
         },
         // Pro's files sit outside this repo; make sure they use this app's Mockttp.
-        dedupe: ['mockttp', '@casazium/license-sdk'],
+        dedupe: ['mockttp', '@casazium/license-sdk', 'yaml'],
       },
       build: {
         rolldownOptions: {
@@ -123,6 +154,11 @@ export default defineConfig(() => {
             backend: resolve(__dirname, 'src/backend/index.ts'),
             // Formats bodies in a worker thread of the backend; see src/backend/formatter.ts.
             'format-worker': resolve(__dirname, 'src/backend/format-worker.mts'),
+            // With Pro, its spec parser's worker; see proSpecWorker above.
+            ...(proSpecWorkerKey ? { 'pro-spec-worker': proSpecWorker! } : {}),
+            ...(proCheckWorker && existsSync(proCheckWorker)
+              ? { 'pro-check-worker': resolve(__dirname, 'src/backend/pro-check-worker.ts') }
+              : {}),
           },
           // With Pro, put all of Pro's backend code in one chunk (chunks/pro-*.js), so that
           // scripts/pro-bytecode/compile.mjs can swap it for V8 bytecode before packaging.

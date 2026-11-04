@@ -109,3 +109,20 @@ describe('DetailPane', () => {
     expect(screen.getByText('Response headers')).toBeTruthy();
   });
 });
+
+describe('DetailPane plugin sections', () => {
+  it('shows plugins’ sections under their headings, and none when there are none', () => {
+    const send = vi.fn(async () => undefined);
+    const view = render(
+      pane({
+        summary: summary('a'),
+        send,
+        sections: [{ key: 'pro:spec', label: 'API spec', content: <p>Matches the spec.</p> }],
+      }),
+    );
+    expect(screen.getByText('API spec').tagName).toBe('SUMMARY');
+    expect(screen.getByText('Matches the spec.')).toBeTruthy();
+    view.rerender(pane({ summary: summary('a'), send }));
+    expect(screen.queryByText('API spec')).toBeNull();
+  });
+});

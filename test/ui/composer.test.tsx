@@ -147,6 +147,14 @@ describe('ComposerView', () => {
   });
 });
 
+describe('ComposerView labels', () => {
+  it('names the headers and body fields by their labels alone, whatever they hold', () => {
+    renderComposer({ ...EMPTY_DRAFT, headersText: 'Accept: */*', body: '{"name": "doggie"}' });
+    expect(screen.getByRole('textbox', { name: 'Headers' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Body' })).toBeTruthy();
+  });
+});
+
 describe('ComposerView shortcuts', () => {
   it('sends on Cmd/Ctrl+Enter from the body', () => {
     const { onSend } = renderComposer({ ...EMPTY_DRAFT, url: 'https://a.example/' });

@@ -40,6 +40,21 @@ export interface ExchangeSummary {
   imported?: true;
   /** True for a request sent from Wirescry's composer. */
   composed?: true;
+  /** Badges plugins put on it, e.g. whether it matches an API spec. At most one per plugin. */
+  annotations?: PluginAnnotation[];
+}
+
+/** A badge a plugin puts on an exchange: shown in the traffic list, with `title` on hover. */
+export interface ExchangeAnnotation {
+  /** Short: at most 16 characters. */
+  label: string;
+  tone: 'ok' | 'warn' | 'info';
+  /** At most 200 characters. */
+  title?: string;
+}
+
+export interface PluginAnnotation extends ExchangeAnnotation {
+  plugin: string;
 }
 
 /**
