@@ -33,9 +33,19 @@ const proRoot = proDir ? idKey(realpathSync(proDir)) + '/' : undefined;
  * then needn't load Pro's bytecode.
  */
 const proSpecWorker = proDir ? resolve(proDir, 'src/backend/openapi/parse-worker.mts') : undefined;
-// A Pro with OpenAPI support needs its worker: without it, YAML specs would fail in the app.
-if (proDir && existsSync(resolve(proDir, 'src/backend/openapi')) && !existsSync(proSpecWorker!)) {
-  throw new Error(`Pro has src/backend/openapi but no ${proSpecWorker}: the spec worker would be missing.`);
+/**
+ * Pro's worker that checks traffic against API specs (out/main/pro-check-worker.js). Unlike
+ * the parse worker it's Pro's own logic, so it stays in the bytecode chunk: its entry is
+ * src/backend/pro-check-worker.ts, which only imports it (an entry's own modules would
+ * stay in the entry, readable).
+ */
+const proCheckWorker = proDir ? resolve(proDir, 'src/backend/openapi/check-worker.ts') : undefined;
+// A Pro with OpenAPI support needs both workers: without them YAML specs would fail, and
+// checking would fall back to running on the backend's event loop.
+if (proDir && existsSync(resolve(proDir, 'src/backend/openapi'))) {
+  for (const worker of [proSpecWorker!, proCheckWorker!]) {
+    if (!existsSync(worker)) throw new Error(`Pro has src/backend/openapi but no ${worker}.`);
+  }
 }
 const proSpecWorkerKey =
   proSpecWorker && existsSync(proSpecWorker) ? idKey(realpathSync(proSpecWorker)) : undefined;
@@ -127,6 +137,10 @@ export default defineConfig(() => {
       resolve: {
         alias: {
           '@wirescry/pro/backend': proBackend,
+          '@wirescry/pro/check-worker':
+            proCheckWorker && existsSync(proCheckWorker)
+              ? proCheckWorker
+              : resolve(__dirname, 'src/pro-stub/check-worker.ts'),
           '@wirescry/plugin-api': pluginApi,
         },
         // Pro's files sit outside this repo; make sure they use this app's Mockttp.
@@ -142,6 +156,9 @@ export default defineConfig(() => {
             'format-worker': resolve(__dirname, 'src/backend/format-worker.mts'),
             // With Pro, its spec parser's worker; see proSpecWorker above.
             ...(proSpecWorkerKey ? { 'pro-spec-worker': proSpecWorker! } : {}),
+            ...(proCheckWorker && existsSync(proCheckWorker)
+              ? { 'pro-check-worker': resolve(__dirname, 'src/backend/pro-check-worker.ts') }
+              : {}),
           },
           // With Pro, put all of Pro's backend code in one chunk (chunks/pro-*.js), so that
           // scripts/pro-bytecode/compile.mjs can swap it for V8 bytecode before packaging.

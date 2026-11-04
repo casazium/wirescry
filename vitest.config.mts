@@ -5,6 +5,7 @@ import backendV8Flags from './src/shared/backend-v8-flags.json' with { type: 'js
 const alias = {
   // Tests run against the free build.
   '@wirescry/pro/backend': resolve(import.meta.dirname, 'src/pro-stub/backend.ts'),
+  '@wirescry/pro/check-worker': resolve(import.meta.dirname, 'src/pro-stub/check-worker.ts'),
   '@wirescry/pro/ui': resolve(import.meta.dirname, 'src/pro-stub/ui.ts'),
   '@wirescry/plugin-api': resolve(import.meta.dirname, 'src/plugin-api'),
 };

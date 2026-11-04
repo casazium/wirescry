@@ -17,6 +17,7 @@
     "noEmit": true,
     "paths": {
       "@wirescry/pro/backend": ["./src/pro-stub/backend.ts"],
+      "@wirescry/pro/check-worker": ["./src/pro-stub/check-worker.ts"],
       "@wirescry/pro/ui": ["./src/pro-stub/ui.ts"]
     }
   }
