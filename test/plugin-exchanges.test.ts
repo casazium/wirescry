@@ -16,6 +16,9 @@ import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import type { ExchangeSummary } from '../src/shared/api';
 import { apiClient, exchangesIn, httpViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
+/** Room for slow CI runners (GitHub's Windows ones especially): the default is 1 s. */
+const SLOW_CI = { timeout: 10_000 };
+
 /** A plugin that records what it's told, and keeps its host for the test to use. */
 function watcher(): BackendPlugin & { host?: BackendPluginHost; completed: ExchangeSummary[] } {
   const plugin: BackendPlugin & { host?: BackendPluginHost; completed: ExchangeSummary[] } = {
@@ -245,7 +248,7 @@ describe('plugins and finished exchanges', () => {
     const plugin = watcher();
     const b = await start([plugin]);
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json`);
-    await expect.poll(() => plugin.completed.length).toBe(1);
+    await expect.poll(() => plugin.completed.length, SLOW_CI).toBe(1);
     expect(plugin.completed[0]).toMatchObject({
       path: '/json',
       status: 200,
@@ -277,7 +280,7 @@ describe('plugins and finished exchanges', () => {
     const b = await start([plugin]);
     const sent = Date.now();
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/empty`);
-    await expect.poll(() => plugin.completed.length).toBe(1);
+    await expect.poll(() => plugin.completed.length, SLOW_CI).toBe(1);
     // Not after the 10 s wait for a body that never comes.
     expect(Date.now() - sent).toBeLessThan(3000);
   });
@@ -302,7 +305,7 @@ describe('plugins and finished exchanges', () => {
       command: 'composeSend',
       request: { method: 'POST', url: `http://localhost:${upstream.port}/echo`, headers: [], body: 'hi' },
     });
-    await expect.poll(() => plugin.completed.map((e) => e.path).sort()).toEqual(['/brew', '/echo']);
+    await expect.poll(() => plugin.completed.map((e) => e.path).sort(), SLOW_CI).toEqual(['/brew', '/echo']);
     expect(plugin.completed.find((e) => e.id === exchangeId)?.composed).toBe(true);
     expect(plugin.completed.find((e) => e.path === '/brew')?.status).toBe(418);
 
@@ -364,7 +367,7 @@ describe('plugins and finished exchanges', () => {
       }),
     );
     await b.importHar(file);
-    await expect.poll(() => plugin.completed.map((e) => e.url)).toEqual(['https://api.example/x']);
+    await expect.poll(() => plugin.completed.map((e) => e.url), SLOW_CI).toEqual(['https://api.example/x']);
     expect(plugin.completed[0]?.imported).toBe(true);
   });
 
@@ -387,7 +390,7 @@ describe('plugins and finished exchanges', () => {
       ws.once('error', reject);
     });
     // It was captured...
-    await expect.poll(() => exchangesIn(api.messages).some((e) => e.websocket)).toBe(true);
+    await expect.poll(() => exchangesIn(api.messages).some((e) => e.websocket), SLOW_CI).toBe(true);
     // ...and the plugin wasn't told about it, even after the 2 s wait for a body.
     await new Promise((resolve) => setTimeout(resolve, 2500));
     expect(plugin.completed.map((e) => e.path)).toEqual(['/json']);
@@ -416,7 +419,7 @@ describe('plugins and finished exchanges', () => {
     const fine = watcher();
     const b = await start([throwing, rejecting, fine]);
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json`);
-    await expect.poll(() => fine.completed.length).toBe(1);
+    await expect.poll(() => fine.completed.length, SLOW_CI).toBe(1);
     expect((await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json`)).status).toBe(200);
   });
 
@@ -424,7 +427,7 @@ describe('plugins and finished exchanges', () => {
     const plugin = watcher();
     const b = await start([plugin]);
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json`);
-    await expect.poll(() => plugin.completed.length).toBe(1);
+    await expect.poll(() => plugin.completed.length, SLOW_CI).toBe(1);
     const id = plugin.completed[0]!.id;
     const detail = plugin.host!.getExchange(id)!;
     expect(detail.summary.path).toBe('/json');
@@ -450,14 +453,14 @@ describe('plugins and finished exchanges', () => {
       plugin.host!.annotate(exchange.id, { label: 'Spec', tone: 'ok', title: 'Matches getThing' });
     };
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json`);
-    await expect.poll(() => plugin.completed.length).toBe(1);
+    await expect.poll(() => plugin.completed.length, SLOW_CI).toBe(1);
     const id = plugin.completed[0]!.id;
     const latest = () =>
       exchangesIn(api.messages)
         .filter((e) => e.id === id)
         .at(-1);
     await expect
-      .poll(() => latest()?.annotations)
+      .poll(() => latest()?.annotations, SLOW_CI)
       .toEqual([{ plugin: 'watcher', label: 'Spec', tone: 'ok', title: 'Matches getThing' }]);
     // Still there after the body's sizes and everything else are recorded.
     await new Promise((resolve) => setTimeout(resolve, 300));
@@ -465,10 +468,10 @@ describe('plugins and finished exchanges', () => {
 
     plugin.host!.annotate(id, { label: 'Spec', tone: 'warn' });
     await expect
-      .poll(() => latest()?.annotations)
+      .poll(() => latest()?.annotations, SLOW_CI)
       .toEqual([{ plugin: 'watcher', label: 'Spec', tone: 'warn' }]);
     plugin.host!.annotate(id, undefined);
-    await expect.poll(() => latest()?.annotations).toBeUndefined();
+    await expect.poll(() => latest()?.annotations, SLOW_CI).toBeUndefined();
     // Unknown exchanges are ignored; bad badges are refused.
     expect(() => plugin.host!.annotate('no-such-id', { label: 'Spec', tone: 'ok' })).not.toThrow();
     expect(() => plugin.host!.annotate(id, { label: 'Way too long a label', tone: 'ok' })).toThrow('1 to 16');
@@ -481,7 +484,7 @@ describe('plugins and finished exchanges', () => {
     two.name = 'second';
     const b = await start([one, two]);
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json`);
-    await expect.poll(() => one.completed.length).toBe(1);
+    await expect.poll(() => one.completed.length, SLOW_CI).toBe(1);
     const id = one.completed[0]!.id;
     one.host!.annotate(id, { label: 'One', tone: 'ok' });
     two.host!.annotate(id, { label: 'Two', tone: 'info' });
@@ -501,10 +504,10 @@ describe('plugins and finished exchanges', () => {
     const b = await start([plugin]);
     const api = await apiClient(b.apiPort);
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json`);
-    await expect.poll(() => plugin.completed.length).toBe(1);
+    await expect.poll(() => plugin.completed.length, SLOW_CI).toBe(1);
     await api.send({ command: 'clear' });
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/json`);
-    await expect.poll(() => plugin.completed.length).toBe(2);
+    await expect.poll(() => plugin.completed.length, SLOW_CI).toBe(2);
     expect(plugin.completed[0]!.id).not.toBe(plugin.completed[1]!.id);
     api.close();
   });
