@@ -27,14 +27,18 @@ const idKey = (file: string): string => {
   return process.platform === 'win32' ? key.toLowerCase() : key;
 };
 const proRoot = proDir ? idKey(realpathSync(proDir)) + '/' : undefined;
-const isProModule = (id: string): boolean => proRoot !== undefined && idKey(id).startsWith(proRoot);
 /**
- * Packages only Pro uses, bundled into its chunk with it (and compiled to bytecode). They
- * resolve from the app's node_modules in CI and from Pro's own when developing.
+ * Pro's worker that reads and parses API specs (out/main/pro-spec-worker.js). It's plain
+ * parsing with nothing to protect, so it's left out of the bytecode chunk: a worker thread
+ * then needn't load Pro's bytecode.
  */
-const PRO_ONLY_PACKAGES = /[\\/]node_modules[\\/]yaml[\\/]/;
-const inProChunk = (id: string): boolean =>
-  isProModule(id) || (proDir !== undefined && PRO_ONLY_PACKAGES.test(id));
+const proSpecWorker = proDir ? resolve(proDir, 'src/backend/openapi/parse-worker.mts') : undefined;
+const proSpecWorkerKey =
+  proSpecWorker && existsSync(proSpecWorker) ? idKey(realpathSync(proSpecWorker)) : undefined;
+const isProSpecWorker = (id: string): boolean =>
+  proSpecWorkerKey !== undefined && idKey(id) === proSpecWorkerKey;
+const isProModule = (id: string): boolean =>
+  proRoot !== undefined && idKey(id).startsWith(proRoot) && !isProSpecWorker(id);
 
 /**
  * A second opinion for checkProChunk: resolves the module's file on disk, so a Pro file
@@ -65,7 +69,9 @@ function checkProChunk(): Plugin {
       let found = false;
       for (const chunk of Object.values(bundle)) {
         if (chunk.type !== 'chunk') continue;
-        const pro = Object.keys(chunk.modules).filter((id) => isProModule(id) || isProFile(id));
+        const pro = Object.keys(chunk.modules).filter(
+          (id) => (isProModule(id) || isProFile(id)) && !isProSpecWorker(id),
+        );
         if (chunk.name === 'pro') found = true;
         else if (pro.length > 0) {
           this.error(`Pro code would ship readable in ${chunk.fileName}: ${pro.slice(0, 3).join(', ')}`);
@@ -130,6 +136,8 @@ export default defineConfig(() => {
             backend: resolve(__dirname, 'src/backend/index.ts'),
             // Formats bodies in a worker thread of the backend; see src/backend/formatter.ts.
             'format-worker': resolve(__dirname, 'src/backend/format-worker.mts'),
+            // With Pro, its spec parser's worker; see proSpecWorker above.
+            ...(proSpecWorkerKey ? { 'pro-spec-worker': proSpecWorker! } : {}),
           },
           // With Pro, put all of Pro's backend code in one chunk (chunks/pro-*.js), so that
           // scripts/pro-bytecode/compile.mjs can swap it for V8 bytecode before packaging.
@@ -142,7 +150,7 @@ export default defineConfig(() => {
                 ? 'globalThis.__wirescryBackendFirstLineAt = performance.now();'
                 : '',
             ...(proDir
-              ? { codeSplitting: { groups: [{ name: 'pro', test: inProChunk, priority: 1 }] } }
+              ? { codeSplitting: { groups: [{ name: 'pro', test: isProModule, priority: 1 }] } }
               : {}),
           },
         },

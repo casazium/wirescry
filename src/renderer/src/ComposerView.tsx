@@ -140,25 +140,29 @@ export function ComposerView({
               {onCancel ? 'Cancel' : sending ? 'Sending…' : 'Send'}
             </button>
           </div>
-          <label className="composer-field">
-            <span>Headers</span>
+          {/* Labelled by id, not by wrapping: a wrapping label would make the field's
+              accessible name include everything typed in it. */}
+          <div className="composer-field">
+            <label htmlFor="composer-headers">Headers</label>
             <textarea
+              id="composer-headers"
               rows={5}
               spellCheck={false}
               placeholder={'Accept: application/json\nAuthorization: Bearer …'}
               value={draft.headersText}
               onChange={(e) => set({ headersText: e.target.value })}
             />
-          </label>
-          <label className="composer-field">
-            <span>Body</span>
+          </div>
+          <div className="composer-field">
+            <label htmlFor="composer-body">Body</label>
             <textarea
+              id="composer-body"
               rows={7}
               spellCheck={false}
               value={draft.body}
               onChange={(e) => set({ body: e.target.value })}
             />
-          </label>
+          </div>
           <p className="muted composer-hint">
             Sent through Wirescry, so it shows in Traffic and rules apply. Host and Content-Length are set for
             you. ⌘/Ctrl+Enter sends.
