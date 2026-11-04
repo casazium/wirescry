@@ -58,18 +58,41 @@ describe('validateAnnotation', () => {
     [{ label: 3, tone: 'ok' }, '1 to 16'],
     [{ label: 'Spec', tone: 'error' }, 'ok, warn or info'],
     [{ label: 'Spec' }, 'ok, warn or info'],
-    [{ label: 'Spec', tone: 'ok', title: 'x'.repeat(201) }, 'at most 200'],
-    [{ label: 'Spec', tone: 'ok', title: 'a\u0007b' }, 'at most 200'],
-    [{ label: 'Spec', tone: 'ok', title: 5 }, 'at most 200'],
+    [{ label: 'Spec', tone: 'ok', title: 5 }, 'must be text'],
+    [{ label: 'Spec\u200e', tone: 'ok' }, '1 to 16'],
+    [{ label: 'Sp\ufeffec', tone: 'ok' }, '1 to 16'],
+    [{ label: '\u2060', tone: 'ok' }, '1 to 16'],
+    [{ label: '😀'.repeat(17), tone: 'ok' }, '1 to 16'],
     // Characters that could disguise the path beside the badge.
     [{ label: '\u202eSpec', tone: 'ok' }, '1 to 16'],
     [{ label: '\u200b', tone: 'ok' }, '1 to 16'],
     [{ label: 'Spec\u2028', tone: 'ok' }, '1 to 16'],
     [{ label: 'Spec\u0085', tone: 'ok' }, '1 to 16'],
-    [{ label: 'Spec', tone: 'ok', title: 'ok\u2066hidden' }, 'at most 200'],
-    [{ label: 'Spec', tone: 'ok', title: 'a\u2029b' }, 'at most 200'],
   ])('refuses %j', (annotation, message) => {
     expect(() => validateAnnotation(annotation)).toThrow(message);
+  });
+});
+
+describe('validateAnnotation and real-world text', () => {
+  it('allows emoji, joiners and scripts that need them, counting characters not UTF-16 units', () => {
+    for (const label of ['👩‍💻 Dev', '🏴󠁧󠁢󠁳󠁣󠁴󠁿', '🇫🇷 OK', 'می‌خواهم', 'क्‍ष', '😀'.repeat(16)]) {
+      expect(validateAnnotation({ label, tone: 'ok' }).label).toBe(label);
+    }
+  });
+
+  it('tidies a title instead of refusing it: unsafe characters and runs of space become one space, cut to 200', () => {
+    expect(
+      validateAnnotation({ label: 'Spec', tone: 'ok', title: 'Pet\nstore\t API \u202e2.0\u0007 ' }).title,
+    ).toBe('Pet store API 2.0');
+    expect(validateAnnotation({ label: 'Spec', tone: 'ok', title: 'x'.repeat(250) }).title).toHaveLength(200);
+    expect(validateAnnotation({ label: 'Spec', tone: 'ok', title: '😀'.repeat(250) }).title).toBe(
+      '😀'.repeat(200),
+    );
+    // Nothing left: no title.
+    expect(validateAnnotation({ label: 'Spec', tone: 'ok', title: '\u2066\n ' })).toEqual({
+      label: 'Spec',
+      tone: 'ok',
+    });
   });
 });
 
@@ -132,10 +155,21 @@ describe('PluginHost and a plugin’s lifetime', () => {
     await new Promise((resolve) => setTimeout(resolve, 20));
     pluginHost.exchangeCompleted(summary);
     expect(plugin.completed).toEqual([]);
+    // Nor can it read or badge anything yet.
+    expect(plugin.host!.getExchange('x')).toBeUndefined();
+    expect(await plugin.host!.getBody('x', 'response')).toBeNull();
+    plugin.host!.annotate('x', { label: 'Early', tone: 'ok' });
+    expect(annotated).toEqual([]);
     finishStart();
     await starting;
     pluginHost.exchangeCompleted(summary);
     expect(plugin.completed).toHaveLength(1);
+
+    // Once started, it can.
+    expect(plugin.host!.getExchange('x')).toBeDefined();
+    plugin.host!.annotate('x', { label: 'Now', tone: 'ok' });
+    expect(annotated).toEqual([['watcher', 'x', { label: 'Now', tone: 'ok' }]]);
+    annotated = [];
 
     await pluginHost.stopAll();
     pluginHost.exchangeCompleted(summary);
@@ -158,6 +192,12 @@ describe('PluginHost and a plugin’s lifetime', () => {
     await pluginHost.startAll();
     for (let i = 0; i < 50; i++) pluginHost.exchangeCompleted(summary);
     expect(errors.mock.calls.filter(([m]) => String(m).includes('exchangeCompleted'))).toHaveLength(5);
+    // ...then every thousandth.
+    for (let i = 50; i < 2000; i++) pluginHost.exchangeCompleted(summary);
+    const logged = errors.mock.calls.map(([m]) => String(m)).filter((m) => m.includes('exchangeCompleted'));
+    expect(logged).toHaveLength(7);
+    expect(logged.at(-2)).toContain('(error 1000)');
+    expect(logged.at(-1)).toContain('(error 2000)');
     errors.mockRestore();
   });
 });

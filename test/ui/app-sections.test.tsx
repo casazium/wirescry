@@ -163,6 +163,17 @@ describe('Plugin sections in the detail pane', () => {
     expect(screen.getByText('Spec result for /plain')).toBeTruthy();
   });
 
+  it('gives a section that broke on one exchange a fresh start on the next', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const alsoBadged = { ...breaking, annotations: [{ plugin: 'pro', label: 'Spec', tone: 'ok' as const }] };
+    await started(true, [badged, alsoBadged]);
+    await open('/break');
+    expect(screen.getByText(/section broke/)).toBeTruthy();
+    await open('/users/1');
+    expect(screen.queryByText(/section broke/)).toBeNull();
+    expect(screen.getByText('Spec result for /users/1')).toBeTruthy();
+  });
+
   it('shows no sections while the plugin isn’t running', async () => {
     await started(false);
     await open('/users/1');

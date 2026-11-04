@@ -33,6 +33,10 @@ const proRoot = proDir ? idKey(realpathSync(proDir)) + '/' : undefined;
  * then needn't load Pro's bytecode.
  */
 const proSpecWorker = proDir ? resolve(proDir, 'src/backend/openapi/parse-worker.mts') : undefined;
+// A Pro with OpenAPI support needs its worker: without it, YAML specs would fail in the app.
+if (proDir && existsSync(resolve(proDir, 'src/backend/openapi')) && !existsSync(proSpecWorker!)) {
+  throw new Error(`Pro has src/backend/openapi but no ${proSpecWorker}: the spec worker would be missing.`);
+}
 const proSpecWorkerKey =
   proSpecWorker && existsSync(proSpecWorker) ? idKey(realpathSync(proSpecWorker)) : undefined;
 const isProSpecWorker = (id: string): boolean =>

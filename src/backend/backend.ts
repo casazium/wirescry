@@ -104,10 +104,10 @@ export interface RunningBackend {
   stop(): Promise<void>;
 }
 
-/** Starts the proxy and the local API. Runs without Electron, so tests can use it directly. */
 /** How long a finished exchange's body may take to be stored before plugins are told anyway. */
 const COMPLETION_GRACE_MS = 10_000;
 
+/** Starts the proxy and the local API. Runs without Electron, so tests can use it directly. */
 export async function startBackend(options: BackendOptions): Promise<RunningBackend> {
   const { dataDir } = options;
   const step = options.onStartupStep ?? (() => undefined);

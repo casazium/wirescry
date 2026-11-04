@@ -34,10 +34,10 @@ interface Props {
   empty: React.ReactNode;
 }
 
-/** The traffic list. Only rows in view are in the DOM, so it stays fast with thousands of rows. */
 /** Plugin badges shown on one row. */
 const MAX_BADGES = 3;
 
+/** The traffic list. Only rows in view are in the DOM, so it stays fast with thousands of rows. */
 export function TrafficList({
   rows,
   staleIds,

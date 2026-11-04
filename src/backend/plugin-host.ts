@@ -17,28 +17,39 @@ import { createSecureStore, type Encryptor } from './secure-store';
 
 const NAME = /^[a-z0-9-]{1,32}$/;
 const TONES = new Set(['ok', 'warn', 'info']);
-// Control and format characters (including bidi overrides and zero-width ones) and line or
-// paragraph separators: a badge sits next to the request's path and mustn't disguise it.
-const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+// Characters that could disguise the request's path beside a badge, or break its line:
+// control characters, line and paragraph separators, bidi controls, and invisible spaces
+// and marks. Joiners (U+200C, U+200D), which emoji and many scripts need, are fine.
+const UNSAFE_TEXT =
+  /[\p{Cc}\p{Zl}\p{Zp}\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+const UNSAFE_TEXT_ALL = new RegExp(UNSAFE_TEXT.source, 'gu');
+/** Characters as people count them (code points), not UTF-16 units. */
+const length = (text: string): number => [...text].length;
 
 /** Checks a badge from a plugin, and returns a clean copy. */
 export function validateAnnotation(annotation: unknown): ExchangeAnnotation {
   if (!annotation || typeof annotation !== 'object') throw new Error('An annotation must be an object.');
   // Each field read once, so a getter can't pass the checks and then return something else.
   const { label, tone, title } = annotation as Partial<Record<keyof ExchangeAnnotation, unknown>>;
-  if (typeof label !== 'string' || label.trim() === '' || label.length > 16 || UNSAFE_TEXT.test(label)) {
-    throw new Error('An annotation label must be 1 to 16 characters of plain text.');
+  if (typeof label !== 'string' || label.trim() === '' || length(label) > 16 || UNSAFE_TEXT.test(label)) {
+    throw new Error(
+      'An annotation label must be 1 to 16 characters, without control characters, bidi controls or invisible spaces.',
+    );
   }
   if (typeof tone !== 'string' || !TONES.has(tone)) {
     throw new Error("An annotation's tone must be ok, warn or info.");
   }
-  if (title !== undefined && (typeof title !== 'string' || title.length > 200 || UNSAFE_TEXT.test(title))) {
-    throw new Error('An annotation title must be at most 200 characters of plain text.');
-  }
+  if (title !== undefined && typeof title !== 'string') throw new Error('An annotation title must be text.');
+  // A title is shown only on hover and read out: tidied rather than refused, so a stray
+  // newline from a spec or a request doesn't lose the badge.
+  const cleanTitle =
+    typeof title === 'string'
+      ? [...title.replace(UNSAFE_TEXT_ALL, ' ').replace(/\s+/g, ' ').trim()].slice(0, 200).join('')
+      : '';
   return {
     label,
     tone: tone as ExchangeAnnotation['tone'],
-    ...(title !== undefined ? { title: title as string } : {}),
+    ...(cleanTitle ? { title: cleanTitle } : {}),
   };
 }
 /** Mockttp steps that end a request without a response. */
@@ -150,18 +161,18 @@ export class PluginHost {
             },
             // Copies, so a plugin can't change what the rest of Wirescry sees.
             getExchange: (exchangeId) => {
-              if (!this.isRunning(plugin)) return undefined;
+              if (!this.hasStarted(plugin)) return undefined;
               const detail = this.options.getExchange(String(exchangeId));
               return detail ? structuredClone(detail) : undefined;
             },
             getBody: async (exchangeId, side) => {
               if (side !== 'request' && side !== 'response')
                 throw new Error('side must be request or response');
-              if (!this.isRunning(plugin)) return null;
+              if (!this.hasStarted(plugin)) return null;
               return this.options.getBody(String(exchangeId), side);
             },
             annotate: (exchangeId, annotation) => {
-              if (!this.isRunning(plugin)) return;
+              if (!this.hasStarted(plugin)) return;
               const clean = annotation === undefined ? undefined : validateAnnotation(annotation);
               this.options.annotate(plugin.name, String(exchangeId), clean);
             },
@@ -198,7 +209,7 @@ export class PluginHost {
   exchangeCompleted(summary: ExchangeSummary): void {
     for (const plugin of this.options.plugins) {
       // Only once it has finished starting, and never once it has stopped.
-      if (!plugin.exchangeCompleted || this.states.get(plugin)?.state !== 'running') continue;
+      if (!plugin.exchangeCompleted || !this.hasStarted(plugin)) continue;
       const report = (error: unknown): void => {
         // A plugin failing on every exchange mustn't flood the log: the first few, then now and then.
         const count = (this.completionErrors.get(plugin.name) ?? 0) + 1;
@@ -252,6 +263,11 @@ export class PluginHost {
         console.error(`[wirescry] plugin ${plugin.name} failed to stop:`, error);
       });
     }
+  }
+
+  /** Finished starting, and not stopped: what reading and badging exchanges need. */
+  private hasStarted(plugin: BackendPlugin): boolean {
+    return this.states.get(plugin)?.state === 'running';
   }
 
   private isRunning(plugin: BackendPlugin): boolean {

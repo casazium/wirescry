@@ -98,7 +98,9 @@ export interface BackendPluginHost {
   getBody(exchangeId: string, side: BodySide): Promise<BodyContent | null>;
   /**
    * Puts this plugin's badge on an exchange, replacing its previous one, or removes it
-   * (undefined). Ignored for an exchange that's gone. Throws if the badge isn't valid.
+   * (undefined). Ignored for an exchange that's gone, and until the plugin has started.
+   * Throws if the label isn't 1 to 16 characters, or has control characters, bidi controls
+   * or invisible spaces; the title is tidied (those become spaces) and cut to 200.
    */
   annotate(exchangeId: string, annotation: ExchangeAnnotation | undefined): void;
   /** Writes to Wirescry's log. */

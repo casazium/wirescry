@@ -114,6 +114,11 @@ describe('TrafficList plugin badges', () => {
         }),
       ],
     });
-    expect(document.querySelectorAll('.plugin-badge')).toHaveLength(3);
+    // The first three, in the order they came.
+    expect([...document.querySelectorAll('.plugin-badge')].map((b) => b.textContent)).toEqual([
+      'p1',
+      'p2',
+      'p3',
+    ]);
   });
 });
