@@ -1,19 +1,20 @@
 /**
- * Checks each AppImage in release/<version>/ can start on a stock Linux install: its
+ * Checks each AppImage in release/<version>/ can start on a stock Linux install. Its
  * launcher (the ELF program at the start of the file, which mounts the app and runs it)
- * must be static or need only libraries every distribution has under their usual names.
+ * must be static: a legacy launcher needed libz.so on arm64 (only zlib's developer package
+ * has that name) and loaded FUSE 2 at run time, which Ubuntu hasn't installed by default
+ * since 22.04, so a needed-libraries list can't vouch for one. Then it runs each launcher
+ * for its version, which needs nothing but the launcher itself.
  *
- * The packaged-app self-test runs the unpacked app, never this launcher, which is how an
- * arm64 AppImage that needed libz.so (a name only zlib's developer package provides) got
- * through CI.
+ * The packaged-app self-test runs the unpacked app, never this launcher, which is how those
+ * got through CI.
  *
  *   node scripts/check-appimage.mjs
  */
-import { readdirSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { closeSync, openSync, readdirSync, readFileSync, readSync } from 'node:fs';
+import { arch } from 'node:process';
 import { join } from 'node:path';
-
-const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
-const dir = join('release', version);
 
 /** The libraries an ELF program needs (DT_NEEDED), or [] if it's static. */
 export function neededLibraries(buf) {
@@ -56,14 +57,26 @@ export function neededLibraries(buf) {
     });
 }
 
-/** Problems with a launcher's libraries: an unversioned name (libz.so) needs a -dev package. */
+/** Problems with a launcher's libraries: any at all, since a static launcher is the only one known to start everywhere. */
 export function launcherProblems(libraries) {
-  return libraries
-    .filter((lib) => !/\.so\.\d/.test(lib))
-    .map((lib) => `needs ${lib}, which only a developer package provides`);
+  if (libraries.length === 0) return [];
+  return [`isn't static: it needs ${libraries.join(', ')}, and may load FUSE 2 at run time`];
+}
+
+/** The start of a file: an AppImage's launcher and its tables are in its first few MB. */
+function head(path, bytes = 8 * 1024 * 1024) {
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(bytes);
+    return buf.subarray(0, readSync(fd, buf, 0, bytes, 0));
+  } finally {
+    closeSync(fd);
+  }
 }
 
 if (process.argv[1]?.endsWith('check-appimage.mjs')) {
+  const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+  const dir = join('release', version);
   const images = readdirSync(dir).filter((f) => f.endsWith('.AppImage'));
   if (images.length === 0) {
     console.error(`No AppImage in ${dir}`);
@@ -71,11 +84,24 @@ if (process.argv[1]?.endsWith('check-appimage.mjs')) {
   }
   let failed = false;
   for (const name of images) {
-    const libraries = neededLibraries(readFileSync(join(dir, name)));
+    const path = join(dir, name);
+    const libraries = neededLibraries(head(path));
     const problems = launcherProblems(libraries);
     console.log(`${name}: launcher ${libraries.length ? `needs ${libraries.join(', ')}` : 'is static'}`);
     for (const problem of problems) console.error(`${name}: FAILED: the launcher ${problem}`);
     if (problems.length) failed = true;
+    // Only this machine's CPU can run it.
+    if ((arch === 'arm64') !== name.includes('-arm64')) continue;
+    const run = spawnSync(path, ['--appimage-version'], { encoding: 'utf8', timeout: 30_000 });
+    const output = `${run.stdout ?? ''}${run.stderr ?? ''}`.trim();
+    if (run.status === 0) {
+      console.log(`${name}: launcher runs: ${output.split('\n')[0]}`);
+    } else {
+      console.error(
+        `${name}: FAILED: the launcher didn't run (exit ${run.status}): ${output || run.error?.message}`,
+      );
+      failed = true;
+    }
   }
   process.exit(failed ? 1 : 0);
 }

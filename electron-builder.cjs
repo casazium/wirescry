@@ -144,12 +144,11 @@ module.exports = {
   // No native modules are shipped, so skip rebuilding dependencies for Electron.
   npmRebuild: false,
   // The AppImage launcher (the program at the start of the file). The default, legacy one
-  // for arm64 needs libz.so, which stock Ubuntu doesn't have (only libz.so.1), so arm64
-  // AppImages wouldn't start. The newer one is static: it needs no libz, and no FUSE 2
-  // either. x64 keeps the legacy launcher its users already run. Linux builds only its own
-  // CPU (see release.yml), so the build machine's CPU is the target's. check-appimage.mjs
-  // checks the result in CI.
-  toolsets: { appimage: process.platform === 'linux' && process.arch === 'arm64' ? '1.0.3' : '0.0.0' },
+  // needs FUSE 2, which Ubuntu hasn't installed by default since 22.04, and for arm64 also
+  // libz.so, which only zlib's developer package provides: on a stock install the AppImage
+  // didn't start. The newer one is static and uses the system's FUSE 3. Its AppRun falls back
+  // to --no-sandbox where user namespaces are blocked. check-appimage.mjs checks it in CI.
+  toolsets: { appimage: '1.0.3' },
   // Never ship a CA: each install generates its own at first run, in the user data folder.
   asar: true,
   beforePack: checkBuild,

@@ -998,7 +998,9 @@ describe('Docker relay', () => {
       try {
         const reply = await request('GET', '/_ping');
         expect(reply.status).toBe(502);
-        expect(JSON.parse(reply.body).message).toMatch(/permission to use Docker.*docker group/);
+        expect(JSON.parse(reply.body).message).toMatch(
+          process.platform === 'linux' ? /permission to use Docker.*docker group/ : /permission/,
+        );
         // And for attach.
         const socket = net.connect(relay.listenPath);
         let received = '';
@@ -1006,7 +1008,7 @@ describe('Docker relay', () => {
         socket.write(
           'POST /containers/c1/attach HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n',
         );
-        await waitFor(() => received.includes('docker group'));
+        await waitFor(() => received.includes('permission'));
         expect(received).toMatch(/^HTTP\/1\.1 502/);
         socket.destroy();
       } finally {
@@ -1019,8 +1021,11 @@ describe('Docker relay', () => {
     const error = (code: string, message = code) => Object.assign(new Error(message), { code });
     expect(unreachableReason(error('ENOENT'))).toBe('Is Docker running?');
     expect(unreachableReason(error('ECONNREFUSED'))).toBe('Is Docker running?');
-    expect(unreachableReason(error('EACCES'))).toMatch(/sudo usermod -aG docker \$USER/);
-    expect(unreachableReason(error('EPERM'))).toMatch(/docker group/);
+    expect(unreachableReason(error('EACCES'), 'linux')).toMatch(/sudo usermod -aG docker \$USER/);
+    expect(unreachableReason(error('EPERM'), 'linux')).toMatch(/docker group/);
+    // Windows: a named pipe refusing the user is EPERM, and the group is docker-users.
+    expect(unreachableReason(error('EPERM'), 'win32')).toMatch(/docker-users/);
+    expect(unreachableReason(error('EACCES'), 'darwin')).toMatch(/Docker Desktop is running as you/);
     expect(unreachableReason(error('ETIMEDOUT', 'connect timed out'))).toBe('connect timed out');
   });
 

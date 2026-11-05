@@ -773,13 +773,18 @@ export async function makePrivateDir(dir: string): Promise<void> {
 }
 
 /** What to tell someone whose Docker command Wirescry couldn't pass on, from the connection error. */
-export function unreachableReason(error: Error): string {
+export function unreachableReason(error: Error, platform: NodeJS.Platform = process.platform): string {
   const code = (error as NodeJS.ErrnoException).code;
   if (code === 'ENOENT' || code === 'ECONNREFUSED') return 'Is Docker running?';
-  // On Linux, Docker's socket belongs to the docker group. Wirescry connects as you, and gets
-  // the groups you had when it started.
+  // Wirescry connects as you, with the groups you had when it started.
   if (code === 'EACCES' || code === 'EPERM') {
-    return "You don't have permission to use Docker. On Linux, add yourself to the docker group (sudo usermod -aG docker $USER), log out and back in, then start Wirescry again.";
+    if (platform === 'linux') {
+      return "You don't have permission to use Docker. Add yourself to the docker group (sudo usermod -aG docker $USER), log out and back in (or restart), then start Wirescry again.";
+    }
+    if (platform === 'win32') {
+      return "You don't have permission to use Docker. Add yourself to the docker-users group (as an administrator: net localgroup docker-users <your user name> /add), sign out and back in, then start Wirescry again.";
+    }
+    return "You don't have permission to open Docker's socket. Check Docker Desktop is running as you.";
   }
   return error.message;
 }
