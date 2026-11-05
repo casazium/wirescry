@@ -258,8 +258,12 @@ export class DockerSetup {
         continue;
       }
       const wait = this.lookupStarted + LOOKUP_SPACING_MS - clock();
-      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(wait, LOOKUP_SPACING_MS)));
-      if (this.lookup) continue;
+      if (wait > 0) {
+        // Timers can fire a little early (Windows' are coarse), so look again rather than
+        // assume the spacing has passed.
+        await new Promise((resolve) => setTimeout(resolve, Math.min(Math.ceil(wait), LOOKUP_SPACING_MS)));
+        continue;
+      }
       this.lookupStarted = clock();
       this.lookup = (async () => {
         const relay = this.relay;

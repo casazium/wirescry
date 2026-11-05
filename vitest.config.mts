@@ -18,6 +18,10 @@ export default defineConfig({
   },
   test: {
     testTimeout: 20_000,
+    // expect.poll waits for something to happen, and returns as soon as it does. Its default of
+    // 1 s was too short on slow CI machines (a HAR import on Windows); waiting longer costs
+    // nothing when things are quick.
+    expect: { poll: { timeout: 5_000 } },
     projects: [
       {
         extends: true,

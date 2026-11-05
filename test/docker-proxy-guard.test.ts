@@ -317,10 +317,13 @@ describe('Which containers the proxy accepts on Linux', () => {
 
   it('spaces lookups out for a flood of unknown addresses', async () => {
     const { setup, lookups } = setupWith(() => [], 5);
-    const started = Date.now();
+    // The same clock the spacing uses: Date.now() is coarse on Windows, and could make the
+    // run look shorter than it was.
+    const started = performance.now();
     await Promise.all(Array.from({ length: 30 }, (_, i) => setup.isSetUpContainer(`172.18.1.${i}`)));
-    const elapsed = Date.now() - started;
-    expect(lookups.count).toBeLessThanOrEqual(Math.ceil(elapsed / 100) + 1);
+    const elapsed = performance.now() - started;
+    // Lookups start at least 100 ms apart: at most one at the start and one per 100 ms after.
+    expect(lookups.count).toBeLessThanOrEqual(Math.floor(elapsed / 100) + 1);
   });
 
   it('takes only Linux, and only Docker bridges', () => {
