@@ -80,8 +80,9 @@ export function DockerSection({ status, connected = true, send }: Props): React.
               </li>
               <li>
                 Not covered: containers that are already running, the steps of <code>docker build</code>,
-                Windows containers, and Docker on another computer. If your shell profile sets{' '}
-                <code>DOCKER_HOST</code> itself, it replaces Wirescry&apos;s and nothing is set up.
+                Windows containers, IPv6-only container networks, and Docker on another computer. If your
+                shell profile sets <code>DOCKER_HOST</code> itself, it replaces Wirescry&apos;s and nothing is
+                set up.
               </li>
               {status.platform === 'linux' && (
                 <li>
