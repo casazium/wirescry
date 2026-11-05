@@ -592,6 +592,12 @@ export class DockerRelay {
     );
   }
 
+  /** What the daemon says it is, or undefined if it isn't running or can't be asked. */
+  async describeDaemon(): Promise<DaemonInfo | undefined> {
+    const target = this.socketPath();
+    return typeof target === 'string' ? this.daemonInfo(target) : undefined;
+  }
+
   /** Why the daemon's containers are left alone, if they are; undefined if not, or if it can't be asked. */
   async unsupportedReason(): Promise<string | undefined> {
     const target = this.socketPath();

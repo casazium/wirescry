@@ -34,9 +34,9 @@ describe('Docker section', () => {
       'sudo ufw allow from 192.168.144.0/20 to any port 8001 proto tcp',
     ];
     const copied: string[] = [];
-    const CopyButton = ({ text }: { text: string }) => (
+    const CopyButton = ({ text, label = 'Copy' }: { text: string; label?: string }) => (
       <button type="button" onClick={() => copied.push(text)}>
-        Copy
+        {label}
       </button>
     );
     const ready = { state: 'ready', daemon: 'unix:///var/run/docker.sock' } as const;
@@ -48,8 +48,20 @@ describe('Docker section', () => {
     );
     expect(screen.getByRole('note').textContent).toMatch(/ufw, this computer.s firewall, is on.*hang/);
     expect(screen.getByText(commands.join('\n'), { collapseWhitespace: false, trim: false })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy ufw commands' }));
     expect(copied).toEqual([commands.join('\n')]);
+    // No fixed port: Wirescry may pick another, so it says to fix one.
+    expect(screen.getByText(/picked port 8001 this time.*Always use port/)).toBeTruthy();
+    rerender(
+      <DockerSection
+        status={{
+          ...withDocker({ ...ready, firewall: { name: 'ufw', commands } }, 'linux'),
+          proxyPortSetting: 8001,
+        }}
+        CopyButton={CopyButton}
+      />,
+    );
+    expect(screen.getByText(/If you change the proxy port, run them again/)).toBeTruthy();
     // No firewall reported, or setup off: no note.
     rerender(<DockerSection status={withDocker(ready, 'linux')} CopyButton={CopyButton} />);
     expect(screen.queryByRole('note')).toBeNull();

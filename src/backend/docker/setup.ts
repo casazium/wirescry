@@ -3,7 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DockerStatus } from '../../shared/api';
 import { dockerBridgeChecker } from './bridges';
-import { firewallHint, type FirewallHint } from './firewall';
+import { firewallHint, type FirewallHint, type UfwFiles } from './firewall';
+import type { DaemonInfo } from './runtime';
 import { findDockerEndpoint, type DockerEndpoint } from './endpoint';
 import { DockerRelay, makePrivateDir, type ContainerCreated } from './relay';
 export type { ContainerCreated };
@@ -33,8 +34,8 @@ export interface DockerSetupOptions {
   containerDir: () => string;
   platform?: NodeJS.Platform;
   onContainer?: (event: ContainerCreated) => void;
-  /** Tests: ufw's config instead of /etc/ufw/ufw.conf (undefined: not there). */
-  readUfwConf?: () => string | undefined;
+  /** Tests: ufw's files instead of /etc/ufw/ufw.conf and /etc/default/ufw. */
+  readUfw?: () => UfwFiles;
   /** Tests: this machine's interfaces instead of os.networkInterfaces(). */
   networkInterfaces?: () => ReturnType<typeof os.networkInterfaces>;
 }
@@ -84,6 +85,10 @@ export class DockerSetup {
   private unsupported?: string;
   private active: boolean;
   private lastContainer?: ContainerCreated;
+  /** What the daemon said it is at the last refresh, if it was running. */
+  private daemon?: DaemonInfo;
+  /** A container's connection got through to the proxy, so no firewall is in the way. */
+  private bridgeReached = false;
 
   constructor(private readonly options: DockerSetupOptions) {
     this.platform = options.platform ?? process.platform;
@@ -150,6 +155,7 @@ export class DockerSetup {
     // Which Docker this is, if it's running: one Wirescry doesn't set up is said so up front.
     // When it isn't running, the relay checks again for each container.
     this.unsupported = this.relay ? await this.relay.unsupportedReason().catch(() => undefined) : undefined;
+    this.daemon = this.relay ? await this.relay.describeDaemon().catch(() => undefined) : undefined;
     return JSON.stringify(this.status()) !== before;
   }
 
@@ -171,14 +177,18 @@ export class DockerSetup {
   }
 
   /**
-   * A firewall blocking containers from the proxy. Only Docker Engine on Linux: there their
-   * connections come from Docker's bridges; Docker Desktop's (its socket is under
-   * ~/.docker/desktop) arrive from 127.0.0.1, which firewalls let through.
+   * A firewall that may block containers from the proxy. Only Docker Engine on Linux, as the
+   * daemon says it is: there containers' connections come from Docker's bridges; Docker
+   * Desktop's arrive from 127.0.0.1, which firewalls let through. Not once a container's
+   * connection has got through: then nothing's in the way.
    */
   private firewall(): FirewallHint | undefined {
-    if (this.platform !== 'linux' || this.endpoint.kind !== 'local') return undefined;
+    if (this.platform !== 'linux' || this.endpoint.kind !== 'local' || this.bridgeReached) return undefined;
+    const daemon = this.daemon;
+    if (!daemon || daemon.osType !== 'linux' || /docker desktop/i.test(daemon.operatingSystem))
+      return undefined;
     if (this.endpoint.socketPath.includes('/.docker/desktop/')) return undefined;
-    return firewallHint(this.options.proxyPort(), this.options.readUfwConf, this.options.networkInterfaces);
+    return firewallHint(this.options.proxyPort(), this.options.readUfw, this.options.networkInterfaces);
   }
 
   /** What a Wirescry terminal adds to its environment for Docker. */
@@ -205,6 +215,8 @@ export class DockerSetup {
       .flat()
       .some((info) => info?.address === v4);
     if (own) return true;
+    // From a container on a bridge: it got through any firewall here.
+    this.bridgeReached = true;
     return this.isSetUpContainer(v4);
   }
 

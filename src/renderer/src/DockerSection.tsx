@@ -6,7 +6,7 @@ interface Props {
   status: ProxyStatus;
   connected?: boolean;
   send?: (command: Command) => Promise<unknown>;
-  CopyButton?: (props: { text: string }) => React.JSX.Element;
+  CopyButton?: (props: { text: string; label?: string }) => React.JSX.Element;
 }
 
 /** What Wirescry does for Docker, and whether it can here. */
@@ -87,8 +87,8 @@ export function DockerSection({ status, connected = true, send, CopyButton }: Pr
               </li>
               {status.platform === 'linux' && (
                 <li>
-                  On Linux, a firewall that blocks containers from reaching this computer (ufw, firewalld)
-                  blocks the proxy too; allow Docker&apos;s networks to reach port {status.proxyPort}.
+                  On Linux, a firewall that blocks containers from reaching this computer, such as ufw, blocks
+                  the proxy too; allow Docker&apos;s networks to reach port {status.proxyPort}.
                 </li>
               )}
             </ul>
@@ -102,12 +102,17 @@ export function DockerSection({ status, connected = true, send, CopyButton }: Pr
             containers can&apos;t reach Wirescry, and their HTTP requests hang. To let them in:
           </p>
           <div className="snippet">
-            <pre className="code">{docker.firewall.commands.join('\n')}</pre>
-            {CopyButton && <CopyButton text={docker.firewall.commands.join('\n')} />}
+            <pre className="code" aria-label="ufw commands">
+              {docker.firewall.commands.join('\n')}
+            </pre>
+            {CopyButton && (
+              <CopyButton text={docker.firewall.commands.join('\n')} label="Copy ufw commands" />
+            )}
           </div>
           <p className="muted">
-            If you choose another proxy port, run it again with the new one. A fixed port under Proxy port
-            keeps the rule working.
+            {status.proxyPortSetting === null
+              ? `Wirescry picked port ${status.proxyPort} this time, and may pick another next time. Choose Always use port under Proxy port, so the rule keeps working.`
+              : 'If you change the proxy port, run them again with the new one.'}
           </p>
         </div>
       )}
