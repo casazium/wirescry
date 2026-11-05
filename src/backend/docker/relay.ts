@@ -1,6 +1,7 @@
 import { mkdir, lstat, unlink, chmod } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
+import { pipeline } from 'node:stream';
 import { composeNames } from './compose';
 import {
   namesInDefinition,
@@ -77,8 +78,16 @@ function readAll(stream: NodeJS.ReadableStream, limit: number): Promise<Buffer |
       }
       chunks.push(chunk);
     });
-    stream.once('end', () => resolve(over ? undefined : Buffer.concat(chunks)));
+    let ended = false;
+    stream.once('end', () => {
+      ended = true;
+      resolve(over ? undefined : Buffer.concat(chunks));
+    });
     stream.once('error', reject);
+    // A connection that drops mid-body closes without 'end', and not always with 'error'.
+    stream.once('close', () => {
+      if (!ended) reject(new Error('The connection closed before the whole message arrived.'));
+    });
   });
 }
 
@@ -184,9 +193,10 @@ export class DockerRelay {
       request.once('error', reject);
       if (Buffer.isBuffer(body)) request.end(body);
       else if (body) {
-        const stream: http.IncomingMessage = body;
-        stream.pipe(request);
-        stream.once('error', (error: Error) => request.destroy(error));
+        // A client that stops sending halfway aborts the request to Docker too.
+        pipeline(body, request, (error) => {
+          if (error) request.destroy(error);
+        });
       } else request.end();
     });
   }
@@ -224,8 +234,14 @@ export class DockerRelay {
     res.writeHead(response.statusCode ?? 502, response.statusMessage, forwardHeaders(response.rawHeaders));
     // Docker streams (logs -f, events, pull progress) arrive in pieces; send each at once.
     res.flushHeaders();
-    response.pipe(res);
-    res.once('close', () => response.destroy());
+    // Either side breaking off ends the other: a client that hangs up stops the stream from
+    // Docker, and Docker dying mid-response cuts the client off instead of leaving it waiting.
+    pipeline(response, res, (error) => {
+      if (error) {
+        response.destroy();
+        res.destroy();
+      }
+    });
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {

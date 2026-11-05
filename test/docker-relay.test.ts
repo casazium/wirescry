@@ -15,6 +15,8 @@ class FakeDaemon {
   refuseMounts = false;
   listed: unknown = [];
   readonly upgraded = new Set<net.Socket>();
+  followClosed = false;
+  uploadsAborted = 0;
   server = http.createServer((req, res) => void this.handle(req, res));
 
   constructor(readonly socketPath: string) {
@@ -42,7 +44,12 @@ class FakeDaemon {
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
+    try {
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+    } catch {
+      this.uploadsAborted++;
+      return;
+    }
     const body = Buffer.concat(chunks);
     const url = req.url ?? '';
     const json = (status: number, value: unknown, headers: Record<string, string> = {}) => {
@@ -54,6 +61,12 @@ class FakeDaemon {
       });
       res.end(text);
     };
+    if (url === '/v1.47/containers/json?dies=1') {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+      res.write('[{"Id":');
+      setTimeout(() => res.socket?.destroy(), 30);
+      return;
+    }
     if (url === '/_ping') {
       res.writeHead(200, { 'content-type': 'text/plain', ostype: this.osType, 'api-version': '1.47' });
       res.end(req.method === 'HEAD' ? undefined : 'OK');
@@ -95,6 +108,24 @@ class FakeDaemon {
       res.socket?.setNoDelay(true);
       setImmediate(() => res.write('{"status":"start"}\n'));
       setTimeout(() => res.end('{"status":"die"}\n'), 150);
+      return;
+    }
+    if (url === '/follow') {
+      // `docker logs -f`: never ends by itself. Records when the relay hangs up.
+      res.writeHead(200, { 'content-type': 'application/vnd.docker.raw-stream' });
+      res.flushHeaders();
+      const timer = setInterval(() => res.write('line\n'), 20);
+      res.once('close', () => {
+        clearInterval(timer);
+        this.followClosed = true;
+      });
+      return;
+    }
+    if (url === '/dies') {
+      // The daemon goes away halfway through a response.
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': '1000' });
+      res.write('{"partial":');
+      setTimeout(() => res.socket?.destroy(), 30);
       return;
     }
     if (url === '/text-list') {
@@ -242,6 +273,99 @@ describe('Docker relay', () => {
     });
     expect(first.text).toBe('{"status":"start"}\n{"status":"die"}\n');
     expect(first.at).toBeLessThan(first.done - 100);
+  });
+
+  it("stops following Docker's stream when the client hangs up", async () => {
+    await new Promise<void>((resolve, reject) => {
+      const req = http.get(
+        { socketPath: relay.listenPath, path: '/follow', headers: { host: 'docker' } },
+        (res) => {
+          res.once('data', () => {
+            req.destroy();
+            resolve();
+          });
+        },
+      );
+      req.on('error', () => undefined);
+      setTimeout(() => reject(new Error('no data')), 3000);
+    });
+    await waitFor(() => daemon.followClosed);
+  });
+
+  it('cuts the client off, rather than ending cleanly, when Docker dies mid-response', async () => {
+    const outcome = await new Promise<string>((resolve) => {
+      const req = http.get(
+        { socketPath: relay.listenPath, path: '/dies', headers: { host: 'docker' } },
+        (res) => {
+          res.on('data', () => undefined);
+          res.on('end', () => resolve(res.complete ? 'complete' : 'incomplete'));
+          res.on('error', () => resolve('error'));
+          res.on('close', () => resolve(res.complete ? 'complete' : 'cut off'));
+        },
+      );
+      req.on('error', () => resolve('error'));
+    });
+    expect(outcome).not.toBe('complete');
+  });
+
+  it('aborts the upload to Docker when the client stops sending halfway', async () => {
+    const req = http.request({
+      socketPath: relay.listenPath,
+      method: 'POST',
+      path: '/echo',
+      headers: { host: 'docker', 'transfer-encoding': 'chunked' },
+    });
+    req.on('error', () => undefined);
+    req.write('the first part of a big image');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    req.destroy();
+    await waitFor(() => daemon.uploadsAborted === 1);
+  });
+
+  it('answers with an error when Docker dies while sending a container list', async () => {
+    const reply = await request('GET', '/v1.47/containers/json?dies=1');
+    expect(reply.status).toBe(502);
+    expect(JSON.parse(reply.body).message).toContain("couldn't reach Docker");
+  });
+
+  it('answers several requests on one kept-alive connection, a create among them', async () => {
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    const sockets = new Set<net.Socket>();
+    const one = (method: string, url: string, body?: string) =>
+      new Promise<number>((resolve, reject) => {
+        const req = http.request(
+          { socketPath: relay.listenPath, method, path: url, agent, headers: { host: 'docker' } },
+          (res) => {
+            sockets.add(res.socket as net.Socket);
+            res.resume();
+            res.on('end', () => resolve(res.statusCode ?? 0));
+          },
+        );
+        req.on('error', reject);
+        req.end(body);
+      });
+    expect(await one('GET', '/_ping')).toBe(200);
+    expect(await one('POST', '/v1.47/containers/create', JSON.stringify({ Image: 'x' }))).toBe(201);
+    expect(await one('GET', '/v1.47/containers/json')).toBe(200);
+    expect(await one('POST', '/echo', 'abc')).toBe(200);
+    expect(sockets.size).toBe(1);
+    expect(daemon.creates[0]!.body.Env).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^HTTP_PROXY=/)]),
+    );
+    agent.destroy();
+  });
+
+  it('sets up containers created at the same time, each with its own settings', async () => {
+    const replies = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => create({ Image: 'x', Env: [`N=${i}`] }, `?name=c${i}`)),
+    );
+    expect(replies.every((r) => r.status === 201)).toBe(true);
+    expect(daemon.creates).toHaveLength(10);
+    for (const { url, body } of daemon.creates) {
+      const n = new URL(url, 'http://d').searchParams.get('name')!.slice(1);
+      expect(body.Env).toContain(`N=${n}`);
+      expect((body.Env as string[]).filter((e) => e.startsWith('HTTP_PROXY='))).toHaveLength(1);
+    }
   });
 
   it('sets up a new container', async () => {
