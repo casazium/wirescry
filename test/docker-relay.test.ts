@@ -554,7 +554,7 @@ describe('Docker relay', () => {
       });
       const reason = await relay.unsupportedReason();
       expect(reason).toBeTruthy();
-      if (platform === 'linux' && 'name' in rest) expect(reason).toMatch(`virtual machine (${rest.name})`);
+      if (platform === 'linux' && 'name' in rest) expect(reason).toMatch(`another machine (${rest.name})`);
     }
   });
 
