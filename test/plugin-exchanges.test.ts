@@ -156,7 +156,7 @@ describe('PluginHost and a plugin’s lifetime', () => {
     const pluginHost = host(plugin);
     const starting = pluginHost.startAll();
     // Until its start() is under way; a fixed wait was too short on a slow machine.
-    await vi.waitFor(() => expect(plugin.host).toBeDefined());
+    await vi.waitFor(() => expect(plugin.host).toBeDefined(), SLOW_CI);
     pluginHost.exchangeCompleted(summary);
     expect(plugin.completed).toEqual([]);
     // Nor can it read or badge anything yet.

@@ -18,7 +18,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LABELS } from '../src/backend/docker/container';
-import { findDockerEndpoint } from '../src/backend/docker/endpoint';
+import { parseDockerHost } from '../src/backend/docker/endpoint';
 import { DockerRelay, type ContainerCreated } from '../src/backend/docker/relay';
 
 const run = promisify(execFile);
@@ -48,9 +48,11 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
   };
 
   /** Runs docker through the relay with `input` on stdin, then ends it; resolves with stdout and the exit code. */
-  const dockerWithInput = (args: string[], input: string, timeoutMs: number) =>
+  const dockerWithInput = (args: string[], input: string, timeoutMs: number, direct = false) =>
     new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve, reject) => {
-      const child = spawn('docker', args, { env: { ...process.env, DOCKER_HOST: dockerHost } });
+      const env = { ...process.env };
+      if (!direct) env.DOCKER_HOST = dockerHost;
+      const child = spawn('docker', args, { env });
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
@@ -72,7 +74,9 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
     });
 
   beforeAll(async () => {
-    const endpoint = await findDockerEndpoint();
+    // Docker's own pipe. Wirescry looks for Docker Desktop's config folder before assuming it,
+    // which a runner with only Docker Engine may not have.
+    const endpoint = parseDockerHost('npipe:////./pipe/docker_engine', 'win32') ?? { kind: 'none' };
     if (endpoint.kind !== 'local') throw new Error(`No local Docker found: ${JSON.stringify(endpoint)}`);
     const version = JSON.parse(await docker(['version', '--format', '{{json .Server}}'], true)) as {
       Os: string;
@@ -120,15 +124,19 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
   }, 300_000);
 
   it('ends a docker run -i container’s input when the input ends', async () => {
-    // `sort` reads stdin to its end before writing anything: it finishes only if the end gets through.
-    const result = await dockerWithInput(
-      ['run', '-i', '--rm', image, 'cmd', '/c', 'sort'],
-      'b\r\na\r\n',
-      180_000,
-    );
-    expect(result.stderr).toBe('');
-    expect(result.code).toBe(0);
-    expect(result.stdout.split(/\r?\n/).filter(Boolean)).toEqual(['a', 'b']);
+    // cmd reads its commands from stdin and exits only when stdin ends: it finishes only if
+    // the end gets through. (nanoserver has cmd, but not necessarily sort or more.)
+    const args = ['run', '-i', '--rm', image, 'cmd', '/q'];
+    const input = 'echo relay-eof-ok\r\n';
+    const ran = (out: string) => out.split(/\r?\n/).some((line) => line.trim() === 'relay-eof-ok');
+    // Straight to Docker first: if this hangs too, the test is wrong, not the relay.
+    const direct = await dockerWithInput(args, input, 120_000, true);
+    expect(direct.code).toBe(0);
+    expect(ran(direct.stdout)).toBe(true);
+    // Through the relay's named pipe.
+    const relayed = await dockerWithInput(args, input, 120_000);
+    expect(relayed.code).toBe(0);
+    expect(ran(relayed.stdout)).toBe(true);
   }, 300_000);
 
   it('labels what it leaves alone, as Docker sees it', async () => {

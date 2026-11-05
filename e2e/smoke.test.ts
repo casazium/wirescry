@@ -102,7 +102,7 @@ it('captures traffic, opens gzip and HTML bodies, survives a backend crash, comp
   // Traffic shows up.
   expect(await viaProxy(proxyPort, '/data.json')).toBe(200);
   expect(await viaProxy(proxyPort, '/page.html')).toBe(200);
-  // 30 s, like the waits below: once, on a slow arm64 runner, 15 s passed with no rows.
+  // 30 s: once, on a slow arm64 runner, 15 s passed with no rows.
   await expect
     .poll(() => rows().count(), { timeout: 30_000 })
     .toBe(2)
