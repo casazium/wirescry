@@ -13,7 +13,10 @@ interface Props {
 export function DockerSection({ status, connected = true, send, CopyButton }: Props): React.JSX.Element {
   const { docker } = status;
   const [error, setError] = useState<string>();
-  const switchable = docker.state === 'ready' || docker.state === 'off' || docker.state === 'unsupported';
+  // Not on Windows, where Wirescry doesn't set Docker up at all yet: the box would do nothing.
+  const switchable =
+    status.platform !== 'win32' &&
+    (docker.state === 'ready' || docker.state === 'off' || docker.state === 'unsupported');
   const toggle = (enabled: boolean): void => {
     setError(undefined);
     send?.({ command: 'setDockerSetup', enabled }).catch((e: Error) => setError(e.message));
@@ -124,8 +127,9 @@ export function DockerSection({ status, connected = true, send, CopyButton }: Pr
       )}
       {docker.state === 'none' && (
         <p className="muted">
-          Docker wasn&apos;t found on this computer. Once it&apos;s installed, containers you start from a
-          Wirescry terminal send their traffic through Wirescry.
+          {status.platform === 'win32'
+            ? 'Wirescry doesn’t set up Docker on Windows yet.'
+            : 'Docker wasn’t found on this computer. Once it’s installed, containers you start from a Wirescry terminal send their traffic through Wirescry.'}
         </p>
       )}
       {docker.state === 'remote' && (

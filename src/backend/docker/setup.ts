@@ -24,8 +24,7 @@ const LOOKUP_SPACING_MS = 100;
  * message on its named pipe, which Node can neither see nor send, so through the relay
  * `docker run` hung after the container finished (test/docker-windows.test.ts shows it).
  */
-export const WINDOWS_NOT_YET =
-  'Wirescry doesn’t set up Docker on Windows yet: through it, docker run wouldn’t finish.';
+export const WINDOWS_NOT_YET = 'Wirescry doesn’t set up Docker on Windows yet.';
 /** Unix socket paths longer than this don't fit in sockaddr_un on macOS (104 bytes, with the NUL). */
 const MAX_SOCKET_PATH = 100;
 

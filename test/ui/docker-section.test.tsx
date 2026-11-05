@@ -77,6 +77,34 @@ describe('Docker section', () => {
     expect(screen.queryByRole('note')).toBeNull();
   });
 
+  it('on Windows, says Docker isn’t set up yet, with no switch', () => {
+    const send = vi.fn(async () => undefined);
+    const error = 'Wirescry doesn’t set up Docker on Windows yet.';
+    const { rerender } = render(
+      <DockerSection
+        status={withDocker(
+          { state: 'unsupported', daemon: 'npipe:////./pipe/docker_engine', error },
+          'win32',
+        )}
+        send={send}
+      />,
+    );
+    expect(screen.getByText(/doesn’t set up Docker on Windows yet/)).toBeTruthy();
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    // No Docker found: no promise that installing it would help.
+    rerender(<DockerSection status={withDocker({ state: 'none' }, 'win32')} send={send} />);
+    expect(screen.getByText(/doesn’t set up Docker on Windows yet/)).toBeTruthy();
+    expect(screen.queryByText(/Once it.s installed/)).toBeNull();
+    // Elsewhere, an unsupported Docker still has the switch.
+    rerender(
+      <DockerSection
+        status={withDocker({ state: 'unsupported', daemon: 'unix:///x', error: 'colima.' }, 'darwin')}
+        send={send}
+      />,
+    );
+    expect(screen.getByRole('checkbox')).toBeTruthy();
+  });
+
   it('says when Docker is missing, remote, or could not be set up', () => {
     const { rerender } = render(<DockerSection status={withDocker({ state: 'none' })} />);
     expect(screen.getByText(/Docker wasn.t found/)).toBeTruthy();
