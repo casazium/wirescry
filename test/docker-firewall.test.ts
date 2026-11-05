@@ -152,6 +152,18 @@ describe('The Setup page’s firewall note', () => {
     port.value = 8123;
     expect(setup.status().firewall?.commands[0]).toContain('port 8123');
   });
+  it("doesn't announce a change when there was no note to remove", () => {
+    const setup = readySetup('linux', '/var/run/docker.sock', 'ENABLED=no');
+    let changes = 0;
+    (setup as unknown as { options: { onStatusChange: () => void } }).options.onStatusChange = () =>
+      changes++;
+    Object.assign(setup as unknown as Record<string, unknown>, {
+      fromBridge: () => true,
+      isSetUpContainer: async () => false,
+    });
+    void setup.acceptsConnection('172.17.0.9');
+    expect(changes).toBe(0);
+  });
   it("doesn't appear with ufw off, for Docker Desktop, unknown Docker, off Linux, or with setup off", () => {
     const sock = '/var/run/docker.sock';
     expect(readySetup('linux', sock, 'ENABLED=no').status().firewall).toBeUndefined();
@@ -169,8 +181,11 @@ describe('The Setup page’s firewall note', () => {
     off.setActive(false);
     expect(off.status()).toEqual({ state: 'off', daemon: 'unix:///var/run/docker.sock' });
   });
-  it("goes away once a container's connection gets through", () => {
+  it("goes away once a container's connection gets through, saying so once", () => {
     const setup = readySetup('linux', '/var/run/docker.sock', ubuntuConf);
+    let changes = 0;
+    (setup as unknown as { options: { onStatusChange: () => void } }).options.onStatusChange = () =>
+      changes++;
     Object.assign(setup as unknown as Record<string, unknown>, {
       fromBridge: (address: string) => address.startsWith('172.17.'),
       isSetUpContainer: async () => false,
@@ -178,7 +193,12 @@ describe('The Setup page’s firewall note', () => {
     // A connection from elsewhere proves nothing.
     void setup.acceptsConnection('192.168.1.50');
     expect(setup.status().firewall).toBeDefined();
+    expect(changes).toBe(0);
     void setup.acceptsConnection('172.17.0.9');
     expect(setup.status().firewall).toBeUndefined();
+    expect(changes).toBe(1);
+    // Later containers change nothing.
+    void setup.acceptsConnection('172.17.0.10');
+    expect(changes).toBe(1);
   });
 });

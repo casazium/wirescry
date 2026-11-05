@@ -585,6 +585,19 @@ pre.code.hex {
   color: var(--error);
 }
 
+/* Advice the user should act on, set apart from the text around it. */
+.callout.warn {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--warn);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
+
+.callout p {
+  margin: 4px 0;
+}
+
 .status.ok {
   color: var(--ok);
 }

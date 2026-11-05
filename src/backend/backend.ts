@@ -197,6 +197,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       broadcast({ type: 'status', status: status() });
     },
     findEndpoint: options.dockerEndpoint,
+    onStatusChange: () => broadcast({ type: 'status', status: status() }),
     proxyPort: () => proxy.port,
     containerDir: () => terminalConfig.containerDir,
   });

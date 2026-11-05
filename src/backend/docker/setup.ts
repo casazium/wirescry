@@ -34,6 +34,8 @@ export interface DockerSetupOptions {
   containerDir: () => string;
   platform?: NodeJS.Platform;
   onContainer?: (event: ContainerCreated) => void;
+  /** Called when the status changes other than through refresh() or a container: e.g. the firewall note goes. */
+  onStatusChange?: () => void;
   /** Tests: ufw's files instead of /etc/ufw/ufw.conf and /etc/default/ufw. */
   readUfw?: () => UfwFiles;
   /** Tests: this machine's interfaces instead of os.networkInterfaces(). */
@@ -215,8 +217,12 @@ export class DockerSetup {
       .flat()
       .some((info) => info?.address === v4);
     if (own) return true;
-    // From a container on a bridge: it got through any firewall here.
-    this.bridgeReached = true;
+    // From a container on a bridge: it got through any firewall here, so the note can go.
+    if (!this.bridgeReached) {
+      const hadNote = this.status().firewall !== undefined;
+      this.bridgeReached = true;
+      if (hadNote) this.options.onStatusChange?.();
+    }
     return this.isSetUpContainer(v4);
   }
 

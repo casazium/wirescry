@@ -96,7 +96,7 @@ export function DockerSection({ status, connected = true, send, CopyButton }: Pr
         </>
       )}
       {docker.state === 'ready' && docker.firewall && (
-        <div className="note" role="note">
+        <div className="callout warn" role="note">
           <p>
             ufw, this computer&apos;s firewall, is on. Unless its rules already let Docker&apos;s networks in,
             containers can&apos;t reach Wirescry, and their HTTP requests hang. To let them in:
