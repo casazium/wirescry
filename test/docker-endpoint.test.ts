@@ -264,17 +264,55 @@ describe('Docker bridges', () => {
     expect(list.check('10.0.0.5', 'ipv4')).toBe(false);
   });
 
-  it('takes IPv4-mapped addresses, refuses anything else, and re-reads the interfaces', () => {
-    let reads = 0;
-    const check = dockerBridgeChecker(() => {
-      reads++;
-      return interfaces;
-    });
+  it('takes IPv4-mapped addresses and refuses anything else', () => {
+    const check = dockerBridgeChecker(() => interfaces);
     expect(check('::ffff:172.17.0.2')).toBe(true);
     expect(check('172.19.0.2')).toBe(false);
     expect(check('fe80::1')).toBe(false);
     expect(check('garbage')).toBe(false);
+  });
+
+  it('sees a network made a moment ago, as Compose does just before starting containers', () => {
+    let clock = 0;
+    let current = interfaces;
+    let reads = 0;
+    const check = dockerBridgeChecker(
+      () => {
+        reads++;
+        return current;
+      },
+      () => clock,
+    );
+    expect(check('172.17.0.2')).toBe(true);
+    // Compose makes a network; its first container connects 50 ms later.
+    clock = 50;
+    current = {
+      ...interfaces,
+      'br-fedcba987654': [{ address: '172.20.0.1', family: 'IPv4', cidr: '172.20.0.1/16' }],
+    } as unknown as typeof interfaces;
+    clock = 300;
+    expect(check('172.20.0.3')).toBe(true);
+    // Known bridges don't re-read at all.
+    const before = reads;
+    for (let i = 0; i < 100; i++) check('172.17.0.2');
+    expect(reads).toBe(before);
+  });
+
+  it('re-reads at most every 200 ms for addresses that stay unknown', () => {
+    let clock = 1000;
+    let reads = 0;
+    const check = dockerBridgeChecker(
+      () => {
+        reads++;
+        return interfaces;
+      },
+      () => clock,
+    );
+    for (let i = 0; i < 50; i++) expect(check('192.168.1.99')).toBe(false);
     expect(reads).toBe(1);
+    clock += 250;
+    check('192.168.1.99');
+    expect(reads).toBe(2);
   });
 
   it('refuses everything when the interfaces cannot be read', () => {

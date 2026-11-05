@@ -3,8 +3,12 @@ import os from 'node:os';
 
 /** Docker's default bridge and the bridges it makes for user-defined networks. */
 const BRIDGE_NAME = /^(?:docker\d+|br-[0-9a-f]{12})$/;
-/** How long a reading of the network interfaces is trusted. Networks come and go with Compose projects. */
-const REFRESH_MS = 5000;
+/**
+ * How soon an address that isn't on a known bridge makes the interfaces be read again. Compose
+ * creates a network moments before its containers connect, so a miss usually means a new
+ * bridge; the limit keeps a flood of other connections from re-reading constantly.
+ */
+const MISS_REREAD_MS = 200;
 
 type Interfaces = ReturnType<typeof os.networkInterfaces>;
 
@@ -27,25 +31,29 @@ export function bridgeSubnets(interfaces: Interfaces): BlockList {
 /**
  * Whether a connection from this address comes from a container on one of Docker's bridge
  * networks. That's where containers' connections to the proxy come from with Docker on Linux;
- * Docker Desktop delivers them from 127.0.0.1. The interfaces are re-read every few seconds.
+ * Docker Desktop delivers them from 127.0.0.1.
  */
 export function dockerBridgeChecker(
   read: () => Interfaces = os.networkInterfaces,
+  now: () => number = Date.now,
 ): (address: string) => boolean {
   let list = new BlockList();
   let readAt = -Infinity;
+  const reread = (): void => {
+    try {
+      list = bridgeSubnets(read());
+    } catch {
+      list = new BlockList();
+    }
+    readAt = now();
+  };
   return (address: string): boolean => {
     const v4 = address.startsWith('::ffff:') ? address.slice(7) : address;
     if (!isIPv4(v4)) return false;
-    const now = Date.now();
-    if (now - readAt > REFRESH_MS) {
-      try {
-        list = bridgeSubnets(read());
-      } catch {
-        list = new BlockList();
-      }
-      readAt = now;
-    }
+    if (list.check(v4, 'ipv4')) return true;
+    // Not on a bridge seen so far: a network may have been made since, so look again.
+    if (now() - readAt < MISS_REREAD_MS) return false;
+    reread();
     return list.check(v4, 'ipv4');
   };
 }

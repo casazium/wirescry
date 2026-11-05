@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { MOUNT_POINT } from '../src/backend/docker/container';
-import type { DockerEndpoint } from '../src/backend/docker/endpoint';
+import { parseDockerHost, type DockerEndpoint } from '../src/backend/docker/endpoint';
 import type { ProxyStatus } from '../src/shared/api';
 import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
@@ -49,8 +49,13 @@ function dockerRequest(socketPath: string, method: string, url: string, body?: u
   });
 }
 
-const relaySocket = (status: ProxyStatus): string =>
-  status.terminalEnv.DOCKER_HOST!.replace(/^unix:\/\//, '');
+/** Where the relay listens, read from the DOCKER_HOST terminals get (a socket, or a pipe on Windows). */
+const relaySocket = (status: ProxyStatus): string => {
+  const endpoint = parseDockerHost(status.terminalEnv.DOCKER_HOST!);
+  if (endpoint?.kind !== 'local')
+    throw new Error(`not a local DOCKER_HOST: ${status.terminalEnv.DOCKER_HOST}`);
+  return endpoint.socketPath;
+};
 
 describe('Docker setup in the backend', () => {
   let dataDir: string;
@@ -67,7 +72,10 @@ describe('Docker setup in the backend', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-docker-backend-'));
     daemonDir = await mkdtemp(path.join(os.tmpdir(), 'wd-'));
-    const socketPath = path.join(daemonDir, 'docker.sock');
+    const socketPath =
+      process.platform === 'win32'
+        ? `\\\\.\\pipe\\wirescry-test-daemon-${process.pid}`
+        : path.join(daemonDir, 'docker.sock');
     daemon = await fakeDaemon(socketPath);
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
@@ -111,7 +119,11 @@ describe('Docker setup in the backend', () => {
       state: 'ready',
       daemon: expect.stringMatching(/^unix:\/\/.*docker\.sock$/),
     });
-    expect(status().terminalEnv.DOCKER_HOST).toMatch(/^unix:\/\/.+\/docker\.sock$/);
+    expect(status().terminalEnv.DOCKER_HOST).toMatch(
+      process.platform === 'win32'
+        ? /^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]{12}$/
+        : /^unix:\/\/.+\/docker\.sock$/,
+    );
     const script = await readFile(status().terminalScripts.posix!, 'utf8');
     expect(script).toContain(`export DOCKER_HOST='${status().terminalEnv.DOCKER_HOST}'`);
   });

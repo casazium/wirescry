@@ -181,6 +181,26 @@ describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker
     ).toBe(true);
   }, 300_000);
 
+  it('works on a network made just before the container, as Compose makes them', async () => {
+    const network = `${PROJECT}-fresh`;
+    await docker(['network', 'create', network], false);
+    try {
+      const out = await docker([
+        'run',
+        '--rm',
+        '--network',
+        network,
+        CURL,
+        '-sS',
+        '--fail',
+        `http://host.docker.internal:${localPort}/fresh-network`,
+      ]);
+      expect(out).toBe('local-ok /fresh-network');
+    } finally {
+      await docker(['network', 'rm', network], false);
+    }
+  }, 120_000);
+
   it('works for Node.js fetch and Python urllib, HTTPS included', async () => {
     const url = `https://host.docker.internal:${upstream.port}`;
     const node = await docker([

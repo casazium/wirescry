@@ -106,6 +106,12 @@ class FakeDaemon {
   }
 }
 
+const windows = process.platform === 'win32';
+let pipes = 0;
+/** A socket to listen on: a file in `dir`, or a named pipe on Windows, where Node has no Unix sockets. */
+const socketIn = (folder: string, name: string): string =>
+  windows ? `\\\\.\\pipe\\wirescry-test-${process.pid}-${++pipes}-${name}` : path.join(folder, name);
+
 let dir: string;
 let daemon: FakeDaemon;
 let relay: DockerRelay;
@@ -115,13 +121,13 @@ let logs: string[];
 
 beforeEach(async () => {
   dir = await mkdtemp(path.join(os.tmpdir(), 'wr-'));
-  daemon = new FakeDaemon(path.join(dir, 'daemon.sock'));
+  daemon = new FakeDaemon(socketIn(dir, 'daemon.sock'));
   await daemon.listen();
   endpoint = { kind: 'local', socketPath: daemon.socketPath, host: `unix://${daemon.socketPath}` };
   created = [];
   logs = [];
   relay = new DockerRelay({
-    listenPath: path.join(dir, 'relay.sock'),
+    listenPath: socketIn(dir, 'relay.sock'),
     upstream: () => endpoint,
     proxyPort: () => 8001,
     configDir: '/data/docker-config',
@@ -409,7 +415,7 @@ describe('Docker relay', () => {
     expect(JSON.parse((await request('GET', '/_ping')).body).message).toContain("couldn't find Docker");
   });
 
-  it('keeps its socket private to this user, and replaces a stale one', async () => {
+  it.skipIf(windows)('keeps its socket private to this user, and replaces a stale one', async () => {
     expect((await stat(relay.listenPath)).mode & 0o777).toBe(0o600);
     await relay.stop();
     // A socket file left behind, as after a crash.
@@ -428,7 +434,7 @@ describe('Docker relay', () => {
     expect((await request('GET', '/_ping')).status).toBe(200);
   });
 
-  it("won't replace a file that isn't a socket", async () => {
+  it.skipIf(windows)("won't replace a file that isn't a socket", async () => {
     const { writeFile } = await import('node:fs/promises');
     const file = path.join(dir, 'not-a-socket');
     await writeFile(file, 'data');
@@ -439,6 +445,19 @@ describe('Docker relay', () => {
       configDir: '/x',
     });
     await expect(other.start()).rejects.toThrow(/isn't a socket/);
+  });
+});
+
+describe.runIf(windows)('Docker relay on Windows', () => {
+  it('refuses a pipe another program already has, instead of sharing it', async () => {
+    const other = new DockerRelay({
+      listenPath: relay.listenPath,
+      upstream: () => endpoint,
+      proxyPort: () => 8001,
+      configDir: 'C:\\x',
+    });
+    await expect(other.start()).rejects.toThrow(/EADDRINUSE/);
+    expect((await request('GET', '/_ping')).status).toBe(200);
   });
 });
 

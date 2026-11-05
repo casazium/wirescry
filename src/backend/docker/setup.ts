@@ -34,12 +34,13 @@ export function relayAddress(
     const name = `wirescry-docker-${id}`;
     return { listenPath: `\\\\.\\pipe\\${name}`, dockerHost: `npipe:////./pipe/${name}` };
   }
-  let dir = path.join(dataDir, 'docker');
-  if (Buffer.byteLength(path.join(dir, 'docker.sock')) > MAX_SOCKET_PATH) {
+  // Unix paths, whatever this process's own platform is.
+  let dir = path.posix.join(dataDir, 'docker');
+  if (Buffer.byteLength(path.posix.join(dir, 'docker.sock')) > MAX_SOCKET_PATH) {
     const uid = typeof process.getuid === 'function' ? process.getuid() : 'user';
-    dir = path.join(os.tmpdir(), `wirescry-${uid}-${id}`);
+    dir = path.posix.join(os.tmpdir(), `wirescry-${uid}-${id}`);
   }
-  const listenPath = path.join(dir, 'docker.sock');
+  const listenPath = path.posix.join(dir, 'docker.sock');
   return { listenPath, dockerHost: `unix://${listenPath}`, dir };
 }
 
