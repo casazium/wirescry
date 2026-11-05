@@ -122,7 +122,8 @@ describe('Docker setup in the backend', () => {
   it('says Docker is set up, and gives terminals DOCKER_HOST', async () => {
     expect(status().docker).toEqual({
       state: 'ready',
-      daemon: expect.stringMatching(/^unix:\/\/.*docker\.sock$/),
+      // The daemon given to the backend, as given.
+      daemon: expect.stringMatching(/^unix:\/\/.*(docker\.sock|wirescry-test-daemon-\d+)$/),
     });
     expect(status().terminalEnv.DOCKER_HOST).toMatch(
       process.platform === 'win32'

@@ -38,6 +38,8 @@ class FakeDaemon {
       // Echoes stdin back, upper-cased, like a container would answer. On stdin's end, says
       // goodbye and closes, as a container whose input ended does.
       socket.on('data', (data: Buffer) => socket.write(data.toString().toUpperCase()));
+      // The relay may close its side first; a container's socket ignores that too.
+      socket.on('error', () => undefined);
       socket.on('end', () => socket.end('BYE'));
     });
   }
@@ -670,7 +672,9 @@ describe('Docker relay', () => {
     socket.destroy();
   });
 
-  it('tells the container its input ended, and lets its last output through', async () => {
+  // Windows named pipes have no half-close in Node, so this can't pass there; checked by hand
+  // on Windows instead (docker run -i with piped input).
+  it.skipIf(windows)('tells the container its input ended, and lets its last output through', async () => {
     const socket = net.connect(relay.listenPath);
     let received = '';
     socket.on('data', (d: Buffer) => (received += d.toString()));
@@ -712,7 +716,8 @@ describe('Docker relay', () => {
     );
   });
 
-  it("uses the daemon's own socket path for the mount on Docker on Linux", async () => {
+  // Docker on Linux listens on a Unix socket; Windows has no such daemon.
+  it.skipIf(windows)("uses the daemon's own socket path for the mount on Docker on Linux", async () => {
     daemon.operatingSystem = 'Ubuntu 24.04.3 LTS';
     await relay.stop();
     relay = new DockerRelay({
