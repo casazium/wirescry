@@ -188,6 +188,14 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   const docker = new DockerSetup({
     dataDir,
     enabled: options.docker !== false,
+    active: settings.dockerSetup !== false,
+    // Shown on the Setup page, so what happened to the last container is visible.
+    onContainer: (event) => {
+      console.log(
+        `[wirescry] docker: ${event.name ?? event.image ?? 'container'} ${event.setUp ? 'set up' : `left as it is: ${event.reason}`}`,
+      );
+      broadcast({ type: 'status', status: status() });
+    },
     findEndpoint: options.dockerEndpoint,
     proxyPort: () => proxy.port,
     containerDir: () => terminalConfig.containerDir,
@@ -291,6 +299,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       isPaused: () => paused,
       isComposed: (remotePort, remoteAddress, id) => composer.claim(remotePort, remoteAddress, id),
       allowAddress: (address) => docker.allowsAddress(address),
+      mayReachThisComputer: (address) => docker.mayReachThisComputer(address),
       onCATrusted: (userAgent) => {
         if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;
         firefoxTrusted = true;
@@ -592,6 +601,15 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         paused = command.paused;
         broadcast({ type: 'paused', paused });
         return undefined;
+      case 'setDockerSetup': {
+        docker.setActive(command.enabled === true);
+        settings = { ...settings, dockerSetup: command.enabled === true ? undefined : false };
+        await saveSettings(dataDir, settings);
+        // New terminals get DOCKER_HOST only while it's on.
+        terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+        broadcast({ type: 'status', status: status() });
+        return undefined;
+      }
       case 'setProxyPort':
         return exclusive(async () => {
           if (command.port !== null && !isValidPort(command.port)) {

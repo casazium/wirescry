@@ -1,3 +1,4 @@
+import { lookup } from 'node:dns/promises';
 import net from 'node:net';
 import * as mockttp from 'mockttp';
 import type { BodySide, ExchangeDetail, ExchangeTiming, HandledBy } from '../shared/api';
@@ -53,6 +54,12 @@ export interface ProxyOptions {
    * on Linux, whose connections come from Docker's bridge network.
    */
   allowAddress?: (address: string) => boolean;
+  /**
+   * Whether a client that isn't on this computer (a Docker container on Linux) may reach
+   * services on this computer's own loopback through the proxy. Without it, any container on
+   * the machine could use the proxy to reach services that listen only on localhost.
+   */
+  mayReachThisComputer?: (address: string) => Promise<boolean>;
 }
 
 export interface RunningProxy {
@@ -105,6 +112,66 @@ function restrictToLoopback(server: mockttp.Mockttp, allow?: (address: string) =
     if (!address || !allowed(allow, address)) socket.destroy();
   });
 }
+
+/** Whether a host name means this computer's loopback: by name, by address, or by what it resolves to. */
+async function isThisComputer(hostname: string): Promise<boolean> {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (host === DOCKER_HOST_NAME || host === 'localhost' || host.endsWith('.localhost')) return true;
+  const unspecified = (address: string): boolean => address === '0.0.0.0' || address === '::';
+  if (net.isIP(host)) return isLoopback(host) || unspecified(host);
+  try {
+    // Names that resolve to 127.0.0.1 (localtest.me, or a rebinding attacker's) count too.
+    const addresses = await Promise.race([
+      lookup(host, { all: true }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out')), 2000).unref()),
+    ]);
+    return addresses.some(({ address }) => isLoopback(address) || unspecified(address));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Matches a request from a client on another address (a container) to this computer's own
+ * loopback, when that client isn't allowed there. Checks the client first, without waiting,
+ * so other requests aren't slowed down or buffered.
+ */
+class ToThisComputerUninvited extends mockttp.matchers.CallbackMatcher {
+  constructor(private readonly mayReach: (address: string) => Promise<boolean>) {
+    super(() => false);
+  }
+
+  // Mockttp takes a plain false from any matcher as "no" at once, though the type says Promise.
+  override matches(request: mockttp.OngoingRequest): Promise<boolean> {
+    return this.check(request) as Promise<boolean>;
+  }
+
+  private check(request: mockttp.OngoingRequest): boolean | Promise<boolean> {
+    const client = request.remoteIpAddress;
+    if (!client || isLoopback(client)) return false;
+    let hostname: string;
+    try {
+      hostname = new URL(request.url).hostname;
+    } catch {
+      return false;
+    }
+    return (async () => {
+      if (!(await isThisComputer(hostname))) return false;
+      try {
+        return !(await this.mayReach(client));
+      } catch {
+        return true;
+      }
+    })();
+  }
+
+  override explain(): string {
+    return 'from a container Wirescry did not set up, to this computer';
+  }
+}
+
+const UNINVITED_MESSAGE =
+  'Wirescry only lets containers it set up reach services on this computer. Start this container from a terminal Wirescry set up.';
 
 /** Asks `allow` about an address; a check that throws refuses it. */
 function allowed(allow: ((address: string) => boolean) | undefined, address: string): boolean {
@@ -570,8 +637,19 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     steps: rule.steps,
     completionChecker: new mockttp.completionCheckers.Always(),
   });
+  const mayReach = options.mayReachThisComputer ?? (async () => false);
+  const uninvitedRule: mockttp.RequestRuleData = {
+    matchers: [new ToThisComputerUninvited(mayReach)],
+    steps: [
+      new mockttp.requestSteps.FixedResponseStep(403, 'Forbidden', UNINVITED_MESSAGE, {
+        'content-type': 'text/plain; charset=utf-8',
+      }),
+    ],
+    completionChecker: new mockttp.completionCheckers.Always(),
+  };
   const applyRules = async (): Promise<void> => {
     await server.setRequestRules(
+      uninvitedRule,
       setupRule,
       ...(options.extraRules?.() ?? []).map(always),
       dockerHostRule,
@@ -579,7 +657,12 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     );
   };
   await applyRules();
-  // The more specific WebSocket rule first: Mockttp uses the first that matches.
+  // The more specific WebSocket rules first: Mockttp uses the first that matches.
+  await server.addWebSocketRule({
+    matchers: [new ToThisComputerUninvited(mayReach)],
+    steps: [new mockttp.webSocketSteps.RejectWebSocketStep(403, 'Forbidden', {}, UNINVITED_MESSAGE)],
+    completionChecker: new mockttp.completionCheckers.Always(),
+  });
   await server
     .forAnyWebSocket()
     .forHostname(DOCKER_HOST_NAME)

@@ -212,12 +212,16 @@ export interface DockerStatus {
    * ready: Wirescry terminals point DOCKER_HOST at Wirescry, which sets up new containers.
    * remote: the user's Docker runs on another machine, which Wirescry doesn't set up.
    * none: no Docker found. failed: Docker was found, but Wirescry couldn't set itself up for it.
+   * unsupported: a kind of Docker Wirescry doesn't set up yet (e.g. colima, rootless Docker).
+   * off: the user turned Docker setup off.
    */
-  state: 'ready' | 'remote' | 'none' | 'failed';
+  state: 'ready' | 'remote' | 'none' | 'failed' | 'unsupported' | 'off';
   /** The user's Docker daemon, e.g. unix:///var/run/docker.sock. */
   daemon?: string;
-  /** Why it failed, for state "failed". */
+  /** Why it failed, or why it isn't set up, for states "failed" and "unsupported". */
   error?: string;
+  /** The last container created through Wirescry this session, and what Wirescry did with it. */
+  lastContainer?: { name?: string; image?: string; setUp: boolean; reason?: string };
 }
 
 /** Messages the backend pushes to the UI. */
@@ -248,6 +252,8 @@ export type ClientCommand =
   | { id: number; command: 'setPaused'; paused: boolean }
   /** A port from 1024 to 65535, or null to pick one automatically. */
   | { id: number; command: 'setProxyPort'; port: number | null }
+  /** Turns setting up Docker containers on or off. Off, new terminals don't get DOCKER_HOST, and the relay passes containers on as written. */
+  | { id: number; command: 'setDockerSetup'; enabled: boolean }
   | { id: number; command: 'resetCertificate' }
   | { id: number; command: 'launchTerminal'; terminalId: string }
   /** WebSocket messages with index greater than `after` (default: from the start). */

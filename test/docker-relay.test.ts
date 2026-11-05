@@ -12,11 +12,18 @@ import { DockerRelay, type ContainerCreated } from '../src/backend/docker/relay'
 class FakeDaemon {
   readonly creates: Array<{ url: string; body: Record<string, unknown> }> = [];
   osType = 'linux';
+  operatingSystem = 'Docker Desktop';
+  securityOptions: string[] = ['name=seccomp,profile=builtin'];
+  imageEnv: Record<string, string[]> = {};
   refuseMounts = false;
+  /** Status the create answers with, to try Docker's other refusals. */
+  createStatus?: { status: number; message: string; once?: boolean };
+  readonly seenRelayHeader: string[] = [];
   listed: unknown = [];
   readonly upgraded = new Set<net.Socket>();
   followClosed = false;
   uploadsAborted = 0;
+  lastListUrl = '';
   server = http.createServer((req, res) => void this.handle(req, res));
 
   constructor(readonly socketPath: string) {
@@ -25,10 +32,13 @@ class FakeDaemon {
       socket.write(
         `HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n`,
       );
+      // A body sent with the upgrade (exec start's JSON) is echoed as it came, wherever Node put it.
       if (head.length) socket.write(head);
-      // Echoes stdin back, upper-cased, like a container would answer.
+      req.on('data', (data: Buffer) => socket.write(data));
+      // Echoes stdin back, upper-cased, like a container would answer. On stdin's end, says
+      // goodbye and closes, as a container whose input ended does.
       socket.on('data', (data: Buffer) => socket.write(data.toString().toUpperCase()));
-      void req;
+      socket.on('end', () => socket.end('BYE'));
     });
   }
 
@@ -52,6 +62,7 @@ class FakeDaemon {
     }
     const body = Buffer.concat(chunks);
     const url = req.url ?? '';
+    if (req.headers['x-wirescry-relay']) this.seenRelayHeader.push(url);
     const json = (status: number, value: unknown, headers: Record<string, string> = {}) => {
       const text = JSON.stringify(value);
       res.writeHead(status, {
@@ -67,12 +78,24 @@ class FakeDaemon {
       setTimeout(() => res.socket?.destroy(), 30);
       return;
     }
+    if (url === '/info') {
+      return json(200, {
+        OSType: this.osType,
+        OperatingSystem: this.operatingSystem,
+        SecurityOptions: this.securityOptions,
+      });
+    }
+    if (url.startsWith('/images/') && url.endsWith('/json')) {
+      const name = decodeURIComponent(url.slice('/images/'.length, -'/json'.length));
+      const env = this.imageEnv[name];
+      return env ? json(200, { Config: { Env: env } }) : json(404, { message: `No such image: ${name}` });
+    }
     if (url === '/_ping') {
       res.writeHead(200, { 'content-type': 'text/plain', ostype: this.osType, 'api-version': '1.47' });
       res.end(req.method === 'HEAD' ? undefined : 'OK');
       return;
     }
-    if (url.startsWith('/v1.47/containers/create')) {
+    if (url.startsWith('/v1.47/containers/create') || url.startsWith('/containers/create')) {
       let parsed: Record<string, unknown>;
       try {
         parsed = JSON.parse(body.toString()) as Record<string, unknown>;
@@ -82,15 +105,43 @@ class FakeDaemon {
       this.creates.push({ url, body: parsed });
       const mounts = (parsed.HostConfig as { Mounts?: unknown[] } | undefined)?.Mounts ?? [];
       if (this.refuseMounts && mounts.length > 0) return json(400, { message: 'invalid mount config' });
+      if (this.createStatus) {
+        const { status, message, once } = this.createStatus;
+        if (once) this.createStatus = undefined;
+        return json(status, { message });
+      }
       return json(201, { Id: 'c1', Warnings: [] });
     }
-    if (url.startsWith('/containers/json') || url.startsWith('/v1.47/containers/json'))
+    if (
+      (url.startsWith('/containers/json') || url.startsWith('/v1.47/containers/json')) &&
+      !url.includes('text=1')
+    ) {
+      this.lastListUrl = url;
       return json(200, this.listed);
+    }
     if (url === '/v1.47/containers/c1/json')
       return json(200, { Id: 'c1', Config: { Labels: { [COMPOSE_HASH_LABEL]: 'h' } } });
     if (url === '/v1.47/containers/gone/json') return json(404, { message: 'No such container: gone' });
     if (url === '/networks/app_default')
-      return json(200, { Containers: { x: { Name: 'db' }, y: { Name: 'cache' } } });
+      return json(200, {
+        Name: 'app_default',
+        IPAM: { Config: [{ Subnet: '172.20.0.0/16', Gateway: '172.20.0.1' }] },
+        Containers: { x: { Name: 'db' }, y: { Name: 'cache' } },
+      });
+    if (url === '/containers/x/json')
+      return json(200, {
+        NetworkSettings: { Networks: { app_default: { Aliases: ['database'], DNSNames: ['db', 'x1'] } } },
+      });
+    if (url === '/networks/bridge')
+      return json(200, { Name: 'bridge', IPAM: { Config: [{ Subnet: '172.17.0.0/16' }] } });
+    if (url === '/networks/slow') return; // Never answers.
+    if (url === '/containers/plain/json')
+      return json(200, { HostConfig: { ExtraHosts: [] }, Config: { Labels: {} } });
+    if (url === '/containers/wired/json')
+      return json(200, {
+        HostConfig: { ExtraHosts: ['host.docker.internal:host-gateway'] },
+        Config: { Labels: {} },
+      });
     if (url === '/networks/missing') return json(404, { message: 'network missing not found' });
     if (url === '/echo') {
       res.writeHead(200, {
@@ -128,7 +179,7 @@ class FakeDaemon {
       setTimeout(() => res.socket?.destroy(), 30);
       return;
     }
-    if (url === '/text-list') {
+    if (url === '/v1.47/containers/json?text=1') {
       res.writeHead(200, { 'content-type': 'text/plain' });
       res.end('not json');
       return;
@@ -382,11 +433,13 @@ describe('Docker relay', () => {
     expect(created).toEqual([{ name: 'web', image: 'node:22', setUp: true, reason: undefined }]);
   });
 
-  it('works with the unversioned path too', async () => {
-    daemon.creates.length = 0;
+  it('sets up a container created on the unversioned path too', async () => {
     const reply = await request('POST', '/containers/create', JSON.stringify({ Image: 'x' }));
-    // The fake daemon only knows the versioned path, so this proves the relay changed it and passed it on.
-    expect(reply.status).toBe(404);
+    expect(reply.status).toBe(201);
+    expect(daemon.creates[0]!.url).toBe('/containers/create');
+    expect(daemon.creates[0]!.body.Env).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^HTTP_PROXY=/)]),
+    );
   });
 
   it("names other containers on the container's networks as ones to reach directly", async () => {
@@ -396,7 +449,23 @@ describe('Docker relay', () => {
       NetworkingConfig: { EndpointsConfig: { app_default: { Aliases: ['web'] }, missing: {} } },
     });
     const env = daemon.creates[0]!.body.Env as string[];
-    expect(env).toContain('NO_PROXY=localhost,127.0.0.1,::1,web,db,cache');
+    const noProxy = env
+      .find((e) => e.startsWith('NO_PROXY='))!
+      .slice('NO_PROXY='.length)
+      .split(',');
+    // Its own alias, peers' names and aliases, and the network's addresses.
+    expect(noProxy).toEqual([
+      'localhost',
+      '127.0.0.1',
+      '::1',
+      'web',
+      '172.20.0.0/16',
+      'db',
+      'database',
+      'x1',
+      'cache',
+    ]);
+    expect(env.find((e) => e.startsWith('JAVA_TOOL_OPTIONS='))).toContain('|172.20.*|');
   });
 
   it('creates the container as written when Docker refuses the changed one', async () => {
@@ -404,7 +473,11 @@ describe('Docker relay', () => {
     const reply = await create({ Image: 'alpine', Env: ['A=1'] });
     expect(reply.status).toBe(201);
     expect(daemon.creates).toHaveLength(2);
-    expect(daemon.creates[1]!.body).toEqual({ Image: 'alpine', Env: ['A=1'] });
+    expect(daemon.creates[1]!.body).toEqual({
+      Image: 'alpine',
+      Env: ['A=1'],
+      Labels: { [LABELS.setup]: 'skipped' },
+    });
     expect(created).toEqual([
       expect.objectContaining({
         name: 'web',
@@ -426,10 +499,84 @@ describe('Docker relay', () => {
     expect(created).toEqual([]);
   });
 
+  it('leaves containers alone on Docker it does not set up, labelled so Compose keeps them', async () => {
+    for (const [operatingSystem, securityOptions] of [
+      ['Ubuntu 24.04 LTS', []],
+      ['Ubuntu 24.04 LTS', ['name=rootless']],
+    ] as const) {
+      daemon.creates.length = 0;
+      daemon.operatingSystem = operatingSystem;
+      daemon.securityOptions = [...securityOptions];
+      // Remembered for a minute: a new relay asks again.
+      await relay.stop();
+      relay = new DockerRelay({
+        listenPath: relay.listenPath,
+        upstream: () => endpoint,
+        proxyPort: () => 8001,
+        configDir: '/x',
+        platform: securityOptions.length ? 'linux' : 'darwin',
+      });
+      await relay.start();
+      await create({ Image: 'x', Env: ['A=1'] });
+      expect(daemon.creates[0]!.body).toEqual({
+        Image: 'x',
+        Env: ['A=1'],
+        Labels: { [LABELS.setup]: 'skipped' },
+      });
+      expect(await relay.unsupportedReason()).toBeTruthy();
+    }
+  });
+
+  it("reads the image's environment, and keeps a certificate variable the container sets", async () => {
+    daemon.imageEnv['registry.example.com:5000/team/app:1.2'] = ['JAVA_TOOL_OPTIONS=-Xss1m'];
+    await create({
+      Image: 'registry.example.com:5000/team/app:1.2',
+      Env: ['NODE_EXTRA_CA_CERTS=/certs/ca.pem'],
+    });
+    const env = daemon.creates[0]!.body.Env as string[];
+    expect(env.find((e) => e.startsWith('JAVA_TOOL_OPTIONS='))).toMatch(/^JAVA_TOOL_OPTIONS=-Xss1m -Dhttp/);
+    expect(env).toContain('NODE_EXTRA_CA_CERTS=/certs/ca.pem');
+  });
+
+  it('carries on without the image when Docker does not know it', async () => {
+    const reply = await create({ Image: 'not-pulled-yet' });
+    expect(reply.status).toBe(201);
+    expect(daemon.creates[0]!.body.Env).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^HTTP_PROXY=/)]),
+    );
+  });
+
+  it('relabels the mount on a daemon with SELinux', async () => {
+    daemon.securityOptions = ['name=selinux'];
+    await create({ Image: 'x' });
+    const hostConfig = daemon.creates[0]!.body.HostConfig as { Binds?: string[]; Mounts?: unknown };
+    expect(hostConfig.Binds).toEqual([`/data/docker-config:${MOUNT_POINT}:ro,z`]);
+    expect(hostConfig.Mounts).toBeUndefined();
+  });
+
+  it('lists the addresses of running containers it set up', async () => {
+    daemon.listed = [
+      {
+        Id: 'a',
+        NetworkSettings: {
+          Networks: { bridge: { IPAddress: '172.17.0.5' }, app: { IPAddress: '172.20.0.3' } },
+        },
+      },
+      { Id: 'b', NetworkSettings: { Networks: { none: { IPAddress: '' } } } },
+    ];
+    expect([...(await relay.setUpAddresses())].sort()).toEqual(['172.17.0.5', '172.20.0.3']);
+    expect(daemon.lastListUrl).toContain(encodeURIComponent('app.wirescry.setup=proxy'));
+    expect(daemon.lastListUrl).toContain(encodeURIComponent('"running"'));
+  });
+
   it('leaves Windows containers alone', async () => {
     daemon.osType = 'windows';
     await create({ Image: 'mcr.microsoft.com/windows/nanoserver', Env: ['A=1'] });
-    expect(daemon.creates[0]!.body).toEqual({ Image: 'mcr.microsoft.com/windows/nanoserver', Env: ['A=1'] });
+    expect(daemon.creates[0]!.body).toEqual({
+      Image: 'mcr.microsoft.com/windows/nanoserver',
+      Env: ['A=1'],
+      Labels: { [LABELS.setup]: 'skipped' },
+    });
     expect(created[0]).toMatchObject({ setUp: false });
   });
 
@@ -511,6 +658,195 @@ describe('Docker relay', () => {
     await closed;
   });
 
+  it('passes a body sent with an upgrade on, as docker exec sends one', async () => {
+    const socket = net.connect(relay.listenPath);
+    let received = '';
+    socket.on('data', (d: Buffer) => (received += d.toString()));
+    const body = '{"Detach":false,"Tty":false}';
+    socket.write(
+      `POST /v1.47/exec/e1/start HTTP/1.1\r\nHost: docker\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n${body}`,
+    );
+    await waitFor(() => received.includes('101 UPGRADED') && received.includes(body));
+    socket.destroy();
+  });
+
+  it('tells the container its input ended, and lets its last output through', async () => {
+    const socket = net.connect(relay.listenPath);
+    let received = '';
+    socket.on('data', (d: Buffer) => (received += d.toString()));
+    socket.write(
+      'POST /containers/c1/attach HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n',
+    );
+    await waitFor(() => received.includes('101'));
+    socket.write('last words');
+    // Half-close: no more input, but still reading.
+    socket.end();
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    await closed;
+    expect(received).toMatch(/LAST WORDSBYE$/);
+  });
+
+  it('points a mount of its own socket at the daemon’s, as Testcontainers mounts DOCKER_HOST', async () => {
+    const own = relay.listenPath;
+    await create({
+      Image: 'testcontainers/ryuk',
+      HostConfig: {
+        Binds: [`${own}:/var/run/docker.sock:rw`, '/src:/app'],
+        Mounts: [{ Type: 'bind', Source: own, Target: '/docker.sock' }],
+      },
+    });
+    const hostConfig = daemon.creates[0]!.body.HostConfig as {
+      Binds: string[];
+      Mounts: Array<{ Source: string; Target: string }>;
+    };
+    expect(hostConfig.Binds).toEqual(['/var/run/docker.sock:/var/run/docker.sock:rw', '/src:/app']);
+    expect(hostConfig.Mounts.find((m) => m.Target === '/docker.sock')!.Source).toBe('/var/run/docker.sock');
+  });
+
+  it.skipIf(windows)('recognizes its own socket written through /private on macOS', async () => {
+    const own = relay.listenPath;
+    const other = own.startsWith('/private/') ? own.slice('/private'.length) : `/private${own}`;
+    await create({ Image: 'x', HostConfig: { Binds: [`${other}:/var/run/docker.sock`] } });
+    expect((daemon.creates[0]!.body.HostConfig as { Binds: string[] }).Binds[0]).toBe(
+      '/var/run/docker.sock:/var/run/docker.sock',
+    );
+  });
+
+  it("uses the daemon's own socket path for the mount on Docker on Linux", async () => {
+    daemon.operatingSystem = 'Ubuntu 24.04.3 LTS';
+    await relay.stop();
+    relay = new DockerRelay({
+      listenPath: relay.listenPath,
+      upstream: () => endpoint,
+      proxyPort: () => 8001,
+      configDir: '/x',
+      platform: 'linux',
+    });
+    await relay.start();
+    await create({ Image: 'x', HostConfig: { Binds: [`${relay.listenPath}:/var/run/docker.sock`] } });
+    expect((daemon.creates[0]!.body.HostConfig as { Binds: string[] }).Binds[0]).toBe(
+      `${daemon.socketPath}:/var/run/docker.sock`,
+    );
+  });
+
+  it('leaves dev containers, BuildKit builders and Kubernetes nodes alone', async () => {
+    await create({
+      Image: 'mcr.microsoft.com/devcontainers/base',
+      Labels: { 'devcontainer.local_folder': '/src' },
+    });
+    await create({ Image: 'moby/buildkit' }, '?name=buildx_buildkit_mybuilder0');
+    await create({ Image: 'kindest/node', Labels: { 'io.x-k8s.kind.cluster': 'kind' } });
+    expect(daemon.creates).toHaveLength(3);
+    for (const { body } of daemon.creates) {
+      expect((body.Labels as Record<string, string>)[LABELS.setup]).toBe('skipped');
+      expect(body.Env).toBeUndefined();
+    }
+    expect(created.map((c) => c.reason)).toEqual([
+      'it’s a dev container.',
+      'it’s a BuildKit builder.',
+      'it’s a Kubernetes node.',
+    ]);
+  });
+
+  it("leaves a container sharing an unprepared container's network alone, off Docker Desktop", async () => {
+    daemon.operatingSystem = 'Ubuntu 24.04.3 LTS';
+    await relay.stop();
+    relay = new DockerRelay({
+      listenPath: relay.listenPath,
+      upstream: () => endpoint,
+      proxyPort: () => 8001,
+      configDir: '/x',
+      platform: 'linux',
+    });
+    await relay.start();
+    await create({ Image: 'x', HostConfig: { NetworkMode: 'container:plain' } });
+    expect((daemon.creates[0]!.body.Labels as Record<string, string>)[LABELS.setup]).toBe('skipped');
+    // One that has the host entry is fine.
+    await create({ Image: 'x', HostConfig: { NetworkMode: 'container:wired' } });
+    expect((daemon.creates[1]!.body.Labels as Record<string, string>)[LABELS.setup]).toBe('proxy');
+  });
+
+  it('sets up a container sharing any network on Docker Desktop, which provides the name itself', async () => {
+    await create({ Image: 'x', HostConfig: { NetworkMode: 'container:plain' } });
+    expect((daemon.creates[0]!.body.Labels as Record<string, string>)[LABELS.setup]).toBe('proxy');
+  });
+
+  it("doesn't retry when Docker's refusal has nothing to do with Wirescry", async () => {
+    for (const [status, message] of [
+      [404, 'No such image: nope:latest'],
+      [409, 'Conflict. The container name "/web" is already in use'],
+    ] as const) {
+      daemon.creates.length = 0;
+      daemon.createStatus = { status, message };
+      const reply = await create({ Image: 'nope' });
+      expect(reply.status).toBe(status);
+      expect(JSON.parse(reply.body).message).toBe(message);
+      expect(daemon.creates).toHaveLength(1);
+    }
+    expect(logs.join('\n')).not.toContain('refused');
+  });
+
+  it('retries a 500 from the changed container, as Docker answers a mount it cannot make', async () => {
+    daemon.createStatus = { status: 500, message: 'error while creating mount source path', once: true };
+    expect((await create({ Image: 'x' })).status).toBe(201);
+    expect(daemon.creates).toHaveLength(2);
+    expect((daemon.creates[1]!.body.Labels as Record<string, string>)[LABELS.setup]).toBe('skipped');
+  });
+
+  it('marks what it passes on, and passes on untouched what another Wirescry relay sent', async () => {
+    await request('GET', '/_ping');
+    expect(daemon.seenRelayHeader).toContain('/_ping');
+    const reply = await request(
+      'POST',
+      '/v1.47/containers/create',
+      JSON.stringify({ Image: 'x', Env: ['A=1'] }),
+      {
+        'x-wirescry-relay': '1',
+      },
+    );
+    expect(reply.status).toBe(201);
+    expect(daemon.creates[0]!.body).toEqual({ Image: 'x', Env: ['A=1'] });
+  });
+
+  it('passes containers on as written while Docker setup is off', async () => {
+    let active = false;
+    await relay.stop();
+    relay = new DockerRelay({
+      listenPath: relay.listenPath,
+      upstream: () => endpoint,
+      proxyPort: () => 8001,
+      configDir: '/x',
+      active: () => active,
+    });
+    await relay.start();
+    await create({ Image: 'x', Env: ['A=1'] });
+    expect(daemon.creates[0]!.body).toEqual({ Image: 'x', Env: ['A=1'] });
+    active = true;
+    await create({ Image: 'x', Env: ['A=1'] });
+    expect((daemon.creates[1]!.body.Labels as Record<string, string>)[LABELS.setup]).toBe('proxy');
+  });
+
+  it('asks for images by their full name, registry, port and digest included', async () => {
+    daemon.imageEnv['registry.example.com:5000/team/app@sha256:abc123'] = ['NO_PROXY=from-image'];
+    await create({ Image: 'registry.example.com:5000/team/app@sha256:abc123' });
+    expect(daemon.creates[0]!.body.Env).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^NO_PROXY=from-image,/)]),
+    );
+  });
+
+  it('waits only so long for a lookup Docker never answers', async () => {
+    const started = Date.now();
+    const reply = await create({ Image: 'x', HostConfig: { NetworkMode: 'slow' } });
+    expect(reply.status).toBe(201);
+    expect(Date.now() - started).toBeLessThan(5000);
+  }, 10_000);
+
+  it('passes a list that is not JSON on untouched', async () => {
+    const reply = await request('GET', '/v1.47/containers/json?text=1');
+    expect(reply.status).toBe(200);
+    expect(reply.body).toBe('not json');
+  });
+
   it('says when Docker is not running', async () => {
     await daemon.close();
     const reply = await request('GET', '/_ping');
@@ -542,12 +878,16 @@ describe('Docker relay', () => {
   it.skipIf(windows)('keeps its socket private to this user, and replaces a stale one', async () => {
     expect((await stat(relay.listenPath)).mode & 0o777).toBe(0o600);
     await relay.stop();
-    // A socket file left behind, as after a crash.
-    const stale = net.createServer();
-    await new Promise<void>((resolve) => stale.listen(path.join(dir, 'stale.sock'), resolve));
-    await new Promise<void>((resolve) => {
-      stale.close(() => resolve());
-    });
+    // A socket file left behind by a process that crashed: listening, then killed outright.
+    const { spawn } = await import('node:child_process');
+    const child = spawn(process.execPath, [
+      '-e',
+      `require('net').createServer().listen(${JSON.stringify(relay.listenPath)}, () => console.log('up'))`,
+    ]);
+    await new Promise((resolve) => child.stdout.once('data', resolve));
+    child.kill('SIGKILL');
+    await new Promise((resolve) => child.once('exit', resolve));
+    expect((await stat(relay.listenPath)).isSocket()).toBe(true);
     relay = new DockerRelay({
       listenPath: relay.listenPath,
       upstream: () => endpoint,

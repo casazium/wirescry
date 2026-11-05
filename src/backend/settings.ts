@@ -4,6 +4,8 @@ import path from 'node:path';
 export interface Settings {
   /** Fixed proxy port. Unset means pick a free one automatically. */
   proxyPort?: number;
+  /** false: don't set up Docker containers. Unset means on. */
+  dockerSetup?: boolean;
 }
 
 const FILE = 'settings.json';
@@ -16,7 +18,10 @@ export function isValidPort(port: unknown): port is number {
 export async function loadSettings(dir: string): Promise<Settings> {
   try {
     const raw = JSON.parse(await readFile(path.join(dir, FILE), 'utf8')) as Record<string, unknown>;
-    return isValidPort(raw.proxyPort) ? { proxyPort: raw.proxyPort } : {};
+    return {
+      ...(isValidPort(raw.proxyPort) ? { proxyPort: raw.proxyPort } : {}),
+      ...(raw.dockerSetup === false ? { dockerSetup: false } : {}),
+    };
   } catch {
     return {};
   }

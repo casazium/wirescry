@@ -13,18 +13,23 @@ import type { ProxyStatus } from '../src/shared/api';
 import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
 /** A daemon that records what it was asked to create. */
-async function fakeDaemon(socketPath: string) {
+async function fakeDaemon(socketPath: string, operatingSystem = 'Docker Desktop') {
   const creates: Array<Record<string, unknown>> = [];
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
     req.on('data', (c: Buffer) => chunks.push(c));
     req.on('end', () => {
-      if (req.url?.includes('/containers/create')) creates.push(JSON.parse(Buffer.concat(chunks).toString()));
-      res.writeHead(req.url === '/_ping' ? 200 : 201, {
-        'content-type': 'application/json',
-        ostype: 'linux',
-      });
-      res.end(req.url === '/_ping' ? 'OK' : '{"Id":"c1"}');
+      const send = (status: number, body: unknown) => {
+        res.writeHead(status, { 'content-type': 'application/json', ostype: 'linux' });
+        res.end(typeof body === 'string' ? body : JSON.stringify(body));
+      };
+      if (req.url === '/_ping') return send(200, 'OK');
+      if (req.url === '/info') return send(200, { OSType: 'linux', OperatingSystem: operatingSystem });
+      if (req.url?.includes('/containers/create')) {
+        creates.push(JSON.parse(Buffer.concat(chunks).toString()));
+        return send(201, { Id: 'c1' });
+      }
+      send(404, { message: 'not here' });
     });
   });
   await new Promise<void>((resolve) => server.listen(socketPath, resolve));
@@ -216,6 +221,43 @@ describe('Docker setup in the backend', () => {
     expect(reply).toBe('101');
   });
 
+  it('shows what happened to the last container on the Setup page', async () => {
+    await dockerRequest(relaySocket(status()), 'POST', '/v1.47/containers/create?name=shown', {
+      Image: 'alpine',
+    });
+    await expect
+      .poll(() => {
+        const latest = [...api.messages].reverse().find((m) => m.type === 'status') as
+          { status: ProxyStatus } | undefined;
+        return latest?.status.docker.lastContainer;
+      })
+      .toEqual({ name: 'shown', image: 'alpine', setUp: true });
+  });
+
+  it('can be turned off and on, remembering the choice, and keeps open terminals working', async () => {
+    const socketPath = relaySocket(status());
+    await api.send({ command: 'setDockerSetup', enabled: false });
+    const latest = () =>
+      ([...api.messages].reverse().find((m) => m.type === 'status') as { status: ProxyStatus }).status;
+    expect(latest().docker.state).toBe('off');
+    expect(latest().terminalEnv.DOCKER_HOST).toBeUndefined();
+    expect(await readFile(latest().terminalScripts.posix!, 'utf8')).not.toContain('DOCKER_HOST');
+    expect(JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')).dockerSetup).toBe(false);
+    // A terminal that already has DOCKER_HOST still reaches Docker; its containers are left as written.
+    const before = daemon.creates.length;
+    expect((await dockerRequest(socketPath, 'POST', '/v1.47/containers/create', { Image: 'x' })).status).toBe(
+      201,
+    );
+    expect(daemon.creates[before]).toEqual({ Image: 'x' });
+
+    await api.send({ command: 'setDockerSetup', enabled: true });
+    expect(latest().docker.state).toBe('ready');
+    expect(latest().terminalEnv.DOCKER_HOST).toBeDefined();
+    expect(
+      JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')).dockerSetup,
+    ).toBeUndefined();
+  });
+
   it('closes the relay when it stops', async () => {
     const socketPath = relaySocket(status());
     const second = await startBackend({
@@ -270,6 +312,52 @@ describe('Docker setup when it does not apply', () => {
   it('leaves DOCKER_HOST alone for Docker on another computer, and says so', async () => {
     const status = await statusWith({ endpoint: { kind: 'remote', host: 'ssh://me@box' } });
     expect(status.docker).toEqual({ state: 'remote', daemon: 'ssh://me@box' });
+    expect(status.terminalEnv.DOCKER_HOST).toBeUndefined();
+  });
+
+  it('says so, and leaves DOCKER_HOST alone, for Docker it does not set up', async () => {
+    const daemonDir = await mkdtemp(path.join(os.tmpdir(), 'wd-'));
+    dirs.push(daemonDir);
+    const socketPath =
+      process.platform === 'win32'
+        ? `\\\\.\\pipe\\wirescry-test-colima-${process.pid}`
+        : path.join(daemonDir, 'd.sock');
+    // colima on a Mac, or Docker in a VM elsewhere: Linux, not Docker Desktop.
+    const daemon = await fakeDaemon(socketPath, 'Ubuntu 24.04 LTS');
+    try {
+      const status = await statusWith({
+        endpoint: { kind: 'local', socketPath, host: `unix://${socketPath}` },
+      });
+      if (process.platform === 'linux') {
+        expect(status.docker.state).toBe('ready');
+      } else {
+        expect(status.docker).toMatchObject({
+          state: 'unsupported',
+          error: expect.stringContaining('Ubuntu 24.04 LTS'),
+        });
+        expect(status.terminalEnv.DOCKER_HOST).toBeUndefined();
+      }
+    } finally {
+      await daemon.close();
+    }
+  });
+
+  it('does not relay to itself when DOCKER_HOST points at its own relay', async () => {
+    const dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-docker-self-'));
+    dirs.push(dataDir);
+    const { relayAddress } = await import('../src/backend/docker/setup');
+    const own = relayAddress(dataDir).listenPath;
+    const backend = await startBackend({
+      dataDir,
+      token: TOKEN,
+      allowedOrigins: [UI_ORIGIN],
+      dockerEndpoint: async () => ({ kind: 'local', socketPath: own, host: `unix://${own}` }),
+    });
+    const client = await apiClient(backend.apiPort);
+    const status = (client.messages[0] as { status: ProxyStatus }).status;
+    client.close();
+    await backend.stop();
+    expect(status.docker.state).toBe('none');
     expect(status.terminalEnv.DOCKER_HOST).toBeUndefined();
   });
 

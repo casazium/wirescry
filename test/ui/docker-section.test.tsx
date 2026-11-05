@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import type { DockerStatus, ProxyStatus } from '../../src/shared/api';
 import { DockerSection } from '../../src/renderer/src/DockerSection';
 import { status } from './fixtures';
@@ -37,5 +37,89 @@ describe('Docker section', () => {
       <DockerSection status={withDocker({ state: 'failed', daemon: 'unix:///x', error: 'EACCES' })} />,
     );
     expect(screen.getByText(/couldn.t set itself up for Docker: EACCES/)).toBeTruthy();
+  });
+
+  it('turns Docker setup off and on with the switch', () => {
+    const send = vi.fn(async () => undefined);
+    const { rerender } = render(
+      <DockerSection status={withDocker({ state: 'ready', daemon: 'unix:///d' })} send={send} />,
+    );
+    const box = screen.getByRole('checkbox', { name: /Set up containers started from Wirescry terminals/ });
+    expect((box as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(box);
+    expect(send).toHaveBeenCalledWith({ command: 'setDockerSetup', enabled: false });
+    rerender(<DockerSection status={withDocker({ state: 'off', daemon: 'unix:///d' })} send={send} />);
+    expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByText(/New terminals don.t get/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect(send).toHaveBeenLastCalledWith({ command: 'setDockerSetup', enabled: true });
+  });
+
+  it('shows why the switch failed, and is disabled while disconnected', async () => {
+    const send = vi.fn(async () => {
+      throw new Error('Could not save settings.');
+    });
+    const { rerender } = render(
+      <DockerSection status={withDocker({ state: 'ready', daemon: 'unix:///d' })} send={send} />,
+    );
+    fireEvent.click(screen.getByRole('checkbox'));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Could not save settings.');
+    rerender(
+      <DockerSection
+        status={withDocker({ state: 'ready', daemon: 'unix:///d' })}
+        send={send}
+        connected={false}
+      />,
+    );
+    expect((screen.getByRole('checkbox') as HTMLInputElement).disabled).toBe(true);
+  });
+
+  it('offers no switch where there is nothing to switch', () => {
+    render(<DockerSection status={withDocker({ state: 'none' })} send={vi.fn()} />);
+    expect(screen.queryByRole('checkbox')).toBeNull();
+  });
+
+  it('says why a kind of Docker is not set up', () => {
+    render(
+      <DockerSection
+        status={withDocker({
+          state: 'unsupported',
+          daemon: 'unix:///c',
+          error: 'Wirescry doesn’t set up Podman yet.',
+        })}
+      />,
+    );
+    expect(
+      screen.getByText(/doesn.t set up Podman yet\. Containers you start from a Wirescry terminal are left/),
+    ).toBeTruthy();
+  });
+
+  it('says what happened to the last container', () => {
+    const { rerender } = render(
+      <DockerSection
+        status={withDocker({
+          state: 'ready',
+          daemon: 'unix:///d',
+          lastContainer: { name: 'web', setUp: true },
+        })}
+      />,
+    );
+    expect(screen.getByText('Last container: web, set up.')).toBeTruthy();
+    rerender(
+      <DockerSection
+        status={withDocker({
+          state: 'ready',
+          daemon: 'unix:///d',
+          lastContainer: {
+            image: 'kindest/node',
+            setUp: false,
+            reason: 'it’s a Kubernetes node.',
+          },
+        })}
+      />,
+    );
+    expect(
+      screen.getByText(/Last container: kindest\/node, left as it is: it’s a Kubernetes node\./),
+    ).toBeTruthy();
   });
 });

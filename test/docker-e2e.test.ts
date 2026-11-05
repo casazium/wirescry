@@ -34,6 +34,8 @@ const CURL = 'curlimages/curl:8.11.1';
 const BUSYBOX = 'busybox:1.36.1';
 const NODE = 'node:24.11.0-alpine';
 const PYTHON = 'python:3.13.9-alpine';
+const JAVA = 'eclipse-temurin:21.0.8_9-jdk-alpine';
+const DOCKER_CLI = 'docker:28.5.1-cli';
 const PROJECT = `wirescry-e2e-${process.pid}`;
 
 describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker)', () => {
@@ -81,7 +83,7 @@ describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker
     expect(status.docker.state).toBe('ready');
     dockerHost = status.terminalEnv.DOCKER_HOST!;
     await docker(['pull', '-q', CURL], false);
-    for (const image of [BUSYBOX, NODE, PYTHON]) await docker(['pull', '-q', image], false);
+    for (const image of [BUSYBOX, NODE, PYTHON, JAVA, DOCKER_CLI]) await docker(['pull', '-q', image], false);
   }, 600_000);
 
   afterAll(async () => {
@@ -117,12 +119,18 @@ describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker
       .toBe(true);
   }, 120_000);
 
-  it('leaves docker run without Wirescry as it was', async () => {
-    const out = await docker(
-      ['run', '--rm', BUSYBOX, 'sh', '-c', 'echo "proxy=${HTTPS_PROXY:-none}"'],
-      false,
-    );
-    expect(out.trim()).toBe('proxy=none');
+  it("leaves containers made without Wirescry as they were, even while it's running", async () => {
+    const name = `${PROJECT}-plain`;
+    await docker(['create', '--name', name, BUSYBOX, 'true'], false);
+    try {
+      const labels = JSON.parse(
+        await docker(['inspect', '--format', '{{json .Config.Labels}}', name], false),
+      ) as Record<string, string> | null;
+      expect(Object.keys(labels ?? {}).some((key) => key.startsWith('app.wirescry.'))).toBe(false);
+      expect((await containerEnv(name)).some((e) => e.startsWith('HTTP_PROXY='))).toBe(false);
+    } finally {
+      await docker(['rm', '-f', name], false);
+    }
   }, 120_000);
 
   it('runs a Compose project: containers reach each other directly and the host through Wirescry', async () => {
@@ -237,21 +245,189 @@ describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker
     const name = `${PROJECT}-shared`;
     await docker(['run', '-d', '--name', name, BUSYBOX, 'sleep', '60']);
     try {
+      // It shares the other's network and host entries, and its requests still go through Wirescry.
       const out = await docker([
         'run',
         '--rm',
         '--network',
         `container:${name}`,
-        BUSYBOX,
-        'sh',
-        '-c',
-        'echo "proxy=$HTTPS_PROXY"',
+        CURL,
+        '-sS',
+        '--fail',
+        `http://host.docker.internal:${localPort}/shared-network`,
       ]);
-      expect(out.trim()).toMatch(/^proxy=http:\/\/host\.docker\.internal:\d+$/);
+      expect(out).toBe('local-ok /shared-network');
     } finally {
       await docker(['rm', '-f', name], false);
     }
   }, 120_000);
+
+  it('passes docker exec, logs -f and cp through', async () => {
+    const name = `${PROJECT}-exec`;
+    await docker(['run', '-d', '--name', name, BUSYBOX, 'sh', '-c', 'echo started; sleep 4; echo stopping']);
+    try {
+      expect((await docker(['exec', name, 'echo', 'from exec'])).trim()).toBe('from exec');
+      // exec -i: input, then its end, reach the process; its output comes back.
+      const echoed = await new Promise<string>((resolve, reject) => {
+        const child = execFile(
+          'docker',
+          ['exec', '-i', name, 'cat'],
+          { env: { ...process.env, DOCKER_HOST: dockerHost }, timeout: 30_000 },
+          (error, stdout) => (error ? reject(error) : resolve(stdout)),
+        );
+        child.stdin!.end('piped into exec\n');
+      });
+      expect(echoed).toBe('piped into exec\n');
+      // logs -f follows until the container exits.
+      expect((await docker(['logs', '-f', name])).trim().split('\n')).toEqual(['started', 'stopping']);
+      const file = path.join(projectDir, 'copied.txt');
+      await docker(['cp', `${name}:/etc/hostname`, file]);
+      const { readFile } = await import('node:fs/promises');
+      expect((await readFile(file, 'utf8')).trim().length).toBeGreaterThan(0);
+    } finally {
+      await docker(['rm', '-f', name], false);
+    }
+  }, 120_000);
+
+  it('builds images through it (BuildKit sessions pass through)', async () => {
+    const context = path.join(projectDir, 'build');
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(context, { recursive: true });
+    await writeFile(
+      path.join(context, 'Dockerfile'),
+      `FROM ${BUSYBOX}\nCOPY hello.txt /hello.txt\nRUN cat /hello.txt\n`,
+    );
+    await writeFile(path.join(context, 'hello.txt'), 'built through Wirescry\n');
+    const tag = `${PROJECT}-built:1`;
+    try {
+      await docker(['build', '-q', '-t', tag, context]);
+      expect((await docker(['run', '--rm', tag, 'cat', '/hello.txt'])).trim()).toBe('built through Wirescry');
+    } finally {
+      await docker(['rmi', '-f', tag], false).catch(() => undefined);
+    }
+  }, 300_000);
+
+  it('lets a container mount the Docker socket from DOCKER_HOST, as Testcontainers does', async () => {
+    const own = new URL(dockerHost.replace('unix://', 'file://')).pathname;
+    const out = await docker([
+      'run',
+      '--rm',
+      '-v',
+      `${own}:/var/run/docker.sock`,
+      DOCKER_CLI,
+      'docker',
+      'version',
+      '--format',
+      '{{.Server.Os}}',
+    ]);
+    expect(out.trim()).toBe('linux');
+  }, 120_000);
+
+  it('reaches a container by its network alias directly, not through Wirescry', async () => {
+    const network = `${PROJECT}-aliases`;
+    const server = `${PROJECT}-aliased`;
+    await docker(['network', 'create', network], false);
+    try {
+      await docker([
+        'run',
+        '-d',
+        '--name',
+        server,
+        '--network',
+        network,
+        '--network-alias',
+        'database',
+        BUSYBOX,
+        'sh',
+        '-c',
+        'mkdir -p /www && echo alias-ok > /www/index.html && httpd -f -p 8080 -h /www',
+      ]);
+      const before = exchangesIn(api.messages).length;
+      const out = await docker([
+        'run',
+        '--rm',
+        '--network',
+        network,
+        CURL,
+        '-sS',
+        '--fail',
+        '--retry',
+        '10',
+        '--retry-connrefused',
+        '--retry-delay',
+        '1',
+        'http://database:8080/',
+      ]);
+      expect(out.trim()).toBe('alias-ok');
+      expect(
+        exchangesIn(api.messages)
+          .slice(before)
+          .some((e) => e.host.startsWith('database')),
+      ).toBe(false);
+    } finally {
+      await docker(['rm', '-f', server], false).catch(() => undefined);
+      await docker(['network', 'rm', network], false).catch(() => undefined);
+    }
+  }, 180_000);
+
+  it("keeps Java's calls between Compose services direct, and its calls to the host through Wirescry", async () => {
+    const dir = path.join(projectDir, 'java');
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(dir, { recursive: true });
+    await writeFile(
+      path.join(dir, 'Main.java'),
+      [
+        'import java.net.*; import java.io.*;',
+        'public class Main { public static void main(String[] a) throws Exception {',
+        '  for (String u : a) {',
+        '    for (int i = 0; ; i++) { try {',
+        '      HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();',
+        '      System.out.println(new String(c.getInputStream().readAllBytes()).trim()); break;',
+        '    } catch (IOException e) { if (i > 20) throw e; Thread.sleep(500); } }',
+        '  } } }',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      path.join(dir, 'compose.yaml'),
+      [
+        'services:',
+        '  api:',
+        `    image: ${BUSYBOX}`,
+        '    command: ["sh", "-c", "mkdir -p /www && echo java-api-ok > /www/index.html && httpd -f -p 8080 -h /www"]',
+        '  app:',
+        `    image: ${JAVA}`,
+        '    depends_on: [api]',
+        '    volumes: ["./Main.java:/src/Main.java:ro"]',
+        `    command: ["java", "/src/Main.java", "http://api:8080/", "http://host.docker.internal:${localPort}/from-java"]`,
+        '',
+      ].join('\n'),
+    );
+    const project = `${PROJECT}-java`;
+    try {
+      const out = await docker([
+        'compose',
+        '-p',
+        project,
+        '--project-directory',
+        dir,
+        'up',
+        '--abort-on-container-exit',
+        '--exit-code-from',
+        'app',
+        '--no-color',
+        '--no-log-prefix',
+      ]);
+      expect(out).toContain('java-api-ok');
+      expect(out).toContain('local-ok /from-java');
+      await expect.poll(() => exchangesIn(api.messages).some((e) => e.path === '/from-java')).toBe(true);
+      expect(exchangesIn(api.messages).some((e) => e.host.startsWith('api'))).toBe(false);
+    } finally {
+      await docker(['compose', '-p', project, '--project-directory', dir, 'down', '-t', '0'], false).catch(
+        () => undefined,
+      );
+    }
+  }, 300_000);
 
   it('passes attach through: docker run -i gets its input and output', async () => {
     const env = { ...process.env, DOCKER_HOST: dockerHost };

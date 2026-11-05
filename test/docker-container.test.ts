@@ -5,11 +5,14 @@ import {
   LABELS,
   MOUNT_POINT,
   containerEnv,
+  javaNonProxyHosts,
   labelsAsListed,
+  skippedDefinition,
   namesInDefinition,
   rewriteListed,
   setUpContainer,
   userNetworks,
+  type SetUpOptions,
 } from '../src/backend/docker/container';
 
 const options = { proxyPort: 8001, configDir: '/data/docker-config', direct: [] as string[] };
@@ -18,7 +21,7 @@ type Body = {
   Labels: Record<string, string>;
   HostConfig: { Mounts?: unknown[]; ExtraHosts?: string[]; NetworkMode?: string; Binds?: string[] };
 };
-const setUp = (input: unknown, extra: Partial<typeof options> = {}) => {
+const setUp = (input: unknown, extra: Partial<SetUpOptions> = {}) => {
   const result = setUpContainer(input, { ...options, ...extra });
   return { ...result, body: result.body as unknown as Body };
 };
@@ -174,7 +177,9 @@ describe('setUpContainer', () => {
     const odd = { Env: 'A=1' };
     const result = setUpContainer(odd, options);
     expect(result.setUp).toBe(false);
-    expect(result.body).toBe(odd);
+    // As it was, labelled as left alone.
+    expect(result.body).toEqual({ Env: 'A=1', Labels: { [LABELS.setup]: 'skipped' } });
+    expect(odd).toEqual({ Env: 'A=1' });
   });
 
   it("changes Compose's hash and keeps the original", () => {
@@ -187,6 +192,121 @@ describe('setUpContainer', () => {
   it("doesn't change Compose's hash on a skipped container", () => {
     const { body } = setUp({ Labels: { [COMPOSE_HASH_LABEL]: 'abc' }, HostConfig: { NetworkMode: 'none' } });
     expect(body.Labels[COMPOSE_HASH_LABEL]).toBe('abc');
+  });
+});
+
+describe('settings the container already has', () => {
+  it('keeps certificate variables set for the container, and replaces the rest', () => {
+    const { body } = setUp({ Env: ['NODE_EXTRA_CA_CERTS=/certs/internal.pem', 'SSL_CERT_FILE='] });
+    const env = envOf(body);
+    expect(env.get('NODE_EXTRA_CA_CERTS')).toBe('/certs/internal.pem');
+    expect(body.Env.filter((e) => e.startsWith('NODE_EXTRA_CA_CERTS='))).toHaveLength(1);
+    // An empty one isn't a choice: it gets Wirescry's.
+    expect(env.get('SSL_CERT_FILE')).toBe(`${MOUNT_POINT}/ca-bundle.pem`);
+    expect(env.get('REQUESTS_CA_BUNDLE')).toBe(`${MOUNT_POINT}/ca-bundle.pem`);
+  });
+
+  it("replaces an image's own certificate variables, which point at public roots Wirescry's bundle has", () => {
+    const { body } = setUp({ Env: [] }, { imageEnv: ['CURL_CA_BUNDLE=/cacert.pem', 'PATH=/usr/bin'] });
+    expect(envOf(body).get('CURL_CA_BUNDLE')).toBe(`${MOUNT_POINT}/ca-bundle.pem`);
+    // The image's other variables aren't copied into the definition.
+    expect(envOf(body).has('PATH')).toBe(false);
+  });
+
+  it("builds on the image's JAVA_TOOL_OPTIONS, PHP folders and NO_PROXY", () => {
+    const { body } = setUp(
+      { Env: [] },
+      {
+        imageEnv: [
+          'JAVA_TOOL_OPTIONS=-XX:+UseZGC',
+          'PHP_INI_SCAN_DIR=/etc/php/conf.d',
+          'NO_PROXY=metadata.internal',
+        ],
+      },
+    );
+    const env = envOf(body);
+    expect(env.get('JAVA_TOOL_OPTIONS')).toMatch(/^-XX:\+UseZGC -Dhttp\.proxyHost=/);
+    expect(env.get('PHP_INI_SCAN_DIR')).toBe(`/etc/php/conf.d:${MOUNT_POINT}/php`);
+    expect(env.get('NO_PROXY')).toBe('metadata.internal,localhost,127.0.0.1,::1');
+  });
+
+  it("prefers the container's value to the image's", () => {
+    const { body } = setUp({ Env: ['NO_PROXY=mine'] }, { imageEnv: ['NO_PROXY=image'] });
+    expect(envOf(body).get('NO_PROXY')).toBe('mine,localhost,127.0.0.1,::1');
+  });
+
+  it('respects a variable the container leaves out on purpose', () => {
+    const { body } = setUp({ Env: ['JAVA_TOOL_OPTIONS'] }, { imageEnv: ['JAVA_TOOL_OPTIONS=-Dimage=1'] });
+    expect(envOf(body).get('JAVA_TOOL_OPTIONS')).not.toContain('-Dimage=1');
+  });
+});
+
+describe('Java', () => {
+  it('skips the proxy for the same names as NO_PROXY', () => {
+    const { body } = setUp(
+      { Env: ['NO_PROXY=.corp.example,db:5432,10.0.0.0/8'] },
+      { direct: ['api', 'cache'] },
+    );
+    const options = envOf(body).get('JAVA_TOOL_OPTIONS')!;
+    const hosts = /-Dhttp\.nonProxyHosts=(\S+)/.exec(options)![1]!.split('|');
+    expect(hosts).toEqual(
+      expect.arrayContaining([
+        '*.corp.example',
+        'db',
+        'localhost',
+        '127.0.0.1',
+        '127.*',
+        '[::1]',
+        'api',
+        'cache',
+      ]),
+    );
+    expect(hosts.some((h) => h.includes('/'))).toBe(false);
+  });
+
+  it('turns NO_PROXY entries into Java patterns, dropping what Java cannot express', () => {
+    expect(
+      javaNonProxyHosts([
+        'localhost',
+        '.svc',
+        'host:8080',
+        '[::1]:9000',
+        '*',
+        '192.168.0.0/16',
+        '172.20.0.0/20',
+        'a b',
+        'ok-1',
+      ]),
+    ).toBe('localhost|*.svc|host|[::1]|192.168.*|ok-1');
+  });
+
+  it('puts no spaces in the value, which the JVM would split on', () => {
+    expect(javaNonProxyHosts(['a', 'b c', 'd'])).not.toMatch(/\s/);
+  });
+});
+
+describe('SELinux', () => {
+  it('asks Docker to relabel the folder so the container can read it', () => {
+    const { body } = setUp({ HostConfig: { Binds: ['/src:/app'] } }, { selinux: true });
+    expect(body.HostConfig.Binds).toEqual(['/src:/app', `/data/docker-config:${MOUNT_POINT}:ro,z`]);
+    expect(body.HostConfig.Mounts).toBeUndefined();
+  });
+});
+
+describe('skippedDefinition', () => {
+  it('labels the definition and changes nothing else', () => {
+    const input = { Image: 'x', Env: ['A=1'], Labels: { keep: 'me', [COMPOSE_HASH_LABEL]: 'h' } };
+    expect(skippedDefinition(input)).toEqual({
+      Image: 'x',
+      Env: ['A=1'],
+      Labels: { keep: 'me', [COMPOSE_HASH_LABEL]: 'h', [LABELS.setup]: 'skipped' },
+    });
+    expect(input.Labels).toEqual({ keep: 'me', [COMPOSE_HASH_LABEL]: 'h' });
+  });
+  it('is reported with its own hash, so Compose leaves it alone', () => {
+    const labels = (skippedDefinition({ Labels: { [COMPOSE_HASH_LABEL]: 'h' } }) as { Labels: unknown })
+      .Labels;
+    expect(labelsAsListed(labels, 8001)).toBe(labels);
   });
 });
 
@@ -241,6 +361,12 @@ describe('rewriteListed', () => {
   it('returns anything else as it is', () => {
     const odd = { message: 'no such container' };
     expect(rewriteListed(odd, 8001)).toBe(odd);
+  });
+  it('returns the same list and inspect reply when nothing changes, so they are passed on untouched', () => {
+    const list = [{ Id: 'a', Labels: { other: 'x' } }];
+    expect(rewriteListed(list, 8001)).toBe(list);
+    const inspect = { Config: { Labels: { [COMPOSE_HASH_LABEL]: 'h', [LABELS.setup]: 'skipped' } } };
+    expect(rewriteListed(inspect, 8001)).toBe(inspect);
   });
 });
 

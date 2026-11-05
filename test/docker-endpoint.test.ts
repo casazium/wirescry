@@ -154,10 +154,21 @@ describe('findDockerEndpoint', () => {
 
 describe('relayAddress', () => {
   it('is in the data folder, the same every time', () => {
+    const a = relayAddress('/home/me/.config/Wirescry', 'linux');
+    expect(a.listenPath).toBe('/home/me/.config/Wirescry/docker/docker.sock');
+    expect(a.dockerHost).toBe('unix:///home/me/.config/Wirescry/docker/docker.sock');
+    expect(relayAddress('/home/me/.config/Wirescry', 'linux')).toEqual(a);
+  });
+
+  it('avoids a path with a space, which Docker clients other than the CLI refuse', () => {
     const a = relayAddress('/Users/me/Library/Application Support/Wirescry', 'darwin');
-    expect(a.listenPath).toBe('/Users/me/Library/Application Support/Wirescry/docker/docker.sock');
-    expect(a.dockerHost).toBe('unix:///Users/me/Library/Application Support/Wirescry/docker/docker.sock');
+    expect(a.listenPath).not.toMatch(/\s/);
+    expect(a.listenPath.startsWith(os.tmpdir())).toBe(true);
+    // Still the same every time, and different for another data folder.
     expect(relayAddress('/Users/me/Library/Application Support/Wirescry', 'darwin')).toEqual(a);
+    expect(relayAddress('/Users/me/Library/Application Support/Other', 'darwin').listenPath).not.toBe(
+      a.listenPath,
+    );
   });
   it('moves to the temporary folder when the path is too long for a socket', () => {
     const long = `/Users/${'x'.repeat(90)}/Wirescry`;
