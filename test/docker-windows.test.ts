@@ -197,7 +197,7 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
       image,
       'cmd',
       '/c',
-      'ping -n 20 127.0.0.1 >nul & echo attach-ok',
+      'ping -n 60 127.0.0.1 >nul & echo attach-ok',
     ]);
     try {
       const exec = await dockerWithInput(
@@ -207,7 +207,7 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
       );
       expect({ code: exec.code, out: exec.stdout.includes('exec-eof-ok') }).toEqual({ code: 0, out: true });
       // Attach ends when the container does.
-      const attach = await dockerWithInput(['attach', '--no-stdin', name], '', 90_000);
+      const attach = await dockerWithInput(['attach', '--no-stdin', name], '', 120_000);
       expect({ code: attach.code, out: attach.stdout.includes('attach-ok') }).toEqual({ code: 0, out: true });
     } finally {
       await docker(['rm', '-f', name], true);

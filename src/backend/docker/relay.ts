@@ -149,13 +149,16 @@ export class DockerRelay {
             500,
             `Wirescry couldn't pass this request on to Docker: ${(error as Error)?.message ?? error}`,
           );
-        else res.destroy();
+        else this.abort(res.socket);
       });
     });
     // Builds, image loads and log streams can take as long as they take.
     server.requestTimeout = 0;
     server.headersTimeout = 60_000;
-    server.keepAliveTimeout = 30_000;
+    // Through the helper (Windows), a connection the relay closes for being idle reaches the
+    // client as a half-close, which Node clients (dockerode, Testcontainers for Node) can't see on
+    // a pipe: they'd send their next request into it. Docker doesn't close idle ones either.
+    server.keepAliveTimeout = transport ? 0 : 30_000;
     server.on('upgrade', (req: http.IncomingMessage, socket: net.Socket, head: Buffer) =>
       this.upgrade(req, socket, head),
     );
@@ -180,7 +183,7 @@ export class DockerRelay {
     const server = this.server;
     this.server = undefined;
     if (!server) return;
-    for (const socket of this.upgraded) socket.destroy();
+    for (const socket of this.upgraded) this.abort(socket);
     this.upgraded.clear();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -190,6 +193,23 @@ export class DockerRelay {
   /** Why Docker can't be reached through the relay right now, if something of Wirescry's is in the way. */
   problem(): string | undefined {
     return this.options.transport?.problem();
+  }
+
+  /**
+   * Closes a connection that's being given up on. Through the helper that's a TCP reset, so the
+   * helper closes the pipe too; a plain close would reach it as the end of one direction only.
+   */
+  private abort(socket: net.Socket | null | undefined): void {
+    if (!socket || socket.destroyed) return;
+    if (this.options.transport) {
+      try {
+        socket.resetAndDestroy();
+        return;
+      } catch {
+        // Not a TCP connection after all: close it as usual.
+      }
+    }
+    socket.destroy();
   }
 
   /** A new connection to the daemon. */
@@ -261,7 +281,9 @@ export class DockerRelay {
       else if (body) {
         // A client that stops sending halfway aborts the request to Docker too.
         pipeline(body, request, (error) => {
-          if (error) request.destroy(error);
+          if (!error) return;
+          this.abort(request.socket);
+          request.destroy(error);
         });
       } else request.end();
     });
@@ -332,6 +354,8 @@ export class DockerRelay {
     // Docker, and Docker dying mid-response cuts the client off instead of leaving it waiting.
     pipeline(response, res, (error) => {
       if (error) {
+        this.abort(response.socket);
+        this.abort(res.socket);
         response.destroy();
         res.destroy();
       }
@@ -362,7 +386,7 @@ export class DockerRelay {
       this.pipe(response, res);
     } catch (error) {
       if (res.headersSent) {
-        res.destroy();
+        this.abort(res.socket);
         return;
       }
       this.unreachable(res, target, error as Error, `${method} ${url}`);
@@ -718,8 +742,8 @@ export class DockerRelay {
       }
     };
     const destroyBoth = (): void => {
-      client.destroy();
-      daemon.destroy();
+      this.abort(client);
+      this.abort(daemon);
       forget();
     };
     // Written at once, in order: a socket queues writes until it connects.
@@ -751,12 +775,11 @@ export class DockerRelay {
       const first = (): void => {
         const chunk = daemon.read() as Buffer | null;
         daemon.off('readable', first);
-        const code = chunk ? dialErrorIn(chunk) : undefined;
-        if (code) {
+        const error = chunk ? dialErrorIn(chunk) : undefined;
+        if (error) {
           connected = false;
           client.unpipe(daemon);
           daemon.destroy();
-          const error = Object.assign(new Error(code), { code });
           endWithError(client, `Wirescry couldn't reach Docker at ${target}. ${unreachableReason(error)}`);
           return;
         }
@@ -786,11 +809,19 @@ export class DockerRelay {
   }
 }
 
-/** The error code in the helper's answer when it couldn't reach Docker, if `chunk` starts one. */
-function dialErrorIn(chunk: Buffer): string | undefined {
-  const head = chunk.subarray(0, 1024).toString('latin1');
-  if (!head.startsWith('HTTP/1.1 502 ')) return undefined;
-  return new RegExp(`\r\n${DIAL_ERROR_HEADER}: *([A-Z]+)\r\n`, 'i').exec(head)?.[1];
+/** The error in the helper's answer when it couldn't reach Docker, if `chunk` starts one. */
+function dialErrorIn(chunk: Buffer): NodeJS.ErrnoException | undefined {
+  const text = chunk.subarray(0, 4096).toString('utf8');
+  if (!text.startsWith('HTTP/1.1 502 ')) return undefined;
+  const code = new RegExp(`\r\n${DIAL_ERROR_HEADER}: *([A-Z]+)\r\n`, 'i').exec(text)?.[1];
+  if (!code) return undefined;
+  let message = code;
+  try {
+    message = (JSON.parse(text.slice(text.indexOf('\r\n\r\n') + 4)) as { message?: string }).message ?? code;
+  } catch {
+    // The code alone.
+  }
+  return Object.assign(new Error(message), { code });
 }
 
 /** Answers a taken-over connection with a JSON error and closes it. */

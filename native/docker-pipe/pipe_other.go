@@ -33,6 +33,9 @@ func dialLocal(ctx context.Context, path string) (net.Conn, error) {
 
 func validLocal(path string) bool { return filepath.IsAbs(path) }
 
+// peerGone: a Unix socket's half-close and close read alike, and the tests don't need to tell.
+func peerGone(net.Conn) bool { return false }
+
 func errorCode(err error) string {
 	switch {
 	case errors.Is(err, syscall.ENOENT):

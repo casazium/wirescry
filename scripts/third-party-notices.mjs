@@ -184,7 +184,12 @@ const pipeDir = join(root, 'native/docker-pipe');
 const goNotices = JSON.parse(readFileSync(join(pipeDir, 'licenses/index.json'), 'utf8'));
 const goMod = readFileSync(join(pipeDir, 'go.mod'), 'utf8');
 const toolchain = /^toolchain go(\S+)$/m.exec(goMod)?.[1];
-const required = [...goMod.matchAll(/^\s+(\S+) (v\S+)$/gm)].map(([, mod, version]) => `${mod}@${version}`);
+// Every module built in, direct or indirect, in a require block or on a line of its own.
+const required = [...goMod.matchAll(/^(?:require\s+|\s+)([^\s()]+) (v\S+)(?:\s+\/\/.*)?$/gm)].map(
+  ([, mod, version]) => `${mod}@${version}`,
+);
+if (required.length === 0)
+  fail('native/docker-pipe/go.mod requires nothing: the notices check is out of date');
 const listed = new Set(goNotices.map((n) => n.id));
 for (const id of [...required, `Go standard library and runtime (go${toolchain})`]) {
   if (!listed.has(id)) fail(`native/docker-pipe/licenses/index.json has no notice for ${id} (from go.mod)`);

@@ -536,3 +536,45 @@ func TestStopsWhenStdinCloses(t *testing.T) {
 		t.Fatal("still running after stdin closed")
 	}
 }
+
+// A client that goes away altogether (killed, Ctrl-C) doesn't leave Docker's side open: Docker
+// sees its input end, and its connection is closed by the time it next writes. On Windows the
+// helper tells a closed pipe from a half-closed one, so the close comes at once.
+func TestClientGoingAwayClosesDockersSide(t *testing.T) {
+	writeFailed := make(chan struct{})
+	s := startAll(t, func(t *testing.T, c net.Conn, r *bufio.Reader, head string) {
+		fmt.Fprint(c, upgraded)
+		_, _ = io.ReadAll(r) // the input's end
+		for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+			if _, err := c.Write([]byte(".")); err != nil {
+				close(writeFailed)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
+	c := s.dial(t)
+	fmt.Fprint(c, upgradeRequest)
+	head := make([]byte, len(upgraded))
+	if _, err := io.ReadFull(c, head); err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+	select {
+	case <-writeFailed:
+	case <-time.After(6 * time.Second):
+		t.Fatal("Docker's side stayed open after the client went away")
+	}
+	s.waitDockerClosed(t)
+}
+
+func TestPipeNamesDotAndDotDot(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows pipe names")
+	}
+	for _, path := range []string{`\\.\pipe\.`, `\\.\pipe\..`} {
+		if validLocal(path) {
+			t.Errorf("validLocal(%q)", path)
+		}
+	}
+}

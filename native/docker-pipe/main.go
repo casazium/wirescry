@@ -168,16 +168,21 @@ func (h *Helper) forget(c net.Conn) {
 
 func (h *Helper) serve(l net.Listener, handle func(net.Conn)) {
 	defer h.wg.Done()
+	failures := 0
 	for {
 		c, err := l.Accept()
 		if err != nil {
 			if h.isClosed() {
 				return
 			}
-			log.Printf("accept: %v", err)
-			time.Sleep(50 * time.Millisecond)
+			// Rare; don't flood the log if it keeps happening.
+			if failures++; failures <= 5 || failures%100 == 0 {
+				log.Printf("accept: %v", err)
+			}
+			time.Sleep(min(time.Duration(failures)*50*time.Millisecond, 2*time.Second))
 			continue
 		}
+		failures = 0
 		if !h.track(c) {
 			c.Close()
 			return
@@ -223,14 +228,14 @@ func (h *Helper) handleBack(relay net.Conn) {
 	}
 	_ = relay.SetReadDeadline(time.Time{})
 	if !validLocal(path) {
-		refuse(relay, "EINVAL", fmt.Sprintf("Wirescry only passes requests on to a Docker pipe on this computer, not %s.", path))
+		refuse(relay, "EINVAL", fmt.Sprintf("%s isn't a pipe on this computer", path))
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), dialTimeout)
 	docker, err := dialLocal(ctx, path)
 	cancel()
 	if err != nil {
-		refuse(relay, errorCode(err), fmt.Sprintf("Wirescry couldn't reach Docker at %s: %v", path, err))
+		refuse(relay, errorCode(err), err.Error())
 		return
 	}
 	if !h.track(docker) {
@@ -263,7 +268,8 @@ func readPreamble(r *bufio.Reader, token []byte) (string, error) {
 }
 
 // refuse answers a back connection that couldn't be passed on, the way Docker answers errors,
-// with the reason in X-Wirescry-Dial-Error for the relay.
+// with Node's name for the error in X-Wirescry-Dial-Error and the error itself as the message,
+// which the relay puts into words.
 func refuse(c net.Conn, code, message string) {
 	body, _ := json.Marshal(map[string]string{"message": message})
 	fmt.Fprintf(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: %d\r\nX-Wirescry-Dial-Error: %s\r\nConnection: close\r\n\r\n%s", len(body), code, body)
@@ -283,37 +289,46 @@ type halfCloser interface {
 
 // bridge copies a→b and b→a until both directions have ended. When one direction ends, the
 // other side is told by a half-close (a zero-length message on a message-mode pipe, a FIN on
-// TCP), and the other direction goes on. When both have ended, or either fails, both are closed.
-// Docker never closes its end after a stream, only half-closes it, so closing here is what
-// frees it.
+// TCP), and the other direction goes on. When both have ended both are closed: Docker never
+// closes its end after a stream, only half-closes it, so closing here is what frees it.
+//
+// When a side goes away altogether instead (a pipe whose other end closed, a TCP reset, an
+// error), both are closed at once, and TCP with a reset, so the relay (Node) knows it's not a
+// half-close. go-winio reads a pipe's half-close and its closing alike, as the end; peerGone
+// tells them apart.
 //
 // ar and br are what to read a and b through (a buffered reader holding bytes already read).
 func bridge(a net.Conn, ar io.Reader, b net.Conn, br io.Reader) {
 	var once sync.Once
-	closeBoth := func() {
+	finish := func(abort bool) {
 		once.Do(func() {
-			a.Close()
-			b.Close()
+			for _, c := range []net.Conn{a, b} {
+				if tcp, ok := c.(*net.TCPConn); ok && abort {
+					_ = tcp.SetLinger(0) // Close then sends a reset.
+				}
+				c.Close()
+			}
 		})
 	}
 	done := make(chan struct{}, 2)
-	pass := func(dst net.Conn, src io.Reader) {
+	pass := func(dst net.Conn, src io.Reader, from net.Conn) {
 		defer func() { done <- struct{}{} }()
-		// io.Copy never writes zero bytes, which on a message-mode pipe would mean the end.
-		if _, err := io.Copy(dst, src); err != nil {
-			closeBoth()
+		// A zero-length write on a message-mode pipe means the end, but go-winio ignores them
+		// (and io.Copy through a bufio.Reader can make one), so only CloseWrite sends it.
+		if _, err := io.Copy(dst, src); err != nil || peerGone(from) {
+			finish(true)
 			return
 		}
 		if hc, ok := dst.(halfCloser); ok {
 			if err := hc.CloseWrite(); err != nil {
-				closeBoth()
+				finish(true)
 			}
 		}
 		// A byte-mode pipe can't be half-closed: like the Docker CLI on one, carry on.
 	}
-	go pass(b, ar)
-	go pass(a, br)
+	go pass(b, ar, a)
+	go pass(a, br, b)
 	<-done
 	<-done
-	closeBoth()
+	finish(false)
 }

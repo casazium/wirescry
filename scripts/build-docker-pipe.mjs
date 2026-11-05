@@ -5,9 +5,11 @@
 //   node scripts/build-docker-pipe.mjs            this computer's, for tests
 //   node scripts/build-docker-pipe.mjs --windows  Windows x64 and arm64, which the app ships
 //
-// Needs Go (the version in native/docker-pipe/go.mod or later). Go cross-compiles, so any
-// computer can build the Windows ones. Builds are reproducible: no paths, build IDs or VCS stamps.
+// Needs Go 1.21 or later, which fetches the exact version in go.mod's toolchain line if it's not
+// that one. Go cross-compiles, so any computer can build the Windows ones. Builds are
+// reproducible: no paths, build IDs or VCS stamps.
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,6 +23,13 @@ export function helperPath(platform = process.platform, arch = process.arch) {
   const name = platform === 'win32' ? 'wirescry-docker-pipe.exe' : 'wirescry-docker-pipe';
   return path.join(source, 'bin', `${platform}-${arch}`, name);
 }
+
+/**
+ * The Go that builds it, from go.mod's toolchain line: the notices name that version, and Go
+ * fetches it (checked against Go's checksum database) when the one installed is different.
+ */
+const toolchain = /^toolchain (go\S+)$/m.exec(readFileSync(path.join(source, 'go.mod'), 'utf8'))?.[1];
+if (!toolchain) throw new Error('native/docker-pipe/go.mod has no toolchain line');
 
 /** Builds the helper for each [platform, arch] (Node's names). Returns the files. */
 export function buildDockerPipe(targets = [[process.platform, process.arch]]) {
@@ -37,6 +46,7 @@ export function buildDockerPipe(targets = [[process.platform, process.arch]]) {
         env: {
           ...process.env,
           CGO_ENABLED: '0',
+          GOTOOLCHAIN: toolchain,
           GOOS: platform === 'win32' ? 'windows' : platform,
           GOARCH: goarch,
         },
