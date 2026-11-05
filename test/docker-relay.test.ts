@@ -512,7 +512,7 @@ describe('Docker relay', () => {
       // Remembered for a minute: a new relay asks again.
       await relay.stop();
       relay = new DockerRelay({
-        listenPath: relay.listenPath,
+        listenPath: socketIn(dir, `relay-${securityOptions.length}.sock`),
         upstream: () => endpoint,
         proxyPort: () => 8001,
         configDir: '/x',
