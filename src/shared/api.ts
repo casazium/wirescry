@@ -222,6 +222,11 @@ export interface DockerStatus {
   error?: string;
   /** The last container created through Wirescry this session, and what Wirescry did with it. */
   lastContainer?: { name?: string; image?: string; setUp: boolean; reason?: string };
+  /**
+   * Docker Engine on Linux only: a firewall that's on here (ufw), which blocks containers from
+   * reaching the proxy unless its rules allow Docker's networks, and the commands that do.
+   */
+  firewall?: { name: 'ufw'; commands: string[] };
 }
 
 /** Messages the backend pushes to the UI. */
