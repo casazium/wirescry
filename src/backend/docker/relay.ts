@@ -614,7 +614,8 @@ export class DockerRelay {
       timeoutMs,
     );
     // Fails rather than answering "none": a hiccup mustn't un-trust every set-up container.
-    if (!response || response.status !== 200) throw new Error(`Docker answered ${response?.status ?? 'nothing'}.`);
+    if (!response || response.status !== 200)
+      throw new Error(`Docker answered ${response?.status ?? 'nothing'}.`);
     const list = JSON.parse(response.body.toString('utf8')) as Array<{
       NetworkSettings?: { Networks?: Record<string, { IPAddress?: unknown }> };
     }>;
