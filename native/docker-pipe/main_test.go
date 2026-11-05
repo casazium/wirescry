@@ -538,8 +538,8 @@ func TestStopsWhenStdinCloses(t *testing.T) {
 }
 
 // A client that goes away altogether (killed, Ctrl-C) doesn't leave Docker's side open: Docker
-// sees its input end, and its connection is closed by the time it next writes. On Windows the
-// helper tells a closed pipe from a half-closed one, so the close comes at once.
+// sees its input end, and its connection is closed once it next writes, as when the client
+// talks to Docker directly.
 func TestClientGoingAwayClosesDockersSide(t *testing.T) {
 	writeFailed := make(chan struct{})
 	s := startAll(t, func(t *testing.T, c net.Conn, r *bufio.Reader, head string) {

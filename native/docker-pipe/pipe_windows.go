@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net"
 	"regexp"
-	"unsafe"
 
 	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
@@ -52,23 +51,6 @@ var localPipe = regexp.MustCompile(`(?i)^\\\\\.\\pipe\\([^\\/]+)$`)
 func validLocal(path string) bool {
 	m := localPipe.FindStringSubmatch(path)
 	return m != nil && m[1] != "." && m[1] != ".."
-}
-
-var peekNamedPipe = windows.NewLazySystemDLL("kernel32.dll").NewProc("PeekNamedPipe")
-
-// peerGone says whether the other end of a pipe that read as ended has closed it, rather than
-// half-closed it with a zero-length message. go-winio reads both as the end.
-func peerGone(c net.Conn) bool {
-	f, ok := c.(interface{ Fd() uintptr })
-	if !ok {
-		return false
-	}
-	var avail uint32
-	r, _, err := peekNamedPipe.Call(f.Fd(), 0, 0, 0, uintptr(unsafe.Pointer(&avail)), 0)
-	if r != 0 {
-		return false
-	}
-	return errors.Is(err, windows.ERROR_BROKEN_PIPE) || errors.Is(err, windows.ERROR_PIPE_NOT_CONNECTED)
 }
 
 // errorCode names a dial error the way Node would, for the relay's messages.

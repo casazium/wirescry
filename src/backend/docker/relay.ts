@@ -280,10 +280,12 @@ export class DockerRelay {
       if (Buffer.isBuffer(body)) request.end(body);
       else if (body) {
         // A client that stops sending halfway aborts the request to Docker too.
+        // Before pipeline() closes it the ordinary way, which the helper would take as the end.
+        const broken = (): void => this.abort(request.socket);
+        body.once('aborted', broken);
+        body.once('error', broken);
         pipeline(body, request, (error) => {
-          if (!error) return;
-          this.abort(request.socket);
-          request.destroy(error);
+          if (error) request.destroy(error);
         });
       } else request.end();
     });
@@ -352,10 +354,21 @@ export class DockerRelay {
     res.flushHeaders();
     // Either side breaking off ends the other: a client that hangs up stops the stream from
     // Docker, and Docker dying mid-response cuts the client off instead of leaving it waiting.
+    // Through the helper, a cut-off is passed on as a reset, which must happen before
+    // pipeline() closes the connections the ordinary way (which the helper takes as the end).
+    const fromDocker = response.socket;
+    const toClient = res.socket;
+    const broken = (): void => {
+      this.abort(fromDocker);
+      this.abort(toClient);
+    };
+    response.once('aborted', broken);
+    response.once('error', broken);
+    res.once('close', () => {
+      if (!res.writableFinished) broken();
+    });
     pipeline(response, res, (error) => {
       if (error) {
-        this.abort(response.socket);
-        this.abort(res.socket);
         response.destroy();
         res.destroy();
       }

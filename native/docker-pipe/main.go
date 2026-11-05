@@ -292,10 +292,11 @@ type halfCloser interface {
 // TCP), and the other direction goes on. When both have ended both are closed: Docker never
 // closes its end after a stream, only half-closes it, so closing here is what frees it.
 //
-// When a side goes away altogether instead (a pipe whose other end closed, a TCP reset, an
-// error), both are closed at once, and TCP with a reset, so the relay (Node) knows it's not a
-// half-close. go-winio reads a pipe's half-close and its closing alike, as the end; peerGone
-// tells them apart.
+// When either side fails instead (a TCP reset, a write to a pipe whose other end has gone),
+// both are closed at once, TCP with a reset, so the relay (Node) knows it's not a half-close.
+// A pipe whose other end closed reads like a half-close (go-winio reads both as the end): that
+// passes on as a FIN, after everything it sent, and the next write to it fails. A reset there
+// could lose the end of what it sent, such as Docker's last response before it closes.
 //
 // ar and br are what to read a and b through (a buffered reader holding bytes already read).
 func bridge(a net.Conn, ar io.Reader, b net.Conn, br io.Reader) {
@@ -311,11 +312,11 @@ func bridge(a net.Conn, ar io.Reader, b net.Conn, br io.Reader) {
 		})
 	}
 	done := make(chan struct{}, 2)
-	pass := func(dst net.Conn, src io.Reader, from net.Conn) {
+	pass := func(dst net.Conn, src io.Reader) {
 		defer func() { done <- struct{}{} }()
 		// A zero-length write on a message-mode pipe means the end, but go-winio ignores them
 		// (and io.Copy through a bufio.Reader can make one), so only CloseWrite sends it.
-		if _, err := io.Copy(dst, src); err != nil || peerGone(from) {
+		if _, err := io.Copy(dst, src); err != nil {
 			finish(true)
 			return
 		}
@@ -326,8 +327,8 @@ func bridge(a net.Conn, ar io.Reader, b net.Conn, br io.Reader) {
 		}
 		// A byte-mode pipe can't be half-closed: like the Docker CLI on one, carry on.
 	}
-	go pass(b, ar, a)
-	go pass(a, br, b)
+	go pass(b, ar)
+	go pass(a, br)
 	<-done
 	<-done
 	finish(false)

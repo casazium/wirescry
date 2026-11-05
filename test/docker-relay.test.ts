@@ -681,7 +681,9 @@ describe('Docker relay', () => {
     expect(JSON.parse((await request('GET', '/containers/json')).body)).toEqual({ not: 'a list' });
   });
 
-  it('passes attach and exec connections through both ways', async () => {
+  // On Windows through the helper, this fake Docker (a Node pipe, byte-mode) can't be told the
+  // client ended; Docker's own pipe can. native/docker-pipe's tests cover that with real pipes.
+  it.skipIf(windows && helper)('passes attach and exec connections through both ways', async () => {
     const socket = net.connect(relay.listenPath);
     await new Promise((resolve) => socket.once('connect', resolve));
     socket.write(
