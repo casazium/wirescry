@@ -321,7 +321,10 @@ describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker
   }, 300_000);
 
   it('lets a container mount the Docker socket from DOCKER_HOST, as Testcontainers does', async () => {
-    const own = new URL(dockerHost.replace('unix://', 'file://')).pathname;
+    // As the CLI gives it to Docker: a path, or on Windows //./pipe/name (a URL would drop the ".").
+    const own = dockerHost.startsWith('npipe://')
+      ? dockerHost.slice('npipe://'.length)
+      : new URL(dockerHost.replace('unix://', 'file://')).pathname;
     const out = await docker([
       'run',
       '--rm',
