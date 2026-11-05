@@ -162,19 +162,21 @@ export class DockerSetup {
   /**
    * Whether the proxy takes a connection from this non-loopback address. Only on Linux, where
    * containers' connections come from Docker's bridges, and only from containers Wirescry set
-   * up (asked of the daemon) or this computer's own addresses (containers on the host's
-   * network). Any other container could otherwise use the proxy to reach services that listen
+   * up (asked of the daemon) or this computer's own address on a bridge (containers on the
+   * host's network). Any other container could otherwise use the proxy to reach services that listen
    * only on this computer's localhost. Docker Desktop's connections arrive from 127.0.0.1 and
    * never get here.
    */
   acceptsConnection(address: string): boolean | Promise<boolean> {
     if (this.platform !== 'linux' || !this.relay) return false;
     const v4 = address.startsWith('::ffff:') ? address.slice(7) : address;
+    if (!this.fromBridge(v4)) return false;
+    // This computer's own address on a Docker bridge (its gateway): a container on the host's
+    // network reaching host.docker.internal. Its LAN address isn't accepted: that's the network.
     const own = Object.values(os.networkInterfaces())
       .flat()
       .some((info) => info?.address === v4);
     if (own) return true;
-    if (!this.fromBridge(v4)) return false;
     return this.isSetUpContainer(v4);
   }
 

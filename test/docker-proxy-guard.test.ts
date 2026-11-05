@@ -232,7 +232,7 @@ describe('Which containers the proxy accepts on Linux', () => {
     expect(lookups.count).toBeLessThanOrEqual(Math.ceil(elapsed / 100) + 1);
   });
 
-  it('takes only Linux, and only Docker bridges or this computer', () => {
+  it('takes only Linux, and only Docker bridges', () => {
     const { setup } = setupWith(() => ['172.18.0.5']);
     // A LAN address isn't on a Docker bridge: refused without a lookup.
     expect(setup.acceptsConnection('192.168.1.50')).toBe(false);
@@ -245,6 +245,7 @@ describe('Which containers the proxy accepts on Linux', () => {
     });
     (mac as unknown as { relay: unknown }).relay = {};
     expect(mac.acceptsConnection('172.17.0.2')).toBe(false);
-    if (lan) expect(setup.acceptsConnection(lan)).toBe(true);
+    // This computer's LAN address is the network, not a container.
+    if (lan) expect(setup.acceptsConnection(lan)).toBe(false);
   });
 });

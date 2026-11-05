@@ -24,6 +24,8 @@ class FakeDaemon {
   followClosed = false;
   uploadsAborted = 0;
   lastListUrl = '';
+  /** How many times the flaky route has been asked; it drops the first without answering. */
+  flakyAsks = 0;
   server = http.createServer((req, res) => void this.handle(req, res));
 
   constructor(readonly socketPath: string) {
@@ -83,6 +85,13 @@ class FakeDaemon {
       res.write('[{"Id":');
       setTimeout(() => res.socket?.destroy(), 30);
       return;
+    }
+    if (url === '/v1.54/containers/c1/exec') {
+      if (++this.flakyAsks === 1) {
+        res.socket?.destroy();
+        return;
+      }
+      return json(201, { Id: 'exec1', got: JSON.parse(body.toString()) as unknown });
     }
     if (url === '/info') {
       return json(200, {
@@ -887,6 +896,43 @@ describe('Docker relay', () => {
       Labels: Record<string, string>;
     }>;
     expect(list[0]!.Labels[COMPOSE_HASH_LABEL]).toBe('h1');
+  });
+
+  it('sends a small request again once when Docker drops it without answering', async () => {
+    const reply = await request(
+      'POST',
+      '/v1.54/containers/c1/exec',
+      JSON.stringify({ Cmd: ['cat'], AttachStdin: true }),
+      {
+        'content-type': 'application/json',
+      },
+    );
+    expect(reply.status).toBe(201);
+    expect(JSON.parse(reply.body)).toEqual({ Id: 'exec1', got: { Cmd: ['cat'], AttachStdin: true } });
+    expect(daemon.flakyAsks).toBe(2);
+    expect(logs.join('\n')).toContain('Docker dropped POST /v1.54/containers/c1/exec before answering');
+  });
+
+  it("doesn't send a streamed request again: its body is gone", async () => {
+    const reply = await new Promise<Reply>((resolve, reject) => {
+      const req = http.request(
+        {
+          socketPath: relay.listenPath,
+          method: 'POST',
+          path: '/v1.54/containers/c1/exec',
+          headers: { host: 'docker', 'transfer-encoding': 'chunked' },
+        },
+        (res) => {
+          let body = '';
+          res.on('data', (c: Buffer) => (body += c.toString()));
+          res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }));
+        },
+      );
+      req.on('error', reject);
+      req.end('{"Cmd":["x"]}');
+    });
+    expect(reply.status).toBe(502);
+    expect(daemon.flakyAsks).toBe(1);
   });
 
   it('says when Docker is not running', async () => {

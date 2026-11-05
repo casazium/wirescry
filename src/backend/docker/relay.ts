@@ -28,6 +28,8 @@ const INSPECT = new RegExp(`^${VERSION}/containers/[^/?]+/json(?:\\?|$)`);
 const MAX_CREATE_BODY = 16 * 1024 * 1024;
 /** Container lists bigger than this get an error instead: Wirescry would have to hold them whole. */
 const MAX_LIST_BODY = 64 * 1024 * 1024;
+/** Request bodies up to this size are read before sending, so they can be sent again. */
+const RETRYABLE_BODY = 1024 * 1024;
 /** How many containers on a network are looked at for their aliases. */
 const MAX_PEERS = 50;
 /** How long the relay waits for the daemon when asking it something on its own behalf. */
@@ -227,6 +229,34 @@ export class DockerRelay {
     });
   }
 
+  /**
+   * Sends a request from a client on to the daemon. One with a small body of known length (almost
+   * every API call) is read first, so it can be sent again once if Docker drops the connection
+   * before answering, as it was seen to do now and then on Linux. Streamed or large bodies (image
+   * loads, build contexts) go on as they come, and can't be.
+   */
+  private async passOnRequest(
+    req: http.IncomingMessage,
+    socketPath: string,
+    method: string,
+    url: string,
+  ): Promise<http.IncomingMessage> {
+    const headers = forwardHeaders(req.rawHeaders);
+    const length = Number(req.headers['content-length'] ?? 0);
+    const small = !req.headers['transfer-encoding'] && Number.isFinite(length) && length <= RETRYABLE_BODY;
+    if (!small) return this.send(socketPath, method, url, headers, req);
+    const body = await readAll(req, RETRYABLE_BODY);
+    if (!body) throw new Error('The request body was larger than it said.');
+    try {
+      return await this.send(socketPath, method, url, headers, body);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EPIPE' && code !== 'ECONNRESET') throw error;
+      this.log(`Docker dropped ${method} ${url} before answering (${code}); sending it again.`);
+      return this.send(socketPath, method, url, headers, body);
+    }
+  }
+
   private async buffered(
     socketPath: string,
     method: string,
@@ -290,7 +320,7 @@ export class DockerRelay {
       if (!relayed && active && method === 'GET' && (LIST.test(url) || INSPECT.test(url))) {
         return await this.listed(req, res, target, url);
       }
-      const response = await this.send(target, method, url, forwardHeaders(req.rawHeaders), req);
+      const response = await this.passOnRequest(req, target, method, url);
       this.pipe(response, res);
     } catch (error) {
       if (res.headersSent) {
