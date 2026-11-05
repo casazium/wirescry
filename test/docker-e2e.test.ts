@@ -38,6 +38,19 @@ const JAVA = 'eclipse-temurin:21.0.8_9-jdk-alpine';
 const DOCKER_CLI = 'docker:28.5.1-cli';
 const PROJECT = `wirescry-e2e-${process.pid}`;
 
+// The Windows test PC's runner sets this, so a Docker that's stopped or in Windows-containers
+// mode fails the job there instead of skipping these tests unnoticed.
+describe.runIf(process.env.WIRESCRY_REQUIRE_DOCKER_E2E === '1' && !linuxDocker())(
+  'Docker containers through Wirescry (required)',
+  () => {
+    it('needs Docker with Linux containers running', () => {
+      expect.fail(
+        'WIRESCRY_REQUIRE_DOCKER_E2E is set, but `docker version` found no Docker running Linux containers. Start Docker Desktop, in Linux containers mode.',
+      );
+    });
+  },
+);
+
 describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker)', () => {
   let dataDir: string;
   let projectDir: string;
