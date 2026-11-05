@@ -155,7 +155,8 @@ describe('PluginHost and a plugin’s lifetime', () => {
     };
     const pluginHost = host(plugin);
     const starting = pluginHost.startAll();
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Until its start() is under way; a fixed wait was too short on a slow machine.
+    await vi.waitFor(() => expect(plugin.host).toBeDefined(), SLOW_CI);
     pluginHost.exchangeCompleted(summary);
     expect(plugin.completed).toEqual([]);
     // Nor can it read or badge anything yet.

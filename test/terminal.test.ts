@@ -160,6 +160,9 @@ describe('terminal interception', () => {
       ]);
       expect(ps.stdout).toContain(`proxy=${proxy}`);
     },
+    // Starts cmd and then PowerShell, which can take a while on a busy CI machine (the Windows
+    // Docker test runs alongside, starting containers).
+    60_000,
   );
 
   it('writes a CA bundle with Wirescry first, then the usual roots', async () => {
@@ -374,6 +377,21 @@ describe('terminal setup', () => {
   it('strips Electron variables from the inherited environment', () => {
     const merged = childEnv({ PATH: '/bin', ELECTRON_RUN_AS_NODE: '1', HOME: '/h' }, { HTTP_PROXY: 'x' });
     expect(merged).toEqual({ PATH: '/bin', HOME: '/h', HTTP_PROXY: 'x' });
+  });
+
+  it("drops an older Wirescry's Windows relay pipe from DOCKER_HOST, and nothing else", () => {
+    const stale = 'npipe:////./pipe/wirescry-docker-0123456789ab';
+    expect(childEnv({ PATH: '/bin', DOCKER_HOST: stale }, {})).toEqual({ PATH: '/bin' });
+    // The user's own Docker, and Wirescry's relay on macOS and Linux, are kept.
+    for (const own of [
+      'npipe:////./pipe/docker_engine',
+      'unix:///run/user/1000/docker.sock',
+      'unix:///tmp/wirescry-501-0123456789ab/docker.sock',
+    ]) {
+      expect(childEnv({ DOCKER_HOST: own }, {}).DOCKER_HOST).toBe(own);
+    }
+    // And Wirescry's own value, when it gives one, wins as before.
+    expect(childEnv({ DOCKER_HOST: stale }, { DOCKER_HOST: 'unix:///x' }).DOCKER_HOST).toBe('unix:///x');
   });
 
   it('finds terminals for each platform', async () => {

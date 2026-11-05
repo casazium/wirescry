@@ -102,7 +102,19 @@ it('captures traffic, opens gzip and HTML bodies, survives a backend crash, comp
   // Traffic shows up.
   expect(await viaProxy(proxyPort, '/data.json')).toBe(200);
   expect(await viaProxy(proxyPort, '/page.html')).toBe(200);
-  await expect.poll(() => rows().count(), { timeout: 15_000 }).toBe(2);
+  // 30 s: once, on a slow arm64 runner, 15 s passed with no rows.
+  await expect
+    .poll(() => rows().count(), { timeout: 30_000 })
+    .toBe(2)
+    .catch(async (error: unknown) => {
+      // Say what the window showed, so a failure here can be told apart from a slow machine.
+      const shown = await page
+        .locator('body')
+        .innerText()
+        .catch((e: Error) => `(couldn't read: ${e.message})`);
+      console.error(`No rows. The window showed:\n${shown.slice(0, 3000)}`);
+      throw error;
+    });
 
   // Opening an HTML body formats it in a backend worker, and a gzip body decodes: both
   // crashed the backend until 0.1.4.

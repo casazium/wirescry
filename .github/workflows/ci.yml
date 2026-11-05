@@ -20,7 +20,8 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
+    # Windows also pulls a Windows container image for test/docker-windows.test.ts.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 30 || 15 }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -33,6 +34,9 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm test
+        env:
+          # The Docker relay against the runner's real Docker, over named pipes (Windows only).
+          WIRESCRY_WINDOWS_DOCKER_E2E: ${{ matrix.os == 'windows-latest' && '1' || '' }}
 
   smoke:
     # The free app, built and driven end to end (e2e/smoke.test.ts). Release builds run the

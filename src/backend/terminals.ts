@@ -88,6 +88,10 @@ export function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>)
   for (const [key, value] of Object.entries(base)) {
     if (!key.startsWith('ELECTRON_') && key !== 'NODE_CHANNEL_FD') env[key] = value;
   }
+  // Wirescry started from a terminal an older Wirescry opened on Windows inherits that one's
+  // DOCKER_HOST, a relay pipe that no longer exists there (Docker setup is off on Windows):
+  // don't pass it on.
+  if (/^npipe:\/\/.*\/pipe\/wirescry-docker-[0-9a-f]+$/i.test(env.DOCKER_HOST ?? '')) delete env.DOCKER_HOST;
   return { ...env, ...extra };
 }
 
