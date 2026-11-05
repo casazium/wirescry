@@ -1,6 +1,6 @@
 name: Release
 
-# Builds installers for macOS, Windows and Linux.
+# Builds installers for macOS, Windows and Linux (x64 and arm64).
 #
 # - Pushing a tag like v0.2.0 builds, signs (when the secrets exist) and uploads to a
 #   draft release on casazium/wirescry-releases. Publish the draft on GitHub to ship it.
@@ -115,7 +115,9 @@ jobs:
         # Windows builds on Arm: Pro's bytecode must be compiled by Electron for each CPU
         # type, and Windows on Arm can run both arm64 and (emulated) x64 Electron, while
         # x64 Windows can't run arm64. The macOS runners are Apple silicon, with Rosetta.
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest", "windows-11-arm", "ubuntu-latest"]') }}
+        # Linux can't run another CPU's Electron, so it builds on one runner per CPU: x64,
+        # and arm64 (free, like x64 Linux, for a public repo). Each packages its own CPU.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest", "ubuntu-24.04-arm"]') || fromJSON('["macos-latest", "windows-11-arm", "ubuntu-latest", "ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.os }}
     # Windows on Arm runners have 2 cores, and build x64 emulated.
     timeout-minutes: 90
@@ -137,6 +139,12 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # The x64 Linux image has Xvfb, for Electron's display; make sure the arm64 one does.
+      - name: Install Xvfb
+        if: runner.os == 'Linux'
+        shell: bash
+        run: command -v xvfb-run || { sudo apt-get update && sudo apt-get install -y xvfb; }
 
       - name: Check the tag matches package.json
         if: startsWith(github.ref, 'refs/tags/v')
@@ -193,7 +201,7 @@ jobs:
             case "$RUNNER_OS" in
               macOS) arches=arm64,x64 ;;
               Windows) arches=x64,arm64 ;;
-              *) arches=x64 ;;
+              *) if [ "$RUNNER_ARCH" = "ARM64" ]; then arches=arm64; else arches=x64; fi ;;
             esac
             # Electron needs a display on Linux; the hosted runners have Xvfb.
             run=""
@@ -324,7 +332,7 @@ jobs:
       - name: Keep the installers
         uses: actions/upload-artifact@v7
         with:
-          name: wirescry-${{ runner.os }}
+          name: wirescry-${{ runner.os }}-${{ runner.arch }}
           # Three days for a pull request, one for anything else. A packaging
           # PR builds Linux only (~225MB) and a reviewer may not get to it
           # until Monday, so three days earns its keep there. Everything else
@@ -378,7 +386,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n wirescry-Windows -D release
+        run: gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n wirescry-Windows-ARM64 -D release
 
       - name: Install the setup and start the installed app
         shell: bash
