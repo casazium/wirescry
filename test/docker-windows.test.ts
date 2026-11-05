@@ -61,13 +61,17 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
         child.kill();
         reject(
           new Error(
-            `docker ${args.join(' ')} didn't finish in ${timeoutMs} ms: stdin's end never reached the container? stdout: ${stdout} stderr: ${stderr}`,
+            `docker ${args.join(' ')}${direct ? ' (straight to Docker)' : ' (through the relay)'} didn't finish in ${timeoutMs} ms. Output so far: ${JSON.stringify({ stdout, stderr })}`,
           ),
         );
       }, timeoutMs);
       child.on('error', reject);
       child.on('close', (code) => {
         clearTimeout(timer);
+        // In the CI log, so what Windows did is on record either way.
+        console.log(
+          `docker ${args.join(' ')}${direct ? ' (straight to Docker)' : ' (through the relay)'}: ${JSON.stringify({ code, stdout, stderr })}`,
+        );
         resolve({ stdout, stderr, code });
       });
       child.stdin.end(input);
@@ -113,9 +117,16 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
     expect(await docker(['image', 'inspect', '--format', '{{.Os}}', image])).toContain('windows');
   });
 
-  it('runs a container and returns its output', async () => {
-    const out = await docker(['run', '--rm', image, 'cmd', '/c', 'echo relay-ok']);
-    expect(out.trim()).toBe('relay-ok');
+  it('runs a detached container, and gets its exit code and logs', async () => {
+    // No attached stream: create, start, wait and logs are ordinary requests.
+    const name = `wirescry-detached-${process.pid}`;
+    await docker(['run', '-d', '--name', name, image, 'cmd', '/c', 'echo detached-ok']);
+    try {
+      expect((await docker(['wait', name])).trim()).toBe('0');
+      expect((await docker(['logs', name])).trim()).toBe('detached-ok');
+    } finally {
+      await docker(['rm', '-f', name], true);
+    }
     // Windows containers are left as written, and labelled so.
     expect(created.at(-1)).toMatchObject({
       setUp: false,
@@ -123,20 +134,38 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
     });
   }, 300_000);
 
-  it('ends a docker run -i container’s input when the input ends', async () => {
-    // cmd reads its commands from stdin and exits only when stdin ends: it finishes only if
-    // the end gets through. (nanoserver has cmd, but not necessarily sort or more.)
-    const args = ['run', '-i', '--rm', image, 'cmd', '/q'];
-    const input = 'echo relay-eof-ok\r\n';
-    const ran = (out: string) => out.split(/\r?\n/).some((line) => line.trim() === 'relay-eof-ok');
-    // Straight to Docker first: if this hangs too, the test is wrong, not the relay.
+  it('runs an attached container: its output, and its end', async () => {
+    const args = ['run', '--rm', image, 'cmd', '/c', 'echo relay-ok'];
+    const direct = await dockerWithInput(args, '', 120_000, true);
+    expect({ code: direct.code, out: direct.stdout.trim() }).toEqual({ code: 0, out: 'relay-ok' });
+    const relayed = await dockerWithInput(args, '', 60_000);
+    expect({ code: relayed.code, out: relayed.stdout.trim() }).toEqual({ code: 0, out: 'relay-ok' });
+  }, 300_000);
+
+  it('passes a docker run -i container its input', async () => {
+    // The input ends with exit, so this needs the input to arrive, not its end.
+    const args = ['run', '-i', '--rm', image, 'cmd', '/q', '/k', 'echo started'];
+    const input = 'echo relay-input-ok\r\nexit\r\n';
     const direct = await dockerWithInput(args, input, 120_000, true);
-    expect(direct.code).toBe(0);
-    expect(ran(direct.stdout)).toBe(true);
-    // Through the relay's named pipe.
-    const relayed = await dockerWithInput(args, input, 120_000);
-    expect(relayed.code).toBe(0);
-    expect(ran(relayed.stdout)).toBe(true);
+    expect(direct.stdout).toContain('relay-input-ok');
+    const relayed = await dockerWithInput(args, input, 60_000);
+    expect({ code: relayed.code, out: relayed.stdout.includes('relay-input-ok') }).toEqual({
+      code: direct.code,
+      out: true,
+    });
+  }, 300_000);
+
+  it('ends a docker run -i container’s input when the input ends', async () => {
+    // No exit: cmd reads commands until its input ends, so this finishes only if the end gets through.
+    const args = ['run', '-i', '--rm', image, 'cmd', '/q', '/k', 'echo started'];
+    const input = 'echo relay-eof-ok\r\n';
+    const direct = await dockerWithInput(args, input, 120_000, true);
+    expect(direct.stdout).toContain('relay-eof-ok');
+    const relayed = await dockerWithInput(args, input, 60_000);
+    expect({ code: relayed.code, out: relayed.stdout.includes('relay-eof-ok') }).toEqual({
+      code: direct.code,
+      out: true,
+    });
   }, 300_000);
 
   it('labels what it leaves alone, as Docker sees it', async () => {
