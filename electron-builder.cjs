@@ -24,6 +24,12 @@ const env = process.env;
 // builds already carry Electron's own license files; electron-builder removes them from
 // macOS builds, so those get the copies in out/licenses-electron.
 const notices = { from: 'out/licenses', to: 'licenses' };
+// Windows' Docker pipe helper (native/docker-pipe), built by scripts/build-docker-pipe.mjs --windows.
+// electron-builder signs it with the app.
+const dockerPipe = {
+  from: 'native/docker-pipe/bin/win32-${arch}/wirescry-docker-pipe.exe',
+  to: 'wirescry-docker-pipe.exe',
+};
 const electronNotices = { from: 'out/licenses-electron', to: 'licenses' };
 
 /**
@@ -50,6 +56,19 @@ function checkBuild(context) {
     fs.statSync(notices).mtimeMs < fs.statSync(built).mtimeMs
   ) {
     throw new Error('Missing or old license notices. Build with `npm run build`, which writes them.');
+  }
+  if (context.electronPlatformName === 'win32') {
+    const helper = path.join(
+      __dirname,
+      'native/docker-pipe/bin',
+      `win32-${Arch[context.arch]}`,
+      'wirescry-docker-pipe.exe',
+    );
+    if (!fs.existsSync(helper)) {
+      throw new Error(
+        `No Docker pipe helper at ${helper}. Build it with node scripts/build-docker-pipe.mjs --windows.`,
+      );
+    }
   }
   const chunks = path.join(out, 'main/chunks');
   const names = fs.existsSync(chunks) ? fs.readdirSync(chunks) : [];
@@ -199,7 +218,7 @@ module.exports = {
   },
 
   win: {
-    extraResources: [notices],
+    extraResources: [notices, dockerPipe],
     target: [{ target: 'nsis', arch: ['x64', 'arm64'] }],
     ...(azureSigning ? { azureSignOptions: azureSigning } : {}),
   },

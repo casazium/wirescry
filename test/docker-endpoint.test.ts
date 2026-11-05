@@ -41,6 +41,11 @@ describe('parseDockerHost', () => {
       socketPath: '\\\\.\\pipe\\docker_engine',
       host: 'npipe:////./pipe/docker_engine',
     });
+    // A pipe on another computer is reached over the network: not set up.
+    expect(parseDockerHost('npipe:////buildbox/pipe/docker_engine', 'win32')).toEqual({
+      kind: 'remote',
+      host: 'npipe:////buildbox/pipe/docker_engine',
+    });
     expect(parseDockerHost('tcp://10.0.0.2:2376')).toEqual({ kind: 'remote', host: 'tcp://10.0.0.2:2376' });
     expect(parseDockerHost('ssh://me@box')).toEqual({ kind: 'remote', host: 'ssh://me@box' });
     expect(parseDockerHost('/run/user/1000/docker.sock', 'linux')).toMatchObject({

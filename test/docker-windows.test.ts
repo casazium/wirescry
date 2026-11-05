@@ -1,12 +1,12 @@
 /**
- * The Docker relay in front of a real Docker on Windows, over named pipes.
+ * The Docker relay in front of a real Docker on Windows, over named pipes, through the pipe
+ * helper (native/docker-pipe), started by Docker setup as the app starts it.
  *
  * GitHub's Windows runners have Docker with Windows containers only, which Wirescry leaves as
- * they are, so the app wouldn't point terminals at its relay there. This starts the relay
- * directly instead: what's tested is that every kind of Docker request passes through it over
- * a named pipe unharmed, above all `docker run -i`, whose stdin must end when the input does
- * (named pipes have no half-close in Node; a hang here would hang users' `docker run -i` with
- * Docker Desktop on Windows).
+ * they are (so terminals wouldn't get DOCKER_HOST there), but still relays. What's tested is that
+ * every kind of Docker request passes through unharmed, above all attached streams, whose ends
+ * Docker marks with a zero-length message on its pipe: `docker run` must finish when the output
+ * does, and `docker run -i` must tell the container its input ended. Without the helper both hung.
  *
  * Runs only on Windows with WIRESCRY_WINDOWS_DOCKER_E2E=1 (set by CI), which also makes a
  * missing Docker a failure rather than a skip.
@@ -19,7 +19,8 @@ import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { LABELS } from '../src/backend/docker/container';
 import { parseDockerHost } from '../src/backend/docker/endpoint';
-import { DockerRelay, type ContainerCreated } from '../src/backend/docker/relay';
+import { DockerSetup, relayAddress, type ContainerCreated } from '../src/backend/docker/setup';
+import { pipeHelperForTests } from './pipe-helper-binary';
 
 const run = promisify(execFile);
 const wanted = process.platform === 'win32' && process.env.WIRESCRY_WINDOWS_DOCKER_E2E === '1';
@@ -34,7 +35,7 @@ function nanoserverFor(kernelVersion: string): string {
 
 describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
   let dir: string;
-  let relay: DockerRelay;
+  let setup: DockerSetup;
   let dockerHost: string;
   let image: string;
   const created: ContainerCreated[] = [];
@@ -91,22 +92,28 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
     await docker(['pull', '-q', image], true);
 
     dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-win-docker-'));
-    const name = `wirescry-test-${process.pid}`;
-    relay = new DockerRelay({
-      listenPath: `\\\\.\\pipe\\${name}`,
-      upstream: () => endpoint,
+    setup = new DockerSetup({
+      dataDir: dir,
+      enabled: true,
+      findEndpoint: async () => endpoint,
       proxyPort: () => 8000,
-      configDir: dir,
+      containerDir: () => dir,
       onContainer: (event) => created.push(event),
       platform: 'win32',
+      pipeHelper: pipeHelperForTests(),
     });
-    await relay.start();
-    dockerHost = `npipe:////./pipe/${name}`;
+    await setup.refresh();
+    // Windows containers: left alone, so terminals wouldn't get DOCKER_HOST; the relay runs anyway.
+    expect(setup.status()).toMatchObject({
+      state: 'unsupported',
+      error: expect.stringMatching(/Windows containers/),
+    });
+    dockerHost = relayAddress(dir, 'win32').dockerHost;
   }, 900_000);
 
   afterAll(async () => {
     await docker(['compose', '-p', PROJECT, 'down', '-t', '0'], true).catch(() => undefined);
-    await relay?.stop();
+    await setup?.stop();
     if (dir) await rm(dir, { recursive: true, force: true });
   }, 120_000);
 
@@ -152,18 +159,60 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
     expect({ code: input.code, out: input.stdout.includes('relay-eof-ok') }).toEqual({ code: 0, out: true });
   }, 300_000);
 
-  // KNOWN PROBLEM, why Docker setup is off on Windows (WINDOWS_NOT_YET in setup.ts): Docker ends
-  // an attached stream with an empty message on its named pipe, which Node can't see, so the
-  // output arrives but `docker run` never finishes. This passes while that's so; when the relay
-  // is fixed it fails, and it should become a plain it().
-  it.fails(
-    'docker run finishes through the relay (not yet: it hangs after the output)',
-    async () => {
-      const relayed = await dockerWithInput(['run', '--rm', image, 'cmd', '/c', 'echo relay-ok'], '', 30_000);
-      expect({ code: relayed.code, out: relayed.stdout.trim() }).toEqual({ code: 0, out: 'relay-ok' });
-    },
-    120_000,
-  );
+  it('runs attached containers through the relay, finishing when they do', async () => {
+    const relayed = await dockerWithInput(['run', '--rm', image, 'cmd', '/c', 'echo relay-ok'], '', 60_000);
+    expect({ code: relayed.code, out: relayed.stdout.trim() }).toEqual({ code: 0, out: 'relay-ok' });
+  }, 120_000);
+
+  it("passes stdin's end on, so `docker run -i` finishes when its input does", async () => {
+    // cmd reads commands from stdin until it ends, then exits.
+    const relayed = await dockerWithInput(
+      ['run', '-i', '--rm', image, 'cmd', '/q', '/k', 'echo started'],
+      'echo relay-eof-ok\r\n',
+      60_000,
+    );
+    expect({ code: relayed.code, out: relayed.stdout.includes('relay-eof-ok') }).toEqual({
+      code: 0,
+      out: true,
+    });
+  }, 120_000);
+
+  it('runs a container with a TTY through the relay', async () => {
+    const relayed = await dockerWithInput(
+      ['run', '-t', '--rm', image, 'cmd', '/c', 'echo tty-ok'],
+      '',
+      60_000,
+    );
+    expect({ code: relayed.code, out: relayed.stdout.includes('tty-ok') }).toEqual({ code: 0, out: true });
+  }, 120_000);
+
+  it('runs `docker exec -i` and `docker attach` through the relay', async () => {
+    const name = `wirescry-exec-${process.pid}`;
+    // Runs a while, then says something and exits, for attach to see.
+    await docker([
+      'run',
+      '-d',
+      '--name',
+      name,
+      image,
+      'cmd',
+      '/c',
+      'ping -n 20 127.0.0.1 >nul & echo attach-ok',
+    ]);
+    try {
+      const exec = await dockerWithInput(
+        ['exec', '-i', name, 'cmd', '/q', '/k', 'echo exec-started'],
+        'echo exec-eof-ok\r\n',
+        60_000,
+      );
+      expect({ code: exec.code, out: exec.stdout.includes('exec-eof-ok') }).toEqual({ code: 0, out: true });
+      // Attach ends when the container does.
+      const attach = await dockerWithInput(['attach', '--no-stdin', name], '', 90_000);
+      expect({ code: attach.code, out: attach.stdout.includes('attach-ok') }).toEqual({ code: 0, out: true });
+    } finally {
+      await docker(['rm', '-f', name], true);
+    }
+  }, 300_000);
 
   it('labels what it leaves alone, as Docker sees it', async () => {
     const name = `wirescry-label-${process.pid}`;
@@ -193,6 +242,27 @@ describe.runIf(wanted)('The Docker relay with a real Docker on Windows', () => {
     const before = (await docker(['compose', '-p', PROJECT, '-f', file, 'ps', '-a', '-q'])).trim();
     await docker(['compose', '-p', PROJECT, '-f', file, 'up', '--abort-on-container-exit']);
     expect((await docker(['compose', '-p', PROJECT, '-f', file, 'ps', '-a', '-q'])).trim()).toBe(before);
+    // `compose run` attaches, with stdin that ends.
+    const run = await dockerWithInput(
+      [
+        'compose',
+        '-p',
+        PROJECT,
+        '-f',
+        file,
+        'run',
+        '--rm',
+        '-T',
+        'hello',
+        'cmd',
+        '/q',
+        '/k',
+        'echo run-started',
+      ],
+      'echo compose-run-ok\r\n',
+      120_000,
+    );
+    expect({ code: run.code, out: run.stdout.includes('compose-run-ok') }).toEqual({ code: 0, out: true });
     await docker(['compose', '-p', PROJECT, '-f', file, 'down', '-t', '0']);
   }, 600_000);
 });

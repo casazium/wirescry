@@ -17,6 +17,7 @@ import {
   type SetUpResult,
 } from './container';
 import type { DockerEndpoint } from './endpoint';
+import { DIAL_ERROR_HEADER, type RelayTransport } from './pipe-helper';
 import { parseInfo, unsupportedReason, type DaemonInfo } from './runtime';
 
 const VERSION = String.raw`(?:/v\d+(?:\.\d+)*)?`;
@@ -62,6 +63,12 @@ export interface DockerRelayOptions {
   platform?: NodeJS.Platform;
   /** false while the user has Docker setup turned off: containers are then passed on as written. */
   active?: () => boolean;
+  /**
+   * How clients reach the relay and the relay reaches Docker, when not over Unix sockets by
+   * the relay itself: on Windows, through the helper (see PipeHelper). `listenPath` is still
+   * where clients connect.
+   */
+  transport?: RelayTransport;
 }
 
 interface Buffered {
@@ -130,9 +137,9 @@ export class DockerRelay {
   }
 
   async start(): Promise<void> {
-    const { listenPath } = this.options;
+    const { listenPath, transport } = this.options;
     const windowsPipe = listenPath.startsWith('\\\\');
-    if (!windowsPipe) await removeStaleSocket(listenPath);
+    if (!windowsPipe && !transport) await removeStaleSocket(listenPath);
     const server = http.createServer((req, res) => {
       this.handle(req, res).catch((error: unknown) => {
         this.log(`request failed: ${(error as Error)?.message ?? error}`);
@@ -153,6 +160,11 @@ export class DockerRelay {
       this.upgrade(req, socket, head),
     );
     server.on('clientError', (_error, socket) => socket.destroy());
+    if (transport) {
+      await transport.listen(server);
+      this.server = server;
+      return;
+    }
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(listenPath, () => {
@@ -172,6 +184,17 @@ export class DockerRelay {
     this.upgraded.clear();
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await this.options.transport?.close();
+  }
+
+  /** Why Docker can't be reached through the relay right now, if something of Wirescry's is in the way. */
+  problem(): string | undefined {
+    return this.options.transport?.problem();
+  }
+
+  /** A new connection to the daemon. */
+  private connect(socketPath: string): net.Socket {
+    return this.options.transport?.connect(socketPath) ?? net.connect(socketPath);
   }
 
   private log(message: string): void {
@@ -209,14 +232,30 @@ export class DockerRelay {
     body?: Buffer | http.IncomingMessage,
   ): Promise<http.IncomingMessage> {
     return new Promise((resolve, reject) => {
+      // No agent: a connection of its own for each request, closed after it.
       const request = http.request({
-        socketPath,
+        createConnection: () => this.connect(socketPath),
         method,
         path,
         headers: [...rawHeaders, RELAY_HEADER, '1'],
-        agent: false,
       });
-      request.once('response', resolve);
+      request.once('response', (response) => {
+        // The helper (Windows) couldn't reach Docker's pipe: an error like net.connect's.
+        const code = response.headers[DIAL_ERROR_HEADER];
+        if (typeof code !== 'string') return resolve(response);
+        readAll(response, 64 * 1024).then(
+          (body) => {
+            let message = `couldn't reach Docker (${code})`;
+            try {
+              message = (JSON.parse(body?.toString('utf8') ?? '') as { message?: string }).message ?? message;
+            } catch {
+              // The default above.
+            }
+            reject(Object.assign(new Error(message), { code }));
+          },
+          (error: unknown) => reject(error as Error),
+        );
+      });
       request.once('error', reject);
       if (Buffer.isBuffer(body)) request.end(body);
       else if (body) {
@@ -668,7 +707,7 @@ export class DockerRelay {
       endWithError(client, target.error);
       return;
     }
-    const daemon = net.connect(target);
+    const daemon = this.connect(target);
     let connected = false;
     this.upgraded.add(client);
     this.upgraded.add(daemon);
@@ -702,8 +741,29 @@ export class DockerRelay {
       connected = true;
       // pipe() passes each side's end on as a half-close, which `docker run -i` relies on to
       // tell the container stdin has ended, and lets the last output drain before closing.
-      daemon.pipe(client);
       client.pipe(daemon);
+      if (!this.options.transport) {
+        daemon.pipe(client);
+        return;
+      }
+      // Through the helper (Windows), Docker being unreachable comes back as its answer: say
+      // so as for any other request, rather than pass the helper's wording on.
+      const first = (): void => {
+        const chunk = daemon.read() as Buffer | null;
+        daemon.off('readable', first);
+        const code = chunk ? dialErrorIn(chunk) : undefined;
+        if (code) {
+          connected = false;
+          client.unpipe(daemon);
+          daemon.destroy();
+          const error = Object.assign(new Error(code), { code });
+          endWithError(client, `Wirescry couldn't reach Docker at ${target}. ${unreachableReason(error)}`);
+          return;
+        }
+        if (chunk) daemon.unshift(chunk);
+        daemon.pipe(client);
+      };
+      daemon.on('readable', first);
     });
     daemon.once('error', (error) => {
       if (connected) return destroyBoth();
@@ -724,6 +784,13 @@ export class DockerRelay {
       });
     }
   }
+}
+
+/** The error code in the helper's answer when it couldn't reach Docker, if `chunk` starts one. */
+function dialErrorIn(chunk: Buffer): string | undefined {
+  const head = chunk.subarray(0, 1024).toString('latin1');
+  if (!head.startsWith('HTTP/1.1 502 ')) return undefined;
+  return new RegExp(`\r\n${DIAL_ERROR_HEADER}: *([A-Z]+)\r\n`, 'i').exec(head)?.[1];
 }
 
 /** Answers a taken-over connection with a JSON error and closes it. */

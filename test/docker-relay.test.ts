@@ -6,6 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { COMPOSE_HASH_LABEL, HASH_SUFFIX, LABELS, MOUNT_POINT } from '../src/backend/docker/container';
 import type { DockerEndpoint } from '../src/backend/docker/endpoint';
+import { PipeHelper } from '../src/backend/docker/pipe-helper';
 import { DockerRelay, unreachableReason, type ContainerCreated } from '../src/backend/docker/relay';
 
 /** Stands in for the Docker daemon. */
@@ -207,6 +208,11 @@ class FakeDaemon {
 }
 
 const windows = process.platform === 'win32';
+/**
+ * Set by docker-relay-helper.test.ts, which runs these tests again with the relay behind the
+ * pipe helper (native/docker-pipe), as on Windows.
+ */
+const helper = (globalThis as { __wirescryRelayHelper?: string }).__wirescryRelayHelper;
 let pipes = 0;
 /** A socket to listen on: a file in `dir`, or a named pipe on Windows, where Node has no Unix sockets. */
 const socketIn = (folder: string, name: string): string =>
@@ -226,13 +232,15 @@ beforeEach(async () => {
   endpoint = { kind: 'local', socketPath: daemon.socketPath, host: `unix://${daemon.socketPath}` };
   created = [];
   logs = [];
+  const listenPath = socketIn(dir, 'relay.sock');
   relay = new DockerRelay({
-    listenPath: socketIn(dir, 'relay.sock'),
+    listenPath,
     upstream: () => endpoint,
     proxyPort: () => 8001,
     configDir: '/data/docker-config',
     onContainer: (event) => created.push(event),
     log: (message) => logs.push(message),
+    transport: helper ? new PipeHelper({ executable: helper, listenPath }) : undefined,
   });
   await relay.start();
 });
@@ -1036,30 +1044,33 @@ describe('Docker relay', () => {
     expect(JSON.parse((await request('GET', '/_ping')).body).message).toContain("couldn't find Docker");
   });
 
-  it.skipIf(windows)('keeps its socket private to this user, and replaces a stale one', async () => {
-    expect((await stat(relay.listenPath)).mode & 0o777).toBe(0o600);
-    await relay.stop();
-    // A socket file left behind by a process that crashed: listening, then killed outright.
-    const { spawn } = await import('node:child_process');
-    const child = spawn(process.execPath, [
-      '-e',
-      `require('net').createServer().listen(${JSON.stringify(relay.listenPath)}, () => console.log('up'))`,
-    ]);
-    await new Promise((resolve) => child.stdout.once('data', resolve));
-    child.kill('SIGKILL');
-    await new Promise((resolve) => child.once('exit', resolve));
-    expect((await stat(relay.listenPath)).isSocket()).toBe(true);
-    relay = new DockerRelay({
-      listenPath: relay.listenPath,
-      upstream: () => endpoint,
-      proxyPort: () => 8001,
-      configDir: '/x',
-    });
-    await relay.start();
-    expect((await request('GET', '/_ping')).status).toBe(200);
-  });
+  it.skipIf(windows || helper)(
+    'keeps its socket private to this user, and replaces a stale one',
+    async () => {
+      expect((await stat(relay.listenPath)).mode & 0o777).toBe(0o600);
+      await relay.stop();
+      // A socket file left behind by a process that crashed: listening, then killed outright.
+      const { spawn } = await import('node:child_process');
+      const child = spawn(process.execPath, [
+        '-e',
+        `require('net').createServer().listen(${JSON.stringify(relay.listenPath)}, () => console.log('up'))`,
+      ]);
+      await new Promise((resolve) => child.stdout.once('data', resolve));
+      child.kill('SIGKILL');
+      await new Promise((resolve) => child.once('exit', resolve));
+      expect((await stat(relay.listenPath)).isSocket()).toBe(true);
+      relay = new DockerRelay({
+        listenPath: relay.listenPath,
+        upstream: () => endpoint,
+        proxyPort: () => 8001,
+        configDir: '/x',
+      });
+      await relay.start();
+      expect((await request('GET', '/_ping')).status).toBe(200);
+    },
+  );
 
-  it.skipIf(windows)("won't replace a file that isn't a socket", async () => {
+  it.skipIf(windows || helper)("won't replace a file that isn't a socket", async () => {
     const { writeFile } = await import('node:fs/promises');
     const file = path.join(dir, 'not-a-socket');
     await writeFile(file, 'data');

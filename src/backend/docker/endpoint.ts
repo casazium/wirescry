@@ -43,7 +43,10 @@ export function parseDockerHost(
   if (value.startsWith('npipe://')) {
     // npipe:////./pipe/docker_engine → \\.\pipe\docker_engine
     const rest = value.slice('npipe://'.length).replace(/\//g, '\\');
-    if (!/^\\\\[^\\]+\\pipe\\[^\\]+$/i.test(rest)) return undefined;
+    const pipe = /^\\\\([^\\]+)\\pipe\\[^\\]+$/i.exec(rest);
+    if (!pipe) return undefined;
+    // \\server\pipe\name is Docker on another computer, reached over the network.
+    if (pipe[1] !== '.') return { kind: 'remote', host: value };
     return { kind: 'local', socketPath: rest, host: value };
   }
   if (/^(tcp|ssh|http|https):\/\//i.test(value)) return { kind: 'remote', host: value };

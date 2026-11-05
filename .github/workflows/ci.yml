@@ -33,6 +33,24 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
+      # The Docker pipe helper (Go), which Windows ships. Off Windows it uses Unix sockets, so the
+      # relay's tests run through it everywhere; the Windows ones are cross-built here too, so a
+      # change that breaks them shows on every OS.
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: native/docker-pipe/go.mod
+          cache-dependency-path: native/docker-pipe/go.sum
+      - name: Check the Docker pipe helper
+        shell: bash
+        working-directory: native/docker-pipe
+        run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "Not gofmt-formatted (above)."; exit 1; }
+          go vet ./...
+          GOOS=windows GOARCH=amd64 go vet ./...
+          GOOS=windows GOARCH=arm64 go build -o "$RUNNER_TEMP/docker-pipe-arm64.exe" .
+          # The race detector needs a C compiler, which only the macOS and Linux images have set up.
+          if [ "$RUNNER_OS" = Windows ]; then go test -count=1 -v ./...; else go test -race -count=1 ./...; fi
+      - run: node scripts/build-docker-pipe.mjs
       # GitHub's Windows images have Docker, but its service isn't always running yet.
       - name: Start Docker (Windows)
         if: runner.os == 'Windows'
@@ -51,6 +69,8 @@ jobs:
         env:
           # The Docker relay against the runner's real Docker, over named pipes (Windows only).
           WIRESCRY_WINDOWS_DOCKER_E2E: ${{ matrix.os == 'windows-latest' && '1' || '' }}
+          # Tests that need the helper fail instead of skipping without it.
+          WIRESCRY_REQUIRE_PIPE_HELPER: '1'
 
   smoke:
     # The free app, built and driven end to end (e2e/smoke.test.ts). Release builds run the
