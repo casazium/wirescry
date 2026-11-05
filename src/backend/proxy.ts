@@ -9,6 +9,7 @@ import {
 } from '../shared/failure';
 import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
+import { HOST_NAME as DOCKER_HOST_NAME } from './docker/container';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
 import type { RequestStore } from './store';
 import type { WebSocketStore } from './websocket-store';
@@ -47,6 +48,12 @@ export interface ProxyOptions {
   ruleEndsWithoutResponse?: (ruleId: string | undefined) => boolean;
   /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
   onCATrusted?: (userAgent: string) => void;
+  /**
+   * Whether to accept a connection from this non-loopback address: a Docker container on
+   * Linux, whose connections come from Docker's bridge networks. The connection waits for the
+   * answer, which may take a lookup. Anything else (or a throw) drops it.
+   */
+  acceptConnection?: (address: string) => boolean | Promise<boolean>;
 }
 
 export interface RunningProxy {
@@ -86,16 +93,74 @@ export function isLoopback(address: string | undefined): boolean {
   return v4.startsWith('127.') || address === '::1';
 }
 
+/** How long a connection from another address may wait to be accepted. */
+const ACCEPT_TIMEOUT_MS = 5000;
+
 /**
  * Mockttp listens on every network interface and has no option to change that. Drop
- * connections from other machines, so the proxy isn't open to the local network.
+ * connections from other machines, so the proxy isn't open to the local network. Others are
+ * offered to `accept` first, and handed to Mockttp only once it says yes: wrapping the server's
+ * 'connection' event, so no listener of Mockttp's sees a connection that wasn't accepted, and
+ * nothing is read from it until then.
  */
-function restrictToLoopback(server: mockttp.Mockttp): void {
+function restrictToLoopback(
+  server: mockttp.Mockttp,
+  accept?: (address: string) => boolean | Promise<boolean>,
+): { stop(): void } {
   const listener = (server as unknown as { server?: net.Server }).server;
   if (!listener) throw new Error("Can't restrict the proxy to this machine");
-  listener.prependListener('connection', (socket: net.Socket) => {
-    if (!isLoopback(socket.remoteAddress)) socket.destroy();
-  });
+  const emit = listener.emit.bind(listener) as (event: string | symbol, ...args: unknown[]) => boolean;
+  listener.emit = ((event: string | symbol, ...args: unknown[]): boolean => {
+    if (event !== 'connection') return emit(event, ...args);
+    const socket = args[0] as net.Socket;
+    const address = socket.remoteAddress;
+    if (isLoopback(address)) return emit(event, ...args);
+    let answer: boolean | Promise<boolean>;
+    try {
+      answer = !!address && !!accept && accept(address);
+    } catch {
+      answer = false;
+    }
+    if (answer === true) return emit(event, ...args);
+    if (answer === false) {
+      socket.destroy();
+      return true;
+    }
+    // Nothing else listens to it yet: an error now (a reset while waiting) would otherwise be
+    // thrown, and take the backend down.
+    const onError = (): void => {
+      socket.destroy();
+    };
+    socket.on('error', onError);
+    pending.add(socket);
+    const timer = setTimeout(() => socket.destroy(), ACCEPT_TIMEOUT_MS);
+    socket.once('close', () => {
+      clearTimeout(timer);
+      pending.delete(socket);
+    });
+    answer.then(
+      (ok) => {
+        clearTimeout(timer);
+        pending.delete(socket);
+        if (ok && !socket.destroyed && !stopped) {
+          socket.off('error', onError);
+          emit(event, ...args);
+        } else socket.destroy();
+      },
+      () => socket.destroy(),
+    );
+    return true;
+  }) as typeof listener.emit;
+  const pending = new Set<net.Socket>();
+  let stopped = false;
+  return {
+    /** Drops connections still waiting to be accepted, so none reaches a stopped proxy. */
+    stop: () => {
+      stopped = true;
+      for (const socket of pending) socket.destroy();
+      pending.clear();
+    },
+  };
 }
 
 /**
@@ -524,6 +589,23 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     steps: [new mockttp.requestSteps.PassThroughStep(passThrough)],
     completionChecker: new mockttp.completionCheckers.Always(),
   };
+  // Docker containers reach this computer as host.docker.internal, a name only they can
+  // resolve. Their requests to it come here through the proxy, so send them to localhost.
+  // The Host header stays as the container sent it.
+  const toLocalhost = {
+    matchReplaceHost: {
+      replacements: [[new RegExp(`^${DOCKER_HOST_NAME.replace(/\./g, '\\.')}(?=:|$)`, 'i'), 'localhost']] as [
+        RegExp,
+        string,
+      ][],
+      updateHostHeader: false as const,
+    },
+  };
+  const dockerHostRule: mockttp.RequestRuleData = {
+    matchers: [new mockttp.matchers.HostnameMatcher(DOCKER_HOST_NAME)],
+    steps: [new mockttp.requestSteps.PassThroughStep({ ...passThrough, transformRequest: toLocalhost })],
+    completionChecker: new mockttp.completionCheckers.Always(),
+  };
 
   // The first matching rule handles each request: the setup host, then plugin rules in
   // order, then normal pass-through. Every rule is "always", or Mockttp would move on to
@@ -537,15 +619,27 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     completionChecker: new mockttp.completionCheckers.Always(),
   });
   const applyRules = async (): Promise<void> => {
-    await server.setRequestRules(setupRule, ...(options.extraRules?.() ?? []).map(always), passThroughRule);
+    await server.setRequestRules(
+      setupRule,
+      ...(options.extraRules?.() ?? []).map(always),
+      dockerHostRule,
+      passThroughRule,
+    );
   };
   await applyRules();
+  // The more specific WebSocket rule first: Mockttp uses the first that matches.
+  await server
+    .forAnyWebSocket()
+    .forHostname(DOCKER_HOST_NAME)
+    .always()
+    .thenPassThrough({ ...passThrough, transformRequest: toLocalhost });
   await server.forAnyWebSocket().always().thenPassThrough(passThrough);
 
   if (options.port !== undefined) await assertLoopbackPortFree(options.port);
   await server.start(options.port);
+  let restriction: { stop(): void };
   try {
-    restrictToLoopback(server);
+    restriction = restrictToLoopback(server, options.acceptConnection);
   } catch (error) {
     await server.stop();
     throw error;
@@ -554,6 +648,9 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   return {
     port: server.port,
     refreshRules: applyRules,
-    stop: () => server.stop(),
+    stop: () => {
+      restriction.stop();
+      return server.stop();
+    },
   };
 }

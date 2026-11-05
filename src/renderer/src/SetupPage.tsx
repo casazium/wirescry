@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { BrowserInfo, ProxyStatus } from '../../shared/api';
 import type { Command } from './api-client';
 import { CertificateTrust } from './CertificateTrust';
+import { DockerSection } from './DockerSection';
 import { TerminalSection } from './TerminalSection';
 
 interface Props {
@@ -173,6 +174,8 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
         onLaunched={onLaunched}
         CopyButton={CopyButton}
       />
+
+      <DockerSection status={status} connected={connected} send={send} />
 
       <section>
         <h2>Manual setup</h2>

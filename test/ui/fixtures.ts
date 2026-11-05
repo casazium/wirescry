@@ -37,6 +37,7 @@ export const status = (): ProxyStatus =>
       cmd: 'C:\\data\\wirescry.cmd',
     },
     plugins: [],
+    docker: { state: 'none' },
     platform: 'darwin',
     firefoxTrusted: false,
   }) as unknown as ProxyStatus;

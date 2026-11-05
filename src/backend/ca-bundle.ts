@@ -10,6 +10,7 @@ import {
   shellScriptSupported,
   type ShellKind,
 } from '../shared/terminal-env';
+import { CONTAINER_FILES, MOUNT_POINT } from './docker/container';
 import { pemToDer, trustStoreJks } from './jks';
 
 export const CA_BUNDLE_FILE = 'ca-bundle.pem';
@@ -38,6 +39,8 @@ export interface TerminalConfig {
   phpIniDir: string;
   curlHome: string;
   javaTrustStore: string;
+  /** Folder mounted into Docker containers Wirescry sets up, with the same files at container paths. */
+  containerDir: string;
 }
 
 /** Writes the CA bundle plus the PHP and curl config files that point at it. */
@@ -55,8 +58,36 @@ export async function writeTerminalConfig(dir: string, caCert: string): Promise<
   const javaDir = path.join(dir, 'terminal-config', 'java');
   await mkdir(javaDir, { recursive: true });
   const javaTrustStore = path.join(javaDir, 'wirescry-truststore.jks');
-  await writeFile(javaTrustStore, trustStoreJks(pemToDer(pem), JAVA_TRUST_STORE_PASSWORD));
-  return { bundlePath, phpIniDir, curlHome, javaTrustStore };
+  const jks = trustStoreJks(pemToDer(pem), JAVA_TRUST_STORE_PASSWORD);
+  await writeFile(javaTrustStore, jks);
+  const containerDir = await writeContainerConfig(dir, caCert, pem, jks);
+  return { bundlePath, phpIniDir, curlHome, javaTrustStore, containerDir };
+}
+
+/**
+ * The folder Docker containers see at MOUNT_POINT: the certificate, the bundle, and the PHP and
+ * Java files, with paths as the container sees them. Files are rewritten in place, so running
+ * containers pick up a new certificate too.
+ */
+async function writeContainerConfig(
+  dir: string,
+  caCert: string,
+  bundlePem: string,
+  jks: Buffer,
+): Promise<string> {
+  const containerDir = path.join(dir, 'docker-config');
+  await mkdir(path.join(containerDir, CONTAINER_FILES.phpDir), { recursive: true });
+  await mkdir(path.dirname(path.join(containerDir, CONTAINER_FILES.javaTrustStore)), { recursive: true });
+  // Readable by everyone: containers often run as a user other than the host's.
+  await writeFile(path.join(containerDir, CONTAINER_FILES.ca), caCert.trim() + '\n', { mode: 0o644 });
+  await writeFile(path.join(containerDir, CONTAINER_FILES.bundle), bundlePem, { mode: 0o644 });
+  await writeFile(
+    path.join(containerDir, CONTAINER_FILES.phpDir, 'wirescry.ini'),
+    phpIniContent(`${MOUNT_POINT}/${CONTAINER_FILES.bundle}`),
+    { mode: 0o644 },
+  );
+  await writeFile(path.join(containerDir, CONTAINER_FILES.javaTrustStore), jks, { mode: 0o644 });
+  return containerDir;
 }
 
 /**
