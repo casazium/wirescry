@@ -49,8 +49,9 @@ export function unsupportedReason(
   info: DaemonInfo | undefined,
   platform: NodeJS.Platform,
 ): string | undefined {
-  // Unknown: Docker answered nothing useful. The create will most likely fail on its own.
-  if (!info) return undefined;
+  // Unknown: Docker didn't say what it is in time. Guessing wrong would cut off the
+  // container's HTTP, so it's left alone.
+  if (!info) return 'Docker didn’t say what kind of Docker it is, so this container was left as it is.';
   if (info.osType === 'windows') return 'Wirescry doesn’t set up Windows containers.';
   if (info.rootless) return 'Wirescry doesn’t set up rootless Docker yet.';
   if (info.podman) return 'Wirescry doesn’t set up Podman yet.';

@@ -280,6 +280,13 @@ describe('Java', () => {
     ).toBe('localhost|*.svc|host|[::1]|192.168.*|ok-1');
   });
 
+  it('keeps the names the container gives Java itself, which a later option would replace', () => {
+    const { body } = setUp({ Env: ['JAVA_TOOL_OPTIONS=-Dhttp.nonProxyHosts="internal.corp|*.svc" -Xmx1g'] });
+    const options = envOf(body).get('JAVA_TOOL_OPTIONS')!;
+    const last = [...options.matchAll(/-Dhttp\.nonProxyHosts=(\S+)/g)].at(-1)![1]!.split('|');
+    expect(last).toEqual(expect.arrayContaining(['localhost', 'internal.corp', '*.svc']));
+  });
+
   it('puts no spaces in the value, which the JVM would split on', () => {
     expect(javaNonProxyHosts(['a', 'b c', 'd'])).not.toMatch(/\s/);
   });

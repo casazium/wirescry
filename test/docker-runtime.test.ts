@@ -72,7 +72,8 @@ describe('unsupportedReason', () => {
     expect(unsupportedReason(info({ podman: true, operatingSystem: 'fedora' }), 'linux')).toMatch(/Podman/);
     expect(unsupportedReason(info({ operatingSystem: '' }), 'darwin')).toMatch(/not this Docker/);
   });
-  it('goes ahead when Docker said nothing useful', () => {
-    expect(unsupportedReason(undefined, 'darwin')).toBeUndefined();
+  it("leaves the container alone when Docker didn't say what it is", () => {
+    expect(unsupportedReason(undefined, 'darwin')).toMatch(/didn.t say what kind of Docker/);
+    expect(unsupportedReason(undefined, 'linux')).toMatch(/didn.t say/);
   });
 });

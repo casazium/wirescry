@@ -298,8 +298,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       ruleEndsWithoutResponse: (ruleId) => pluginHost.endsWithoutResponse(ruleId),
       isPaused: () => paused,
       isComposed: (remotePort, remoteAddress, id) => composer.claim(remotePort, remoteAddress, id),
-      allowAddress: (address) => docker.allowsAddress(address),
-      mayReachThisComputer: (address) => docker.mayReachThisComputer(address),
+      acceptConnection: (address) => docker.acceptsConnection(address),
       onCATrusted: (userAgent) => {
         if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;
         firefoxTrusted = true;

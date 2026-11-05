@@ -7,6 +7,10 @@ import { findDockerEndpoint, type DockerEndpoint } from './endpoint';
 import { DockerRelay, makePrivateDir, type ContainerCreated } from './relay';
 export type { ContainerCreated };
 
+/** How long an address of a set-up container is trusted before the daemon is asked again. */
+const SET_UP_ADDRESS_TTL_MS = 10_000;
+/** The least time between two lookups of set-up containers' addresses. */
+const LOOKUP_SPACING_MS = 100;
 /** Unix socket paths longer than this don't fit in sockaddr_un on macOS (104 bytes, with the NUL). */
 const MAX_SOCKET_PATH = 100;
 
@@ -62,11 +66,13 @@ export class DockerSetup {
   private refreshing?: Promise<boolean>;
   private readonly platform: NodeJS.Platform;
   private readonly fromBridge = dockerBridgeChecker();
-  private setUpIps = new Set<string>();
+  /** Addresses of containers Wirescry set up, each with when to stop trusting it without asking again. */
+  private setUpIps = new Map<string, number>();
+  private lookup?: Promise<void>;
+  private lookupStarted = -Infinity;
   private unsupported?: string;
   private active: boolean;
   private lastContainer?: ContainerCreated;
-  private setUpIpsAt = -Infinity;
 
   constructor(private readonly options: DockerSetupOptions) {
     this.platform = options.platform ?? process.platform;
@@ -154,27 +160,59 @@ export class DockerSetup {
   }
 
   /**
-   * Whether a container at this address may reach services on this computer's loopback through
-   * the proxy: only containers Wirescry set up, or this computer's own addresses (containers on
-   * the host's network). The daemon is asked again when an address is new, at most every 250 ms.
+   * Whether the proxy takes a connection from this non-loopback address. Only on Linux, where
+   * containers' connections come from Docker's bridges, and only from containers Wirescry set
+   * up (asked of the daemon) or this computer's own addresses (containers on the host's
+   * network). Any other container could otherwise use the proxy to reach services that listen
+   * only on this computer's localhost. Docker Desktop's connections arrive from 127.0.0.1 and
+   * never get here.
    */
-  async mayReachThisComputer(address: string): Promise<boolean> {
+  acceptsConnection(address: string): boolean | Promise<boolean> {
+    if (this.platform !== 'linux' || !this.relay) return false;
     const v4 = address.startsWith('::ffff:') ? address.slice(7) : address;
     const own = Object.values(os.networkInterfaces())
       .flat()
       .some((info) => info?.address === v4);
     if (own) return true;
-    if (!this.relay) return false;
-    if (this.setUpIps.has(v4)) return true;
-    if (Date.now() - this.setUpIpsAt < 250) return false;
-    this.setUpIpsAt = Date.now();
-    this.setUpIps = await this.relay.setUpAddresses().catch(() => new Set<string>());
-    return this.setUpIps.has(v4);
+    if (!this.fromBridge(v4)) return false;
+    return this.isSetUpContainer(v4);
   }
 
-  /** Whether the proxy takes a connection from this address: a container on a Linux Docker bridge. */
-  allowsAddress(address: string): boolean {
-    return this.platform === 'linux' && !!this.relay && this.fromBridge(address);
+  /** Whether a container Wirescry set up has this address, as of a daemon lookup no older than its arrival. */
+  async isSetUpContainer(address: string, now = Date.now()): Promise<boolean> {
+    if ((this.setUpIps.get(address) ?? 0) > now) return true;
+    await this.lookUpSince(now);
+    return (this.setUpIps.get(address) ?? 0) > Date.now();
+  }
+
+  /**
+   * Waits for a lookup that started at or after `since`: a container that started a moment ago
+   * must be looked for after it started. Lookups don't overlap, and start at most every 100 ms,
+   * so a burst of new addresses costs a few lookups, not one each.
+   */
+  private async lookUpSince(since: number): Promise<void> {
+    for (;;) {
+      if (this.lookup && this.lookupStarted >= since) return this.lookup;
+      if (this.lookup) {
+        await this.lookup;
+        continue;
+      }
+      const wait = this.lookupStarted + LOOKUP_SPACING_MS - Date.now();
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      if (this.lookup) continue;
+      this.lookupStarted = Date.now();
+      this.lookup = (async () => {
+        const relay = this.relay;
+        const found = relay ? await relay.setUpAddresses().catch(() => new Set<string>()) : new Set<string>();
+        // Replaces what was known: a container that's gone no longer counts, even if its
+        // address is given to another.
+        const until = Date.now() + SET_UP_ADDRESS_TTL_MS;
+        this.setUpIps = new Map([...found].map((ip) => [ip, until]));
+      })().finally(() => {
+        this.lookup = undefined;
+      });
+      return this.lookup;
+    }
   }
 
   async stop(): Promise<void> {

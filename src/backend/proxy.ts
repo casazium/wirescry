@@ -1,4 +1,3 @@
-import { lookup } from 'node:dns/promises';
 import net from 'node:net';
 import * as mockttp from 'mockttp';
 import type { BodySide, ExchangeDetail, ExchangeTiming, HandledBy } from '../shared/api';
@@ -50,16 +49,11 @@ export interface ProxyOptions {
   /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
   onCATrusted?: (userAgent: string) => void;
   /**
-   * Whether to accept a connection from this non-loopback address, e.g. a Docker container
-   * on Linux, whose connections come from Docker's bridge network.
+   * Whether to accept a connection from this non-loopback address: a Docker container on
+   * Linux, whose connections come from Docker's bridge networks. The connection waits for the
+   * answer, which may take a lookup. Anything else (or a throw) drops it.
    */
-  allowAddress?: (address: string) => boolean;
-  /**
-   * Whether a client that isn't on this computer (a Docker container on Linux) may reach
-   * services on this computer's own loopback through the proxy. Without it, any container on
-   * the machine could use the proxy to reach services that listen only on localhost.
-   */
-  mayReachThisComputer?: (address: string) => Promise<boolean>;
+  acceptConnection?: (address: string) => boolean | Promise<boolean>;
 }
 
 export interface RunningProxy {
@@ -99,87 +93,51 @@ export function isLoopback(address: string | undefined): boolean {
   return v4.startsWith('127.') || address === '::1';
 }
 
+/** How long a connection from another address may wait to be accepted. */
+const ACCEPT_TIMEOUT_MS = 5000;
+
 /**
  * Mockttp listens on every network interface and has no option to change that. Drop
- * connections from other machines, so the proxy isn't open to the local network.
+ * connections from other machines, so the proxy isn't open to the local network. Others are
+ * offered to `accept` first, and handed to Mockttp only once it says yes: wrapping the server's
+ * 'connection' event, so no listener of Mockttp's sees a connection that wasn't accepted, and
+ * nothing is read from it until then.
  */
-function restrictToLoopback(server: mockttp.Mockttp, allow?: (address: string) => boolean): void {
+function restrictToLoopback(
+  server: mockttp.Mockttp,
+  accept?: (address: string) => boolean | Promise<boolean>,
+): void {
   const listener = (server as unknown as { server?: net.Server }).server;
   if (!listener) throw new Error("Can't restrict the proxy to this machine");
-  listener.prependListener('connection', (socket: net.Socket) => {
+  const emit = listener.emit.bind(listener) as (event: string | symbol, ...args: unknown[]) => boolean;
+  listener.emit = ((event: string | symbol, ...args: unknown[]): boolean => {
+    if (event !== 'connection') return emit(event, ...args);
+    const socket = args[0] as net.Socket;
     const address = socket.remoteAddress;
-    if (isLoopback(address)) return;
-    if (!address || !allowed(allow, address)) socket.destroy();
-  });
-}
-
-/** Whether a host name means this computer's loopback: by name, by address, or by what it resolves to. */
-async function isThisComputer(hostname: string): Promise<boolean> {
-  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
-  if (host === DOCKER_HOST_NAME || host === 'localhost' || host.endsWith('.localhost')) return true;
-  const unspecified = (address: string): boolean => address === '0.0.0.0' || address === '::';
-  if (net.isIP(host)) return isLoopback(host) || unspecified(host);
-  try {
-    // Names that resolve to 127.0.0.1 (localtest.me, or a rebinding attacker's) count too.
-    const addresses = await Promise.race([
-      lookup(host, { all: true }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timed out')), 2000).unref()),
-    ]);
-    return addresses.some(({ address }) => isLoopback(address) || unspecified(address));
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Matches a request from a client on another address (a container) to this computer's own
- * loopback, when that client isn't allowed there. Checks the client first, without waiting,
- * so other requests aren't slowed down or buffered.
- */
-class ToThisComputerUninvited extends mockttp.matchers.CallbackMatcher {
-  constructor(private readonly mayReach: (address: string) => Promise<boolean>) {
-    super(() => false);
-  }
-
-  // Mockttp takes a plain false from any matcher as "no" at once, though the type says Promise.
-  override matches(request: mockttp.OngoingRequest): Promise<boolean> {
-    return this.check(request) as Promise<boolean>;
-  }
-
-  private check(request: mockttp.OngoingRequest): boolean | Promise<boolean> {
-    const client = request.remoteIpAddress;
-    if (!client || isLoopback(client)) return false;
-    let hostname: string;
+    if (isLoopback(address)) return emit(event, ...args);
+    let answer: boolean | Promise<boolean>;
     try {
-      hostname = new URL(request.url).hostname;
+      answer = !!address && !!accept && accept(address);
     } catch {
-      return false;
+      answer = false;
     }
-    return (async () => {
-      if (!(await isThisComputer(hostname))) return false;
-      try {
-        return !(await this.mayReach(client));
-      } catch {
-        return true;
-      }
-    })();
-  }
-
-  override explain(): string {
-    return 'from a container Wirescry did not set up, to this computer';
-  }
-}
-
-const UNINVITED_MESSAGE =
-  'Wirescry only lets containers it set up reach services on this computer. Start this container from a terminal Wirescry set up.';
-
-/** Asks `allow` about an address; a check that throws refuses it. */
-function allowed(allow: ((address: string) => boolean) | undefined, address: string): boolean {
-  try {
-    return !!allow?.(address);
-  } catch {
-    return false;
-  }
+    if (answer === true) return emit(event, ...args);
+    if (answer === false) {
+      socket.destroy();
+      return true;
+    }
+    const timer = setTimeout(() => socket.destroy(), ACCEPT_TIMEOUT_MS);
+    socket.once('close', () => clearTimeout(timer));
+    answer.then(
+      (ok) => {
+        clearTimeout(timer);
+        if (ok && !socket.destroyed) emit(event, ...args);
+        else socket.destroy();
+      },
+      () => socket.destroy(),
+    );
+    return true;
+  }) as typeof listener.emit;
 }
 
 /**
@@ -637,19 +595,8 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     steps: rule.steps,
     completionChecker: new mockttp.completionCheckers.Always(),
   });
-  const mayReach = options.mayReachThisComputer ?? (async () => false);
-  const uninvitedRule: mockttp.RequestRuleData = {
-    matchers: [new ToThisComputerUninvited(mayReach)],
-    steps: [
-      new mockttp.requestSteps.FixedResponseStep(403, 'Forbidden', UNINVITED_MESSAGE, {
-        'content-type': 'text/plain; charset=utf-8',
-      }),
-    ],
-    completionChecker: new mockttp.completionCheckers.Always(),
-  };
   const applyRules = async (): Promise<void> => {
     await server.setRequestRules(
-      uninvitedRule,
       setupRule,
       ...(options.extraRules?.() ?? []).map(always),
       dockerHostRule,
@@ -657,12 +604,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     );
   };
   await applyRules();
-  // The more specific WebSocket rules first: Mockttp uses the first that matches.
-  await server.addWebSocketRule({
-    matchers: [new ToThisComputerUninvited(mayReach)],
-    steps: [new mockttp.webSocketSteps.RejectWebSocketStep(403, 'Forbidden', {}, UNINVITED_MESSAGE)],
-    completionChecker: new mockttp.completionCheckers.Always(),
-  });
+  // The more specific WebSocket rule first: Mockttp uses the first that matches.
   await server
     .forAnyWebSocket()
     .forHostname(DOCKER_HOST_NAME)
@@ -673,7 +615,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   if (options.port !== undefined) await assertLoopbackPortFree(options.port);
   await server.start(options.port);
   try {
-    restrictToLoopback(server, options.allowAddress);
+    restrictToLoopback(server, options.acceptConnection);
   } catch (error) {
     await server.stop();
     throw error;

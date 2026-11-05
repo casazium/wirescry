@@ -271,8 +271,14 @@ export function setUpContainer(input: unknown, options: SetUpOptions): SetUpResu
   ours.NO_PROXY = direct;
   ours.no_proxy = direct;
   // Java ignores NO_PROXY: give it the same names, or calls between containers go to the proxy.
-  ours.JAVA_TOOL_OPTIONS = `${ours.JAVA_TOOL_OPTIONS} -Dhttp.nonProxyHosts=${javaNonProxyHosts(directList)}`;
+  // The JVM takes the last of a repeated option, so names the container gives Java itself are
+  // kept by merging them into Wirescry's.
   const javaOptions = valueOf('JAVA_TOOL_OPTIONS');
+  const theirHosts = /(?:^|\s)-Dhttp\.nonProxyHosts=(\S+)/
+    .exec(javaOptions ?? '')?.[1]
+    ?.replace(/^["']|["']$/g, '');
+  const javaHosts = [javaNonProxyHosts(directList), ...(theirHosts ? [theirHosts] : [])].join('|');
+  ours.JAVA_TOOL_OPTIONS = `${ours.JAVA_TOOL_OPTIONS} -Dhttp.nonProxyHosts=${javaHosts}`;
   if (javaOptions?.trim()) ours.JAVA_TOOL_OPTIONS = `${javaOptions} ${ours.JAVA_TOOL_OPTIONS}`;
   const replaced = new Set(Object.keys(ours));
   body.Env = [

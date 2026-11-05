@@ -33,8 +33,12 @@ class FakeDaemon {
         `HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n`,
       );
       // A body sent with the upgrade (exec start's JSON) is echoed as it came, wherever Node put it.
-      if (head.length) socket.write(head);
+      // Node 24 puts body and what follows in `head`; Node 26 gives the body as data: either way,
+      // the body comes first.
       req.on('data', (data: Buffer) => socket.write(data));
+      req.once('end', () => {
+        if (head.length) socket.write(head);
+      });
       // Echoes stdin back, upper-cased, like a container would answer. On stdin's end, says
       // goodbye and closes, as a container whose input ended does.
       socket.on('data', (data: Buffer) => socket.write(data.toString().toUpperCase()));
@@ -568,7 +572,7 @@ describe('Docker relay', () => {
     ];
     expect([...(await relay.setUpAddresses())].sort()).toEqual(['172.17.0.5', '172.20.0.3']);
     expect(daemon.lastListUrl).toContain(encodeURIComponent('app.wirescry.setup=proxy'));
-    expect(daemon.lastListUrl).toContain(encodeURIComponent('"running"'));
+    expect(daemon.lastListUrl).toContain('all=1');
   });
 
   it('leaves Windows containers alone', async () => {
@@ -789,6 +793,8 @@ describe('Docker relay', () => {
       expect(daemon.creates).toHaveLength(1);
     }
     expect(logs.join('\n')).not.toContain('refused');
+    // Nothing was made, so nothing is reported.
+    expect(created).toEqual([]);
   });
 
   it('retries a 500 from the changed container, as Docker answers a mount it cannot make', async () => {
@@ -850,6 +856,37 @@ describe('Docker relay', () => {
     const reply = await request('GET', '/v1.47/containers/json?text=1');
     expect(reply.status).toBe(200);
     expect(reply.body).toBe('not json');
+  });
+
+  it('passes on what follows an upgrade body after the body, in order', async () => {
+    const socket = net.connect(relay.listenPath);
+    let received = '';
+    socket.on('data', (d: Buffer) => (received += d.toString()));
+    const body = '{"Detach":false}';
+    socket.write(
+      `POST /v1.47/exec/e1/start HTTP/1.1\r\nHost: docker\r\nContent-Length: ${body.length}\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n${body}stdin-bytes`,
+    );
+    // The fake echoes the body as it came, then upper-cases what follows.
+    await waitFor(() => received.includes(`${body}stdin-bytes`));
+
+    socket.destroy();
+  });
+
+  it("leaves Compose's hash alone while Docker setup is off, so nothing is recreated for it", async () => {
+    await relay.stop();
+    relay = new DockerRelay({
+      listenPath: socketIn(dir, 'off.sock'),
+      upstream: () => endpoint,
+      proxyPort: () => 8001,
+      configDir: '/x',
+      active: () => false,
+    });
+    await relay.start();
+    daemon.listed = [{ Id: 'a', Labels: { [COMPOSE_HASH_LABEL]: 'h1' } }];
+    const list = JSON.parse((await request('GET', '/v1.47/containers/json')).body) as Array<{
+      Labels: Record<string, string>;
+    }>;
+    expect(list[0]!.Labels[COMPOSE_HASH_LABEL]).toBe('h1');
   });
 
   it('says when Docker is not running', async () => {

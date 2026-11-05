@@ -192,8 +192,9 @@ export class DockerRelay {
     res.end(body);
   }
 
-  private unreachable(res: http.ServerResponse, socketPath: string, error: Error): void {
+  private unreachable(res: http.ServerResponse, socketPath: string, error: Error, request = ''): void {
     const code = (error as NodeJS.ErrnoException).code;
+    this.log(`couldn't pass ${request || 'a request'} on to Docker: ${code ?? ''} ${error.message}`);
     const why = code === 'ENOENT' || code === 'ECONNREFUSED' ? 'Is Docker running?' : error.message;
     this.fail(res, 502, `Wirescry couldn't reach Docker at ${socketPath}. ${why}`);
   }
@@ -283,7 +284,10 @@ export class DockerRelay {
     const relayed = req.headers[RELAY_HEADER.toLowerCase()] !== undefined;
     try {
       if (!relayed && method === 'POST' && CREATE.test(url)) return await this.create(req, res, target, url);
-      if (!relayed && method === 'GET' && (LIST.test(url) || INSPECT.test(url))) {
+      // While Docker setup is off, Compose sees containers as they are: those set up earlier
+      // look out of date (and are recreated without the settings), the rest are left alone.
+      const active = this.options.active?.() ?? true;
+      if (!relayed && active && method === 'GET' && (LIST.test(url) || INSPECT.test(url))) {
         return await this.listed(req, res, target, url);
       }
       const response = await this.send(target, method, url, forwardHeaders(req.rawHeaders), req);
@@ -293,7 +297,7 @@ export class DockerRelay {
         res.destroy();
         return;
       }
-      this.unreachable(res, target, error as Error);
+      this.unreachable(res, target, error as Error, `${method} ${url}`);
     }
   }
 
@@ -344,9 +348,12 @@ export class DockerRelay {
       return;
     }
     const withBody = (body: Buffer): string[] => [...headers, 'Content-Length', String(body.length)];
-    const passOn = async (body: Buffer): Promise<void> => {
+    const passOn = async (body: Buffer, event?: Omit<ContainerCreated, 'name' | 'image'>): Promise<void> => {
       const response = await this.buffered(socketPath, 'POST', url, withBody(body), body);
       if (!response) throw new Error('Docker sent a reply too big to pass on.');
+      // Only a container Docker made is worth telling about.
+      if (event && response.status < 400)
+        this.options.onContainer?.({ ...describe(definition, url), ...event });
       this.reply(res, response);
     };
 
@@ -363,10 +370,7 @@ export class DockerRelay {
     // Left as written, but labelled so: Compose would otherwise see it as not set up, and
     // recreate it on every `up` from a Wirescry terminal.
     const asWritten = Buffer.from(JSON.stringify(skippedDefinition(definition)));
-    const leaveAlone = async (reason: string): Promise<void> => {
-      this.options.onContainer?.({ ...describe(definition, url), setUp: false, reason });
-      return passOn(asWritten);
-    };
+    const leaveAlone = (reason: string): Promise<void> => passOn(asWritten, { setUp: false, reason });
 
     if (this.options.active && !this.options.active()) return passOn(Buffer.from(JSON.stringify(definition)));
     const unsupported = unsupportedReason(info, this.platform);
@@ -390,11 +394,13 @@ export class DockerRelay {
     // image" (404) or "name already in use" (409), which the original would get too.
     const refusedSettings = first.status === 400 || first.status >= 500;
     if (!refusedSettings || !result.setUp) {
-      this.options.onContainer?.({
-        ...describe(definition, url),
-        setUp: result.setUp,
-        reason: result.setUp ? undefined : result.reason,
-      });
+      if (first.status < 400) {
+        this.options.onContainer?.({
+          ...describe(definition, url),
+          setUp: result.setUp,
+          reason: result.setUp ? undefined : result.reason,
+        });
+      }
       this.reply(res, first);
       return;
     }
@@ -561,19 +567,21 @@ export class DockerRelay {
   async unsupportedReason(): Promise<string | undefined> {
     const target = this.socketPath();
     if (typeof target !== 'string') return undefined;
-    return unsupportedReason(await this.daemonInfo(target), this.platform);
+    // Not running yet, or not answering: nothing to say yet. Each container is checked again.
+    const info = await this.daemonInfo(target);
+    return info ? unsupportedReason(info, this.platform) : undefined;
   }
 
-  /** The addresses of running containers Wirescry set up, from the daemon. */
+  /** The addresses of containers Wirescry set up, from the daemon. */
   async setUpAddresses(): Promise<Set<string>> {
     const target = this.socketPath();
     const addresses = new Set<string>();
     if (typeof target !== 'string') return addresses;
-    const filters = encodeURIComponent(
-      JSON.stringify({ label: [`${LABELS.setup}=proxy`], status: ['running'] }),
-    );
+    // Any state: a container that has only just started may not be listed as running yet, and
+    // only containers with a network have an address anyway.
+    const filters = encodeURIComponent(JSON.stringify({ label: [`${LABELS.setup}=proxy`] }));
     const response = await withTimeout(
-      this.buffered(target, 'GET', `/containers/json?filters=${filters}`, ['Host', 'docker']),
+      this.buffered(target, 'GET', `/containers/json?all=1&filters=${filters}`, ['Host', 'docker']),
       LOOKUP_TIMEOUT_MS,
     );
     if (!response || response.status !== 200) return addresses;
@@ -646,10 +654,13 @@ export class DockerRelay {
     // Other Wirescry relays pass this on untouched (see handle()).
     lines.push(`${RELAY_HEADER}: 1`);
     daemon.write(`${lines.join('\r\n')}\r\n\r\n`);
-    // A body sent with the upgrade (exec start's JSON) comes in `head` up to Node 24, and as
-    // the request's own data from Node 26: pass on both.
-    if (head.length > 0) daemon.write(head);
+    // Measured: Node 24 (Electron's) puts body and what follows in `head`; Node 26 gives the
+    // body as the request's data and only what follows in `head`. Both end the request after,
+    // so passing on its data and then `head` keeps the order either way.
     req.on('data', (chunk: Buffer) => daemon.write(chunk));
+    req.once('end', () => {
+      if (head.length > 0) daemon.write(head);
+    });
     daemon.once('connect', () => {
       connected = true;
       // pipe() passes each side's end on as a half-close, which `docker run -i` relies on to
