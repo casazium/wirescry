@@ -197,8 +197,7 @@ export class DockerRelay {
   private unreachable(res: http.ServerResponse, socketPath: string, error: Error, request = ''): void {
     const code = (error as NodeJS.ErrnoException).code;
     this.log(`couldn't pass ${request || 'a request'} on to Docker: ${code ?? ''} ${error.message}`);
-    const why = code === 'ENOENT' || code === 'ECONNREFUSED' ? 'Is Docker running?' : error.message;
-    this.fail(res, 502, `Wirescry couldn't reach Docker at ${socketPath}. ${why}`);
+    this.fail(res, 502, `Wirescry couldn't reach Docker at ${socketPath}. ${unreachableReason(error)}`);
   }
 
   /** Sends a request to the daemon and gives back its response, unread. */
@@ -704,7 +703,7 @@ export class DockerRelay {
       if (connected) return destroyBoth();
       this.log(`couldn't reach Docker: ${error.message}`);
       daemon.destroy();
-      endWithError(client, `Wirescry couldn't reach Docker at ${target}. Is Docker running?`);
+      endWithError(client, `Wirescry couldn't reach Docker at ${target}. ${unreachableReason(error)}`);
       client.once('close', forget);
     });
     client.once('error', destroyBoth);
@@ -771,4 +770,21 @@ export async function makePrivateDir(dir: string): Promise<void> {
     throw new Error(`${dir} belongs to another user`);
   }
   await chmod(dir, 0o700);
+}
+
+/** What to tell someone whose Docker command Wirescry couldn't pass on, from the connection error. */
+export function unreachableReason(error: Error, platform: NodeJS.Platform = process.platform): string {
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === 'ENOENT' || code === 'ECONNREFUSED') return 'Is Docker running?';
+  // Wirescry connects as you, with the groups you had when it started.
+  if (code === 'EACCES' || code === 'EPERM') {
+    if (platform === 'linux') {
+      return "You don't have permission to use Docker. Add yourself to the docker group (sudo usermod -aG docker $USER), log out and back in (or restart), then start Wirescry again.";
+    }
+    if (platform === 'win32') {
+      return "You don't have permission to use Docker. Add yourself to the docker-users group (as an administrator: net localgroup docker-users <your user name> /add), sign out and back in, then start Wirescry again.";
+    }
+    return "You don't have permission to open Docker's socket. Check Docker Desktop is running as you.";
+  }
+  return error.message;
 }

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { COMPOSE_HASH_LABEL, HASH_SUFFIX, LABELS, MOUNT_POINT } from '../src/backend/docker/container';
 import type { DockerEndpoint } from '../src/backend/docker/endpoint';
-import { DockerRelay, type ContainerCreated } from '../src/backend/docker/relay';
+import { DockerRelay, unreachableReason, type ContainerCreated } from '../src/backend/docker/relay';
 
 /** Stands in for the Docker daemon. */
 class FakeDaemon {
@@ -987,6 +987,46 @@ describe('Docker relay', () => {
     await waitFor(() => received.includes('Is Docker running?'));
     expect(received).toMatch(/^HTTP\/1\.1 502/);
     socket.destroy();
+  });
+
+  // Unix permissions; root can open the socket whatever its mode.
+  it.skipIf(windows || process.getuid?.() === 0)(
+    "says what to do when Docker's socket refuses this user",
+    async () => {
+      const { chmod } = await import('node:fs/promises');
+      await chmod(daemon.socketPath, 0o000);
+      try {
+        const reply = await request('GET', '/_ping');
+        expect(reply.status).toBe(502);
+        expect(JSON.parse(reply.body).message).toMatch(
+          process.platform === 'linux' ? /permission to use Docker.*docker group/ : /permission/,
+        );
+        // And for attach.
+        const socket = net.connect(relay.listenPath);
+        let received = '';
+        socket.on('data', (d: Buffer) => (received += d.toString()));
+        socket.write(
+          'POST /containers/c1/attach HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n',
+        );
+        await waitFor(() => received.includes('permission'));
+        expect(received).toMatch(/^HTTP\/1\.1 502/);
+        socket.destroy();
+      } finally {
+        await chmod(daemon.socketPath, 0o755);
+      }
+    },
+  );
+
+  it('explains why Docker could not be reached', () => {
+    const error = (code: string, message = code) => Object.assign(new Error(message), { code });
+    expect(unreachableReason(error('ENOENT'))).toBe('Is Docker running?');
+    expect(unreachableReason(error('ECONNREFUSED'))).toBe('Is Docker running?');
+    expect(unreachableReason(error('EACCES'), 'linux')).toMatch(/sudo usermod -aG docker \$USER/);
+    expect(unreachableReason(error('EPERM'), 'linux')).toMatch(/docker group/);
+    // Windows: a named pipe refusing the user is EPERM, and the group is docker-users.
+    expect(unreachableReason(error('EPERM'), 'win32')).toMatch(/docker-users/);
+    expect(unreachableReason(error('EACCES'), 'darwin')).toMatch(/Docker Desktop is running as you/);
+    expect(unreachableReason(error('ETIMEDOUT', 'connect timed out'))).toBe('connect timed out');
   });
 
   it('says when Docker is on another computer, or missing', async () => {

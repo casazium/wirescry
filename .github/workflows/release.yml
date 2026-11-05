@@ -1,11 +1,11 @@
 name: Release
 
-# Builds installers for macOS, Windows and Linux.
+# Builds installers for macOS, Windows and Linux (x64 and arm64).
 #
 # - Pushing a tag like v0.2.0 builds, signs (when the secrets exist) and uploads to a
 #   draft release on casazium/wirescry-releases. Publish the draft on GitHub to ship it.
 # - Pull requests that touch packaging build Linux only, without publishing, and keep
-#   the installer as a workflow artifact for three days. Manual runs build all three,
+#   the installer as a workflow artifact for three days. Manual runs build every platform,
 #   and keep theirs for one day.
 #
 # Signing is skipped, with a warning, for any platform whose secrets aren't set yet.
@@ -87,6 +87,28 @@ jobs:
           token: ${{ steps.pro-token.outputs.token }}
           persist-credentials: false
 
+      # electron-builder creates the draft on its first upload if there isn't one, with no
+      # lock: two builds finishing together (the two Linux CPUs do) could each create one
+      # and split the files. Making it here, before any build, gives them one to share. It
+      # matches by tag; the title and target are what electron-builder would use.
+      - name: Create the draft release
+        if: env.IS_TAG == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "No RELEASES_TOKEN: the builds won't upload, so no draft is needed."
+            exit 0
+          fi
+          repo=casazium/wirescry-releases
+          tag="$GITHUB_REF_NAME"
+          existing="$(gh api "repos/$repo/releases?per_page=100" --jq "[.[] | select(.tag_name == \"$tag\")] | length")"
+          if [ "$existing" -gt 0 ]; then
+            echo "A release for $tag already exists."
+          else
+            gh release create "$tag" -R "$repo" --draft --title "${tag#v}" --target main --notes ""
+          fi
+
       - name: Pick the commit
         id: pick
         run: |
@@ -115,7 +137,9 @@ jobs:
         # Windows builds on Arm: Pro's bytecode must be compiled by Electron for each CPU
         # type, and Windows on Arm can run both arm64 and (emulated) x64 Electron, while
         # x64 Windows can't run arm64. The macOS runners are Apple silicon, with Rosetta.
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest"]') || fromJSON('["macos-latest", "windows-11-arm", "ubuntu-latest"]') }}
+        # Linux can't run another CPU's Electron, so it builds on one runner per CPU: x64,
+        # and arm64 (free, like x64 Linux, for a public repo). Each packages its own CPU.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest", "ubuntu-24.04-arm"]') || fromJSON('["macos-latest", "windows-11-arm", "ubuntu-latest", "ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.os }}
     # Windows on Arm runners have 2 cores, and build x64 emulated.
     timeout-minutes: 90
@@ -137,6 +161,12 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # The x64 Linux image has Xvfb, for Electron's display; make sure the arm64 one does.
+      - name: Install Xvfb
+        if: runner.os == 'Linux'
+        shell: bash
+        run: command -v xvfb-run || { sudo apt-get update && sudo apt-get install -y xvfb; }
 
       - name: Check the tag matches package.json
         if: startsWith(github.ref, 'refs/tags/v')
@@ -193,7 +223,7 @@ jobs:
             case "$RUNNER_OS" in
               macOS) arches=arm64,x64 ;;
               Windows) arches=x64,arm64 ;;
-              *) arches=x64 ;;
+              *) if [ "$RUNNER_ARCH" = "ARM64" ]; then arches=arm64; else arches=x64; fi ;;
             esac
             # Electron needs a display on Linux; the hosted runners have Xvfb.
             run=""
@@ -307,6 +337,11 @@ jobs:
           if [ "$PUBLISH" = "true" ]; then publish=always; else publish=never; fi
           npx electron-builder --publish "$publish"
 
+      # The self-test below runs the unpacked app, never the AppImage's own launcher.
+      - name: Check the AppImage launcher
+        if: runner.os == 'Linux'
+        run: node scripts/check-appimage.mjs
+
       # Starts each packaged app without a window and checks it runs and, in a Pro build,
       # that Pro loaded. On a tag this runs after the upload; the release is still a
       # draft, so if it fails, delete the draft rather than publishing it. The same goes
@@ -324,11 +359,11 @@ jobs:
       - name: Keep the installers
         uses: actions/upload-artifact@v7
         with:
-          name: wirescry-${{ runner.os }}
+          name: wirescry-${{ runner.os }}-${{ runner.arch }}
           # Three days for a pull request, one for anything else. A packaging
           # PR builds Linux only (~225MB) and a reviewer may not get to it
           # until Monday, so three days earns its keep there. Everything else
-          # builds all three platforms - about 930MB - and does not need
+          # builds every platform - about 1.15GB with arm64 Linux - and does not need
           # them: a workflow_dispatch was triggered by someone who is looking
           # now, and a tag push has already published the installers to
           # casazium/wirescry-releases through electron-builder, so the
@@ -378,7 +413,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n wirescry-Windows -D release
+        run: gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n wirescry-Windows-ARM64 -D release
 
       - name: Install the setup and start the installed app
         shell: bash
