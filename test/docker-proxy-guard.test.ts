@@ -83,7 +83,7 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
     });
 
   /** A CONNECT tunnel to `target`, then a plain request inside it with a misleading Host. */
-  const tunnel = (from: string, target: string) =>
+  const tunnel = (from: string, target: string, innerHost = 'example.com') =>
     new Promise<string>((resolve) => {
       const socket = net.connect({ host: from, port: proxy.port, localAddress: from });
       let data = '';
@@ -92,7 +92,7 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
         data += d.toString();
         if (!sent && data.includes(' 200')) {
           sent = true;
-          socket.write('GET /tunnel HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n');
+          socket.write(`GET /tunnel HTTP/1.1\r\nHost: ${innerHost}\r\nConnection: close\r\n\r\n`);
         }
       });
       socket.on('close', () => resolve(data));
@@ -117,18 +117,57 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
     }
   });
 
-  it('reaches nothing, however a refused client names this computer', async () => {
-    for (const url of [
-      `http://[::ffff:7f00:1]:${localPort}/a`,
-      `http://[::ffff:127.0.0.1]:${localPort}/b`,
-      `http://0.0.0.0:${localPort}/c`,
-      `http://host.docker.internal:${localPort}/d`,
-    ]) {
-      await expect(via(lan!, url), url).rejects.toThrow();
+  it('sends a refused client nothing at all, not even an answer to CONNECT', async () => {
+    expect(await tunnel(lan!, `0.0.0.0:${localPort}`)).toBe('');
+  });
+
+  it('survives a client that resets the connection while the answer is looked up', async () => {
+    accept = () => new Promise((resolve) => setTimeout(() => resolve(true), 300));
+    for (let i = 0; i < 5; i++) {
+      const socket = net.connect({ host: lan!, port: proxy.port, localAddress: lan! });
+      socket.on('error', () => undefined);
+      await new Promise((resolve) => socket.once('connect', resolve));
+      socket.write('G');
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      socket.resetAndDestroy();
     }
-    for (const target of [`0.0.0.0:${localPort}`, `[::ffff:7f00:1]:${localPort}`]) {
-      expect(await tunnel(lan!, target)).not.toContain('reached');
-    }
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    // Still answering: an unhandled reset would have thrown (and failed this run).
+    accept = () => true;
+    expect((await via(lan!, `http://host.docker.internal:${localPort}/after-resets`)).status).toBe(200);
+  });
+
+  it('lets an accepted client tunnel, and reuse its connection, after waiting', async () => {
+    accept = () => new Promise((resolve) => setTimeout(() => resolve(true), 100));
+    const target = `host.docker.internal:${localPort}`;
+    expect(await tunnel(lan!, target, target)).toContain('reached /tunnel');
+    // Two requests on one kept-alive connection: only the connection waits, once.
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1, localAddress: lan! });
+    const once = (p: string) =>
+      new Promise<string>((resolve, reject) => {
+        http
+          .get(
+            {
+              host: lan!,
+              port: proxy.port,
+              agent,
+              path: `http://host.docker.internal:${localPort}${p}`,
+              headers: { host: `host.docker.internal:${localPort}` },
+            },
+            (res) => {
+              let body = '';
+              res.on('data', (c: Buffer) => (body += c.toString()));
+              res.on('end', () => resolve(body));
+            },
+          )
+          .on('error', reject);
+      });
+    // (A tunnel is checked again for the connection inside it, which Mockttp hands back.)
+    const before = asked.length;
+    expect(await once('/one')).toBe('reached /one');
+    expect(await once('/two')).toBe('reached /two');
+    expect(asked.length - before).toBe(1);
+    agent.destroy();
   });
 
   it('lets an accepted client reach this computer, as a set-up container may', async () => {
@@ -154,7 +193,32 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
     const started = Date.now();
     await expect(via(lan!, `http://host.docker.internal:${localPort}/never`)).rejects.toThrow();
     expect(Date.now() - started).toBeGreaterThanOrEqual(4500);
+    expect(Date.now() - started).toBeLessThan(7000);
   }, 15_000);
+
+  it('drops a connection still waiting when the proxy stops, rather than hand it to a stopped proxy', async () => {
+    let answer: (ok: boolean) => void = () => undefined;
+    const second = await startProxy({
+      ca: await loadOrCreateCA(dir),
+      store: new InMemoryRequestStore(10),
+      bodies: await HybridBodyStore.open(path.join(dir, 'bodies-2')),
+      websockets: new WebSocketStore(),
+      onExchange: () => undefined,
+      acceptConnection: () => new Promise((resolve) => (answer = resolve)),
+    });
+    const socket = net.connect({ host: lan!, port: second.port, localAddress: lan! });
+    let received = '';
+    socket.on('data', (d: Buffer) => (received += d.toString()));
+    socket.on('error', () => undefined);
+    await new Promise((resolve) => socket.once('connect', resolve));
+    socket.write('GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\n\r\n');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const closed = new Promise((resolve) => socket.once('close', resolve));
+    await second.stop();
+    answer(true);
+    await closed;
+    expect(received).toBe('');
+  });
 
   it("never asks about this computer's own loopback clients", async () => {
     expect(await via('127.0.0.1', `http://127.0.0.1:${localPort}/self`)).toEqual({
@@ -166,7 +230,7 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
 });
 
 /** Docker setup on Linux, with a relay that answers set-up containers' addresses from a list. */
-function setupWith(addresses: () => string[], delayMs = 20) {
+function setupWith(addresses: () => string[] | Error, delayMs = 20) {
   const setup = new DockerSetup({
     dataDir: os.tmpdir(),
     enabled: true,
@@ -180,6 +244,7 @@ function setupWith(addresses: () => string[], delayMs = 20) {
       lookups.count++;
       const now = addresses();
       await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (now instanceof Error) throw now;
       return new Set(now);
     },
   };
@@ -221,7 +286,33 @@ describe('Which containers the proxy accepts on Linux', () => {
     running = [];
     // Another lookup (for some other address) replaces what was known.
     expect(await setup.isSetUpContainer('172.18.0.99')).toBe(false);
-    expect(await setup.isSetUpContainer('172.18.0.5', Date.now() + 1)).toBe(false);
+    expect(await setup.isSetUpContainer('172.18.0.5')).toBe(false);
+  });
+
+  it('finds a container Docker lists only a moment after its first connection', async () => {
+    let calls = 0;
+    const { setup, lookups } = setupWith(() => (++calls < 3 ? [] : ['172.18.0.8']));
+    expect(await setup.isSetUpContainer('172.18.0.8')).toBe(true);
+    expect(lookups.count).toBe(3);
+  });
+
+  it('refuses an address no set-up container has, after a short while', async () => {
+    const { setup } = setupWith(() => ['172.18.0.5']);
+    const started = performance.now();
+    expect(await setup.isSetUpContainer('172.18.0.66')).toBe(false);
+    const took = performance.now() - started;
+    expect(took).toBeGreaterThanOrEqual(1400);
+    expect(took).toBeLessThan(3000);
+  });
+
+  it('keeps trusting known containers when a lookup fails', async () => {
+    let fail = false;
+    const { setup } = setupWith(() => (fail ? new Error('Docker is busy') : ['172.18.0.5']));
+    expect(await setup.isSetUpContainer('172.18.0.5')).toBe(true);
+    fail = true;
+    // A lookup for another address fails; the known one still counts.
+    expect(await setup.isSetUpContainer('172.18.0.77')).toBe(false);
+    expect(await setup.isSetUpContainer('172.18.0.5')).toBe(true);
   });
 
   it('spaces lookups out for a flood of unknown addresses', async () => {

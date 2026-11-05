@@ -602,22 +602,23 @@ export class DockerRelay {
     return info ? unsupportedReason(info, this.platform) : undefined;
   }
 
-  /** The addresses of containers Wirescry set up, from the daemon. */
-  async setUpAddresses(): Promise<Set<string>> {
+  /** The (IPv4) addresses of containers Wirescry set up, from the daemon. Throws if it can't tell. */
+  async setUpAddresses(timeoutMs = LOOKUP_TIMEOUT_MS): Promise<Set<string>> {
     const target = this.socketPath();
-    const addresses = new Set<string>();
-    if (typeof target !== 'string') return addresses;
+    if (typeof target !== 'string') throw new Error('No Docker to ask.');
     // Any state: a container that has only just started may not be listed as running yet, and
     // only containers with a network have an address anyway.
     const filters = encodeURIComponent(JSON.stringify({ label: [`${LABELS.setup}=proxy`] }));
     const response = await withTimeout(
       this.buffered(target, 'GET', `/containers/json?all=1&filters=${filters}`, ['Host', 'docker']),
-      LOOKUP_TIMEOUT_MS,
+      timeoutMs,
     );
-    if (!response || response.status !== 200) return addresses;
+    // Fails rather than answering "none": a hiccup mustn't un-trust every set-up container.
+    if (!response || response.status !== 200) throw new Error(`Docker answered ${response?.status ?? 'nothing'}.`);
     const list = JSON.parse(response.body.toString('utf8')) as Array<{
       NetworkSettings?: { Networks?: Record<string, { IPAddress?: unknown }> };
     }>;
+    const addresses = new Set<string>();
     for (const container of Array.isArray(list) ? list : []) {
       for (const network of Object.values(container.NetworkSettings?.Networks ?? {})) {
         if (typeof network?.IPAddress === 'string' && network.IPAddress) addresses.add(network.IPAddress);

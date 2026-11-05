@@ -7,6 +7,12 @@ import { findDockerEndpoint, type DockerEndpoint } from './endpoint';
 import { DockerRelay, makePrivateDir, type ContainerCreated } from './relay';
 export type { ContainerCreated };
 
+/** A clock that never jumps (unlike Date.now() across NTP changes or sleep), for spacing and expiry. */
+const clock = (): number => performance.now();
+/** How long a just-started container's address is looked for before its connection is refused. */
+const NEW_CONTAINER_GRACE_MS = 1500;
+/** How long one lookup may take. With the grace above, well inside the proxy's 5 s accept limit. */
+const SET_UP_LOOKUP_TIMEOUT_MS = 1000;
 /** How long an address of a set-up container is trusted before the daemon is asked again. */
 const SET_UP_ADDRESS_TTL_MS = 10_000;
 /** The least time between two lookups of set-up containers' addresses. */
@@ -180,17 +186,29 @@ export class DockerSetup {
     return this.isSetUpContainer(v4);
   }
 
-  /** Whether a container Wirescry set up has this address, as of a daemon lookup no older than its arrival. */
-  async isSetUpContainer(address: string, now = Date.now()): Promise<boolean> {
-    if ((this.setUpIps.get(address) ?? 0) > now) return true;
-    await this.lookUpSince(now);
-    return (this.setUpIps.get(address) ?? 0) > Date.now();
+  /**
+   * Whether a container Wirescry set up has this address, as of a daemon lookup that started
+   * after it arrived. Docker lists a container's address a few milliseconds after its process
+   * starts (measured: 15-19 ms, in about 1 in 20 starts), so an address not found yet is
+   * looked for again for a little while before it's refused.
+   */
+  async isSetUpContainer(address: string, arrived = clock()): Promise<boolean> {
+    if ((this.setUpIps.get(address) ?? 0) > arrived) return true;
+    // A lookup that began just before the connection arrived may still have been after the
+    // container started; if it missed it, the next one won't.
+    let since = arrived - LOOKUP_SPACING_MS / 2;
+    for (;;) {
+      await this.lookUpSince(since);
+      if ((this.setUpIps.get(address) ?? 0) > clock()) return true;
+      if (clock() - arrived >= NEW_CONTAINER_GRACE_MS) return false;
+      since = clock();
+    }
   }
 
   /**
-   * Waits for a lookup that started at or after `since`: a container that started a moment ago
-   * must be looked for after it started. Lookups don't overlap, and start at most every 100 ms,
-   * so a burst of new addresses costs a few lookups, not one each.
+   * Waits for a lookup that started at or after `since`. Lookups don't overlap, and start at
+   * most every 100 ms, so a burst of new addresses costs a few lookups, not one each. A lookup
+   * that fails leaves what was known as it was (entries still run out).
    */
   private async lookUpSince(since: number): Promise<void> {
     for (;;) {
@@ -199,17 +217,22 @@ export class DockerSetup {
         await this.lookup;
         continue;
       }
-      const wait = this.lookupStarted + LOOKUP_SPACING_MS - Date.now();
-      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+      const wait = this.lookupStarted + LOOKUP_SPACING_MS - clock();
+      if (wait > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(wait, LOOKUP_SPACING_MS)));
       if (this.lookup) continue;
-      this.lookupStarted = Date.now();
+      this.lookupStarted = clock();
       this.lookup = (async () => {
         const relay = this.relay;
-        const found = relay ? await relay.setUpAddresses().catch(() => new Set<string>()) : new Set<string>();
-        // Replaces what was known: a container that's gone no longer counts, even if its
-        // address is given to another.
-        const until = Date.now() + SET_UP_ADDRESS_TTL_MS;
-        this.setUpIps = new Map([...found].map((ip) => [ip, until]));
+        if (!relay) return;
+        try {
+          const found = await relay.setUpAddresses(SET_UP_LOOKUP_TIMEOUT_MS);
+          // Replaces what was known: a container that's gone no longer counts, even if its
+          // address is given to another.
+          const until = clock() + SET_UP_ADDRESS_TTL_MS;
+          this.setUpIps = new Map([...found].map((ip) => [ip, until]));
+        } catch {
+          // Docker didn't answer: keep what's known.
+        }
       })().finally(() => {
         this.lookup = undefined;
       });

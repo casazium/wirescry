@@ -106,7 +106,7 @@ const ACCEPT_TIMEOUT_MS = 5000;
 function restrictToLoopback(
   server: mockttp.Mockttp,
   accept?: (address: string) => boolean | Promise<boolean>,
-): void {
+): { stop(): void } {
   const listener = (server as unknown as { server?: net.Server }).server;
   if (!listener) throw new Error("Can't restrict the proxy to this machine");
   const emit = listener.emit.bind(listener) as (event: string | symbol, ...args: unknown[]) => boolean;
@@ -126,18 +126,41 @@ function restrictToLoopback(
       socket.destroy();
       return true;
     }
+    // Nothing else listens to it yet: an error now (a reset while waiting) would otherwise be
+    // thrown, and take the backend down.
+    const onError = (): void => {
+      socket.destroy();
+    };
+    socket.on('error', onError);
+    pending.add(socket);
     const timer = setTimeout(() => socket.destroy(), ACCEPT_TIMEOUT_MS);
-    socket.once('close', () => clearTimeout(timer));
+    socket.once('close', () => {
+      clearTimeout(timer);
+      pending.delete(socket);
+    });
     answer.then(
       (ok) => {
         clearTimeout(timer);
-        if (ok && !socket.destroyed) emit(event, ...args);
-        else socket.destroy();
+        pending.delete(socket);
+        if (ok && !socket.destroyed && !stopped) {
+          socket.off('error', onError);
+          emit(event, ...args);
+        } else socket.destroy();
       },
       () => socket.destroy(),
     );
     return true;
   }) as typeof listener.emit;
+  const pending = new Set<net.Socket>();
+  let stopped = false;
+  return {
+    /** Drops connections still waiting to be accepted, so none reaches a stopped proxy. */
+    stop: () => {
+      stopped = true;
+      for (const socket of pending) socket.destroy();
+      pending.clear();
+    },
+  };
 }
 
 /**
@@ -614,8 +637,9 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
 
   if (options.port !== undefined) await assertLoopbackPortFree(options.port);
   await server.start(options.port);
+  let restriction: { stop(): void };
   try {
-    restrictToLoopback(server, options.acceptConnection);
+    restriction = restrictToLoopback(server, options.acceptConnection);
   } catch (error) {
     await server.stop();
     throw error;
@@ -624,6 +648,9 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   return {
     port: server.port,
     refreshRules: applyRules,
-    stop: () => server.stop(),
+    stop: () => {
+      restriction.stop();
+      return server.stop();
+    },
   };
 }
