@@ -19,6 +19,13 @@ const SET_UP_LOOKUP_TIMEOUT_MS = 1000;
 const SET_UP_ADDRESS_TTL_MS = 10_000;
 /** The least time between two lookups of set-up containers' addresses. */
 const LOOKUP_SPACING_MS = 100;
+/**
+ * Why Docker isn't set up on Windows. Docker there marks the end of a stream with an empty
+ * message on its named pipe, which Node can neither see nor send, so through the relay
+ * `docker run` hung after the container finished (test/docker-windows.test.ts shows it).
+ */
+export const WINDOWS_NOT_YET =
+  'Wirescry doesn’t set up Docker on Windows yet: through it, docker run wouldn’t finish.';
 /** Unix socket paths longer than this don't fit in sockaddr_un on macOS (104 bytes, with the NUL). */
 const MAX_SOCKET_PATH = 100;
 
@@ -130,7 +137,8 @@ export class DockerSetup {
     } catch {
       this.endpoint = { kind: 'none' };
     }
-    if (this.endpoint.kind === 'local' && !this.relay) {
+    // Not on Windows yet: see WINDOWS_NOT_YET. No relay, so terminals don't get DOCKER_HOST.
+    if (this.endpoint.kind === 'local' && !this.relay && this.platform !== 'win32') {
       const address = relayAddress(this.options.dataDir, this.platform);
       const relay = new DockerRelay({
         listenPath: address.listenPath,
@@ -165,6 +173,8 @@ export class DockerSetup {
     const { endpoint } = this;
     if (endpoint.kind === 'none') return { state: 'none' };
     if (endpoint.kind === 'remote') return { state: 'remote', daemon: endpoint.host };
+    if (this.platform === 'win32')
+      return { state: 'unsupported', daemon: endpoint.host, error: WINDOWS_NOT_YET };
     if (!this.relay) return { state: 'failed', daemon: endpoint.host, error: this.error ?? 'Not started.' };
     if (!this.active) return { state: 'off', daemon: endpoint.host };
     if (this.unsupported) return { state: 'unsupported', daemon: endpoint.host, error: this.unsupported };
