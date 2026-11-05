@@ -33,6 +33,20 @@ jobs:
       - run: npm run typecheck
       - run: npm run lint
       - run: npm run format:check
+      # GitHub's Windows images have Docker, but its service isn't always running yet.
+      - name: Start Docker (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $service = Get-Service docker -ErrorAction SilentlyContinue
+          if (-not $service) { throw "This runner has no Docker service, which test/docker-windows.test.ts needs." }
+          if ($service.Status -ne 'Running') { Start-Service docker }
+          $deadline = (Get-Date).AddMinutes(2)
+          while (-not (Test-Path '\\.\pipe\docker_engine')) {
+            if ((Get-Date) -gt $deadline) { throw "Docker didn't start within 2 minutes." }
+            Start-Sleep -Seconds 2
+          }
+          docker version
       - run: npm test
         env:
           # The Docker relay against the runner's real Docker, over named pipes (Windows only).
