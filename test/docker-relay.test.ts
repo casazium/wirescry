@@ -14,6 +14,8 @@ class FakeDaemon {
   osType = 'linux';
   operatingSystem = 'Docker Desktop';
   securityOptions: string[] = ['name=seccomp,profile=builtin'];
+  /** The daemon machine's host name in /info, if it gives one. */
+  name?: string;
   imageEnv: Record<string, string[]> = {};
   refuseMounts = false;
   /** Status the create answers with, to try Docker's other refusals. */
@@ -98,6 +100,7 @@ class FakeDaemon {
         OSType: this.osType,
         OperatingSystem: this.operatingSystem,
         SecurityOptions: this.securityOptions,
+        ...(this.name === undefined ? {} : { Name: this.name }),
       });
     }
     if (url.startsWith('/images/') && url.endsWith('/json')) {
@@ -515,21 +518,32 @@ describe('Docker relay', () => {
   });
 
   it('leaves containers alone on Docker it does not set up, labelled so Compose keeps them', async () => {
-    for (const [operatingSystem, securityOptions] of [
-      ['Ubuntu 24.04 LTS', []],
-      ['Ubuntu 24.04 LTS', ['name=rootless']],
-    ] as const) {
+    const cases = [
+      // colima or Lima on macOS.
+      { operatingSystem: 'Ubuntu 24.04 LTS', securityOptions: [], platform: 'darwin', name: 'colima' },
+      { operatingSystem: 'Ubuntu 24.04 LTS', securityOptions: ['name=rootless'], platform: 'linux' },
+      // colima, Lima or Rancher Desktop on Linux: Docker in a VM, which has its own host name.
+      { operatingSystem: 'Ubuntu 24.04 LTS', securityOptions: [], platform: 'linux', name: 'colima' },
+      {
+        operatingSystem: 'Alpine Linux v3.20',
+        securityOptions: [],
+        platform: 'linux',
+        name: 'lima-rancher-desktop',
+      },
+    ] as const;
+    for (const [i, { operatingSystem, securityOptions, platform, ...rest }] of cases.entries()) {
       daemon.creates.length = 0;
       daemon.operatingSystem = operatingSystem;
       daemon.securityOptions = [...securityOptions];
+      daemon.name = 'name' in rest ? rest.name : undefined;
       // Remembered for a minute: a new relay asks again.
       await relay.stop();
       relay = new DockerRelay({
-        listenPath: socketIn(dir, `relay-${securityOptions.length}.sock`),
+        listenPath: socketIn(dir, `relay-${i}.sock`),
         upstream: () => endpoint,
         proxyPort: () => 8001,
         configDir: '/x',
-        platform: securityOptions.length ? 'linux' : 'darwin',
+        platform,
       });
       await relay.start();
       await create({ Image: 'x', Env: ['A=1'] });
@@ -538,8 +552,27 @@ describe('Docker relay', () => {
         Env: ['A=1'],
         Labels: { [LABELS.setup]: 'skipped' },
       });
-      expect(await relay.unsupportedReason()).toBeTruthy();
+      const reason = await relay.unsupportedReason();
+      expect(reason).toBeTruthy();
+      if (platform === 'linux' && 'name' in rest) expect(reason).toMatch(`another machine (${rest.name})`);
     }
+  });
+
+  it("sets up Docker on Linux that reports this computer's host name", async () => {
+    daemon.operatingSystem = 'Ubuntu 24.04.3 LTS';
+    daemon.name = os.hostname().toUpperCase();
+    await relay.stop();
+    relay = new DockerRelay({
+      listenPath: relay.listenPath,
+      upstream: () => endpoint,
+      proxyPort: () => 8001,
+      configDir: '/x',
+      platform: 'linux',
+    });
+    await relay.start();
+    await create({ Image: 'x' });
+    expect((daemon.creates[0]!.body.Labels as Record<string, string>)[LABELS.setup]).toBe('proxy');
+    expect(await relay.unsupportedReason()).toBeUndefined();
   });
 
   it("reads the image's environment, and keeps a certificate variable the container sets", async () => {
