@@ -6,10 +6,11 @@ interface Props {
   status: ProxyStatus;
   connected?: boolean;
   send?: (command: Command) => Promise<unknown>;
+  CopyButton?: (props: { text: string }) => React.JSX.Element;
 }
 
 /** What Wirescry does for Docker, and whether it can here. */
-export function DockerSection({ status, connected = true, send }: Props): React.JSX.Element {
+export function DockerSection({ status, connected = true, send, CopyButton }: Props): React.JSX.Element {
   const { docker } = status;
   const [error, setError] = useState<string>();
   const switchable = docker.state === 'ready' || docker.state === 'off' || docker.state === 'unsupported';
@@ -93,6 +94,22 @@ export function DockerSection({ status, connected = true, send }: Props): React.
             </ul>
           </details>
         </>
+      )}
+      {docker.state === 'ready' && docker.firewall && (
+        <div className="note" role="note">
+          <p>
+            ufw, this computer&apos;s firewall, is on. Unless its rules already let Docker&apos;s networks in,
+            containers can&apos;t reach Wirescry, and their HTTP requests hang. To let them in:
+          </p>
+          <div className="snippet">
+            <pre className="code">{docker.firewall.commands.join('\n')}</pre>
+            {CopyButton && <CopyButton text={docker.firewall.commands.join('\n')} />}
+          </div>
+          <p className="muted">
+            If you choose another proxy port, run it again with the new one. A fixed port under Proxy port
+            keeps the rule working.
+          </p>
+        </div>
       )}
       {docker.state === 'ready' && last && (
         <p className="muted" role="status">

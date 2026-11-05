@@ -2,7 +2,7 @@ import { BlockList, isIPv4 } from 'node:net';
 import os from 'node:os';
 
 /** Docker's default bridge and the bridges it makes for user-defined networks. */
-const BRIDGE_NAME = /^(?:docker\d+|br-[0-9a-f]{12})$/;
+export const BRIDGE_NAME = /^(?:docker\d+|br-[0-9a-f]{12})$/;
 /**
  * How soon an address that isn't on a known bridge makes the interfaces be read again. Compose
  * creates a network moments before its containers connect, so a miss usually means a new

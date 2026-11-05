@@ -28,6 +28,43 @@ describe('Docker section', () => {
     expect(screen.getByText(/firewall.*port 8001/)).toBeTruthy();
   });
 
+  it('warns that ufw is on, with commands to copy, only when told', () => {
+    const commands = [
+      'sudo ufw allow from 172.16.0.0/12 to any port 8001 proto tcp',
+      'sudo ufw allow from 192.168.144.0/20 to any port 8001 proto tcp',
+    ];
+    const copied: string[] = [];
+    const CopyButton = ({ text }: { text: string }) => (
+      <button type="button" onClick={() => copied.push(text)}>
+        Copy
+      </button>
+    );
+    const ready = { state: 'ready', daemon: 'unix:///var/run/docker.sock' } as const;
+    const { rerender } = render(
+      <DockerSection
+        status={withDocker({ ...ready, firewall: { name: 'ufw', commands } }, 'linux')}
+        CopyButton={CopyButton}
+      />,
+    );
+    expect(screen.getByRole('note').textContent).toMatch(/ufw, this computer.s firewall, is on.*hang/);
+    expect(screen.getByText(commands.join('\n'), { collapseWhitespace: false, trim: false })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+    expect(copied).toEqual([commands.join('\n')]);
+    // No firewall reported, or setup off: no note.
+    rerender(<DockerSection status={withDocker(ready, 'linux')} CopyButton={CopyButton} />);
+    expect(screen.queryByRole('note')).toBeNull();
+    rerender(
+      <DockerSection
+        status={withDocker(
+          { state: 'off', daemon: ready.daemon, firewall: { name: 'ufw', commands } },
+          'linux',
+        )}
+        CopyButton={CopyButton}
+      />,
+    );
+    expect(screen.queryByRole('note')).toBeNull();
+  });
+
   it('says when Docker is missing, remote, or could not be set up', () => {
     const { rerender } = render(<DockerSection status={withDocker({ state: 'none' })} />);
     expect(screen.getByText(/Docker wasn.t found/)).toBeTruthy();

@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { DockerStatus } from '../../shared/api';
 import { dockerBridgeChecker } from './bridges';
+import { firewallHint, type FirewallHint } from './firewall';
 import { findDockerEndpoint, type DockerEndpoint } from './endpoint';
 import { DockerRelay, makePrivateDir, type ContainerCreated } from './relay';
 export type { ContainerCreated };
@@ -32,6 +33,10 @@ export interface DockerSetupOptions {
   containerDir: () => string;
   platform?: NodeJS.Platform;
   onContainer?: (event: ContainerCreated) => void;
+  /** Tests: ufw's config instead of /etc/ufw/ufw.conf (undefined: not there). */
+  readUfwConf?: () => string | undefined;
+  /** Tests: this machine's interfaces instead of os.networkInterfaces(). */
+  networkInterfaces?: () => ReturnType<typeof os.networkInterfaces>;
 }
 
 /** Where the relay listens, and the DOCKER_HOST value for it. Stable across restarts, so open terminals keep working. */
@@ -156,7 +161,24 @@ export class DockerSetup {
     if (!this.active) return { state: 'off', daemon: endpoint.host };
     if (this.unsupported) return { state: 'unsupported', daemon: endpoint.host, error: this.unsupported };
     const last = this.lastContainer;
-    return { state: 'ready', daemon: endpoint.host, ...(last ? { lastContainer: { ...last } } : {}) };
+    const firewall = this.firewall();
+    return {
+      state: 'ready',
+      daemon: endpoint.host,
+      ...(last ? { lastContainer: { ...last } } : {}),
+      ...(firewall ? { firewall } : {}),
+    };
+  }
+
+  /**
+   * A firewall blocking containers from the proxy. Only Docker Engine on Linux: there their
+   * connections come from Docker's bridges; Docker Desktop's (its socket is under
+   * ~/.docker/desktop) arrive from 127.0.0.1, which firewalls let through.
+   */
+  private firewall(): FirewallHint | undefined {
+    if (this.platform !== 'linux' || this.endpoint.kind !== 'local') return undefined;
+    if (this.endpoint.socketPath.includes('/.docker/desktop/')) return undefined;
+    return firewallHint(this.options.proxyPort(), this.options.readUfwConf, this.options.networkInterfaces);
   }
 
   /** What a Wirescry terminal adds to its environment for Docker. */

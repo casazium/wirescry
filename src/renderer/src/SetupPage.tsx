@@ -175,7 +175,7 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
         CopyButton={CopyButton}
       />
 
-      <DockerSection status={status} connected={connected} send={send} />
+      <DockerSection status={status} connected={connected} send={send} CopyButton={CopyButton} />
 
       <section>
         <h2>Manual setup</h2>
