@@ -202,6 +202,22 @@ export interface ProxyStatus {
   terminalScripts: Partial<Record<ShellKind, string>>;
   /** Plugins built into this copy of Wirescry, such as Pro. Empty in the free build. */
   plugins: PluginStatus[];
+  /** Whether containers started from Wirescry terminals are set up. */
+  docker: DockerStatus;
+}
+
+/** Docker setup, as the Setup page shows it. */
+export interface DockerStatus {
+  /**
+   * ready: Wirescry terminals point DOCKER_HOST at Wirescry, which sets up new containers.
+   * remote: the user's Docker runs on another machine, which Wirescry doesn't set up.
+   * none: no Docker found. failed: Docker was found, but Wirescry couldn't set itself up for it.
+   */
+  state: 'ready' | 'remote' | 'none' | 'failed';
+  /** The user's Docker daemon, e.g. unix:///var/run/docker.sock. */
+  daemon?: string;
+  /** Why it failed, for state "failed". */
+  error?: string;
 }
 
 /** Messages the backend pushes to the UI. */

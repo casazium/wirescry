@@ -25,11 +25,11 @@ export const JAVA_TRUST_STORE_PASSWORD = 'changeit';
  * and trust the Wirescry trust store. The path is quoted because it may contain spaces
  * (macOS's "Application Support"), which the JVM otherwise splits on.
  */
-export function javaToolOptions(proxyPort: number, trustStore: string): string {
+export function javaToolOptions(proxyPort: number, trustStore: string, proxyHost = '127.0.0.1'): string {
   return [
-    '-Dhttp.proxyHost=127.0.0.1',
+    `-Dhttp.proxyHost=${proxyHost}`,
     `-Dhttp.proxyPort=${proxyPort}`,
-    '-Dhttps.proxyHost=127.0.0.1',
+    `-Dhttps.proxyHost=${proxyHost}`,
     `-Dhttps.proxyPort=${proxyPort}`,
     `-Djavax.net.ssl.trustStore="${trustStore}"`,
     `-Djavax.net.ssl.trustStorePassword=${JAVA_TRUST_STORE_PASSWORD}`,

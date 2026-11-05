@@ -9,6 +9,7 @@ import {
 } from '../shared/failure';
 import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
+import { HOST_NAME as DOCKER_HOST_NAME } from './docker/container';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
 import type { RequestStore } from './store';
 import type { WebSocketStore } from './websocket-store';
@@ -47,6 +48,11 @@ export interface ProxyOptions {
   ruleEndsWithoutResponse?: (ruleId: string | undefined) => boolean;
   /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
   onCATrusted?: (userAgent: string) => void;
+  /**
+   * Whether to accept a connection from this non-loopback address, e.g. a Docker container
+   * on Linux, whose connections come from Docker's bridge network.
+   */
+  allowAddress?: (address: string) => boolean;
 }
 
 export interface RunningProxy {
@@ -90,12 +96,23 @@ export function isLoopback(address: string | undefined): boolean {
  * Mockttp listens on every network interface and has no option to change that. Drop
  * connections from other machines, so the proxy isn't open to the local network.
  */
-function restrictToLoopback(server: mockttp.Mockttp): void {
+function restrictToLoopback(server: mockttp.Mockttp, allow?: (address: string) => boolean): void {
   const listener = (server as unknown as { server?: net.Server }).server;
   if (!listener) throw new Error("Can't restrict the proxy to this machine");
   listener.prependListener('connection', (socket: net.Socket) => {
-    if (!isLoopback(socket.remoteAddress)) socket.destroy();
+    const address = socket.remoteAddress;
+    if (isLoopback(address)) return;
+    if (!address || !allowed(allow, address)) socket.destroy();
   });
+}
+
+/** Asks `allow` about an address; a check that throws refuses it. */
+function allowed(allow: ((address: string) => boolean) | undefined, address: string): boolean {
+  try {
+    return !!allow?.(address);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -524,6 +541,23 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     steps: [new mockttp.requestSteps.PassThroughStep(passThrough)],
     completionChecker: new mockttp.completionCheckers.Always(),
   };
+  // Docker containers reach this computer as host.docker.internal, a name only they can
+  // resolve. Their requests to it come here through the proxy, so send them to localhost.
+  // The Host header stays as the container sent it.
+  const toLocalhost = {
+    matchReplaceHost: {
+      replacements: [[new RegExp(`^${DOCKER_HOST_NAME.replace(/\./g, '\\.')}(?=:|$)`, 'i'), 'localhost']] as [
+        RegExp,
+        string,
+      ][],
+      updateHostHeader: false as const,
+    },
+  };
+  const dockerHostRule: mockttp.RequestRuleData = {
+    matchers: [new mockttp.matchers.HostnameMatcher(DOCKER_HOST_NAME)],
+    steps: [new mockttp.requestSteps.PassThroughStep({ ...passThrough, transformRequest: toLocalhost })],
+    completionChecker: new mockttp.completionCheckers.Always(),
+  };
 
   // The first matching rule handles each request: the setup host, then plugin rules in
   // order, then normal pass-through. Every rule is "always", or Mockttp would move on to
@@ -537,15 +571,26 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     completionChecker: new mockttp.completionCheckers.Always(),
   });
   const applyRules = async (): Promise<void> => {
-    await server.setRequestRules(setupRule, ...(options.extraRules?.() ?? []).map(always), passThroughRule);
+    await server.setRequestRules(
+      setupRule,
+      ...(options.extraRules?.() ?? []).map(always),
+      dockerHostRule,
+      passThroughRule,
+    );
   };
   await applyRules();
+  // The more specific WebSocket rule first: Mockttp uses the first that matches.
+  await server
+    .forAnyWebSocket()
+    .forHostname(DOCKER_HOST_NAME)
+    .always()
+    .thenPassThrough({ ...passThrough, transformRequest: toLocalhost });
   await server.forAnyWebSocket().always().thenPassThrough(passThrough);
 
   if (options.port !== undefined) await assertLoopbackPortFree(options.port);
   await server.start(options.port);
   try {
-    restrictToLoopback(server);
+    restrictToLoopback(server, options.allowAddress);
   } catch (error) {
     await server.stop();
     throw error;

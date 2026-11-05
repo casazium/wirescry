@@ -27,6 +27,8 @@ import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
 import { writeShellScripts, writeTerminalConfig, type TerminalConfig } from './ca-bundle';
 import { detectTerminals, launchTerminal } from './terminals';
+import type { DockerEndpoint } from './docker/endpoint';
+import { DockerSetup } from './docker/setup';
 import { Composer } from './composer';
 import { terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
@@ -49,6 +51,10 @@ import { WebSocketStore } from './websocket-store';
 export interface BackendOptions {
   /** Folder for this install's data, e.g. the CA. */
   dataDir: string;
+  /** false: don't set up Docker. Tests turn it off, or give a daemon of their own. */
+  docker?: boolean;
+  /** Where the user's Docker daemon is. Found the way the Docker CLI finds it if omitted. */
+  dockerEndpoint?: () => Promise<DockerEndpoint>;
   /** Called as each step of starting up finishes, to log how long they take. */
   onStartupStep?: (step: string) => void;
   /** Per-launch secret the UI must present. */
@@ -170,10 +176,22 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     terminalEnv: currentTerminalEnv(),
     terminalScripts,
     plugins: pluginHost.statuses(),
+    docker: docker.status(),
   });
 
-  const currentTerminalEnv = (): Record<string, string> =>
-    terminalEnv(proxy.port, { caPath: ca.certPath, ...terminalConfig }, platform);
+  const currentTerminalEnv = (): Record<string, string> => ({
+    ...terminalEnv(proxy.port, { caPath: ca.certPath, ...terminalConfig }, platform),
+    ...docker.terminalEnv(),
+  });
+
+  // Containers started from Wirescry terminals: a Docker API relay of Wirescry's own.
+  const docker = new DockerSetup({
+    dataDir,
+    enabled: options.docker !== false,
+    findEndpoint: options.dockerEndpoint,
+    proxyPort: () => proxy.port,
+    containerDir: () => terminalConfig.containerDir,
+  });
 
   // Plugins such as Pro. They start once the API is up.
   const pluginHost = new PluginHost({
@@ -272,6 +290,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       ruleEndsWithoutResponse: (ruleId) => pluginHost.endsWithoutResponse(ruleId),
       isPaused: () => paused,
       isComposed: (remotePort, remoteAddress, id) => composer.claim(remotePort, remoteAddress, id),
+      allowAddress: (address) => docker.allowsAddress(address),
       onCATrusted: (userAgent) => {
         if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;
         firefoxTrusted = true;
@@ -288,6 +307,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
 
   let proxy = await openProxy(options.proxyPort ?? settings.proxyPort);
   step('proxy');
+  await docker.refresh();
+  step('docker');
   // Rewritten whenever the port or certificate changes, so the one-line setup stays current.
   let terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
 
@@ -527,6 +548,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'launchTerminal': {
         const terminal = terminals.find((t) => t.id === command.terminalId);
         if (!terminal) throw new Error(`Terminal not found: ${command.terminalId}`);
+        // Docker may have been installed or started since; the new terminal should know.
+        if (await docker.refresh()) {
+          terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+          broadcast({ type: 'status', status: status() });
+        }
         await launchTerminal(terminal, currentTerminalEnv(), {
           scriptDir: path.join(dataDir, 'terminal'),
           proxyAddress: `127.0.0.1:${proxy.port}`,
@@ -539,6 +565,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         return composer.cancel(String(command.exchangeId));
       case 'rescanBrowsers':
         browsers = await detectBrowsers();
+        if (await docker.refresh()) terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
         broadcast({ type: 'status', status: status() });
         return status().browsers;
       case 'clear':
@@ -680,7 +707,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
-      await Promise.all([api.stop(), proxy.stop(), formatter.close()]);
+      await Promise.all([api.stop(), proxy.stop(), formatter.close(), docker.stop()]);
       await bodies.close();
     },
   };
