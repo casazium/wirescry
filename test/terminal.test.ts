@@ -160,6 +160,9 @@ describe('terminal interception', () => {
       ]);
       expect(ps.stdout).toContain(`proxy=${proxy}`);
     },
+    // Starts cmd and then PowerShell, which can take a while on a busy CI machine (the Windows
+    // Docker test runs alongside, starting containers).
+    60_000,
   );
 
   it('writes a CA bundle with Wirescry first, then the usual roots', async () => {
