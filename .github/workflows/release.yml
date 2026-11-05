@@ -337,6 +337,11 @@ jobs:
           if [ "$PUBLISH" = "true" ]; then publish=always; else publish=never; fi
           npx electron-builder --publish "$publish"
 
+      # The self-test below runs the unpacked app, never the AppImage's own launcher.
+      - name: Check the AppImage launcher
+        if: runner.os == 'Linux'
+        run: node scripts/check-appimage.mjs
+
       # Starts each packaged app without a window and checks it runs and, in a Pro build,
       # that Pro loaded. On a tag this runs after the upload; the release is still a
       # draft, so if it fails, delete the draft rather than publishing it. The same goes
