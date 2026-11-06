@@ -18,15 +18,23 @@ function fakes() {
   const live = new Set<number>();
   const started: Array<{ source: string; port: number }> = [];
   let refreshes = 0;
+  const rechecks: string[] = [];
+  const allowLocal = new Map<string, () => boolean>();
   let gate: Promise<void> | undefined;
-  const start = async (source: ExchangeSource, port: number | undefined): Promise<RunningProxy> => {
+  const start = async (
+    source: ExchangeSource,
+    port: number | undefined,
+    allowed: () => boolean = () => false,
+  ): Promise<RunningProxy> => {
     if (gate) await gate;
     if (failing.has(source.id)) throw new Error(`can't start ${source.id}`);
     if (port !== undefined && (taken.has(port) || live.has(port))) throw new Error(`EADDRINUSE ${port}`);
     const chosen = port ?? nextPort++;
     live.add(chosen);
     started.push({ source: source.id, port: chosen });
+    allowLocal.set(source.id, allowed);
     return {
+      recheckDestinations: () => rechecks.push(source.id),
       port: chosen,
       refreshRules: async () => {
         refreshes += 1;
@@ -45,6 +53,9 @@ function fakes() {
     live,
     started,
     logs,
+    rechecks,
+    /** What the latest listener for this source was told about reaching this computer. */
+    allowsLocal: (id: string) => allowLocal.get(id)?.(),
     refreshes: () => refreshes,
     /** Holds every start until the returned function is called. */
     hold() {
@@ -64,11 +75,11 @@ describe('Device listener bookkeeping', () => {
     expect(await f.set.open(PIXEL)).toEqual({ port: 40000 });
     expect(await f.set.open(TABLET)).toEqual({ port: 40001 });
     expect(f.set.list()).toEqual([
-      { source: PIXEL, port: 40000 },
-      { source: TABLET, port: 40001 },
+      { source: PIXEL, port: 40000, localAccess: false },
+      { source: TABLET, port: 40001, localAccess: false },
     ]);
     await f.set.close(PIXEL.id);
-    expect(f.set.list()).toEqual([{ source: TABLET, port: 40001 }]);
+    expect(f.set.list()).toEqual([{ source: TABLET, port: 40001, localAccess: false }]);
     expect([...f.live]).toEqual([40001]);
     // Closing what isn't open is fine.
     await f.set.close('nothing');
@@ -115,8 +126,8 @@ describe('Device listener bookkeeping', () => {
     f.set.onPortChange((source, port) => told.push([source.id, port]));
     await f.set.restartAll();
     expect(f.set.list()).toEqual([
-      { source: PIXEL, port: 40000 },
-      { source: TABLET, port: 40001 },
+      { source: PIXEL, port: 40000, localAccess: false },
+      { source: TABLET, port: 40001, localAccess: false },
     ]);
     expect(told).toEqual([]);
     expect(f.started.slice(2)).toEqual([
@@ -134,8 +145,8 @@ describe('Device listener bookkeeping', () => {
     f.taken.add(40000);
     await f.set.restartAll();
     expect(f.set.list()).toEqual([
-      { source: PIXEL, port: 40002 },
-      { source: TABLET, port: 40001 },
+      { source: PIXEL, port: 40002, localAccess: false },
+      { source: TABLET, port: 40001, localAccess: false },
     ]);
     expect(told).toEqual([[PIXEL.id, 40002]]);
     expect(f.logs.some((l) => l.includes("couldn't reopen port 40000"))).toBe(true);
@@ -149,7 +160,7 @@ describe('Device listener bookkeeping', () => {
     f.set.onPortChange((source, port) => told.push([source.id, port]));
     f.failing.add(PIXEL.id);
     await f.set.restartAll();
-    expect(f.set.list()).toEqual([{ source: TABLET, port: 40001 }]);
+    expect(f.set.list()).toEqual([{ source: TABLET, port: 40001, localAccess: false }]);
     expect(told).toEqual([[PIXEL.id, undefined]]);
     expect([...f.live]).toEqual([40001]);
   });
@@ -181,7 +192,7 @@ describe('Device listener bookkeeping', () => {
     const close = f.set.close(TABLET.id);
     release();
     await Promise.all([restart, close]);
-    expect(f.set.list()).toEqual([{ source: PIXEL, port: 40000 }]);
+    expect(f.set.list()).toEqual([{ source: PIXEL, port: 40000, localAccess: false }]);
     expect([...f.live]).toEqual([40000]);
   });
 
@@ -210,6 +221,33 @@ describe('Device listener bookkeeping', () => {
     // Restarting after stop does nothing.
     await f.set.restartAll();
     expect(f.set.list()).toEqual([]);
+  });
+
+  it("keeps each device's local access, open or not, and closes connections when it's turned off", async () => {
+    const f = fakes();
+    await f.set.open(PIXEL);
+    await f.set.open(TABLET);
+    expect(f.allowsLocal(PIXEL.id)).toBe(false);
+    f.set.setLocalAccess(PIXEL.id, true);
+    expect(f.allowsLocal(PIXEL.id)).toBe(true);
+    expect(f.allowsLocal(TABLET.id)).toBe(false);
+    expect(f.set.list().map((l) => l.localAccess)).toEqual([true, false]);
+    // Turning it on closes nothing; turning it off rechecks that device's open connections.
+    expect(f.rechecks).toEqual([]);
+    f.set.setLocalAccess(PIXEL.id, false);
+    expect(f.rechecks).toEqual([PIXEL.id]);
+    expect(f.allowsLocal(PIXEL.id)).toBe(false);
+    // Set before a listener opens, and kept across closing and a restart.
+    f.set.setLocalAccess('later', true);
+    const later: ExchangeSource = { kind: 'android', id: 'later', label: 'Later' };
+    await f.set.open(later);
+    expect(f.allowsLocal('later')).toBe(true);
+    await f.set.close('later');
+    await f.set.open(later);
+    await f.set.restartAll();
+    expect(f.allowsLocal('later')).toBe(true);
+    // Turning it off for a device with no listener is fine.
+    f.set.setLocalAccess('nothing', false);
   });
 
   it('carries on after a failed operation', async () => {

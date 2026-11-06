@@ -40,6 +40,7 @@ import {
   launchFirefox,
   markProfileTrusted,
 } from './firefox';
+import type { EgressGuardOptions } from './egress-guard';
 import { deviceListenerSet, type DeviceListeners } from './device-listeners';
 import { startProxy, type RunningProxy } from './proxy';
 import { isValidPort, loadSettings, saveSettings, type Settings } from './settings';
@@ -66,6 +67,8 @@ export interface BackendOptions {
   proxyPort?: number;
   /** Extra CAs to trust for upstream servers (PEM). Used by tests. */
   upstreamCAs?: string[];
+  /** The egress guard's DNS, connections and own addresses for device listeners. For tests. */
+  deviceEgress?: Pick<EgressGuardOptions, 'lookup' | 'connect' | 'ownAddresses'>;
   /** Bodies up to this size stay in memory; larger ones go to disk. */
   bodyMemoryLimit?: number;
   /** Bytes kept per body. Used by tests. */
@@ -325,7 +328,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   // Listeners for single devices: like the main proxy, minus what belongs to this computer
   // only (Docker containers' host.docker.internal, the composer, Firefox trust, and Docker's
   // non-loopback connections).
-  const openDeviceProxy = (source: ExchangeSource, port: number | undefined): Promise<RunningProxy> =>
+  const openDeviceProxy = (
+    source: ExchangeSource,
+    port: number | undefined,
+    allowLocal: () => boolean,
+  ): Promise<RunningProxy> =>
     startProxy({
       ca,
       store,
@@ -343,6 +350,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       isPaused: () => paused,
       source,
       dockerHostToLocalhost: false,
+      egress: { allowLocal, ...options.deviceEgress },
     });
   const devices = deviceListenerSet({ start: openDeviceProxy });
   const refreshAllRules = async (): Promise<void> => {
@@ -352,6 +360,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     open: devices.open,
     close: devices.close,
     list: devices.list,
+    setLocalAccess: devices.setLocalAccess,
     onPortChange: devices.onPortChange,
   };
   step('proxy');

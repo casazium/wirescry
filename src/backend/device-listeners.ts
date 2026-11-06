@@ -5,15 +5,22 @@ import type { RunningProxy } from './proxy';
  * Extra proxy listeners, one per device: each on its own port on this computer's loopback,
  * recording into the same traffic list with the device as the exchanges' source. They share
  * the main proxy's certificate, plugin rules and pause, follow rule changes, and keep their
- * port across a certificate reset (a device's tunnel points at it).
+ * port across a certificate reset (a device's tunnel points at it). A device can't reach this
+ * computer or its local networks through its listener unless allowed (`setLocalAccess`).
  */
 export interface DeviceListeners {
   /** Starts a listener for this source (or returns the running one). `port` reuses a port if free. */
   open(source: ExchangeSource, port?: number): Promise<{ port: number }>;
   /** Stops this source's listener, if running. */
   close(sourceId: string): Promise<void>;
-  /** The running listeners. */
-  list(): Array<{ source: ExchangeSource; port: number }>;
+  /** The running listeners, and whether each device may reach this computer and its local networks. */
+  list(): Array<{ source: ExchangeSource; port: number; localAccess: boolean }>;
+  /**
+   * Whether this device may reach this computer and its local networks (default: no). Kept for
+   * the device while Wirescry runs, listener open or not; turning it off closes connections
+   * the device already has open to them.
+   */
+  setLocalAccess(sourceId: string, allowed: boolean): void;
   /**
    * Calls `watch` when a listener had to move to another port (`port`) or couldn't restart at
    * all (`undefined`), e.g. after a certificate reset: a device's tunnel must follow. Returns a
@@ -33,8 +40,11 @@ export interface DeviceListenerSet extends DeviceListeners {
 }
 
 export interface DeviceListenerOptions {
-  /** Starts a proxy listener for this source, on `port` or on a free port if undefined. */
-  start(source: ExchangeSource, port: number | undefined): Promise<RunningProxy>;
+  /**
+   * Starts a proxy listener for this source, on `port` or on a free port if undefined, that
+   * lets the device reach this computer and its local networks only while `allowLocal()`.
+   */
+  start(source: ExchangeSource, port: number | undefined, allowLocal: () => boolean): Promise<RunningProxy>;
   log?: (message: string, error?: unknown) => void;
 }
 
@@ -50,6 +60,9 @@ export function deviceListenerSet(options: DeviceListenerOptions): DeviceListene
     return result;
   };
   let stopped = false;
+  const localAccess = new Set<string>();
+  const start = (source: ExchangeSource, port: number | undefined) =>
+    options.start(source, port, () => localAccess.has(source.id));
   const watchers = new Set<(source: ExchangeSource, port: number | undefined) => void>();
   const portChanged = (source: ExchangeSource, port: number | undefined): void => {
     for (const watch of watchers) {
@@ -69,10 +82,10 @@ export function deviceListenerSet(options: DeviceListenerOptions): DeviceListene
         if (existing) return { port: existing.proxy.port };
         let started: RunningProxy;
         try {
-          started = await options.start(source, port);
+          started = await start(source, port);
         } catch (error) {
           if (port === undefined) throw error;
-          started = await options.start(source, undefined);
+          started = await start(source, undefined);
         }
         running.set(source.id, { source: { ...source }, proxy: started });
         // Plugins may have changed their rules while it was starting.
@@ -88,7 +101,21 @@ export function deviceListenerSet(options: DeviceListenerOptions): DeviceListene
         await listener.proxy.stop();
       }),
 
-    list: () => [...running.values()].map((l) => ({ source: { ...l.source }, port: l.proxy.port })),
+    list: () =>
+      [...running.values()].map((l) => ({
+        source: { ...l.source },
+        port: l.proxy.port,
+        localAccess: localAccess.has(l.source.id),
+      })),
+
+    setLocalAccess(sourceId, allowed) {
+      if (allowed) {
+        localAccess.add(sourceId);
+        return;
+      }
+      localAccess.delete(sourceId);
+      running.get(sourceId)?.proxy.recheckDestinations?.();
+    },
 
     onPortChange(watch) {
       watchers.add(watch);
@@ -107,10 +134,10 @@ export function deviceListenerSet(options: DeviceListenerOptions): DeviceListene
           await listener.proxy.stop().catch(() => undefined);
           let reopened: RunningProxy | undefined;
           try {
-            reopened = await options.start(listener.source, port);
+            reopened = await start(listener.source, port);
           } catch (error) {
             log(`listener for ${listener.source.label} couldn't reopen port ${port}:`, error);
-            reopened = await options.start(listener.source, undefined).catch((again: unknown) => {
+            reopened = await start(listener.source, undefined).catch((again: unknown) => {
               log(`listener for ${listener.source.label} couldn't start:`, again);
               return undefined;
             });

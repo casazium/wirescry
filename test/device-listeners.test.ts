@@ -114,6 +114,8 @@ describe('Device listeners', () => {
       plugins: [plugin],
       pluginsEnabled: true,
     });
+    // These tests use servers on this computer; the destination policy has tests of its own.
+    for (const source of [PIXEL, TABLET]) backend.listeners.setLocalAccess(source.id, true);
   });
   afterEach(async () => {
     if (!stopped) await backend.stop();
@@ -134,7 +136,7 @@ describe('Device listeners', () => {
     const byPath = new Map(exchangesIn(api.messages).map((e) => [e.path, e]));
     expect(byPath.get('/from-phone')?.source).toEqual(PIXEL);
     expect(byPath.get('/from-mac')?.source).toBeUndefined();
-    expect(backend.listeners.list()).toEqual([{ source: PIXEL, port }]);
+    expect(backend.listeners.list()).toEqual([{ source: PIXEL, port, localAccess: true }]);
     api.close();
   });
 
@@ -213,7 +215,7 @@ describe('Device listeners', () => {
     await api.send({ command: 'resetCertificate' });
     const newCa = await readFile(backend.caCertPath, 'utf8');
     expect(newCa).not.toBe(oldCa);
-    expect(backend.listeners.list()).toEqual([{ source: PIXEL, port }]);
+    expect(backend.listeners.list()).toEqual([{ source: PIXEL, port, localAccess: true }]);
     expect((await requestViaProxy(port, 'https://mocked.test/', newCa)).status).toBe(418);
     await expect(requestViaProxy(port, 'https://mocked.test/', oldCa)).rejects.toThrow();
     api.close();
@@ -399,6 +401,8 @@ describe('Device listeners, beside the rest of Wirescry', () => {
       plugins: [plugin],
       pluginsEnabled: true,
     });
+    // These tests use servers on this computer; the destination policy has tests of its own.
+    for (const source of [PIXEL, TABLET]) backend.listeners.setLocalAccess(source.id, true);
   });
   afterEach(async () => {
     await backend.stop();
@@ -472,7 +476,7 @@ describe('Device listeners, beside the rest of Wirescry', () => {
     await api.send({ command: 'setProxyPort', port: free });
     expect(backend.proxyPort).toBe(free);
     expect(backend.proxyPort).not.toBe(before);
-    expect(backend.listeners.list()).toEqual([{ source: PIXEL, port }]);
+    expect(backend.listeners.list()).toEqual([{ source: PIXEL, port, localAccess: true }]);
     expect((await httpViaProxy(port, `${upstreamUrl}/still-here`)).body).toBe('upstream /still-here');
     api.close();
   });
