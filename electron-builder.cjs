@@ -25,10 +25,12 @@ const env = process.env;
 // macOS builds, so those get the copies in out/licenses-electron.
 const notices = { from: 'out/licenses', to: 'licenses' };
 // Windows' Docker pipe helper (native/docker-pipe), built by scripts/build-docker-pipe.mjs --windows.
-// electron-builder signs it with the app.
+// Copied from its folder, not as a single file: electron-builder signs extraResources .exe files
+// only when it copies a folder (a single `from` file skips its signing step, fileMatcher.js
+// copyFiles), and the helper must be signed like Wirescry.exe. Lands in resources/.
 const dockerPipe = {
-  from: 'native/docker-pipe/bin/win32-${arch}/wirescry-docker-pipe.exe',
-  to: 'wirescry-docker-pipe.exe',
+  from: 'native/docker-pipe/bin/win32-${arch}',
+  filter: ['wirescry-docker-pipe.exe'],
 };
 const electronNotices = { from: 'out/licenses-electron', to: 'licenses' };
 
