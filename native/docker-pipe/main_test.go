@@ -132,6 +132,7 @@ type fakeRelay struct {
 	l        net.Listener
 	token    []byte
 	back     string
+	backSet  chan struct{} // closed once back is set: the helper may connect before that
 	docker   string
 	rejected chan struct{}
 }
@@ -143,7 +144,7 @@ func startRelay(t *testing.T, token []byte, docker string) *fakeRelay {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { l.Close() })
-	r := &fakeRelay{l: l, token: token, docker: docker, rejected: make(chan struct{}, 4)}
+	r := &fakeRelay{l: l, token: token, docker: docker, backSet: make(chan struct{}), rejected: make(chan struct{}, 4)}
 	go func() {
 		for {
 			c, err := l.Accept()
@@ -163,6 +164,7 @@ func (r *fakeRelay) handle(c net.Conn) {
 		c.Close()
 		return
 	}
+	<-r.backSet
 	back, err := net.Dial("tcp", r.back)
 	if err != nil {
 		c.Close()
@@ -193,6 +195,7 @@ func startAll(t *testing.T, behave daemonBehaviour) *setup {
 	}
 	t.Cleanup(h.Close)
 	relay.back = h.BackAddr()
+	close(relay.backSet)
 	return &setup{helper: h, relay: relay, docker: docker, front: front, token: token}
 }
 
