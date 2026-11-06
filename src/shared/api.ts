@@ -218,6 +218,46 @@ export interface ProxyStatus {
   plugins: PluginStatus[];
   /** Whether containers started from Wirescry terminals are set up. */
   docker: DockerStatus;
+  /** Android devices over ADB. Missing while Android setup is off (it's experimental for now). */
+  android?: AndroidStatus;
+}
+
+/** Android setup, as the Setup page shows it. */
+export interface AndroidStatus {
+  /**
+   * ready: talking to the ADB server. starting: looking for it. no-adb: no server running and
+   * no adb found to start one. failed: something else went wrong (`error` says what).
+   */
+  state: 'ready' | 'starting' | 'no-adb' | 'failed';
+  error?: string;
+  /** The ADB server's protocol version, e.g. 41. */
+  serverVersion?: number;
+  /** The adb Wirescry started the server with, if it had to. */
+  startedWith?: string;
+  devices: AndroidDevice[];
+}
+
+/** A device the ADB server lists. Its strings come from the device: show them as text only. */
+export interface AndroidDevice {
+  /** The ADB transport serial, e.g. emulator-5554. Reused by other devices later, so only for now. */
+  serial: string;
+  /**
+   * ready: connected and allowed. unauthorized: waiting for "Allow USB debugging?" on the device.
+   * connecting: about to be ready. offline: not answering. no-permissions: Linux can't open the
+   * USB device (udev rules). other: anything else (`stateText`, e.g. bootloader or recovery).
+   */
+  state: 'ready' | 'unauthorized' | 'connecting' | 'offline' | 'no-permissions' | 'other';
+  stateText?: string;
+  /** A name to show, e.g. "Pixel 8" or the emulator's AVD name. */
+  label: string;
+  emulator: boolean;
+  apiLevel?: number;
+  /** Who the device is across reconnects (opaque), once its properties are read. */
+  id?: string;
+  /** Why Wirescry can't set this device up, e.g. an Android version that's too old. */
+  unsupported?: string;
+  /** Why its properties couldn't be read. */
+  error?: string;
 }
 
 /** Docker setup, as the Setup page shows it. */
@@ -273,6 +313,8 @@ export type ClientCommand =
   | { id: number; command: 'setProxyPort'; port: number | null }
   /** Turns setting up Docker containers on or off. Off, new terminals don't get DOCKER_HOST, and the relay passes containers on as written. */
   | { id: number; command: 'setDockerSetup'; enabled: boolean }
+  /** Looks for the ADB server again, starting it with the user's adb if none runs. Only while Android setup is on. */
+  | { id: number; command: 'androidRefresh' }
   | { id: number; command: 'resetCertificate' }
   | { id: number; command: 'launchTerminal'; terminalId: string }
   /** WebSocket messages with index greater than `after` (default: from the start). */
