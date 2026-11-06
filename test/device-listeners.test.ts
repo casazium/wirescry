@@ -8,15 +8,20 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
-import type { ExchangeSource } from '../src/shared/api';
+import { WebSocketServer } from 'ws';
+import type { BodyContent, ExchangeSource, ExchangeSummary } from '../src/shared/api';
 import { apiClient, exchangesIn, httpViaProxy, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
 const PIXEL: ExchangeSource = { kind: 'android', id: 'serial-123', label: 'Pixel 8' };
 const TABLET: ExchangeSource = { kind: 'android', id: 'serial-456', label: 'Galaxy Tab' };
 
 /** A plugin with one rule that answers for mocked.test, and a handle to change its rules. */
-function rulePlugin(): BackendPlugin & { host?: BackendPluginHost } {
-  const plugin: BackendPlugin & { host?: BackendPluginHost } = {
+function rulePlugin(): BackendPlugin & { host?: BackendPluginHost; completed: ExchangeSummary[] } {
+  const plugin: BackendPlugin & { host?: BackendPluginHost; completed: ExchangeSummary[] } = {
+    completed: [],
+    exchangeCompleted(exchange) {
+      plugin.completed.push(exchange);
+    },
     name: 'rules',
     apiVersion: PLUGIN_API_VERSION,
     async start(host) {
@@ -83,7 +88,14 @@ describe('Device listeners', () => {
   let stopped: boolean;
 
   beforeAll(async () => {
-    upstream = http.createServer((req, res) => res.end(`upstream ${req.url}`));
+    upstream = http.createServer((req, res) => {
+      // Echoes a request body; otherwise says which path it got.
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () =>
+        res.end(chunks.length ? `echo ${Buffer.concat(chunks).toString()}` : `upstream ${req.url}`),
+      );
+    });
     await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
     upstreamUrl = `http://127.0.0.1:${(upstream.address() as net.AddressInfo).port}`;
   });
@@ -303,5 +315,188 @@ describe('Device listeners', () => {
     await backend.stop();
     stopped = true;
     expect(await isListening(tablet.port)).toBe(false);
+  });
+});
+
+/** Sends a WebSocket upgrade through a proxy listener; resolves with the status it answered. */
+function upgradeVia(proxyPort: number, target: string): Promise<number> {
+  const url = new URL(target);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1',
+      port: proxyPort,
+      path: target.replace(/^ws/, 'http'),
+      headers: {
+        host: url.host,
+        connection: 'Upgrade',
+        upgrade: 'websocket',
+        'sec-websocket-version': '13',
+        'sec-websocket-key': Buffer.from('0123456789abcdef').toString('base64'),
+      },
+    });
+    req.on('upgrade', (res, socket) => {
+      socket.destroy();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('response', (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/** POSTs a body through a proxy listener. */
+function postVia(proxyPort: number, url: string, body: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: proxyPort, path: url, method: 'POST' }, (res) => {
+      let text = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk: string) => (text += chunk));
+      res.on('end', () => resolve(text));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+describe('Device listeners, beside the rest of Wirescry', () => {
+  let dataDir: string;
+  let backend: RunningBackend;
+  let plugin: ReturnType<typeof rulePlugin>;
+  let upstream: http.Server;
+  let upstreamUrl: string;
+  let wss: WebSocketServer;
+  let wsPort: number;
+
+  beforeAll(async () => {
+    upstream = http.createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      req.on('end', () =>
+        res.end(chunks.length ? `echo ${Buffer.concat(chunks).toString()}` : `upstream ${req.url}`),
+      );
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+    upstreamUrl = `http://127.0.0.1:${(upstream.address() as net.AddressInfo).port}`;
+    wss = new WebSocketServer({ port: 0, host: '127.0.0.1' });
+    await new Promise((resolve) => wss.once('listening', resolve));
+    wsPort = (wss.address() as net.AddressInfo).port;
+  });
+  afterAll(async () => {
+    await new Promise((resolve) => upstream.close(resolve));
+    await new Promise((resolve) => wss.close(resolve));
+  });
+
+  beforeEach(async () => {
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-device-beside-'));
+    plugin = rulePlugin();
+    backend = await startBackend({
+      dataDir,
+      token: TOKEN,
+      allowedOrigins: [UI_ORIGIN],
+      plugins: [plugin],
+      pluginsEnabled: true,
+    });
+  });
+  afterEach(async () => {
+    await backend.stop();
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it("records a device's WebSockets with its source", async () => {
+    const api = await apiClient(backend.apiPort);
+    const { port } = await backend.listeners.open(PIXEL);
+    expect(await upgradeVia(port, `ws://127.0.0.1:${wsPort}/socket`)).toBe(101);
+    await expect
+      .poll(() => exchangesIn(api.messages).find((e) => e.path === '/socket')?.websocket)
+      .toBe(true);
+    expect(exchangesIn(api.messages).find((e) => e.path === '/socket')?.source).toEqual(PIXEL);
+    api.close();
+  });
+
+  it("doesn't send a device's WebSockets for host.docker.internal to this computer", async () => {
+    const { port } = await backend.listeners.open(PIXEL);
+    // The main proxy does (for Docker containers)...
+    expect(await upgradeVia(backend.proxyPort, `ws://host.docker.internal:${wsPort}/`)).toBe(101);
+    // ...a device's listener resolves the name like any other, and here it doesn't resolve.
+    // (The proxy refuses with an error status or by hanging up: either way, no upgrade.)
+    expect(await upgradeVia(port, `ws://host.docker.internal:${wsPort}/`).catch(() => 0)).not.toBe(101);
+  });
+
+  it("stores a device's request and response bodies", async () => {
+    const api = await apiClient(backend.apiPort);
+    const { port } = await backend.listeners.open(PIXEL);
+    expect(await postVia(port, `${upstreamUrl}/upload`, 'hello from the phone')).toBe(
+      'echo hello from the phone',
+    );
+    await expect
+      .poll(() => exchangesIn(api.messages).find((e) => e.path === '/upload' && e.responseSize !== undefined))
+      .toBeTruthy();
+    const id = exchangesIn(api.messages).find((e) => e.path === '/upload')!.id;
+    const text = async (side: 'request' | 'response') =>
+      Buffer.from(
+        (await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side })).base64,
+        'base64',
+      ).toString();
+    await expect.poll(() => text('request')).toBe('hello from the phone');
+    await expect.poll(() => text('response')).toBe('echo hello from the phone');
+    api.close();
+  });
+
+  it('tells plugins which device a completed request came from', async () => {
+    const { port } = await backend.listeners.open(PIXEL);
+    await httpViaProxy(port, `${upstreamUrl}/for-plugin`);
+    await httpViaProxy(backend.proxyPort, `${upstreamUrl}/for-plugin-mac`);
+    await expect
+      .poll(() => plugin.completed.filter((e) => e.path.startsWith('/for-plugin')).length, {
+        timeout: 15_000,
+      })
+      .toBe(2);
+    expect(plugin.completed.find((e) => e.path === '/for-plugin')?.source).toEqual(PIXEL);
+    expect(plugin.completed.find((e) => e.path === '/for-plugin-mac')?.source).toBeUndefined();
+  });
+
+  it("keeps a device's listener where it is when the main proxy's port changes", async () => {
+    const api = await apiClient(backend.apiPort);
+    const { port } = await backend.listeners.open(PIXEL);
+    const before = backend.proxyPort;
+    await api.send({ command: 'setProxyPort', port: null });
+    const free = await new Promise<number>((resolve) => {
+      const probe = net.createServer().listen(0, '127.0.0.1', () => {
+        const chosen = (probe.address() as net.AddressInfo).port;
+        probe.close(() => resolve(chosen));
+      });
+    });
+    await api.send({ command: 'setProxyPort', port: free });
+    expect(backend.proxyPort).toBe(free);
+    expect(backend.proxyPort).not.toBe(before);
+    expect(backend.listeners.list()).toEqual([{ source: PIXEL, port }]);
+    expect((await httpViaProxy(port, `${upstreamUrl}/still-here`)).body).toBe('upstream /still-here');
+    api.close();
+  });
+
+  it("never marks a device's request as sent from the Compose tab, nor a composed one as a device's", async () => {
+    const api = await apiClient(backend.apiPort);
+    const { port } = await backend.listeners.open(PIXEL);
+    const [composed] = await Promise.all([
+      api.send<{ exchangeId: string }>({
+        command: 'composeSend',
+        request: { method: 'GET', url: `${upstreamUrl}/composed`, headers: [], body: '' },
+      }),
+      httpViaProxy(port, `${upstreamUrl}/from-phone`),
+    ]);
+    await expect
+      .poll(
+        () => exchangesIn(api.messages).filter((e) => ['/composed', '/from-phone'].includes(e.path)).length,
+      )
+      .toBeGreaterThanOrEqual(2);
+    const byPath = new Map(exchangesIn(api.messages).map((e) => [e.path, e]));
+    expect(byPath.get('/from-phone')).toMatchObject({ source: PIXEL });
+    expect(byPath.get('/from-phone')?.composed).toBeUndefined();
+    expect(byPath.get('/composed')).toMatchObject({ id: composed.exchangeId, composed: true });
+    expect(byPath.get('/composed')?.source).toBeUndefined();
+    api.close();
   });
 });
