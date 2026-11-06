@@ -235,6 +235,11 @@ export interface AndroidStatus {
   /** The adb Wirescry started the server with, if it had to. */
   startedWith?: string;
   devices: AndroidDevice[];
+  /**
+   * Devices Wirescry set up that aren't connected now: they have no internet until they're
+   * connected here and put back (or fixed by hand).
+   */
+  notConnected?: Array<{ label: string; capturing: boolean }>;
 }
 
 /** A device the ADB server lists. Its strings come from the device: show them as text only. */
@@ -258,6 +263,23 @@ export interface AndroidDevice {
   unsupported?: string;
   /** Why its properties couldn't be read. */
   error?: string;
+  /** While Wirescry routes the device's traffic through itself. */
+  capture?: {
+    /** The port on the device its proxy setting points at (127.0.0.1:devicePort). */
+    devicePort: number;
+    /** The port on this computer the device's traffic arrives on. */
+    hostPort: number;
+    /** Whether the device may reach this computer and its local networks. */
+    localAccess: boolean;
+  };
+  /** Wirescry set this device up before and didn't undo it (it quit or crashed): offer Restore. */
+  leftover?: boolean;
+  /** Its proxy points at 127.0.0.1 with nothing behind it that Wirescry knows of: offer Clear. */
+  strayProxy?: string;
+  /** What Wirescry is doing to it right now. */
+  busy?: 'capturing' | 'stopping';
+  /** What went wrong with the last thing Wirescry did to it, or what the user should know. */
+  note?: string;
 }
 
 /** Docker setup, as the Setup page shows it. */
@@ -315,6 +337,18 @@ export type ClientCommand =
   | { id: number; command: 'setDockerSetup'; enabled: boolean }
   /** Looks for the ADB server again, starting it with the user's adb if none runs. Only while Android setup is on. */
   | { id: number; command: 'androidRefresh' }
+  /**
+   * Routes a device's traffic through Wirescry. Replies `{ needsConfirmation: proxy }` instead if
+   * the device already uses another proxy; send again with `replaceProxy` set to that proxy to
+   * go ahead (if the device's proxy has changed meanwhile, it asks again).
+   */
+  | { id: number; command: 'androidCapture'; deviceId: string; replaceProxy?: string }
+  /** Puts a capturing device back as it was. Also undoes what's left from an earlier run (Restore). */
+  | { id: number; command: 'androidStop'; deviceId: string }
+  /** Sets a device's proxy back to none, when it points at 127.0.0.1 and Wirescry didn't set it. */
+  | { id: number; command: 'androidClearProxy'; deviceId: string }
+  /** Whether a device may reach this computer and its local networks while capturing. */
+  | { id: number; command: 'androidSetLocalAccess'; deviceId: string; allowed: boolean }
   | { id: number; command: 'resetCertificate' }
   | { id: number; command: 'launchTerminal'; terminalId: string }
   /** WebSocket messages with index greater than `after` (default: from the start). */

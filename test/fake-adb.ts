@@ -162,3 +162,129 @@ export async function startFakeAdb(options: FakeAdbOptions = {}): Promise<FakeAd
     },
   };
 }
+
+/** A device the fake server plays at the protocol level: its settings, properties and reverse rules. */
+export interface FakeDeviceState {
+  serial: string;
+  settings: Map<string, string>;
+  props: Record<string, string>;
+  androidId: string;
+  rules: Array<{ device: string; host: string }>;
+  /** Shell commands it ran, in order. */
+  commands: string[];
+}
+
+export function fakeDeviceState(serial = 'R58', props: Record<string, string> = {}): FakeDeviceState {
+  return {
+    serial,
+    settings: new Map([
+      ['http_proxy', ':0'],
+      ['global_http_proxy_port', '0'],
+    ]),
+    props: {
+      'ro.serialno': serial,
+      'ro.product.model': 'Pixel 8',
+      'ro.product.manufacturer': 'Google',
+      'ro.build.version.sdk': '35',
+      ...props,
+    },
+    androidId: '0123456789abcdef',
+    rules: [],
+    commands: [],
+  };
+}
+
+const frame = (text: string): string => `${Buffer.byteLength(text).toString(16).padStart(4, '0')}${text}`;
+
+function shellPackets(stdout: string, exitCode = 0): Buffer {
+  const out = Buffer.from(stdout);
+  const head = Buffer.from([1, 0, 0, 0, 0]);
+  head.writeUInt32LE(out.length, 1);
+  return Buffer.concat([Buffer.from('OKAY'), head, out, Buffer.from([3, 1, 0, 0, 0, exitCode])]);
+}
+
+/**
+ * A fake ADB server with these devices, answering the requests Wirescry makes as the API 37
+ * emulator was measured to (test/fixtures/adb): version, track-devices-l, features, shell v2
+ * getprop and settings, and reverse rules, which it keeps.
+ */
+export async function startDeviceServer(devices: FakeDeviceState[]): Promise<FakeAdb> {
+  return startFakeAdb({
+    script: (requests, socket) => {
+      const [first, second] = requests;
+      if (first === 'host:version') return (void socket.end('OKAY00040029'), true);
+      if (first === 'host:track-devices-l') {
+        socket.write(
+          `OKAY${frame(devices.map((d, i) => `${d.serial}\tdevice product:x model:Pixel_8 device:x transport_id:${i + 1}\n`).join(''))}`,
+        );
+        return true;
+      }
+      const features = /^host-serial:(.+):features$/.exec(first ?? '');
+      if (features) return (void socket.end(`OKAY${frame('shell_v2,cmd')}`), true);
+      const tport = /^host:tport:serial:(.+)$/.exec(first ?? '');
+      const device = tport && devices.find((d) => d.serial === tport[1]);
+      if (!tport) return false;
+      if (!device) {
+        socket.end(`FAIL${frame(`device '${tport[1]}' not found`)}`);
+        return true;
+      }
+      if (requests.length === 1) {
+        socket.write(Buffer.concat([Buffer.from('OKAY'), Buffer.from([7, 0, 0, 0, 0, 0, 0, 0])]));
+        return true;
+      }
+      const shell = /^shell,v2,raw:(.*)$/.exec(second ?? '');
+      if (shell) {
+        const command = shell[1]!;
+        device.commands.push(command);
+        const get = /^settings get global (\S+)$/.exec(command);
+        if (command === 'getprop') {
+          socket.end(
+            shellPackets(
+              Object.entries(device.props)
+                .map(([k, v]) => `[${k}]: [${v}]\n`)
+                .join(''),
+            ),
+          );
+        } else if (command === 'settings get secure android_id') {
+          socket.end(shellPackets(`${device.androidId}\n`));
+        } else if (get) {
+          socket.end(shellPackets(`${device.settings.get(get[1]!) ?? ''}\n`));
+        } else {
+          const put = /^settings put global http_proxy (\S+)$/.exec(command);
+          if (!put) return (void socket.end(shellPackets('', 127)), true);
+          const value = put[1]!;
+          device.settings.set('http_proxy', value);
+          const colon = value.lastIndexOf(':');
+          device.settings.set('global_http_proxy_host', value === ':0' ? '' : value.slice(0, colon));
+          device.settings.set('global_http_proxy_port', value === ':0' ? '0' : value.slice(colon + 1));
+          socket.end(shellPackets(''));
+        }
+        return true;
+      }
+      if (second === 'reverse:list-forward') {
+        socket.end(`OKAY${frame(device.rules.map((r) => `host-7 ${r.device} ${r.host}\n`).join(''))}`);
+        return true;
+      }
+      const forward = /^reverse:forward:norebind:(tcp:\d+);(tcp:\d+)$/.exec(second ?? '');
+      if (forward) {
+        if (device.rules.some((r) => r.device === forward[1])) {
+          socket.end(`OKAYFAIL${frame('cannot rebind existing socket')}`);
+        } else {
+          device.rules.push({ device: forward[1]!, host: forward[2]! });
+          socket.end(`OKAYOKAY${frame(forward[1]!.slice(4))}`);
+        }
+        return true;
+      }
+      const kill = /^reverse:killforward:(tcp:\d+)$/.exec(second ?? '');
+      if (kill) {
+        const before = device.rules.length;
+        device.rules = device.rules.filter((r) => r.device !== kill[1]);
+        socket.end(
+          device.rules.length < before ? 'OKAYOKAY' : `OKAYFAIL${frame(`listener '${kill[1]}' not found`)}`,
+        );
+        return true;
+      }
+      return false;
+    },
+  });
+}

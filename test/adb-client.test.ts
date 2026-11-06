@@ -10,6 +10,9 @@ import {
   AdbError,
   adbEndpoint,
   adbFeatures,
+  adbReverse,
+  adbReverseList,
+  adbReverseRemove,
   adbServerVersion,
   adbShell,
   parseDeviceList,
@@ -475,5 +478,73 @@ describe('A connection', () => {
     expect(await connection.readString(true)).toBe('abc');
     expect(await connection.readString(true)).toBeUndefined();
     connection.close();
+  });
+});
+
+describe('Reverse rules, against recorded replies', () => {
+  const REVERSE = loadRecording('reverse');
+
+  it('adds a rule and reads back the port the server reports', async () => {
+    fake = await startFakeAdb({ recordings: [REVERSE] });
+    expect(await adbReverse(fake.endpoint, EMULATOR, 43210, 8001)).toBe(43210);
+    expect(fake.requests.at(-1)).toEqual([
+      `host:tport:serial:${EMULATOR}`,
+      'reverse:forward:norebind:tcp:43210;tcp:8001',
+    ]);
+  });
+
+  it("passes on the server's refusal to replace a rule", async () => {
+    fake = await startFakeAdb({ recordings: [REVERSE] });
+    const error = (await adbReverse(fake.endpoint, EMULATOR, 43210, 8002).catch(
+      (e: unknown) => e,
+    )) as AdbError;
+    expect(error.serverMessage).toBe('cannot rebind existing socket');
+  });
+
+  it('lists rules, skipping the transport name', async () => {
+    fake = await startFakeAdb({ recordings: [REVERSE] });
+    // The first list-forward in the recording was empty; the replay answers each request the same way.
+    expect(await adbReverseList(fake.endpoint, EMULATOR)).toEqual([]);
+    const lines = 'host-16 tcp:43210 tcp:8001\nhost-16 tcp:35029 tcp:8003\n';
+    const endpoint = await rawServer((socket) => {
+      socket.once('data', () => {
+        socket.write(Buffer.concat([Buffer.from('OKAY'), Buffer.alloc(8)]));
+        socket.once('data', () => socket.end(`OKAY${lines.length.toString(16).padStart(4, '0')}${lines}`));
+      });
+    });
+    expect(await adbReverseList(endpoint, EMULATOR)).toEqual([
+      { device: 'tcp:43210', host: 'tcp:8001' },
+      { device: 'tcp:35029', host: 'tcp:8003' },
+    ]);
+  });
+
+  it("removes a rule, and passes on the server's message when there is none", async () => {
+    fake = await startFakeAdb({ recordings: [REVERSE] });
+    await adbReverseRemove(fake.endpoint, EMULATOR, 43210);
+    // The recording's second removal of the same rule was refused.
+    const second = await startFakeAdb({
+      script: (requests, socket) => {
+        if (requests.length === 1) socket.write(Buffer.concat([Buffer.from('OKAY'), Buffer.alloc(8)]));
+        else {
+          const message = "listener 'tcp:43210' not found";
+          socket.end(`OKAYFAIL${message.length.toString(16).padStart(4, '0')}${message}`);
+        }
+        return true;
+      },
+    });
+    extra.push(() => second.close());
+    const error = (await adbReverseRemove(second.endpoint, EMULATOR, 43210).catch(
+      (e: unknown) => e,
+    )) as AdbError;
+    expect(error.serverMessage).toBe("listener 'tcp:43210' not found");
+  });
+
+  it.each([0, -1, 65536, 1.5, Number.NaN])('refuses port %s without connecting', async (port) => {
+    let connections = 0;
+    const endpoint = await rawServer(() => (connections += 1));
+    await expect(adbReverse(endpoint, EMULATOR, port, 8001)).rejects.toThrow(/Bad port/);
+    await expect(adbReverse(endpoint, EMULATOR, 43210, port)).rejects.toThrow(/Bad port/);
+    await expect(adbReverseRemove(endpoint, EMULATOR, port)).rejects.toThrow(/Bad port/);
+    expect(connections).toBe(0);
   });
 });
