@@ -87,6 +87,13 @@ export interface CaptureRecord {
   hostPort: number;
   /** Whether the reverse rule was made as tcp:localhost:<port> (Android 11+). */
   loopbackOnly?: boolean;
+  /**
+   * Device ports the device's proxy may still point at while Wirescry moves it to `devicePort`
+   * (its old port was taken): they count as Wirescry's until the move is done.
+   */
+  formerPorts?: number[];
+  /** An emulator, which can be closed and reopened from a saved state. */
+  emulator?: boolean;
   startedAt: string;
 }
 
@@ -106,6 +113,9 @@ function isRecord(value: unknown): value is CaptureRecord {
     port(r.devicePort) &&
     port(r.hostPort) &&
     (r.loopbackOnly === undefined || typeof r.loopbackOnly === 'boolean') &&
+    (r.formerPorts === undefined ||
+      (Array.isArray(r.formerPorts) && r.formerPorts.length <= 10 && r.formerPorts.every(port))) &&
+    (r.emulator === undefined || typeof r.emulator === 'boolean') &&
     typeof r.startedAt === 'string'
   );
 }
@@ -174,7 +184,24 @@ export interface CaptureTarget {
   label: string;
   /** Its Android API level, which decides how its tunnel is made. Needed to capture. */
   apiLevel?: number;
+  emulator?: boolean;
 }
+
+/** The device ports a record's proxy may point at: its own, and any it's moving from. */
+const recordPorts = (record: CaptureRecord): number[] => [record.devicePort, ...(record.formerPorts ?? [])];
+
+/** Whether the device's http_proxy is one Wirescry set for this record. */
+const isOurProxy = (record: CaptureRecord, httpProxy: string): boolean =>
+  recordPorts(record).some((port) => httpProxy === `127.0.0.1:${port}`);
+
+/** Device ports that reverse rules use. */
+const portsOf = (rules: ReverseRule[]): Set<number> =>
+  new Set(
+    rules.flatMap((r) => {
+      const port = /^tcp:(\d+)$/.exec(r.device)?.[1];
+      return port ? [Number(port)] : [];
+    }),
+  );
 
 /**
  * From Android 11 (API 30), adbd's reverse port listens on every interface unless asked for
@@ -207,6 +234,15 @@ const READ_BACK_FAILED =
   'The device didn’t keep its new proxy setting. On Xiaomi phones, turn on “USB debugging (Security settings)” in Developer options; on Samsung phones, turn off Auto Blocker.';
 
 export class CaptureError extends Error {}
+
+/** Said when a device's proxy changed under a running capture. */
+export const PROXY_CHANGED =
+  'Its proxy setting was changed by something else, so Wirescry stopped capturing it and left the setting as it is.';
+
+/** Whether a reverse request failed because the device port is taken. */
+const portTaken = (error: unknown): boolean =>
+  // "cannot rebind" for tcp:N; adbd answers "cannot bind listener" for a localhost rule.
+  error instanceof AdbError && /cannot rebind|cannot bind listener/i.test(error.serverMessage ?? '');
 
 /**
  * Captures and stops devices, one operation at a time per device. Doesn't know about the device
@@ -242,10 +278,16 @@ export class DeviceCapture {
   }
 
   /** Every device Wirescry has set up, capturing now or left by an earlier run. */
-  setUp(): Array<{ id: string; label: string; capturing: boolean }> {
+  setUp(): Array<{ id: string; label: string; capturing: boolean; emulator?: boolean }> {
+    const entry = (r: CaptureRecord, capturing: boolean) => ({
+      id: r.id,
+      label: r.label,
+      capturing,
+      ...(r.emulator ? { emulator: true } : {}),
+    });
     return [
-      ...[...this.active.values()].map((r) => ({ id: r.id, label: r.label, capturing: true })),
-      ...[...this.left.values()].map((r) => ({ id: r.id, label: r.label, capturing: false })),
+      ...[...this.active.values()].map((r) => entry(r, true)),
+      ...[...this.left.values()].map((r) => entry(r, false)),
     ];
   }
 
@@ -268,12 +310,15 @@ export class DeviceCapture {
   async readProxy(serial: string): Promise<ProxySettings> {
     const out = {} as ProxySettings;
     for (const [key, name] of Object.entries(PROXY_KEYS) as Array<[keyof ProxySettings, string]>) {
-      const result = await this.options.io.shell(serial, `settings get global ${name}`);
-      if (result.exitCode !== 0)
-        throw new CaptureError(`Couldn’t read the device’s proxy settings (${name}).`);
-      out[key] = result.stdout.trim().slice(0, 300);
+      out[key] = await this.readSetting(serial, name);
     }
     return out;
+  }
+
+  private async readSetting(serial: string, name: string): Promise<string> {
+    const result = await this.options.io.shell(serial, `settings get global ${name}`);
+    if (result.exitCode !== 0) throw new CaptureError(`Couldn’t read the device’s proxy settings (${name}).`);
+    return result.stdout.trim().slice(0, 300);
   }
 
   private async writeProxy(serial: string, value: string): Promise<void> {
@@ -348,6 +393,7 @@ export class DeviceCapture {
       id: target.id,
       label: target.label.slice(0, 200),
       previousProxy,
+      ...(target.emulator ? { emulator: true } : {}),
       devicePort: 0,
       hostPort,
       loopbackOnly,
@@ -358,43 +404,13 @@ export class DeviceCapture {
     let wroteProxy = false;
     try {
       // Never touch rules Wirescry didn't make (a developer's own adb reverse stays theirs).
-      const taken = new Set(
-        (await io.reverseList(target.serial)).flatMap((r) => {
-          const port = /^tcp:(\d+)$/.exec(r.device)?.[1];
-          return port ? [Number(port)] : [];
-        }),
-      );
+      const taken = portsOf(await io.reverseList(target.serial));
       record.devicePort = this.pickPort(taken);
       // The record comes before any change to the device.
       await records.write(record);
       wroteRecord = true;
-      for (let attempt = 1; ; attempt++) {
-        try {
-          const reported = await io.reverse(target.serial, record.devicePort, hostPort, loopbackOnly);
-          reversed = true;
-          // A device too old for the localhost form would listen on another port: don't use it.
-          if (loopbackOnly && reported !== record.devicePort) {
-            // Undo that rule, wherever it is (the outer cleanup only knows the port asked for).
-            reversed = false;
-            if (reported !== undefined)
-              await io.reverseRemove(target.serial, reported, false).catch(() => undefined);
-            throw new CaptureError(
-              `The device made its tunnel on port ${String(reported)} instead of ${record.devicePort}, so Wirescry undid it.`,
-            );
-          }
-          break;
-        } catch (error) {
-          // "cannot rebind" for tcp:N; adbd answers "cannot bind listener" for a localhost rule.
-          const rebind =
-            !reversed &&
-            error instanceof AdbError &&
-            /cannot rebind|cannot bind listener/i.test(error.serverMessage ?? '');
-          if (!rebind || attempt >= REVERSE_TRIES) throw error;
-          taken.add(record.devicePort);
-          record.devicePort = this.pickPort(taken);
-          await records.write(record);
-        }
-      }
+      await this.addTunnel(target.serial, record, taken);
+      reversed = true;
       const value = `127.0.0.1:${record.devicePort}`;
       wroteProxy = true;
       await this.writeProxy(target.serial, value);
@@ -426,16 +442,173 @@ export class DeviceCapture {
   }
 
   /**
+   * Adds the record's reverse rule, moving to another device port (and writing the record)
+   * while the port is taken. `taken` holds ports known to be in use, and grows. `former` is a
+   * port the device's proxy may point at now: kept in the record if the port moves.
+   */
+  private async addTunnel(
+    serial: string,
+    record: CaptureRecord,
+    taken: Set<number>,
+    former?: number,
+  ): Promise<void> {
+    const { io, records } = this.options;
+    const loopbackOnly = record.loopbackOnly === true;
+    const move = async (): Promise<void> => {
+      taken.add(record.devicePort);
+      if (former !== undefined && !record.formerPorts?.includes(former)) {
+        record.formerPorts = [...(record.formerPorts ?? []), former].slice(-10);
+      }
+      record.devicePort = this.pickPort(taken);
+      await records.write(record);
+    };
+    if (taken.has(record.devicePort)) await move();
+    for (let attempt = 1; ; attempt++) {
+      let reported: number | undefined;
+      try {
+        reported = await io.reverse(serial, record.devicePort, record.hostPort, loopbackOnly);
+      } catch (error) {
+        if (!portTaken(error) || attempt >= REVERSE_TRIES) throw error;
+        await move();
+        continue;
+      }
+      // A device too old for the localhost form would listen on another port: don't use it.
+      if (loopbackOnly && reported !== record.devicePort) {
+        if (reported !== undefined) await io.reverseRemove(serial, reported, false).catch(() => undefined);
+        throw new CaptureError(
+          `The device made its tunnel on port ${String(reported)} instead of ${record.devicePort}, so Wirescry undid it.`,
+        );
+      }
+      return;
+    }
+  }
+
+  /**
+   * Makes sure a capturing device's tunnel and proxy are still in place, fixing what it can: a
+   * reverse rule lost to a reconnect, an ADB server restart or another tool is added again (on
+   * another port if its own was taken, the proxy following). If something else changed the
+   * device's proxy, capture stops for that device and the setting is left as it is.
+   * Returns `stopped` with a note when that happens, and `changed` when anything was rewritten.
+   */
+  check(target: CaptureTarget): Promise<{ stopped?: string; changed?: boolean }> {
+    return this.oneAtATime(target.id, () => this.doCheck(target));
+  }
+
+  private async doCheck(target: CaptureTarget): Promise<{ stopped?: string; changed?: boolean }> {
+    const record = this.active.get(target.id);
+    if (!record) return {};
+    const proxy = await this.readSetting(target.serial, 'http_proxy');
+    if (!isOurProxy(record, proxy)) {
+      await this.drop(target, record);
+      return { stopped: PROXY_CHANGED };
+    }
+    return (await this.ensureTunnel(target, record, proxy)) ? { changed: true } : {};
+  }
+
+  /** Puts the rule and proxy back in place for an active record; true if anything changed. */
+  private async ensureTunnel(target: CaptureTarget, record: CaptureRecord, proxy: string): Promise<boolean> {
+    const { io, records } = this.options;
+    const rules = await io.reverseList(target.serial);
+    const has = (port: number) =>
+      rules.some((r) => r.device === `tcp:${port}` && r.host === `tcp:${record.hostPort}`);
+    let changed = false;
+    if (!has(record.devicePort)) {
+      // A rule on our port to somewhere else isn't ours: it counts as taken.
+      const taken = portsOf(rules);
+      const pointedAt = /^127\.0\.0\.1:(\d+)$/.exec(proxy)?.[1];
+      await this.addTunnel(target.serial, record, taken, pointedAt ? Number(pointedAt) : undefined);
+      changed = true;
+    }
+    const value = `127.0.0.1:${record.devicePort}`;
+    if (proxy !== value) {
+      await this.writeProxy(target.serial, value);
+      if (!(await this.readBack(target.serial, value))) throw new CaptureError(READ_BACK_FAILED);
+      changed = true;
+    }
+    if (record.formerPorts?.length) {
+      // The move is done: the old ports' rules (if any are left) go, then the record says so.
+      for (const port of record.formerPorts) {
+        if (has(port))
+          await io.reverseRemove(target.serial, port, record.loopbackOnly === true).catch(() => undefined);
+      }
+      delete record.formerPorts;
+      await records.write(record);
+      changed = true;
+    }
+    return changed;
+  }
+
+  /**
+   * Captures again a device an earlier run left set up (Wirescry crashed or was forced to quit),
+   * as long as its proxy still points where Wirescry set it. The listener reuses its old port on
+   * this computer if it's free.
+   */
+  resume(target: CaptureTarget): Promise<void> {
+    return this.oneAtATime(target.id, () => this.doResume(target));
+  }
+
+  private async doResume(target: CaptureTarget): Promise<void> {
+    const { io, listeners, records } = this.options;
+    const record = this.left.get(target.id);
+    if (!record) throw new CaptureError('Wirescry has nothing to resume on this device.');
+    const proxy = await this.readSetting(target.serial, 'http_proxy');
+    if (!isOurProxy(record, proxy)) {
+      throw new CaptureError('Its proxy setting has changed since Wirescry set it up. Use Restore instead.');
+    }
+    const source: ExchangeSource = { kind: 'android', id: target.id, label: record.label };
+    const { port } = await listeners.open(source, record.hostPort);
+    try {
+      // A rule the earlier run made, to its listener's old port, still there if the device
+      // stayed connected: remove it, so the rule is made afresh to the listener now running.
+      const loopbackOnly = record.loopbackOnly ?? (target.apiLevel ?? 0) >= LOOPBACK_SPEC_FROM_API;
+      if (port !== record.hostPort) {
+        for (const r of await io.reverseList(target.serial)) {
+          const devicePort = Number(/^tcp:(\d+)$/.exec(r.device)?.[1]);
+          if (recordPorts(record).includes(devicePort) && r.host === `tcp:${record.hostPort}`) {
+            await io.reverseRemove(target.serial, devicePort, loopbackOnly).catch(() => undefined);
+          }
+        }
+      }
+      record.hostPort = port;
+      record.loopbackOnly = loopbackOnly;
+      if (target.emulator) record.emulator = true;
+      await records.write(record);
+      this.left.delete(target.id);
+      this.active.set(target.id, record);
+      await this.ensureTunnel(target, record, proxy);
+    } catch (error) {
+      // Still left over: Restore (or Resume again) works from the record as written.
+      this.active.delete(target.id);
+      this.left.set(target.id, record);
+      await listeners.close(target.id).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /** Forgets a device's capture: Wirescry's rules, the record, the listener. Not its proxy. */
+  private async drop(target: CaptureTarget, record: CaptureRecord): Promise<void> {
+    const { io, listeners, records } = this.options;
+    const rules = await io.reverseList(target.serial);
+    for (const port of recordPorts(record)) {
+      const ours = rules.some((r) => r.device === `tcp:${port}` && r.host === `tcp:${record.hostPort}`);
+      if (ours) await io.reverseRemove(target.serial, port, record.loopbackOnly === true);
+    }
+    await records.remove(target.id);
+    this.active.delete(target.id);
+    this.left.delete(target.id);
+    await listeners.close(target.id);
+    // The switch starts off again next time.
+    listeners.setLocalAccess(target.id, false);
+  }
+
+  /**
    * Writes back the previous proxy if the device still has Wirescry's. 'back' if it's as it was
    * (already, or now); 'changed' if something else set it since, and it was left alone.
    */
   private async putBackProxy(serial: string, record: CaptureRecord): Promise<'back' | 'changed'> {
     const now = await this.readProxy(serial);
     const previous = record.previousProxy ?? ':0';
-    if (
-      now.httpProxy !== `127.0.0.1:${record.devicePort}` ||
-      (!unset(now.host) && now.host !== '127.0.0.1')
-    ) {
+    if (!isOurProxy(record, now.httpProxy) || (!unset(now.host) && now.host !== '127.0.0.1')) {
       // Already as it was (Wirescry stopped before writing it, or a Stop is being retried)?
       const already =
         previous === ':0'
@@ -460,23 +633,13 @@ export class DeviceCapture {
   }
 
   private async doStop(target: CaptureTarget): Promise<{ note?: string }> {
-    const { io, listeners, records } = this.options;
     const record = this.active.get(target.id) ?? this.left.get(target.id);
     if (!record) return {};
     let note: string | undefined;
     if ((await this.putBackProxy(target.serial, record)) === 'changed') {
       note = 'Its proxy setting had been changed since capture started, so Wirescry left it as it is.';
     }
-    const ours = (await io.reverseList(target.serial)).some(
-      (r) => r.device === `tcp:${record.devicePort}` && r.host === `tcp:${record.hostPort}`,
-    );
-    if (ours) await io.reverseRemove(target.serial, record.devicePort, record.loopbackOnly === true);
-    await records.remove(target.id);
-    this.active.delete(target.id);
-    this.left.delete(target.id);
-    await listeners.close(target.id);
-    // The switch starts off again next time.
-    listeners.setLocalAccess(target.id, false);
+    await this.drop(target, record);
     return note ? { note } : {};
   }
 

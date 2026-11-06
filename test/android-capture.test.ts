@@ -101,12 +101,21 @@ function fakeListeners(fail?: Error) {
   const opened = new Map<string, number>();
   const local = new Map<string, boolean>();
   let next = 9001;
+  /** Ports on this computer that something else has taken. */
+  const taken = new Set<number>();
   return {
     opened,
     local,
-    async open(source: ExchangeSource) {
+    taken,
+    async open(source: ExchangeSource, port?: number) {
       if (fail) throw fail;
-      if (!opened.has(source.id)) opened.set(source.id, next++);
+      if (!opened.has(source.id)) {
+        if (port === undefined || taken.has(port)) {
+          while (taken.has(next)) next++;
+          port = next++;
+        }
+        opened.set(source.id, port);
+      }
       return { port: opened.get(source.id)! };
     },
     async close(id: string) {
@@ -752,5 +761,202 @@ describe('Loopback-only rules, the hard cases', () => {
     await active.capture.listenerMoved(PIXEL, 9777);
     expect(active.device.loopbackOnly.get(fresh.devicePort)).toBe(true);
     expect((await active.records.list())[0]!.loopbackOnly).toBe(true);
+  });
+});
+
+const rule = (devicePort: number, hostPort: number) => ({
+  device: `tcp:${devicePort}`,
+  host: `tcp:${hostPort}`,
+});
+
+describe('Checking a capturing device', () => {
+  it('changes nothing while the rule and the proxy are in place', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    const before = device.commands.length;
+    expect(await capture.check(PIXEL)).toEqual({});
+    // One read of http_proxy, and no writes.
+    expect(device.commands.slice(before)).toEqual(['settings get global http_proxy']);
+  });
+
+  it('adds back a rule that went (a reconnect, an ADB server restart, another tool) on the same port', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    const { devicePort, hostPort } = capture.capturing(ID)!;
+    device.rules = [];
+    expect(await capture.check(PIXEL)).toEqual({ changed: true });
+    expect(device.rules).toEqual([rule(devicePort, hostPort)]);
+    expect(device.loopbackOnly.get(devicePort)).toBe(true);
+    expect(device.settings.get('http_proxy')).toBe(`127.0.0.1:${devicePort}`);
+    expect(capture.capturing(ID)?.devicePort).toBe(devicePort);
+  });
+
+  it('moves to another port when its own was taken, the proxy following, and the record first', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    const { devicePort: old, hostPort } = capture.capturing(ID)!;
+    // Someone else's rule now holds the port.
+    device.rules = [rule(old, 7000)];
+    expect(await capture.check(PIXEL)).toEqual({ changed: true });
+    const moved = capture.capturing(ID)!.devicePort;
+    expect(moved).not.toBe(old);
+    expect(device.rules).toEqual([rule(old, 7000), rule(moved, hostPort)]);
+    expect(device.settings.get('http_proxy')).toBe(`127.0.0.1:${moved}`);
+    // Done: the record no longer lists the old port.
+    const [file] = await readdir(dir);
+    const record = JSON.parse(await readFile(path.join(dir, file!), 'utf8')) as CaptureRecord;
+    expect(record).toMatchObject({ devicePort: moved });
+    expect(record.formerPorts).toBeUndefined();
+    // Their rule stays theirs, even on Stop.
+    await capture.stop(PIXEL);
+    expect(device.rules).toEqual([rule(old, 7000)]);
+    expect(device.settings.get('http_proxy')).toBe(':0');
+  });
+
+  it('keeps the old port as Wirescry’s if the move is cut short, so Stop and the next check still work', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    const { devicePort: old } = capture.capturing(ID)!;
+    device.rules = [];
+    device.rebindRefused.add(old);
+    // The device stops taking proxy writes half-way through the move.
+    device.ignoresWrites = true;
+    await expect(capture.check(PIXEL)).rejects.toThrow(/didn’t keep its new proxy setting/);
+    const record = capture.capturing(ID)!;
+    expect(record.devicePort).not.toBe(old);
+    expect(record.formerPorts).toEqual([old]);
+    const [file] = await readdir(dir);
+    expect(JSON.parse(await readFile(path.join(dir, file!), 'utf8'))).toMatchObject({ formerPorts: [old] });
+    // The proxy still points at the old port: that's Wirescry's, not someone else's.
+    expect(device.settings.get('http_proxy')).toBe(`127.0.0.1:${old}`);
+    device.ignoresWrites = false;
+    expect(await capture.check(PIXEL)).toEqual({ changed: true });
+    expect(device.settings.get('http_proxy')).toBe(`127.0.0.1:${record.devicePort}`);
+    expect(capture.capturing(ID)!.formerPorts).toBeUndefined();
+  });
+
+  it('puts the device back on Stop while its proxy is still on a port Wirescry was moving from', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    const { devicePort: old } = capture.capturing(ID)!;
+    device.rules = [];
+    device.rebindRefused.add(old);
+    device.ignoresWrites = true;
+    await capture.check(PIXEL).catch(() => undefined);
+    device.ignoresWrites = false;
+    expect(await capture.stop(PIXEL)).toEqual({});
+    expect(device.settings.get('http_proxy')).toBe(':0');
+    expect(device.rules).toEqual([]);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it('stops capturing, leaving the setting alone, when something else changed the proxy', async () => {
+    const { device, capture, listeners } = setup();
+    await capture.capture(PIXEL);
+    listeners.setLocalAccess(ID, true);
+    device.settings.set('http_proxy', 'proxy.corp:3128');
+    const { stopped } = await capture.check(PIXEL);
+    expect(stopped).toMatch(/changed by something else/);
+    expect(device.settings.get('http_proxy')).toBe('proxy.corp:3128');
+    expect(device.rules).toEqual([]);
+    expect(capture.capturing(ID)).toBeUndefined();
+    expect(listeners.opened.size).toBe(0);
+    expect(listeners.local.get(ID)).toBe(false);
+    expect(await readdir(dir)).toEqual([]);
+  });
+
+  it('changes nothing when the device doesn’t answer, and keeps capturing', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    device.gone = true;
+    await expect(capture.check(PIXEL)).rejects.toThrow();
+    expect(capture.capturing(ID)).toBeDefined();
+    expect(await readdir(dir)).toHaveLength(1);
+  });
+
+  it('does nothing for a device that isn’t capturing', async () => {
+    const { device, capture } = setup();
+    expect(await capture.check(PIXEL)).toEqual({});
+    expect(device.commands).toEqual([]);
+  });
+
+  it('waits for a capture in progress rather than overlapping it', async () => {
+    const { device, capture } = setup();
+    const capturing = capture.capture(PIXEL);
+    const checked = capture.check(PIXEL);
+    await capturing;
+    expect(await checked).toEqual({});
+    expect(device.rules).toHaveLength(1);
+  });
+});
+
+describe('Resume', () => {
+  async function leftover() {
+    const first = setup();
+    await first.capture.capture(PIXEL);
+    const { devicePort, hostPort } = first.capture.capturing(ID)!;
+    // Wirescry dies without putting the device back; its listener is gone.
+    const listeners = fakeListeners();
+    const next = setup({ device: first.device, listeners });
+    await next.capture.load();
+    return { ...next, devicePort, hostPort };
+  }
+
+  it('captures again on the same ports when they are free', async () => {
+    const { device, capture, listeners, devicePort, hostPort } = await leftover();
+    await capture.resume(PIXEL);
+    expect(capture.isLeftover(ID)).toBe(false);
+    expect(capture.capturing(ID)).toMatchObject({ devicePort, hostPort });
+    expect(listeners.opened.get(ID)).toBe(hostPort);
+    expect(device.rules).toEqual([rule(devicePort, hostPort)]);
+    expect(device.settings.get('http_proxy')).toBe(`127.0.0.1:${devicePort}`);
+  });
+
+  it('moves the tunnel to a new listener port when the old one is taken, replacing the stale rule', async () => {
+    const { device, capture, listeners, devicePort, hostPort } = await leftover();
+    listeners.taken.add(hostPort);
+    await capture.resume(PIXEL);
+    const now = capture.capturing(ID)!;
+    expect(now.hostPort).not.toBe(hostPort);
+    expect(device.rules).toEqual([rule(devicePort, now.hostPort)]);
+    const [file] = await readdir(dir);
+    expect(JSON.parse(await readFile(path.join(dir, file!), 'utf8'))).toMatchObject({
+      hostPort: now.hostPort,
+    });
+  });
+
+  it('adds the rule back when the device lost it while Wirescry was gone', async () => {
+    const { device, capture, devicePort, hostPort } = await leftover();
+    device.rules = [];
+    await capture.resume(PIXEL);
+    expect(device.rules).toEqual([rule(devicePort, hostPort)]);
+  });
+
+  it('refuses when the proxy has changed since, changing nothing', async () => {
+    const { device, capture, listeners } = await leftover();
+    device.settings.set('http_proxy', ':0');
+    const rules = device.rules.map((r) => ({ ...r }));
+    await expect(capture.resume(PIXEL)).rejects.toThrow(/Use Restore/);
+    expect(capture.isLeftover(ID)).toBe(true);
+    expect(listeners.opened.size).toBe(0);
+    expect(device.rules).toEqual(rules);
+    // Restore still works.
+    expect(await capture.stop(PIXEL)).toMatchObject({ note: expect.stringMatching(/changed/) });
+    expect(capture.isLeftover(ID)).toBe(false);
+  });
+
+  it('stays left over, listener closed, when the device fails part-way', async () => {
+    const { device, capture, listeners } = await leftover();
+    device.rules = [];
+    device.reverseFails = new AdbError('ADB: closed');
+    await expect(capture.resume(PIXEL)).rejects.toThrow(/closed/);
+    expect(capture.isLeftover(ID)).toBe(true);
+    expect(capture.capturing(ID)).toBeUndefined();
+    expect(listeners.opened.size).toBe(0);
+  });
+
+  it('refuses a device with nothing to resume', async () => {
+    const { capture } = setup();
+    await expect(capture.resume(PIXEL)).rejects.toThrow(/nothing to resume/);
   });
 });

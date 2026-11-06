@@ -168,3 +168,71 @@ describe('BackendSupervisor restarts', () => {
     expect(forked).toHaveLength(7);
   });
 });
+
+describe('Putting Android devices back before a quick quit', () => {
+  let dataDir: string;
+  const records = (): string => path.join(dataDir, 'android-capture');
+  const notified: Array<[string, string]> = [];
+  const supervisor = () =>
+    new BackendSupervisor({
+      dataDir,
+      allowedOrigins: [],
+      pluginsEnabled: false,
+      app: { version: '0.0.0', releaseDate: '' },
+      notify: (title, body) => notified.push([title, body]),
+    });
+
+  beforeEach(async () => {
+    forked.length = 0;
+    notified.length = 0;
+    nextExitAfter = 0;
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-supervisor-android-'));
+  });
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it("doesn't ask the backend when no device is set up", async () => {
+    const s = supervisor();
+    s.start();
+    await s.undoAndroid(2000);
+    s.undoAndroidSync(2000);
+    expect(forked[0]!.messages).not.toContainEqual(expect.objectContaining({ type: 'android-undo' }));
+  });
+
+  it('asks the backend, and waits for its answer', async () => {
+    await mkdir(records());
+    await writeFile(path.join(records(), `${'a'.repeat(32)}.json`), '{}');
+    const s = supervisor();
+    s.start();
+    const child = forked[0]!;
+    let done = false;
+    const undo = s.undoAndroid(2000).then(() => (done = true));
+    const asked = child.messages.find((m) => (m as { type: string }).type === 'android-undo') as {
+      id: number;
+      timeoutMs: number;
+    };
+    expect(asked).toMatchObject({ timeoutMs: 2000 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(done).toBe(false);
+    child.emit('message', { type: 'android-undone', id: asked.id });
+    await undo;
+  });
+
+  it("doesn't wait much past the time it gave a backend that never answers", async () => {
+    await mkdir(records());
+    await writeFile(path.join(records(), `${'a'.repeat(32)}.json`), '{}');
+    const s = supervisor();
+    s.start();
+    const started = Date.now();
+    await s.undoAndroid(100);
+    expect(Date.now() - started).toBeLessThan(1500);
+  });
+
+  it('passes on notifications from the backend', () => {
+    const s = supervisor();
+    s.start();
+    forked[0]!.emit('message', { type: 'notify', title: 'Device gone', body: 'Pixel 8 …' });
+    expect(notified).toEqual([['Device gone', 'Pixel 8 …']]);
+  });
+});

@@ -6,6 +6,7 @@ import {
   devicesFrom,
   identityOf,
   infoKey,
+  isNetworkSerial,
   parseGetprop,
   readDeviceInfo,
   TOO_OLD,
@@ -268,5 +269,22 @@ describe('The device list', () => {
     const [d] = devicesFrom([l], new Map([[infoKey(l), pixel]]));
     expect(d!.id).not.toContain('emulator-5554');
     expect(d!.id).toMatch(/^[0-9a-f]{32}$/);
+  });
+});
+
+describe('Devices on Wi-Fi', () => {
+  it('knows network transports by their serial', () => {
+    for (const serial of [
+      '192.168.1.20:5555',
+      'phone.lan:37155',
+      '[fe80::1]:5555',
+      'adb-35121FDJH000R8-xyMD0H._adb-tls-connect._tcp',
+      'adb-35121FDJH000R8-xyMD0H._adb-tls-connect._tcp.',
+    ]) {
+      expect(isNetworkSerial(serial), serial).toBe(true);
+    }
+    for (const serial of ['emulator-5554', 'R58M123ABC', '0a388e93', '', 'a b:5555']) {
+      expect(isNetworkSerial(serial), serial).toBe(false);
+    }
   });
 });

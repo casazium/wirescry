@@ -37,10 +37,20 @@ export interface AndroidSetupOptions {
     recordsDir: string;
     /** How long a proxy setting may take to show on the device. */
     readBackMs?: number;
+    /** How often each capturing device's tunnel and proxy are checked. */
+    pollMs?: number;
+    /** How long a capturing device may be gone (a reconnect, a re-read) before the user is told. */
+    graceMs?: number;
   };
+  /** Shows an OS notification: Wirescry may be in the background when a device goes. */
+  notify?: (title: string, body: string) => void;
 }
 
 const RETRY_DELAYS_MS = [1000, 2000, 5000, 10_000];
+const POLL_MS = 5000;
+const GRACE_MS = 5000;
+/** Starts a note about a check that failed, so a later good check can clear it. */
+const CHECK_FAILED = 'Wirescry couldn’t check this device’s tunnel:';
 
 /**
  * Android setup: finds the user's ADB server (starting it with their adb if none runs, never
@@ -65,8 +75,13 @@ export class AndroidSetup {
   private stopped = false;
   private endpoint: AdbEndpoint | undefined;
   private readonly capture: DeviceCapture | undefined;
-  /** What Wirescry is doing to each device, by device id. */
-  private readonly busy = new Map<string, 'capturing' | 'stopping'>();
+  /** What Wirescry is doing to each device, by device id: actions can overlap, the latest shows. */
+  private readonly busy = new Map<string, Array<'capturing' | 'stopping'>>();
+  private pollTimer: NodeJS.Timeout | undefined;
+  /** Devices being checked now. */
+  private readonly checking = new Set<string>();
+  /** Capturing devices not connected now, and whether the user has been told. */
+  private readonly away = new Map<string, { timer?: NodeJS.Timeout; notified: boolean }>();
   /** The last thing to tell the user about each device, by device id. */
   private readonly notes = new Map<string, string>();
 
@@ -93,12 +108,7 @@ export class AndroidSetup {
       options.capture.listeners.onPortChange((source, port) => {
         const device = this.current.devices.find((d) => d.id === source.id && d.state === 'ready');
         if (!device || !this.capture?.capturing(source.id)) return;
-        const target = {
-          id: source.id,
-          serial: device.serial,
-          label: device.label,
-          apiLevel: device.apiLevel,
-        };
+        const target = this.targetOf(device);
         void this.act(source.id, port === undefined ? 'stopping' : 'capturing', () =>
           this.capture!.listenerMoved(target, port),
         ).catch((error: unknown) => this.options.log?.(`couldn't follow a moved listener: ${String(error)}`));
@@ -115,6 +125,10 @@ export class AndroidSetup {
     await this.capture
       ?.load()
       .catch((error: unknown) => this.options.log?.(`couldn't read capture records: ${String(error)}`));
+    if (this.capture && !this.stopped) {
+      this.pollTimer = setInterval(() => this.checkAll(), this.options.capture?.pollMs ?? POLL_MS);
+      this.pollTimer.unref?.();
+    }
     return this.queued(true);
   }
 
@@ -135,11 +149,124 @@ export class AndroidSetup {
     this.tracker?.close();
     this.tracker = undefined;
     clearTimeout(this.retryTimer);
+    clearInterval(this.pollTimer);
+    for (const away of this.away.values()) clearTimeout(away.timer);
+    this.away.clear();
   }
 
   private set(status: AndroidStatus): void {
-    this.current = status;
+    this.current = this.withNotConnected(status);
+    this.watchPresence();
     this.options.onStatusChange?.();
+  }
+
+  /** Ids of the devices connected and ready now. */
+  private readyIds(status: AndroidStatus = this.current): Set<string> {
+    if (status.state !== 'ready') return new Set();
+    return new Set(status.devices.flatMap((d) => (d.state === 'ready' && d.id ? [d.id] : [])));
+  }
+
+  /**
+   * Devices Wirescry set up that aren't here: those left by an earlier run at once (while the
+   * server answers), capturing ones only once they've been gone a while, so a reconnect or a
+   * re-read doesn't flash a warning.
+   */
+  private withNotConnected(status: AndroidStatus): AndroidStatus {
+    const rest = { ...status };
+    delete rest.notConnected;
+    if (!this.capture) return rest;
+    const here = this.readyIds(status);
+    const notConnected = this.capture
+      .setUp()
+      .filter((d) =>
+        d.capturing ? this.away.get(d.id)?.notified : status.state === 'ready' && !here.has(d.id),
+      )
+      .map(({ label, capturing, emulator }) => ({ label, capturing, ...(emulator ? { emulator } : {}) }));
+    return notConnected.length ? { ...rest, notConnected } : rest;
+  }
+
+  /**
+   * Follows capturing devices coming and going: one gone longer than the grace period gets a
+   * notification; one back gets its tunnel checked at once (a reconnect drops adbd's reverse
+   * rules, measured with `adb reconnect` on the API 37 emulator).
+   */
+  private watchPresence(): void {
+    if (!this.capture || this.stopped) return;
+    const here = this.readyIds();
+    const capturing = new Set(this.capture.capturingIds());
+    for (const [id, away] of [...this.away]) {
+      if (capturing.has(id) && !here.has(id)) continue;
+      clearTimeout(away.timer);
+      this.away.delete(id);
+      if (capturing.has(id)) this.checkDevice(id);
+    }
+    for (const id of capturing) {
+      if (here.has(id) || this.away.has(id)) continue;
+      const away: { timer?: NodeJS.Timeout; notified: boolean } = { notified: false };
+      away.timer = setTimeout(() => this.wentAway(id), this.options.capture?.graceMs ?? GRACE_MS);
+      away.timer.unref?.();
+      this.away.set(id, away);
+    }
+  }
+
+  /** A capturing device has been gone past the grace period: tell the user, once. */
+  private wentAway(id: string): void {
+    const away = this.away.get(id);
+    const record = this.capture?.capturing(id);
+    if (!away || !record || this.stopped) return;
+    away.notified = true;
+    away.timer = undefined;
+    const { label } = record;
+    if (this.current.state !== 'ready') {
+      this.options.notify?.(
+        'Lost the ADB server while capturing',
+        `${label} has no internet until Wirescry reaches the ADB server again, which it keeps trying. Starting Android Studio, or running “adb start-server”, starts it.`,
+      );
+    } else if (record.emulator) {
+      this.options.notify?.(
+        'Emulator closed while capturing',
+        `${label} still points at Wirescry. Start it again while Wirescry is running and capture carries on; Stop puts it back.`,
+      );
+    } else {
+      this.options.notify?.(
+        'Android device disconnected while capturing',
+        `${label} has no internet until you connect it again, and capture carries on. Or, with only that device connected, run: ${MANUAL_FIX}`,
+      );
+    }
+    this.set(this.current);
+  }
+
+  /** Checks every capturing device that's connected (the poll). */
+  private checkAll(): void {
+    if (!this.capture || this.stopped) return;
+    const here = this.readyIds();
+    for (const id of this.capture.capturingIds()) if (here.has(id)) this.checkDevice(id);
+  }
+
+  /** Checks one capturing device's tunnel and proxy, unless it's busy or already being checked. */
+  private checkDevice(id: string): void {
+    if (!this.capture || this.stopped || this.checking.has(id) || this.busy.has(id)) return;
+    const device = this.current.devices.find((d) => d.id === id && d.state === 'ready');
+    if (!device) return;
+    this.checking.add(id);
+    void this.capture
+      .check(this.targetOf(device))
+      .then(
+        ({ stopped, changed }) => {
+          const failedBefore = this.notes.get(id)?.startsWith(CHECK_FAILED);
+          if (failedBefore) this.notes.delete(id);
+          if (stopped) this.notes.set(id, stopped);
+          if (stopped || changed || failedBefore) this.publishDevices();
+        },
+        (error: unknown) => {
+          const note = `${CHECK_FAILED} ${(error as Error).message}`;
+          if (this.notes.get(id) === note) return;
+          this.options.log?.(`couldn't check ${device.serial}: ${String(error)}`);
+          this.notes.set(id, note);
+          this.publishDevices();
+        },
+      )
+      .finally(() => this.checking.delete(id));
   }
 
   private async connect(startServer: boolean): Promise<void> {
@@ -226,13 +353,7 @@ export class AndroidSetup {
   private publishDevices(): void {
     if (this.current.state !== 'ready') return;
     const devices = devicesFrom(this.lines, this.info).map((d) => this.withCapture(d));
-    const here = new Set(devices.filter((d) => d.state === 'ready').map((d) => d.id));
-    const notConnected = (this.capture?.setUp() ?? [])
-      .filter((d) => !here.has(d.id))
-      .map(({ label, capturing }) => ({ label, capturing }));
-    const rest = { ...this.current };
-    delete rest.notConnected;
-    this.set({ ...rest, devices, ...(notConnected.length ? { notConnected } : {}) });
+    this.set({ ...this.current, devices });
   }
 
   /** A device with what capture knows about it. */
@@ -252,7 +373,7 @@ export class AndroidSetup {
       ...(leftover ? { leftover: true } : {}),
       // A 127.0.0.1 proxy that's Wirescry's own isn't stray.
       ...(strayProxy && !record && !leftover ? { strayProxy } : {}),
-      ...(this.busy.has(id) ? { busy: this.busy.get(id) } : {}),
+      ...(this.busy.has(id) ? { busy: this.busy.get(id)!.at(-1) } : {}),
       ...(this.notes.has(id) ? { note: this.notes.get(id) } : {}),
     };
   }
@@ -269,12 +390,22 @@ export class AndroidSetup {
       );
     }
     if (purpose === 'capture' && device.unsupported) throw new Error(device.unsupported);
-    return { id, serial: device.serial, label: device.label, apiLevel: device.apiLevel };
+    return this.targetOf(device);
+  }
+
+  private targetOf(device: AndroidDevice): CaptureTarget {
+    return {
+      id: device.id!,
+      serial: device.serial,
+      label: device.label,
+      apiLevel: device.apiLevel,
+      emulator: device.emulator,
+    };
   }
 
   /** Runs an action on a device, showing it as busy, and keeping its outcome as the device's note. */
   private async act<T>(id: string, busy: 'capturing' | 'stopping', task: () => Promise<T>): Promise<T> {
-    this.busy.set(id, busy);
+    this.busy.set(id, [...(this.busy.get(id) ?? []), busy]);
     this.notes.delete(id);
     this.publishDevices();
     try {
@@ -283,7 +414,10 @@ export class AndroidSetup {
       this.notes.set(id, (error as Error).message);
       throw error;
     } finally {
-      this.busy.delete(id);
+      const left = this.busy.get(id) ?? [];
+      left.splice(left.lastIndexOf(busy), 1);
+      if (left.length) this.busy.set(id, left);
+      else this.busy.delete(id);
       this.rereadDevice(id);
       this.publishDevices();
     }
@@ -302,9 +436,23 @@ export class AndroidSetup {
    * Routes a device's traffic through Wirescry. Returns `needsConfirmation` with the device's
    * current proxy if it has one, without changing anything.
    */
-  captureDevice(id: string, replaceProxy?: string): Promise<{ needsConfirmation?: string }> {
+  async captureDevice(
+    id: string,
+    replaceProxy?: string,
+    confirmWireless = false,
+  ): Promise<{ needsConfirmation?: string; needsWirelessConfirmation?: boolean }> {
     const target = this.target(id, 'capture');
+    // Wireless debugging turns itself off on sleep and network changes, and Android's Wi-Fi
+    // settings don't show the global proxy: the device could be left without internet.
+    const wireless = this.current.devices.find((d) => d.id === id)?.wireless;
+    if (wireless && !confirmWireless) return { needsWirelessConfirmation: true };
     return this.act(id, 'capturing', () => this.capture!.capture(target, replaceProxy));
+  }
+
+  /** Captures again a device an earlier run left set up. */
+  async resumeDevice(id: string): Promise<void> {
+    const target = this.target(id, 'stop');
+    await this.act(id, 'capturing', () => this.capture!.resume(target));
   }
 
   /** Puts a device back, whether this run or an earlier one set it up. */

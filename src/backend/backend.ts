@@ -32,6 +32,7 @@ import type { DockerEndpoint } from './docker/endpoint';
 import { DockerSetup } from './docker/setup';
 import { AndroidSetup, type AndroidSetupOptions } from './android/setup';
 import { findAdb } from './android/adb-server';
+import { ANDROID_RECORDS_DIR } from '../shared/ipc';
 import { Composer } from './composer';
 import { terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
@@ -65,7 +66,13 @@ export interface BackendOptions {
    * Android setup: false turns it off, options turn it on (tests). Left out, it follows the
    * experimentalAndroid setting.
    */
-  android?: false | AndroidSetupOptions;
+  android?:
+    | false
+    | (Omit<AndroidSetupOptions, 'capture'> & {
+        capture?: Partial<NonNullable<AndroidSetupOptions['capture']>>;
+      });
+  /** Shows an OS notification (the app's main process does it). */
+  notify?: (title: string, body: string) => void;
   /** Where the user's Docker daemon is. Found the way the Docker CLI finds it if omitted. */
   dockerEndpoint?: () => Promise<DockerEndpoint>;
   /** Called as each step of starting up finishes, to log how long they take. */
@@ -124,6 +131,11 @@ export interface RunningBackend {
   saveBody(file: string, exchangeId: string, side: BodySide): Promise<WrittenBody>;
   /** Proxy listeners for single devices (Android setup), besides the main proxy. */
   listeners: DeviceListeners;
+  /**
+   * Puts capturing Android devices back, within a time limit, without stopping anything else:
+   * for quits that may not give the backend time to stop (an update, Windows logging off).
+   */
+  stopAndroid(timeoutMs?: number): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -393,12 +405,18 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     options.android === false
       ? false
       : options.android !== undefined || settings.experimentalAndroid === true;
+  const androidOptions = options.android || {};
   android = androidOn
     ? new AndroidSetup({
         findAdb: () => findAdb({ setting: settings.adbPath }),
         log: (message) => console.log(`[wirescry] android: ${message}`),
-        capture: { listeners, recordsDir: path.join(dataDir, 'android-capture') },
-        ...(options.android || {}),
+        notify: options.notify,
+        ...androidOptions,
+        capture: {
+          listeners,
+          recordsDir: path.join(dataDir, ANDROID_RECORDS_DIR),
+          ...androidOptions.capture,
+        },
         onStatusChange: () => broadcast({ type: 'status', status: status() }),
       })
     : undefined;
@@ -709,7 +727,12 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         return android.captureDevice(
           String(command.deviceId),
           typeof command.replaceProxy === 'string' ? command.replaceProxy : undefined,
+          command.confirmWireless === true,
         );
+      case 'androidResume':
+        if (!android) throw new Error('Android setup is off.');
+        await android.resumeDevice(String(command.deviceId));
+        return undefined;
       case 'androidStop':
         if (!android) throw new Error('Android setup is off.');
         await android.stopDevice(String(command.deviceId));
@@ -846,6 +869,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     saveBody,
     importHar,
     listeners,
+    async stopAndroid(timeoutMs = ANDROID_STOP_TIMEOUT_MS) {
+      await android?.stopAll(timeoutMs);
+    },
     async stop() {
       // First, and quickly: put capturing devices back before their listeners go (a device left
       // pointing at a closed port has no internet), well inside the time the app gives the

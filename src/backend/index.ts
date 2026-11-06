@@ -59,6 +59,14 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
     void shutdown();
     return;
   }
+  if (data?.type === 'android-undo') {
+    const { id } = data;
+    const timeoutMs = Math.min(Math.max(Number(data.timeoutMs) || 0, 0), 10_000);
+    void (backend?.stopAndroid(timeoutMs) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => post({ type: 'android-undone', id }));
+    return;
+  }
   if (data?.type !== 'start' || starting) return;
   starting = true;
   if (firstLineAt !== undefined) mark('first line of the backend ran', firstLineAt);
@@ -75,6 +83,7 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
       encryptor:
         backendPlugins.length > 0 && (await encryptor.available().catch(() => false)) ? encryptor : undefined,
       app: data.app,
+      notify: (title, body) => post({ type: 'notify', title, body }),
       onStartupStep: (name) => mark(`${name} done`),
     });
     const checked = data.selfCheck ? await selfCheck() : undefined;

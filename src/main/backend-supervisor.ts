@@ -15,7 +15,10 @@ import type {
   BackendShutdownMessage,
   BackendRestart,
   HarRequest,
+  AndroidUndoMessage,
 } from '../shared/ipc';
+import { ANDROID_RECORDS_DIR } from '../shared/ipc';
+import { hasRecords, waitForNoRecordsSync } from './android-undo';
 
 /** How long a HAR export or import may take (large captures, slow disks). */
 const HAR_TIMEOUT_MS = 10 * 60 * 1000;
@@ -67,6 +70,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     number,
     { resolve(value: unknown): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }
   >();
+  private nextAndroidId = 0;
+  private readonly androidWaiting = new Map<number, () => void>();
   /** The keychain, worked out on the first request after each start (null: none). */
   private storage: SecureStorage | null | undefined;
   /** Plugins the backend loaded, as of its last start. */
@@ -90,6 +95,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       app: { version: string; releaseDate: string };
       /** For the packaged self-test: have the backend check itself before it reports ready. */
       selfCheck?: boolean;
+      /** Shows an OS notification the backend asked for. */
+      notify?: (title: string, body: string) => void;
     },
   ) {
     super();
@@ -150,6 +157,11 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
         clearTimeout(waiting.timer);
         if (message.ok) waiting.resolve(message.value);
         else waiting.reject(new Error(message.error));
+      } else if (message.type === 'notify') {
+        this.options.notify?.(String(message.title).slice(0, 200), String(message.body).slice(0, 1000));
+      } else if (message.type === 'android-undone') {
+        this.androidWaiting.get(message.id)?.();
+        this.androidWaiting.delete(message.id);
       } else if (message.type === 'crypto') {
         void this.crypto(message).then((reply) => {
           // A restarted backend doesn't get the old one's answers.
@@ -240,6 +252,56 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
       waiting.reject(new Error(reason));
       this.harWaiting.delete(id);
     }
+  }
+
+  /**
+   * Asks the backend to put capturing Android devices back, and waits for it (a little longer
+   * than it's given). For quits that don't wait for the backend to stop, such as an update.
+   */
+  async undoAndroid(timeoutMs: number): Promise<void> {
+    const child = this.child;
+    if (!child || !hasRecords(this.androidRecordsDir)) return;
+    const id = ++this.nextAndroidId;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        this.androidWaiting.delete(id);
+        resolve();
+      }, timeoutMs + 500);
+      timer.unref();
+      this.androidWaiting.set(id, () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      try {
+        child.postMessage({ type: 'android-undo', id, timeoutMs } satisfies AndroidUndoMessage);
+      } catch {
+        this.androidWaiting.delete(id);
+        resolve();
+      }
+    });
+  }
+
+  /**
+   * The same, for Windows logging off, where nothing can be awaited: asks the backend, then
+   * blocks until the devices' records are gone or `timeoutMs` passes.
+   */
+  undoAndroidSync(timeoutMs: number): void {
+    const child = this.child;
+    if (!child || !hasRecords(this.androidRecordsDir)) return;
+    try {
+      child.postMessage({
+        type: 'android-undo',
+        id: ++this.nextAndroidId,
+        timeoutMs,
+      } satisfies AndroidUndoMessage);
+    } catch {
+      return;
+    }
+    waitForNoRecordsSync(this.androidRecordsDir, timeoutMs);
+  }
+
+  private get androidRecordsDir(): string {
+    return path.join(this.options.dataDir, ANDROID_RECORDS_DIR);
   }
 
   /** Kills the backend at once. Bodies on disk are left for the next start to clear. */
