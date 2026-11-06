@@ -78,6 +78,10 @@ export class AndroidSetup {
   /** What Wirescry is doing to each device, by device id: actions can overlap, the latest shows. */
   private readonly busy = new Map<string, Array<'capturing' | 'stopping'>>();
   private pollTimer: NodeJS.Timeout | undefined;
+  /** Whether the server has sent its device list since the last (re)connect. */
+  private listed = false;
+  /** Set once devices are being put back for a quit. */
+  private quitting = false;
   /** Devices being checked now. */
   private readonly checking = new Set<string>();
   /** Capturing devices not connected now, and whether the user has been told. */
@@ -125,10 +129,7 @@ export class AndroidSetup {
     await this.capture
       ?.load()
       .catch((error: unknown) => this.options.log?.(`couldn't read capture records: ${String(error)}`));
-    if (this.capture && !this.stopped) {
-      this.pollTimer = setInterval(() => this.checkAll(), this.options.capture?.pollMs ?? POLL_MS);
-      this.pollTimer.unref?.();
-    }
+    if (this.capture && !this.stopped) this.startPolling();
     return this.queued(true);
   }
 
@@ -176,10 +177,14 @@ export class AndroidSetup {
     delete rest.notConnected;
     if (!this.capture) return rest;
     const here = this.readyIds(status);
+    // A leftover may be a device whose details aren't read yet (startup, a reconnect): wait.
+    const reading = status.devices.some((d) => d.state === 'ready' && !d.id && !d.error);
     const notConnected = this.capture
       .setUp()
       .filter((d) =>
-        d.capturing ? this.away.get(d.id)?.notified : status.state === 'ready' && !here.has(d.id),
+        d.capturing
+          ? this.away.get(d.id)?.notified
+          : status.state === 'ready' && this.listed && !reading && !here.has(d.id),
       )
       .map(({ label, capturing, emulator }) => ({ label, capturing, ...(emulator ? { emulator } : {}) }));
     return notConnected.length ? { ...rest, notConnected } : rest;
@@ -245,7 +250,7 @@ export class AndroidSetup {
 
   /** Checks one capturing device's tunnel and proxy, unless it's busy or already being checked. */
   private checkDevice(id: string): void {
-    if (!this.capture || this.stopped || this.checking.has(id) || this.busy.has(id)) return;
+    if (!this.capture || this.stopped || this.quitting || this.checking.has(id) || this.busy.has(id)) return;
     const device = this.current.devices.find((d) => d.id === id && d.state === 'ready');
     if (!device) return;
     this.checking.add(id);
@@ -283,6 +288,7 @@ export class AndroidSetup {
       return;
     }
     this.endpoint = endpoint;
+    this.listed = false;
     // Read every device afresh after a reconnect or "Check again".
     this.info.clear();
     if (this.current.state !== 'ready') this.set({ ...this.current, state: 'starting' });
@@ -318,6 +324,7 @@ export class AndroidSetup {
       (lines) => {
         if (generation !== this.generation) return;
         this.retries = 0;
+        this.listed = true;
         this.lines = lines;
         // Forget transports that have gone; a reconnected device is read again.
         const listed = new Set(lines.map(infoKey));
@@ -481,10 +488,26 @@ export class AndroidSetup {
 
   /** Puts back every capturing device it can within the time limit (quitting). */
   async stopAll(timeoutMs: number): Promise<void> {
-    await this.capture?.stopAll((id) => {
-      const device = this.current.devices.find((d) => d.id === id && d.state === 'ready');
-      return device?.serial;
-    }, timeoutMs);
+    // No new checks from here: each would queue ahead of putting its device back.
+    clearInterval(this.pollTimer);
+    this.quitting = true;
+    try {
+      await this.capture?.stopAll((id) => {
+        const device = this.current.devices.find((d) => d.id === id && d.state === 'ready');
+        return device?.serial;
+      }, timeoutMs);
+    } finally {
+      // Still running (an update install that didn't go ahead): any device left keeps being checked.
+      this.quitting = false;
+      if (this.capture && !this.stopped) this.startPolling();
+      this.publishDevices();
+    }
+  }
+
+  private startPolling(): void {
+    clearInterval(this.pollTimer);
+    this.pollTimer = setInterval(() => this.checkAll(), this.options.capture?.pollMs ?? POLL_MS);
+    this.pollTimer.unref?.();
   }
 
   private readInfo(line: AdbDeviceLine, generation: number, again = false): void {
@@ -507,7 +530,14 @@ export class AndroidSetup {
         if (generation !== this.generation) return;
         // Still listed under the same transport?
         if (!this.lines.some((l) => infoKey(l) === key)) return;
-        this.info.set(key, result);
+        // A re-read that fails (a busy device timing out) keeps what was read before: losing the
+        // device's id would make a capturing device look unplugged.
+        const before = this.info.get(key);
+        if ('error' in result && before && !('error' in before)) {
+          this.options.log?.(`couldn't read ${line.serial} again: ${result.error}`);
+        } else {
+          this.info.set(key, result);
+        }
         this.publishDevices();
         if (this.readAgain.delete(key)) this.readInfo(line, generation, true);
       });

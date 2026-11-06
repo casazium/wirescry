@@ -202,8 +202,7 @@ function createWindow(): void {
   // next start empties the rest.
   // Capturing Android devices are put back too, as far as can be within a short wait.
   window.on('session-end', () => {
-    backend.removeBodiesSync();
-    backend.undoAndroidSync(ANDROID_QUIT_UNDO_MS);
+    backend.undoAndroidSync(ANDROID_QUIT_UNDO_MS, () => backend.removeBodiesSync());
   });
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined;

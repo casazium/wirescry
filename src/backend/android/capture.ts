@@ -560,6 +560,11 @@ export class DeviceCapture {
     try {
       // A rule the earlier run made, to its listener's old port, still there if the device
       // stayed connected: remove it, so the rule is made afresh to the listener now running.
+      if (record.loopbackOnly === undefined && target.apiLevel === undefined) {
+        throw new CaptureError(
+          'Wirescry couldn’t read this device’s Android version, so it can’t set up its tunnel safely. Use Restore instead.',
+        );
+      }
       const loopbackOnly = record.loopbackOnly ?? (target.apiLevel ?? 0) >= LOOPBACK_SPEC_FROM_API;
       if (port !== record.hostPort) {
         for (const r of await io.reverseList(target.serial)) {
@@ -591,7 +596,10 @@ export class DeviceCapture {
     const rules = await io.reverseList(target.serial);
     for (const port of recordPorts(record)) {
       const ours = rules.some((r) => r.device === `tcp:${port}` && r.host === `tcp:${record.hostPort}`);
-      if (ours) await io.reverseRemove(target.serial, port, record.loopbackOnly === true);
+      // Best effort: the proxy no longer points at the rule, and a rule left behind leads only to a
+      // closed listener (it goes when the device disconnects).
+      if (ours)
+        await io.reverseRemove(target.serial, port, record.loopbackOnly === true).catch(() => undefined);
     }
     await records.remove(target.id);
     this.active.delete(target.id);
@@ -690,17 +698,18 @@ export class DeviceCapture {
    * device's current transport, if it's connected. Devices it can't put back keep their records.
    */
   async stopAll(serialOf: (id: string) => string | undefined, timeoutMs: number): Promise<void> {
-    const work = async (): Promise<void> => {
-      // A capture still in progress finishes first, so it's put back too.
-      await Promise.all([...this.queues.values()]);
-      await Promise.all(
-        [...this.active.values()].map(async (record) => {
-          const serial = serialOf(record.id);
-          if (!serial) return;
-          await this.stop({ id: record.id, serial, label: record.label }).catch(() => undefined);
-        }),
-      );
-    };
-    await Promise.race([work(), this.sleep(timeoutMs)]);
+    // Each device on its own: one that hangs (a Wi-Fi phone whose link died, mid-check) mustn't
+    // hold up the rest. A capture still in progress finishes first, so it's put back too.
+    const ids = new Set([...this.queues.keys(), ...this.active.keys()]);
+    const work = Promise.all(
+      [...ids].map(async (id) => {
+        await this.queues.get(id);
+        const record = this.active.get(id);
+        const serial = record && serialOf(id);
+        if (!record || !serial) return;
+        await this.stop({ id, serial, label: record.label }).catch(() => undefined);
+      }),
+    );
+    await Promise.race([work, this.sleep(timeoutMs)]);
   }
 }

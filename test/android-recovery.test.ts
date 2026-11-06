@@ -7,6 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { readDeviceInfo } from '../src/backend/android/devices';
 import { AndroidSetup } from '../src/backend/android/setup';
 import type { DeviceListeners } from '../src/backend/device-listeners';
 import type { ExchangeSource } from '../src/shared/api';
@@ -123,6 +124,15 @@ describe('The periodic check', () => {
     expect(listeners.opened.size).toBe(0);
   });
 
+  it('says when it couldn’t check a device, and clears that once a check works', async () => {
+    const { device } = await capturing({ pollMs: 50 });
+    phone.failShell = true;
+    await expect.poll(() => device()?.note).toMatch(/couldn’t check this device’s tunnel/);
+    expect(device()?.capture).toBeDefined();
+    phone.failShell = false;
+    await expect.poll(() => device()?.note).toBeUndefined();
+  });
+
   it('only reads http_proxy and the rules while all is well', async () => {
     await capturing({ pollMs: 50 });
     // The device's details are read once more after Capture: let that finish.
@@ -208,6 +218,30 @@ describe('Devices coming and going', () => {
     ]);
   });
 
+  it('keeps a capturing device it can’t read again, rather than call it unplugged (from the review)', async () => {
+    let reads = 0;
+    const listeners = fakeListeners();
+    const notes: string[] = [];
+    const endpoint = fake.endpoint;
+    const setup = new AndroidSetup({
+      endpoint: () => endpoint,
+      findAdb: () => undefined,
+      timeoutMs: 1000,
+      retryDelaysMs: [30],
+      readInfo: (e, s) => (++reads === 2 ? Promise.reject(new Error('timed out')) : readDeviceInfo(e, s)),
+      notify: (title) => notes.push(title),
+      capture: { listeners, recordsDir: dir, readBackMs: 200, pollMs: 50, graceMs: GRACE_MS },
+    });
+    stops.push(() => setup.stop());
+    await setup.start();
+    await expect.poll(() => setup.status().devices[0]?.id).toBeTruthy();
+    await setup.captureDevice(setup.status().devices[0]!.id!);
+    await sleep(GRACE_MS * 2);
+    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(notes).toEqual([]);
+    expect(setup.status().devices[0]?.capture).toBeDefined();
+  });
+
   it('shows a device as busy until every overlapping action on it has ended', async () => {
     const { setup, device, id } = await capturing();
     // Stop queues behind a second (no-op) capture; the first to end mustn't clear "busy".
@@ -226,6 +260,10 @@ describe('Resume', () => {
     // Wirescry dies: nothing is put back.
     first.setup.stop();
     const { setup, device, listeners } = start();
+    // Never "not connected" while it's still being read.
+    let flashed = false;
+    const watching = setInterval(() => (flashed ||= !!setup.status().notConnected), 2);
+    stops.push(() => clearInterval(watching));
     await setup.start();
     await expect.poll(() => device()?.leftover).toBe(true);
     await setup.resumeDevice(device()!.id!);
@@ -233,6 +271,7 @@ describe('Resume', () => {
     expect(device()?.capture).toMatchObject({ devicePort: first.devicePort, hostPort: first.hostPort });
     expect(listeners.opened.get(first.id)).toBe(first.hostPort);
     expect(phone.rules).toEqual([{ device: `tcp:${first.devicePort}`, host: `tcp:${first.hostPort}` }]);
+    expect(flashed).toBe(false);
   });
 
   it('lists a leftover device that isn’t connected at once, without a notification', async () => {

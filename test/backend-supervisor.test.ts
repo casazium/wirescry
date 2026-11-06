@@ -229,6 +229,40 @@ describe('Putting Android devices back before a quick quit', () => {
     expect(Date.now() - started).toBeLessThan(1500);
   });
 
+  it('waits, blocked, for the backend to mark itself done while Windows logs off', async () => {
+    await mkdir(records());
+    await writeFile(path.join(records(), `${'a'.repeat(32)}.json`), '{}');
+    const s = supervisor();
+    s.start();
+    // Already done (the backend is another process; this test can't run it while blocked).
+    await writeFile(path.join(records(), 'undone-1'), '');
+    let cleaned = false;
+    const started = Date.now();
+    s.undoAndroidSync(2000, () => (cleaned = true));
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(cleaned).toBe(true);
+    expect(forked[0]!.messages).toContainEqual({
+      type: 'android-undo',
+      id: 1,
+      timeoutMs: 2000,
+      markDone: true,
+    });
+    expect(existsSync(path.join(records(), 'undone-1'))).toBe(false);
+  });
+
+  it('gives up waiting at its time limit, and still cleans up', async () => {
+    await mkdir(records());
+    await writeFile(path.join(records(), `${'a'.repeat(32)}.json`), '{}');
+    const s = supervisor();
+    s.start();
+    let cleaned = false;
+    const started = Date.now();
+    s.undoAndroidSync(100, () => (cleaned = true));
+    expect(Date.now() - started).toBeGreaterThanOrEqual(100);
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(cleaned).toBe(true);
+  });
+
   it('passes on notifications from the backend', () => {
     const s = supervisor();
     s.start();

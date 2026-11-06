@@ -1,10 +1,10 @@
-/** The main process's wait for Android records to go, when Windows logs off. */
+/** The main process's wait for the backend to put Android devices back, when Windows logs off. */
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { hasRecords, waitForNoRecordsSync } from '../src/main/android-undo';
+import { hasRecords, waitForFileSync } from '../src/main/android-undo';
 
 let dir: string;
 beforeEach(async () => {
@@ -14,35 +14,39 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-describe('Waiting for Android records to go', () => {
-  it('returns at once when there are none, or no folder', () => {
+describe('Waiting for the backend while Windows logs off', () => {
+  it('knows whether there are records to put back', async () => {
     expect(hasRecords(path.join(dir, 'missing'))).toBe(false);
-    expect(waitForNoRecordsSync(path.join(dir, 'missing'), 5000)).toBe(true);
-  });
-
-  it('ignores files that aren’t records', async () => {
     await writeFile(path.join(dir, 'x.json.123.tmp'), '');
-    expect(waitForNoRecordsSync(dir, 5000)).toBe(true);
+    await writeFile(path.join(dir, 'undone-1'), '');
+    expect(hasRecords(dir)).toBe(false);
+    await writeFile(path.join(dir, `${'a'.repeat(32)}.json`), '{}');
+    expect(hasRecords(dir)).toBe(true);
   });
 
-  it('gives up after its time limit', async () => {
-    await writeFile(path.join(dir, 'a.json'), '{}');
+  it('returns at once when the backend is already done', async () => {
+    await writeFile(path.join(dir, 'undone-1'), '');
     const started = Date.now();
-    expect(waitForNoRecordsSync(dir, 200)).toBe(false);
+    expect(waitForFileSync(path.join(dir, 'undone-1'), 5000)).toBe(true);
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('gives up after its time limit', () => {
+    const started = Date.now();
+    expect(waitForFileSync(path.join(dir, 'undone-1'), 200)).toBe(false);
     expect(Date.now() - started).toBeGreaterThanOrEqual(190);
     expect(Date.now() - started).toBeLessThan(1000);
   });
 
-  it('returns once another process deletes the last record, though this thread is blocked', async () => {
-    const file = path.join(dir, 'a.json');
-    await writeFile(file, '{}');
+  it('notices the backend finishing in another process, though this thread is blocked', async () => {
+    const file = path.join(dir, 'undone-1');
     const child = spawn(process.execPath, [
       '-e',
-      `setTimeout(() => require('fs').unlinkSync(${JSON.stringify(file)}), 300)`,
+      `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(file)}, ''), 300)`,
     ]);
     const exited = new Promise((resolve) => child.on('exit', resolve));
     const started = Date.now();
-    expect(waitForNoRecordsSync(dir, 10_000)).toBe(true);
+    expect(waitForFileSync(file, 10_000)).toBe(true);
     expect(Date.now() - started).toBeLessThan(5000);
     await exited;
   });

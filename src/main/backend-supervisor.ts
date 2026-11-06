@@ -17,8 +17,8 @@ import type {
   HarRequest,
   AndroidUndoMessage,
 } from '../shared/ipc';
-import { ANDROID_RECORDS_DIR } from '../shared/ipc';
-import { hasRecords, waitForNoRecordsSync } from './android-undo';
+import { ANDROID_RECORDS_DIR, androidUndoneFile } from '../shared/ipc';
+import { hasRecords, waitForFileSync } from './android-undo';
 
 /** How long a HAR export or import may take (large captures, slow disks). */
 const HAR_TIMEOUT_MS = 10 * 60 * 1000;
@@ -285,19 +285,24 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
    * The same, for Windows logging off, where nothing can be awaited: asks the backend, then
    * blocks until the devices' records are gone or `timeoutMs` passes.
    */
-  undoAndroidSync(timeoutMs: number): void {
+  undoAndroidSync(timeoutMs: number, meanwhile?: () => void): void {
     const child = this.child;
-    if (!child || !hasRecords(this.androidRecordsDir)) return;
-    try {
-      child.postMessage({
-        type: 'android-undo',
-        id: ++this.nextAndroidId,
-        timeoutMs,
-      } satisfies AndroidUndoMessage);
-    } catch {
+    if (!child || !hasRecords(this.androidRecordsDir)) {
+      meanwhile?.();
       return;
     }
-    waitForNoRecordsSync(this.androidRecordsDir, timeoutMs);
+    const id = ++this.nextAndroidId;
+    const done = androidUndoneFile(this.options.dataDir, id);
+    try {
+      child.postMessage({ type: 'android-undo', id, timeoutMs, markDone: true } satisfies AndroidUndoMessage);
+    } catch {
+      meanwhile?.();
+      return;
+    }
+    // Other clean-up runs while the backend works.
+    meanwhile?.();
+    waitForFileSync(done, timeoutMs + 200);
+    rmSync(done, { force: true });
   }
 
   private get androidRecordsDir(): string {

@@ -49,7 +49,16 @@ export interface AndroidUndoMessage {
   type: 'android-undo';
   id: number;
   timeoutMs: number;
+  /**
+   * Also write the file `androidUndoneFile(dataDir, id)` when done, for a main process that
+   * can't receive the answer (it's blocked, waiting, while Windows logs off).
+   */
+  markDone?: boolean;
 }
+
+/** The file the backend writes when an android-undo with markDone is done. */
+export const androidUndoneFile = (dataDir: string, id: number): string =>
+  `${dataDir}/${ANDROID_RECORDS_DIR}/undone-${Math.trunc(id)}`;
 
 /**
  * Main to backend: stop and delete stored bodies, then exit. Sent on quit instead of a

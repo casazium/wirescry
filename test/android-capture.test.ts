@@ -36,12 +36,18 @@ class FakeDevice implements CaptureIo {
   gone = false;
   /** Fails `reverse` with another error. */
   reverseFails: Error | undefined;
+  /** Never answers (a Wi-Fi link that died without the server noticing). */
+  hung = false;
+  private async answer(): Promise<void> {
+    if (this.hung) await new Promise(() => undefined);
+  }
 
   private ok(stdout = ''): ShellResult {
     return { stdout, stderr: '', exitCode: 0 };
   }
 
   async shell(_serial: string, command: string): Promise<ShellResult> {
+    await this.answer();
     if (this.gone) throw new AdbError("ADB: device 'R58' not found", "device 'R58' not found");
     this.commands.push(command);
     const get = /^settings get global (\S+)$/.exec(command);
@@ -73,6 +79,7 @@ class FakeDevice implements CaptureIo {
     loopbackOnly = false,
   ): Promise<number | undefined> {
     this.loopbackOnly.set(devicePort, loopbackOnly);
+    await this.answer();
     if (this.gone) throw new AdbError('gone');
     if (this.reverseFails) throw this.reverseFails;
     if (this.rebindRefused.has(devicePort) || this.rules.some((r) => r.device === `tcp:${devicePort}`)) {
@@ -91,6 +98,7 @@ class FakeDevice implements CaptureIo {
   }
 
   async reverseList(): Promise<ReverseRule[]> {
+    await this.answer();
     if (this.gone) throw new AdbError('gone');
     return this.rules.map((r) => ({ ...r }));
   }
@@ -522,6 +530,31 @@ describe('Quitting', () => {
     expect(phones.TAB!.rules.length).toBe(1);
   });
 
+  it('puts back a device even while a check on another one hangs (from the review)', async () => {
+    const phones: Record<string, FakeDevice> = { R58: new FakeDevice(), WIFI: new FakeDevice() };
+    const io: CaptureIo = {
+      shell: (serial, command) => phones[serial]!.shell(serial, command),
+      reverse: (serial, d, h, l) => phones[serial]!.reverse(serial, d, h, l),
+      reverseRemove: (serial, d, l) => phones[serial]!.reverseRemove(serial, d, l),
+      reverseList: (serial) => phones[serial]!.reverseList(),
+    };
+    const capture = new DeviceCapture({
+      io,
+      listeners: fakeListeners(),
+      records: new CaptureRecords(dir),
+      readBackMs: 50,
+      readBackIntervalMs: 10,
+    });
+    const wifi = { id: 'b'.repeat(32), serial: 'WIFI', label: 'Tablet', apiLevel: 33 };
+    await capture.capture(PIXEL);
+    await capture.capture(wifi);
+    phones.WIFI!.hung = true;
+    void capture.check(wifi);
+    await capture.stopAll((id) => (id === ID ? 'R58' : 'WIFI'), 300);
+    expect(phones.R58!.settings.get('http_proxy')).toBe(':0');
+    expect(phones.R58!.rules).toEqual([]);
+  });
+
   it('gives up on a device that hangs', async () => {
     const { device, capture } = setup();
     await capture.capture(PIXEL);
@@ -874,6 +907,37 @@ describe('Checking a capturing device', () => {
     expect(await readdir(dir)).toHaveLength(1);
   });
 
+  it('removes the rules on every port Wirescry used when the proxy changes mid-move', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    const { devicePort: old, hostPort } = capture.capturing(ID)!;
+    device.rules = [];
+    device.rebindRefused.add(old);
+    device.ignoresWrites = true;
+    await capture.check(PIXEL).catch(() => undefined);
+    // The old rule is back (say, from before a reconnect the device didn't make after all).
+    device.rebindRefused.delete(old);
+    device.rules.push(rule(old, hostPort));
+    device.ignoresWrites = false;
+    device.settings.set('http_proxy', 'proxy.corp:3128');
+    expect((await capture.check(PIXEL)).stopped).toMatch(/changed/);
+    expect(device.rules).toEqual([]);
+  });
+
+  it('still forgets the capture when removing its rule fails, once the proxy is back', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    const remove = device.reverseRemove.bind(device);
+    device.reverseRemove = async () => {
+      throw new AdbError('ADB: closed');
+    };
+    expect(await capture.stop(PIXEL)).toEqual({});
+    expect(device.settings.get('http_proxy')).toBe(':0');
+    expect(capture.capturing(ID)).toBeUndefined();
+    expect(await readdir(dir)).toEqual([]);
+    device.reverseRemove = remove;
+  });
+
   it('does nothing for a device that isn’t capturing', async () => {
     const { device, capture } = setup();
     expect(await capture.check(PIXEL)).toEqual({});
@@ -953,6 +1017,32 @@ describe('Resume', () => {
     expect(capture.isLeftover(ID)).toBe(true);
     expect(capture.capturing(ID)).toBeUndefined();
     expect(listeners.opened.size).toBe(0);
+  });
+
+  it('makes an old record’s rule loopback-only, and says so in the record', async () => {
+    const { capture, devicePort } = await leftover();
+    const [file] = await readdir(dir);
+    const written = JSON.parse(await readFile(path.join(dir, file!), 'utf8')) as CaptureRecord;
+    delete written.loopbackOnly;
+    await writeFile(path.join(dir, file!), JSON.stringify(written));
+    const fresh = setup({ device: (capture as unknown as { options: { io: FakeDevice } }).options.io });
+    await fresh.capture.load();
+    fresh.device.rules = [];
+    await fresh.capture.resume(PIXEL);
+    expect(fresh.device.loopbackOnly.get(devicePort)).toBe(true);
+    expect(JSON.parse(await readFile(path.join(dir, file!), 'utf8'))).toMatchObject({ loopbackOnly: true });
+  });
+
+  it('refuses to resume an old record when the Android version is unknown', async () => {
+    const { capture } = await leftover();
+    const [file] = await readdir(dir);
+    const written = JSON.parse(await readFile(path.join(dir, file!), 'utf8')) as CaptureRecord;
+    delete written.loopbackOnly;
+    await writeFile(path.join(dir, file!), JSON.stringify(written));
+    const fresh = setup({ device: (capture as unknown as { options: { io: FakeDevice } }).options.io });
+    await fresh.capture.load();
+    await expect(fresh.capture.resume({ ...PIXEL, apiLevel: undefined })).rejects.toThrow(/Use Restore/);
+    expect(fresh.capture.isLeftover(ID)).toBe(true);
   });
 
   it('refuses a device with nothing to resume', async () => {

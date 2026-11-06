@@ -176,6 +176,8 @@ export interface FakeDeviceState {
   commands: string[];
   /** The ADB transport id it's listed with; a reconnect gets a new one. */
   transportId?: number;
+  /** Its shell commands fail (exit code 1), as on a device too busy to answer. */
+  failShell?: boolean;
 }
 
 export function fakeDeviceState(serial = 'R58', props: Record<string, string> = {}): FakeDeviceState {
@@ -255,6 +257,7 @@ export async function startDeviceServer(
       if (shell) {
         const command = shell[1]!;
         device.commands.push(command);
+        if (device.failShell) return (void socket.end(shellPackets('', 1)), true);
         const get = /^settings get global (\S+)$/.exec(command);
         if (command === 'getprop') {
           socket.end(

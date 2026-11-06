@@ -121,7 +121,9 @@ function okOutput(result: ShellResult): string {
  */
 export function isNetworkSerial(serial: string): boolean {
   return (
-    /^(?:\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):\d{1,5}$/.test(serial) ||
+    // Loopback isn't Wi-Fi: Android containers and emulators connected with `adb connect`.
+    (/^(?:\[[0-9A-Fa-f:.]+(?:%[\w.-]+)?\]|[A-Za-z0-9.-]+):\d{1,5}$/.test(serial) &&
+      !/^(?:localhost|127\.\d+\.\d+\.\d+|\[::1\]):/.test(serial)) ||
     /\._adb(?:-tls-connect)?\._tcp\.?$/.test(serial)
   );
 }
