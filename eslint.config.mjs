@@ -6,7 +6,8 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['out/', 'dist/', 'release/', 'coverage/', 'node_modules/'] },
+  // .claude/: other sessions' checkouts (git worktrees) live there.
+  { ignores: ['out/', 'dist/', 'release/', 'coverage/', 'node_modules/', '.claude/'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

@@ -1,0 +1,88 @@
+name: Windows Docker Desktop
+
+# Docker setup tested against Docker Desktop with Linux containers on a real x64 Windows PC:
+# the setup Windows users have, which GitHub's Windows runners can't run (they have Docker
+# Engine with Windows containers only). Runs on the self-hosted runner described in
+# docs/WINDOWS-TEST-PC.md.
+#
+# Safety: this repository is public. Leaving pull requests out of this file is not what keeps
+# strangers' code off the PC: a fork's pull request runs the fork's own workflow files, and
+# one of them could ask for this runner's labels. Two things do:
+#   - the repository requires approval before workflows run for any outside contributor, and
+#   - a guard on the PC (docs/windows-runner-guard.ps1, run before every job) refuses any job
+#     that isn't this workflow, from main or a release tag, started by a push or by hand.
+# This workflow does nothing until the repository variable WINDOWS_TEST_PC is "true".
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-docker-desktop-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docker-desktop:
+    name: Docker Desktop (Windows test PC)
+    if: vars.WINDOWS_TEST_PC == 'true'
+    # Labels set when the runner was registered (docs/WINDOWS-TEST-PC.md).
+    runs-on: [self-hosted, Windows, X64, docker-desktop]
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          # Electron 45 runs Node 24.
+          node-version: 24
+
+      - run: npm ci
+
+      # The pipe helper Docker setup uses on Windows (casazium/wirescry#90), once it exists.
+      - uses: actions/setup-go@v7
+        if: hashFiles('native/docker-pipe/go.mod') != ''
+        with:
+          go-version-file: native/docker-pipe/go.mod
+          cache-dependency-path: native/docker-pipe/go.sum
+      - name: Build the Docker pipe helper
+        if: hashFiles('native/docker-pipe/go.mod') != ''
+        run: node scripts/build-docker-pipe.mjs
+
+      # At sign-in the runner can start before Docker Desktop's engine is up.
+      - name: Wait for Docker Desktop, in Linux containers mode
+        shell: pwsh
+        run: |
+          $deadline = (Get-Date).AddMinutes(3)
+          while ($true) {
+            $os = docker version --format '{{.Server.Os}}' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $os) { break }
+            if ((Get-Date) -gt $deadline) { throw "Docker isn't answering after 3 minutes. Is Docker Desktop running, and is the runner running as the signed-in user?" }
+            Start-Sleep -Seconds 5
+          }
+          if ($os -ne 'linux') { throw "Docker Desktop is in Windows-containers mode ($os). Switch it to Linux containers." }
+          docker version
+
+      # The tests with real containers. Required here: a Docker problem fails the job rather
+      # than skipping the tests.
+      - name: Docker setup against Docker Desktop
+        run: npx vitest run test/docker-e2e.test.ts
+        env:
+          WIRESCRY_REQUIRE_DOCKER_E2E: '1'
+          WIRESCRY_REQUIRE_PIPE_HELPER: '1'
+
+      # Leave no containers, networks, dangling images or stray processes behind.
+      - name: Clean up
+        if: always()
+        shell: pwsh
+        run: |
+          docker ps -aq --filter "name=wirescry" | ForEach-Object { docker rm -f $_ } | Out-Null
+          docker network prune -f | Out-Null
+          docker image prune -f | Out-Null
+          Get-Process wirescry-docker-pipe -ErrorAction SilentlyContinue | Stop-Process -Force
