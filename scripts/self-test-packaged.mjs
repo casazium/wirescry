@@ -10,6 +10,9 @@
  * .exe or .dll files on ARM PCs, because its unpacker can't read the ARM64 compression
  * filter (see ELECTRON_BUILDER_7Z_FILTER in release.yml).
  *
+ * Each Windows app must also have the Docker pipe helper (native/docker-pipe) in its resources,
+ * runnable, and signed when the build is (HAS_AZURE=true, from release.yml).
+ *
  *   node scripts/self-test-packaged.mjs     (on Linux: xvfb-run -a node …)
  */
 import { spawn, spawnSync } from 'node:child_process';
@@ -159,8 +162,42 @@ const underRosetta = (app) => process.platform === 'darwin' && process.arch === 
 const MAX_BACKEND_START_MS = 120_000;
 const MAX_ROSETTA_BACKEND_START_MS = 6 * 60_000;
 
+/** The Docker pipe helper in a Windows app: there, it runs, and it's signed if the build is. */
+function checkDockerHelper(app) {
+  if (process.platform !== 'win32' || !app.exe) return true;
+  const helper = join(dirname(app.exe), 'resources', 'wirescry-docker-pipe.exe');
+  if (!existsSync(helper)) {
+    console.log(`${app.name}: FAILED: no Docker pipe helper at ${helper}`);
+    return false;
+  }
+  // Given no settings, it says so and exits: enough to show it runs on this computer.
+  const result = spawnSync(helper, [], { input: '{}\n', encoding: 'utf8', timeout: 30_000 });
+  if (!/"error"/.test(result.stdout ?? '')) {
+    console.log(`${app.name}: FAILED: the Docker pipe helper didn't run: ${JSON.stringify(result)}`);
+    return false;
+  }
+  if (process.env.HAS_AZURE === 'true') {
+    const status = spawnSync(
+      'powershell.exe',
+      [
+        '-NoProfile',
+        '-Command',
+        `(Get-AuthenticodeSignature -LiteralPath '${helper.replace(/'/g, "''")}').Status`,
+      ],
+      { encoding: 'utf8' },
+    ).stdout?.trim();
+    if (status !== 'Valid') {
+      console.log(`${app.name}: FAILED: the Docker pipe helper's signature is ${status}`);
+      return false;
+    }
+  }
+  console.log(`${app.name}: Docker pipe helper OK`);
+  return true;
+}
+
 let ok = true;
 for (const app of apps) {
+  ok = checkDockerHelper(app) && ok;
   app.maxStartMs = underRosetta(app) ? MAX_ROSETTA_BACKEND_START_MS : MAX_BACKEND_START_MS;
   let passed = await run(app);
   if (!passed && underRosetta(app)) {

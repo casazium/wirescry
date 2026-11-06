@@ -27,3 +27,6 @@ Thumbs.db
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# The Docker pipe helper, built by scripts/build-docker-pipe.mjs
+native/docker-pipe/bin/

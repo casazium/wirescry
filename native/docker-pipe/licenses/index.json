@@ -1,0 +1,20 @@
+[
+  {
+    "id": "github.com/Microsoft/go-winio@v0.6.4",
+    "license": "MIT",
+    "homepage": "https://github.com/microsoft/go-winio",
+    "file": "go-winio.txt"
+  },
+  {
+    "id": "golang.org/x/sys@v0.49.0",
+    "license": "BSD-3-Clause",
+    "homepage": "https://golang.org/x/sys",
+    "file": "golang.org-x-sys.txt"
+  },
+  {
+    "id": "Go standard library and runtime (go1.27.3)",
+    "license": "BSD-3-Clause",
+    "homepage": "https://go.dev",
+    "file": "go.txt"
+  }
+]

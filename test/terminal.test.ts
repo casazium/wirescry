@@ -380,8 +380,13 @@ describe('terminal setup', () => {
   });
 
   it("drops an older Wirescry's Windows relay pipe from DOCKER_HOST, and nothing else", () => {
-    const stale = 'npipe:////./pipe/wirescry-docker-0123456789ab';
-    expect(childEnv({ PATH: '/bin', DOCKER_HOST: stale }, {})).toEqual({ PATH: '/bin' });
+    // 0.1.16-0.1.18's names, and the unguessable ones since.
+    for (const stale of [
+      'npipe:////./pipe/wirescry-docker-0123456789ab',
+      'npipe:////./pipe/wirescry-docker-0123456789abcdef0123456789abcdef',
+    ]) {
+      expect(childEnv({ PATH: '/bin', DOCKER_HOST: stale }, {})).toEqual({ PATH: '/bin' });
+    }
     // The user's own Docker, and Wirescry's relay on macOS and Linux, are kept.
     for (const own of [
       'npipe:////./pipe/docker_engine',
@@ -391,7 +396,10 @@ describe('terminal setup', () => {
       expect(childEnv({ DOCKER_HOST: own }, {}).DOCKER_HOST).toBe(own);
     }
     // And Wirescry's own value, when it gives one, wins as before.
-    expect(childEnv({ DOCKER_HOST: stale }, { DOCKER_HOST: 'unix:///x' }).DOCKER_HOST).toBe('unix:///x');
+    expect(
+      childEnv({ DOCKER_HOST: 'npipe:////./pipe/wirescry-docker-0123456789ab' }, { DOCKER_HOST: 'unix:///x' })
+        .DOCKER_HOST,
+    ).toBe('unix:///x');
   });
 
   it('finds terminals for each platform', async () => {

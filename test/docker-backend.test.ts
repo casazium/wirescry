@@ -9,7 +9,6 @@ import { WebSocketServer } from 'ws';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { MOUNT_POINT } from '../src/backend/docker/container';
 import { parseDockerHost, type DockerEndpoint } from '../src/backend/docker/endpoint';
-import { WINDOWS_NOT_YET } from '../src/backend/docker/setup';
 import type { ProxyStatus } from '../src/shared/api';
 import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
@@ -63,9 +62,8 @@ const relaySocket = (status: ProxyStatus): string => {
   return endpoint.socketPath;
 };
 
-// Docker setup is off on Windows (WINDOWS_NOT_YET): there are no containers to set up, only the
-// host.docker.internal rule, which applies everywhere.
-const windows = process.platform === 'win32';
+// On Windows the backend runs the relay through the pipe helper (native/docker-pipe), found where
+// scripts/build-docker-pipe.mjs builds it. CI builds it first.
 
 describe('Docker setup in the backend', () => {
   let dataDir: string;
@@ -124,7 +122,7 @@ describe('Docker setup in the backend', () => {
 
   const status = (): ProxyStatus => (api.messages[0] as { status: ProxyStatus }).status;
 
-  it.skipIf(windows)('says Docker is set up, and gives terminals DOCKER_HOST', async () => {
+  it('says Docker is set up, and gives terminals DOCKER_HOST', async () => {
     expect(status().docker).toEqual({
       state: 'ready',
       // The daemon given to the backend, as given.
@@ -132,36 +130,33 @@ describe('Docker setup in the backend', () => {
     });
     expect(status().terminalEnv.DOCKER_HOST).toMatch(
       process.platform === 'win32'
-        ? /^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]{12}$/
+        ? /^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]{32}$/
         : /^unix:\/\/.+\/docker\.sock$/,
     );
     const script = await readFile(status().terminalScripts.posix!, 'utf8');
     expect(script).toContain(`export DOCKER_HOST='${status().terminalEnv.DOCKER_HOST}'`);
   });
 
-  it.skipIf(windows)(
-    "sets new containers up for this proxy's port, with the certificate folder",
-    async () => {
-      const reply = await dockerRequest(relaySocket(status()), 'POST', '/v1.47/containers/create', {
-        Image: 'alpine',
-      });
-      expect(reply.status).toBe(201);
-      const sent = daemon.creates.at(-1)!;
-      expect(sent.Env).toContain(`HTTP_PROXY=http://host.docker.internal:${backend.proxyPort}`);
-      const mount = (sent.HostConfig as { Mounts: Array<{ Source: string }> }).Mounts[0]!;
-      expect(mount.Source).toBe(path.join(dataDir, 'docker-config'));
-      // The folder holds the current certificate, and config with paths as the container sees them.
-      const ca = await readFile(backend.caCertPath, 'utf8');
-      expect((await readFile(path.join(mount.Source, 'ca.pem'), 'utf8')).trim()).toBe(ca.trim());
-      expect(await readFile(path.join(mount.Source, 'ca-bundle.pem'), 'utf8')).toContain(ca.trim());
-      expect(await readFile(path.join(mount.Source, 'php', 'wirescry.ini'), 'utf8')).toContain(
-        `${MOUNT_POINT}/ca-bundle.pem`,
-      );
-      expect(
-        (await readFile(path.join(mount.Source, 'java', 'wirescry-truststore.jks'))).length,
-      ).toBeGreaterThan(100);
-    },
-  );
+  it("sets new containers up for this proxy's port, with the certificate folder", async () => {
+    const reply = await dockerRequest(relaySocket(status()), 'POST', '/v1.47/containers/create', {
+      Image: 'alpine',
+    });
+    expect(reply.status).toBe(201);
+    const sent = daemon.creates.at(-1)!;
+    expect(sent.Env).toContain(`HTTP_PROXY=http://host.docker.internal:${backend.proxyPort}`);
+    const mount = (sent.HostConfig as { Mounts: Array<{ Source: string }> }).Mounts[0]!;
+    expect(mount.Source).toBe(path.join(dataDir, 'docker-config'));
+    // The folder holds the current certificate, and config with paths as the container sees them.
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    expect((await readFile(path.join(mount.Source, 'ca.pem'), 'utf8')).trim()).toBe(ca.trim());
+    expect(await readFile(path.join(mount.Source, 'ca-bundle.pem'), 'utf8')).toContain(ca.trim());
+    expect(await readFile(path.join(mount.Source, 'php', 'wirescry.ini'), 'utf8')).toContain(
+      `${MOUNT_POINT}/ca-bundle.pem`,
+    );
+    expect(
+      (await readFile(path.join(mount.Source, 'java', 'wirescry-truststore.jks'))).length,
+    ).toBeGreaterThan(100);
+  });
 
   /** A plain HTTP request through the proxy, as a client in a container sends it. */
   const viaProxy = (url: string, headers: Record<string, string> = {}) =>
@@ -230,7 +225,7 @@ describe('Docker setup in the backend', () => {
     expect(reply).toBe('101');
   });
 
-  it.skipIf(windows)('shows what happened to the last container on the Setup page', async () => {
+  it('shows what happened to the last container on the Setup page', async () => {
     await dockerRequest(relaySocket(status()), 'POST', '/v1.47/containers/create?name=shown', {
       Image: 'alpine',
     });
@@ -243,34 +238,31 @@ describe('Docker setup in the backend', () => {
       .toEqual({ name: 'shown', image: 'alpine', setUp: true });
   });
 
-  it.skipIf(windows)(
-    'can be turned off and on, remembering the choice, and keeps open terminals working',
-    async () => {
-      const socketPath = relaySocket(status());
-      await api.send({ command: 'setDockerSetup', enabled: false });
-      const latest = () =>
-        ([...api.messages].reverse().find((m) => m.type === 'status') as { status: ProxyStatus }).status;
-      expect(latest().docker.state).toBe('off');
-      expect(latest().terminalEnv.DOCKER_HOST).toBeUndefined();
-      expect(await readFile(latest().terminalScripts.posix!, 'utf8')).not.toContain('DOCKER_HOST');
-      expect(JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')).dockerSetup).toBe(false);
-      // A terminal that already has DOCKER_HOST still reaches Docker; its containers are left as written.
-      const before = daemon.creates.length;
-      expect(
-        (await dockerRequest(socketPath, 'POST', '/v1.47/containers/create', { Image: 'x' })).status,
-      ).toBe(201);
-      expect(daemon.creates[before]).toEqual({ Image: 'x' });
+  it('can be turned off and on, remembering the choice, and keeps open terminals working', async () => {
+    const socketPath = relaySocket(status());
+    await api.send({ command: 'setDockerSetup', enabled: false });
+    const latest = () =>
+      ([...api.messages].reverse().find((m) => m.type === 'status') as { status: ProxyStatus }).status;
+    expect(latest().docker.state).toBe('off');
+    expect(latest().terminalEnv.DOCKER_HOST).toBeUndefined();
+    expect(await readFile(latest().terminalScripts.posix!, 'utf8')).not.toContain('DOCKER_HOST');
+    expect(JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')).dockerSetup).toBe(false);
+    // A terminal that already has DOCKER_HOST still reaches Docker; its containers are left as written.
+    const before = daemon.creates.length;
+    expect((await dockerRequest(socketPath, 'POST', '/v1.47/containers/create', { Image: 'x' })).status).toBe(
+      201,
+    );
+    expect(daemon.creates[before]).toEqual({ Image: 'x' });
 
-      await api.send({ command: 'setDockerSetup', enabled: true });
-      expect(latest().docker.state).toBe('ready');
-      expect(latest().terminalEnv.DOCKER_HOST).toBeDefined();
-      expect(
-        JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')).dockerSetup,
-      ).toBeUndefined();
-    },
-  );
+    await api.send({ command: 'setDockerSetup', enabled: true });
+    expect(latest().docker.state).toBe('ready');
+    expect(latest().terminalEnv.DOCKER_HOST).toBeDefined();
+    expect(
+      JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')).dockerSetup,
+    ).toBeUndefined();
+  });
 
-  it.skipIf(windows)('closes the relay when it stops', async () => {
+  it('closes the relay when it stops', async () => {
     const socketPath = relaySocket(status());
     const second = await startBackend({
       dataDir: await mkdtemp(path.join(os.tmpdir(), 'wirescry-docker-stop-')),
@@ -342,9 +334,6 @@ describe('Docker setup when it does not apply', () => {
       });
       if (process.platform === 'linux') {
         expect(status.docker.state).toBe('ready');
-      } else if (windows) {
-        expect(status.docker).toMatchObject({ state: 'unsupported', error: WINDOWS_NOT_YET });
-        expect(status.terminalEnv.DOCKER_HOST).toBeUndefined();
       } else {
         expect(status.docker).toMatchObject({
           state: 'unsupported',
@@ -356,27 +345,6 @@ describe('Docker setup when it does not apply', () => {
       await daemon.close();
     }
   });
-
-  it.runIf(windows)(
-    'on Windows, says it doesn’t set Docker up yet, and gives terminals no DOCKER_HOST',
-    async () => {
-      const socketPath = `\\\\.\\pipe\\wirescry-test-desktop-${process.pid}`;
-      const daemon = await fakeDaemon(socketPath);
-      try {
-        const status = await statusWith({
-          endpoint: { kind: 'local', socketPath, host: `npipe:////./pipe/x` },
-        });
-        expect(status.docker).toEqual({
-          state: 'unsupported',
-          daemon: 'npipe:////./pipe/x',
-          error: WINDOWS_NOT_YET,
-        });
-        expect(status.terminalEnv.DOCKER_HOST).toBeUndefined();
-      } finally {
-        await daemon.close();
-      }
-    },
-  );
 
   it('does not relay to itself when DOCKER_HOST points at its own relay', async () => {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-docker-self-'));

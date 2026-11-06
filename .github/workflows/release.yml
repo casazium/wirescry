@@ -162,6 +162,16 @@ jobs:
 
       - run: npm ci
 
+      # Windows ships the Docker pipe helper (native/docker-pipe, Go) for x64 and arm64.
+      - uses: actions/setup-go@v7
+        if: runner.os == 'Windows'
+        with:
+          go-version-file: native/docker-pipe/go.mod
+          cache-dependency-path: native/docker-pipe/go.sum
+      - name: Build the Docker pipe helper
+        if: runner.os == 'Windows'
+        run: node scripts/build-docker-pipe.mjs --windows
+
       # The x64 Linux image has Xvfb, for Electron's display; make sure the arm64 one does.
       - name: Install Xvfb
         if: runner.os == 'Linux'
@@ -419,4 +429,6 @@ jobs:
         shell: bash
         env:
           WIRESCRY_EXPECT_PRO: ${{ needs.pro.outputs.sha != '' && '1' || '' }}
+          # As in the build job: a signed build's installed Docker pipe helper must be signed too.
+          HAS_AZURE: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.AZURE_SIGNING_ENDPOINT != '' }}
         run: node scripts/self-test-packaged.mjs

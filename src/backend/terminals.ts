@@ -88,9 +88,9 @@ export function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>)
   for (const [key, value] of Object.entries(base)) {
     if (!key.startsWith('ELECTRON_') && key !== 'NODE_CHANNEL_FD') env[key] = value;
   }
-  // Wirescry started from a terminal an older Wirescry opened on Windows inherits that one's
-  // DOCKER_HOST, a relay pipe that no longer exists there (Docker setup is off on Windows):
-  // don't pass it on.
+  // Wirescry started from a terminal Wirescry opened on Windows inherits that one's DOCKER_HOST,
+  // its own relay's pipe. Don't pass it on as it is: Docker setup adds it when the relay is
+  // running, and without the relay (Docker not found, or setup failed) it would lead nowhere.
   if (/^npipe:\/\/.*\/pipe\/wirescry-docker-[0-9a-f]+$/i.test(env.DOCKER_HOST ?? '')) delete env.DOCKER_HOST;
   return { ...env, ...extra };
 }

@@ -1,4 +1,5 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { DockerStatus } from '../../shared/api';
@@ -6,6 +7,7 @@ import { dockerBridgeChecker } from './bridges';
 import { firewallHint, type FirewallHint, type UfwFiles } from './firewall';
 import type { DaemonInfo } from './runtime';
 import { findDockerEndpoint, type DockerEndpoint } from './endpoint';
+import { findPipeHelper, PipeHelper } from './pipe-helper';
 import { DockerRelay, makePrivateDir, type ContainerCreated } from './relay';
 export type { ContainerCreated };
 
@@ -19,12 +21,9 @@ const SET_UP_LOOKUP_TIMEOUT_MS = 1000;
 const SET_UP_ADDRESS_TTL_MS = 10_000;
 /** The least time between two lookups of set-up containers' addresses. */
 const LOOKUP_SPACING_MS = 100;
-/**
- * Why Docker isn't set up on Windows. Docker there marks the end of a stream with an empty
- * message on its named pipe, which Node can neither see nor send, so through the relay
- * `docker run` hung after the container finished (test/docker-windows.test.ts shows it).
- */
-export const WINDOWS_NOT_YET = 'Wirescry doesn’t set up Docker on Windows yet.';
+/** Why Docker isn't set up on Windows when the helper that does its pipes (see PipeHelper) isn't there. */
+export const NO_PIPE_HELPER =
+  'Wirescry’s Docker helper (wirescry-docker-pipe.exe) is missing. Reinstall Wirescry to set up Docker.';
 /** Unix socket paths longer than this don't fit in sockaddr_un on macOS (104 bytes, with the NUL). */
 const MAX_SOCKET_PATH = 100;
 
@@ -46,6 +45,52 @@ export interface DockerSetupOptions {
   readUfw?: () => UfwFiles;
   /** Tests: this machine's interfaces instead of os.networkInterfaces(). */
   networkInterfaces?: () => ReturnType<typeof os.networkInterfaces>;
+  /**
+   * Windows: the helper that serves the relay's pipe and reaches Docker's (see PipeHelper).
+   * Found next to the app if omitted. Tests also give it elsewhere, where it uses Unix sockets.
+   */
+  pipeHelper?: string;
+}
+
+/** The file in the data folder holding the random part of the relay's pipe name on Windows. */
+export const PIPE_SECRET_FILE = 'docker-pipe-secret';
+const pipeSecrets = new Map<string, string>();
+
+/**
+ * Windows: a random part for the relay's pipe name, kept in the data folder (which only this
+ * user can read), so the name stays the same across restarts but can't be guessed. Pipe names
+ * are first come, first served: another user who knew it could create the pipe while the helper
+ * is down (restarting, or Wirescry closed) and catch Docker commands, registry logins included,
+ * from terminals Wirescry opened. If the file can't be kept, the name is random for this run.
+ */
+function pipeSecret(dataDir: string, platform: NodeJS.Platform): string {
+  const known = pipeSecrets.get(dataDir);
+  if (known) return known;
+  let secret: string | undefined;
+  // Only in a real folder: tests on other systems give Windows paths.
+  const onDisk = platform === process.platform;
+  const file = path.join(dataDir, PIPE_SECRET_FILE);
+  if (onDisk) {
+    try {
+      const saved = readFileSync(file, 'utf8').trim();
+      if (/^[0-9a-f]{32}$/.test(saved)) secret = saved;
+    } catch {
+      // Not made yet.
+    }
+  }
+  if (!secret) {
+    secret = randomBytes(16).toString('hex');
+    if (onDisk) {
+      try {
+        mkdirSync(dataDir, { recursive: true });
+        writeFileSync(file, `${secret}\n`, { mode: 0o600 });
+      } catch {
+        // Random for this run only.
+      }
+    }
+  }
+  pipeSecrets.set(dataDir, secret);
+  return secret;
 }
 
 /** Where the relay listens, and the DOCKER_HOST value for it. Stable across restarts, so open terminals keep working. */
@@ -57,12 +102,14 @@ export function relayAddress(
   dockerHost: string;
   dir?: string;
 } {
-  const id = createHash('sha256').update(dataDir).digest('hex').slice(0, 12);
   if (platform === 'win32') {
-    const name = `wirescry-docker-${id}`;
+    const id = createHash('sha256').update(dataDir).update(pipeSecret(dataDir, platform)).digest('hex');
+    const name = `wirescry-docker-${id.slice(0, 32)}`;
     return { listenPath: `\\\\.\\pipe\\${name}`, dockerHost: `npipe:////./pipe/${name}` };
   }
-  // Unix paths, whatever this process's own platform is.
+  const id = createHash('sha256').update(dataDir).digest('hex').slice(0, 12);
+  // Unix paths, whatever this process's own platform is. Unix sockets are files in a folder
+  // only this user can open, so their names needn't be secret.
   let dir = path.posix.join(dataDir, 'docker');
   // Too long for a socket, or with a space (macOS's "Application Support"), which Docker
   // clients other than the CLI, such as Java's, refuse in DOCKER_HOST.
@@ -136,9 +183,19 @@ export class DockerSetup {
     } catch {
       this.endpoint = { kind: 'none' };
     }
-    // Not on Windows yet: see WINDOWS_NOT_YET. No relay, so terminals don't get DOCKER_HOST.
-    if (this.endpoint.kind === 'local' && !this.relay && this.platform !== 'win32') {
+    if (this.endpoint.kind === 'local' && !this.relay) {
       const address = relayAddress(this.options.dataDir, this.platform);
+      // Windows: Node can't serve or use Docker's kind of named pipe fully, so the helper does
+      // the pipes (see PipeHelper). Tests give a helper elsewhere too.
+      const helper =
+        this.options.pipeHelper ?? (this.platform === 'win32' ? findPipeHelper(this.platform) : undefined);
+      const transport = helper
+        ? new PipeHelper({
+            executable: helper,
+            listenPath: address.listenPath,
+            onChange: () => this.options.onStatusChange?.(),
+          })
+        : undefined;
       const relay = new DockerRelay({
         listenPath: address.listenPath,
         upstream: () => this.endpoint,
@@ -150,8 +207,10 @@ export class DockerSetup {
         },
         platform: this.platform,
         active: () => this.active,
+        transport,
       });
       try {
+        if (this.platform === 'win32' && !transport) throw new Error(NO_PIPE_HELPER);
         if (address.dir) await makePrivateDir(address.dir);
         await relay.start();
         this.relay = relay;
@@ -172,9 +231,10 @@ export class DockerSetup {
     const { endpoint } = this;
     if (endpoint.kind === 'none') return { state: 'none' };
     if (endpoint.kind === 'remote') return { state: 'remote', daemon: endpoint.host };
-    if (this.platform === 'win32')
-      return { state: 'unsupported', daemon: endpoint.host, error: WINDOWS_NOT_YET };
     if (!this.relay) return { state: 'failed', daemon: endpoint.host, error: this.error ?? 'Not started.' };
+    // The helper (Windows) stopped and is starting again, or couldn't.
+    const problem = this.relay.problem();
+    if (problem) return { state: 'failed', daemon: endpoint.host, error: problem };
     if (!this.active) return { state: 'off', daemon: endpoint.host };
     if (this.unsupported) return { state: 'unsupported', daemon: endpoint.host, error: this.unsupported };
     const last = this.lastContainer;

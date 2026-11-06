@@ -6,6 +6,8 @@
  * - THIRD_PARTY_NOTICES.txt: every npm package in the app. That's the production
  *   dependencies (shipped as node_modules) plus the packages bundled into the built
  *   code, which the build lists in out/<part>/.bundled-packages.json.
+ *   Also the Go modules in Windows' Docker pipe helper (native/docker-pipe), from
+ *   native/docker-pipe/licenses, which must match the helper's go.mod.
  * - out/licenses-electron: Electron's LICENSE (as LICENSE.electron.txt) and
  *   LICENSES.chromium.html, for macOS builds, which electron-builder leaves them out
  *   of. Windows and Linux builds already carry them.
@@ -176,6 +178,30 @@ for (const dir of dirs) {
   entries.push({ id, license: license ?? 'see the license text', homepage: pkg.homepage, files });
 }
 entries.sort((a, b) => a.id.localeCompare(b.id));
+
+// The Docker pipe helper (Windows) is Go: its modules and Go itself are built into it.
+const pipeDir = join(root, 'native/docker-pipe');
+const goNotices = JSON.parse(readFileSync(join(pipeDir, 'licenses/index.json'), 'utf8'));
+const goMod = readFileSync(join(pipeDir, 'go.mod'), 'utf8');
+const toolchain = /^toolchain go(\S+)$/m.exec(goMod)?.[1];
+// Every module built in, direct or indirect, in a require block or on a line of its own.
+const required = [...goMod.matchAll(/^(?:require\s+|\s+)([^\s()]+) (v\S+)(?:\s+\/\/.*)?$/gm)].map(
+  ([, mod, version]) => `${mod}@${version}`,
+);
+if (required.length === 0)
+  fail('native/docker-pipe/go.mod requires nothing: the notices check is out of date');
+const listed = new Set(goNotices.map((n) => n.id));
+for (const id of [...required, `Go standard library and runtime (go${toolchain})`]) {
+  if (!listed.has(id)) fail(`native/docker-pipe/licenses/index.json has no notice for ${id} (from go.mod)`);
+}
+for (const notice of goNotices) {
+  entries.push({
+    id: `${notice.id} (in wirescry-docker-pipe.exe, Windows)`,
+    license: notice.license,
+    homepage: notice.homepage,
+    files: [{ name: 'LICENSE', text: readFileSync(join(pipeDir, 'licenses', notice.file), 'utf8') }],
+  });
+}
 
 const rule = '-'.repeat(78);
 let text =
