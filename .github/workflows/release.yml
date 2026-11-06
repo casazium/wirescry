@@ -429,4 +429,6 @@ jobs:
         shell: bash
         env:
           WIRESCRY_EXPECT_PRO: ${{ needs.pro.outputs.sha != '' && '1' || '' }}
+          # As in the build job: a signed build's installed Docker pipe helper must be signed too.
+          HAS_AZURE: ${{ secrets.AZURE_TENANT_ID != '' && secrets.AZURE_CLIENT_ID != '' && secrets.AZURE_CLIENT_SECRET != '' && vars.AZURE_SIGNING_ENDPOINT != '' }}
         run: node scripts/self-test-packaged.mjs

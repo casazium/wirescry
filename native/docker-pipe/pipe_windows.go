@@ -29,13 +29,20 @@ func listenLocal(path string) (net.Listener, error) {
 }
 
 // ownerOnly lets only this user and SYSTEM open the pipe: anyone else could otherwise use
-// Docker through it as this user.
+// Docker through it as this user. When Wirescry runs elevated (as administrator), the pipe
+// also gets a high integrity label, so this user's ordinary, non-elevated programs can't use
+// an elevated Wirescry's Docker access either (they can't write to it).
 func ownerOnly() (string, error) {
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	token := windows.GetCurrentProcessToken()
+	user, err := token.GetTokenUser()
 	if err != nil {
 		return "", err
 	}
-	return "D:P(A;;GA;;;SY)(A;;GA;;;" + user.User.Sid.String() + ")", nil
+	sddl := "D:P(A;;GA;;;SY)(A;;GA;;;" + user.User.Sid.String() + ")"
+	if token.IsElevated() {
+		sddl += "S:(ML;;NW;;;HI)"
+	}
+	return sddl, nil
 }
 
 // dialLocal connects to Docker's pipe as the Docker CLI does. go-winio waits while all its

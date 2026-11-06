@@ -130,7 +130,7 @@ describe('Docker setup in the backend', () => {
     });
     expect(status().terminalEnv.DOCKER_HOST).toMatch(
       process.platform === 'win32'
-        ? /^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]{12}$/
+        ? /^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]{32}$/
         : /^unix:\/\/.+\/docker\.sock$/,
     );
     const script = await readFile(status().terminalScripts.posix!, 'utf8');

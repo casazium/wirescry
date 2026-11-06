@@ -1,12 +1,12 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { bridgeSubnets, dockerBridgeChecker } from '../src/backend/docker/bridges';
 import { composeNames } from '../src/backend/docker/compose';
 import { findDockerEndpoint, parseDockerHost } from '../src/backend/docker/endpoint';
-import { relayAddress } from '../src/backend/docker/setup';
+import { PIPE_SECRET_FILE, relayAddress } from '../src/backend/docker/setup';
 
 let home: string;
 beforeEach(async () => {
@@ -181,12 +181,33 @@ describe('relayAddress', () => {
     expect(a.listenPath.startsWith(os.tmpdir())).toBe(true);
     expect(Buffer.byteLength(a.listenPath)).toBeLessThan(104);
   });
-  it('is a named pipe on Windows, different per data folder', () => {
+  it('is a named pipe on Windows, different per data folder, and not guessable from it', () => {
     const a = relayAddress('C:\\Users\\me\\AppData\\Roaming\\Wirescry', 'win32');
-    expect(a.listenPath).toMatch(/^\\\\\.\\pipe\\wirescry-docker-[0-9a-f]{12}$/);
-    expect(a.dockerHost).toMatch(/^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]{12}$/);
+    expect(a.listenPath).toMatch(/^\\\\\.\\pipe\\wirescry-docker-[0-9a-f]{32}$/);
+    expect(a.dockerHost).toMatch(/^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]{32}$/);
+    expect(relayAddress('C:\\Users\\me\\AppData\\Roaming\\Wirescry', 'win32')).toEqual(a);
     expect(relayAddress('C:\\other', 'win32').listenPath).not.toBe(a.listenPath);
+    // Not the old name, which anyone could work out from the data folder.
+    const guessable = createHash('sha256').update('C:\\Users\\me\\AppData\\Roaming\\Wirescry').digest('hex');
+    expect(a.listenPath).not.toContain(guessable.slice(0, 12));
   });
+  it.runIf(process.platform === 'win32')(
+    'keeps the random part of the pipe name in the data folder, so it stays across restarts',
+    async () => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-pipe-'));
+      try {
+        const a = relayAddress(dir);
+        const secret = (await readFile(path.join(dir, PIPE_SECRET_FILE), 'utf8')).trim();
+        expect(secret).toMatch(/^[0-9a-f]{32}$/);
+        // A new run (vi.resetModules forgets what this one remembered) finds the same name.
+        vi.resetModules();
+        const fresh = await import('../src/backend/docker/setup');
+        expect(fresh.relayAddress(dir)).toEqual(a);
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('composeNames', () => {

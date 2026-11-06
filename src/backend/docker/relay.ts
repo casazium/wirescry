@@ -784,22 +784,40 @@ export class DockerRelay {
         return;
       }
       // Through the helper (Windows), Docker being unreachable comes back as its answer: say
-      // so as for any other request, rather than pass the helper's wording on.
-      const first = (): void => {
-        const chunk = daemon.read() as Buffer | null;
-        daemon.off('readable', first);
-        const error = chunk ? dialErrorIn(chunk) : undefined;
-        if (error) {
+      // so as for any other request, rather than pass the helper's wording on. Its answer may
+      // arrive in pieces, so what comes first is gathered until it's clear what it is.
+      let pending = Buffer.alloc(0);
+      let ended = false;
+      const decide = (): void => {
+        const verdict = dialErrorIn(pending, ended);
+        if (verdict === 'wait') return;
+        daemon.off('readable', onReadable);
+        daemon.off('end', onEnd);
+        if (verdict) {
           connected = false;
           client.unpipe(daemon);
           daemon.destroy();
-          endWithError(client, `Wirescry couldn't reach Docker at ${target}. ${unreachableReason(error)}`);
+          endWithError(client, `Wirescry couldn't reach Docker at ${target}. ${unreachableReason(verdict)}`);
           return;
         }
-        if (chunk) daemon.unshift(chunk);
+        if (ended) {
+          client.end(pending);
+          return;
+        }
+        if (pending.length > 0) daemon.unshift(pending);
         daemon.pipe(client);
       };
-      daemon.on('readable', first);
+      const onReadable = (): void => {
+        let chunk: Buffer | null;
+        while ((chunk = daemon.read() as Buffer | null) !== null) pending = Buffer.concat([pending, chunk]);
+        decide();
+      };
+      const onEnd = (): void => {
+        ended = true;
+        decide();
+      };
+      daemon.on('readable', onReadable);
+      daemon.on('end', onEnd);
     });
     daemon.once('error', (error) => {
       if (connected) return destroyBoth();
@@ -822,15 +840,31 @@ export class DockerRelay {
   }
 }
 
-/** The error in the helper's answer when it couldn't reach Docker, if `chunk` starts one. */
-function dialErrorIn(chunk: Buffer): NodeJS.ErrnoException | undefined {
-  const text = chunk.subarray(0, 4096).toString('utf8');
-  if (!text.startsWith('HTTP/1.1 502 ')) return undefined;
-  const code = new RegExp(`\r\n${DIAL_ERROR_HEADER}: *([A-Z]+)\r\n`, 'i').exec(text)?.[1];
+const DIAL_ERROR_START = 'HTTP/1.1 502 ';
+/** How much of an answer is gathered at most to tell whether it's the helper's dial error. */
+const DIAL_ERROR_MAX = 4096;
+
+/**
+ * Whether what Docker's side of a taken-over connection sent first (`data`, all of it so far,
+ * and whether that's the end) is the helper's answer that it couldn't reach Docker: the error,
+ * undefined if it isn't, or 'wait' until more has arrived to tell.
+ */
+export function dialErrorIn(data: Buffer, ended: boolean): NodeJS.ErrnoException | undefined | 'wait' {
+  const text = data.subarray(0, DIAL_ERROR_MAX).toString('latin1');
+  if (!text.startsWith(DIAL_ERROR_START)) {
+    return DIAL_ERROR_START.startsWith(text) && !ended ? 'wait' : undefined;
+  }
+  const headEnd = text.indexOf('\r\n\r\n');
+  if (headEnd < 0) return ended || data.length >= DIAL_ERROR_MAX ? undefined : 'wait';
+  const head = text.slice(0, headEnd + 2);
+  const code = new RegExp(`\r\n${DIAL_ERROR_HEADER}: *([A-Z]+)\r\n`, 'i').exec(head)?.[1];
   if (!code) return undefined;
+  const length = Number(/\r\ncontent-length: *(\d+)\r\n/i.exec(head)?.[1] ?? 0);
+  const body = data.subarray(headEnd + 4, headEnd + 4 + length);
+  if (body.length < length && !ended && data.length < DIAL_ERROR_MAX) return 'wait';
   let message = code;
   try {
-    message = (JSON.parse(text.slice(text.indexOf('\r\n\r\n') + 4)) as { message?: string }).message ?? code;
+    message = (JSON.parse(body.toString('utf8')) as { message?: string }).message ?? code;
   } catch {
     // The code alone.
   }

@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PipeHelper } from '../src/backend/docker/pipe-helper';
-import { DockerRelay } from '../src/backend/docker/relay';
+import { dialErrorIn, DockerRelay } from '../src/backend/docker/relay';
 import { pipeHelperForTests } from './pipe-helper-binary';
 
 const helper = pipeHelperForTests();
@@ -192,5 +192,37 @@ describe('PipeHelper without its executable', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Telling the helper's dial error from Docker's answer on a taken-over connection", () => {
+  const body = JSON.stringify({ message: 'open \\\\.\\pipe\\docker_engine: Access is denied.' });
+  const answer = Buffer.from(
+    `HTTP/1.1 502 Bad Gateway\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nX-Wirescry-Dial-Error: EACCES\r\nConnection: close\r\n\r\n${body}`,
+  );
+
+  it('waits for the whole answer however it arrives, then reads the error', () => {
+    for (let i = 1; i < answer.length; i++) {
+      expect(dialErrorIn(answer.subarray(0, i), false)).toBe('wait');
+    }
+    expect(dialErrorIn(answer, false)).toMatchObject({
+      code: 'EACCES',
+      message: 'open \\\\.\\pipe\\docker_engine: Access is denied.',
+    });
+  });
+
+  it("passes Docker's own answers on at once", () => {
+    expect(dialErrorIn(Buffer.from('HTTP/1.1 101 UPGRADED\r\n'), false)).toBeUndefined();
+    expect(dialErrorIn(Buffer.from('H'), false)).toBe('wait');
+    expect(dialErrorIn(Buffer.from('HX'), false)).toBeUndefined();
+    // A 502 from Docker itself, without the helper's header.
+    const docker = Buffer.from('HTTP/1.1 502 Bad Gateway\r\nContent-Length: 2\r\n\r\n{}');
+    expect(dialErrorIn(docker, false)).toBeUndefined();
+  });
+
+  it('stops waiting at the end of the stream, or once 4 KB have come', () => {
+    expect(dialErrorIn(Buffer.from('HTTP/1.1 50'), true)).toBeUndefined();
+    expect(dialErrorIn(Buffer.from(`HTTP/1.1 502 ${'x'.repeat(5000)}`), false)).toBeUndefined();
+    expect(dialErrorIn(answer.subarray(0, answer.length - 3), true)).toMatchObject({ code: 'EACCES' });
   });
 });
