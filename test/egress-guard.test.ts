@@ -222,11 +222,14 @@ describe('Egress guard', () => {
     });
 
     it.each(['2130706433', '127.1', '0x7f.1', 'localhost.', 'LOCALHOST'])(
-      'the name %j, which the system resolver turns into this computer',
+      'the name %j, which resolvers may turn into this computer',
       async (name) => {
         const g = await start({ lookup: undefined });
         const reply = await connectTo(g, `${name}:${echoPort}`);
-        expect(reply.status).toBe(403);
+        // macOS and glibc resolve these to 127.0.0.1 (refused); Windows doesn't resolve the
+        // numeric forms at all (not found). Either way, nothing on this computer is reached.
+        expect([403, 502]).toContain(reply.status);
+        if (name.toLowerCase().startsWith('localhost')) expect(reply.status).toBe(403);
         expect(connects).toEqual([]);
       },
     );
