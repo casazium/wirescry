@@ -76,6 +76,7 @@ describe('backend', () => {
       'terminal config and Firefox profile',
       'proxy',
       'docker',
+      'android',
       'API',
       'plugins',
     ]);

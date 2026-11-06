@@ -30,6 +30,8 @@ import { writeShellScripts, writeTerminalConfig, type TerminalConfig } from './c
 import { detectTerminals, launchTerminal } from './terminals';
 import type { DockerEndpoint } from './docker/endpoint';
 import { DockerSetup } from './docker/setup';
+import { AndroidSetup, type AndroidSetupOptions } from './android/setup';
+import { findAdb } from './android/adb-server';
 import { Composer } from './composer';
 import { terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
@@ -56,6 +58,11 @@ export interface BackendOptions {
   dataDir: string;
   /** false: don't set up Docker. Tests turn it off, or give a daemon of their own. */
   docker?: boolean;
+  /**
+   * Android setup: false turns it off, options turn it on (tests). Left out, it follows the
+   * experimentalAndroid setting.
+   */
+  android?: false | AndroidSetupOptions;
   /** Where the user's Docker daemon is. Found the way the Docker CLI finds it if omitted. */
   dockerEndpoint?: () => Promise<DockerEndpoint>;
   /** Called as each step of starting up finishes, to log how long they take. */
@@ -150,6 +157,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   // The API needs the proxy port and the proxy needs somewhere to send events,
   // so events go through this indirection until the API is up.
   let broadcast: (message: ServerMessage) => void = () => undefined;
+  // Set once the proxy is up; status() can be asked for before that (e.g. by Docker setup).
+  // Written once the proxy is up; status() can be asked for before that (Docker's callbacks).
+  let terminalScripts: Awaited<ReturnType<typeof writeShellScripts>> = {};
+  // eslint-disable-next-line prefer-const -- assigned later, after what status() reads exists
+  let android: AndroidSetup | undefined;
   const updates = new UpdateBatcher((message) => broadcast(message));
   let paused = false;
 
@@ -186,6 +198,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     terminalScripts,
     plugins: pluginHost.statuses(),
     docker: docker.status(),
+    ...(android ? { android: android.status() } : {}),
   });
 
   const currentTerminalEnv = (): Record<string, string> => ({
@@ -367,7 +380,23 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   await docker.refresh();
   step('docker');
   // Rewritten whenever the port or certificate changes, so the one-line setup stays current.
-  let terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+  terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+  // Android devices over the user's ADB server. Started in the background: finding or starting
+  // the server can take a few seconds, and nothing else waits for it.
+  const androidOn =
+    options.android === false
+      ? false
+      : options.android !== undefined || settings.experimentalAndroid === true;
+  android = androidOn
+    ? new AndroidSetup({
+        findAdb: () => findAdb({ setting: settings.adbPath }),
+        log: (message) => console.log(`[wirescry] android: ${message}`),
+        ...(options.android || {}),
+        onStatusChange: () => broadcast({ type: 'status', status: status() }),
+      })
+    : undefined;
+  void android?.start();
+  step('android');
 
   /** Restarts the proxy, going back to the old port if the new one can't be used. */
   const restartProxy = async (port: number | undefined): Promise<void> => {
@@ -649,6 +678,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         paused = command.paused;
         broadcast({ type: 'paused', paused });
         return undefined;
+      case 'androidRefresh':
+        if (!android) throw new Error('Android setup is off.');
+        await android.refresh();
+        return undefined;
       case 'setDockerSetup': {
         docker.setActive(command.enabled === true);
         settings = { ...settings, dockerSetup: command.enabled === true ? undefined : false };
@@ -779,6 +812,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
+      android?.stop();
       await Promise.all([api.stop(), proxy.stop(), devices.stopAll(), formatter.close(), docker.stop()]);
       await bodies.close();
     },

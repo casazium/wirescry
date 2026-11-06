@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { BrowserInfo, ProxyStatus } from '../../shared/api';
 import type { Command } from './api-client';
 import { CertificateTrust } from './CertificateTrust';
+import { AndroidSection } from './AndroidSection';
 import { DockerSection } from './DockerSection';
 import { TerminalSection } from './TerminalSection';
 
@@ -176,6 +177,8 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
       />
 
       <DockerSection status={status} connected={connected} send={send} CopyButton={CopyButton} />
+
+      <AndroidSection status={status} connected={connected} send={send} />
 
       <section>
         <h2>Manual setup</h2>
