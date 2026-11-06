@@ -548,3 +548,33 @@ describe('Reverse rules, against recorded replies', () => {
     expect(connections).toBe(0);
   });
 });
+
+describe('Loopback-only reverse rules, against recorded replies', () => {
+  const LOOPBACK = loadRecording('reverse-localhost');
+
+  it('asks for tcp:localhost:N, which adbd binds to 127.0.0.1 only', async () => {
+    fake = await startFakeAdb({ recordings: [LOOPBACK] });
+    expect(await adbReverse(fake.endpoint, EMULATOR, 47997, 18999, { loopbackOnly: true })).toBe(47997);
+    // First clears any note the ADB server kept of that name (adbd refuses it: recorded), then asks.
+    expect(fake.requests.map((r) => r[1])).toEqual([
+      'reverse:killforward:tcp:localhost:47997',
+      'reverse:forward:norebind:tcp:localhost:47997;tcp:18999',
+    ]);
+  });
+
+  it('removes it by the name adbd gave it, then clears the server’s note of the localhost name', async () => {
+    fake = await startFakeAdb({ recordings: [LOOPBACK] });
+    await adbReverseRemove(fake.endpoint, EMULATOR, 47997, { loopbackOnly: true });
+    expect(fake.requests.map((r) => r[1])).toEqual([
+      'reverse:killforward:tcp:47997',
+      // adbd refuses this one (recorded); that's fine.
+      'reverse:killforward:tcp:localhost:47997',
+    ]);
+  });
+
+  it('sends only the plain form when not asked', async () => {
+    fake = await startFakeAdb({ recordings: [loadRecording('reverse')] });
+    await adbReverseRemove(fake.endpoint, EMULATOR, 43210);
+    expect(fake.requests.map((r) => r[1])).toEqual(['reverse:killforward:tcp:43210']);
+  });
+});

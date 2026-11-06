@@ -170,6 +170,8 @@ export interface FakeDeviceState {
   props: Record<string, string>;
   androidId: string;
   rules: Array<{ device: string; host: string }>;
+  /** Whether each rule was made loopback-only (tcp:localhost:N), by its listed name. */
+  loopbackRules: Map<string, boolean>;
   /** Shell commands it ran, in order. */
   commands: string[];
 }
@@ -190,6 +192,7 @@ export function fakeDeviceState(serial = 'R58', props: Record<string, string> = 
     },
     androidId: '0123456789abcdef',
     rules: [],
+    loopbackRules: new Map(),
     commands: [],
   };
 }
@@ -265,13 +268,16 @@ export async function startDeviceServer(devices: FakeDeviceState[]): Promise<Fak
         socket.end(`OKAY${frame(device.rules.map((r) => `host-7 ${r.device} ${r.host}\n`).join(''))}`);
         return true;
       }
-      const forward = /^reverse:forward:norebind:(tcp:\d+);(tcp:\d+)$/.exec(second ?? '');
+      // As measured on API 37: tcp:localhost:N binds loopback only, and is listed as tcp:N.
+      const forward = /^reverse:forward:norebind:tcp:(localhost:)?(\d+);(tcp:\d+)$/.exec(second ?? '');
       if (forward) {
-        if (device.rules.some((r) => r.device === forward[1])) {
+        const spec = `tcp:${forward[2]}`;
+        if (device.rules.some((r) => r.device === spec)) {
           socket.end(`OKAYFAIL${frame('cannot rebind existing socket')}`);
         } else {
-          device.rules.push({ device: forward[1]!, host: forward[2]! });
-          socket.end(`OKAYOKAY${frame(forward[1]!.slice(4))}`);
+          device.rules.push({ device: spec, host: forward[3]! });
+          device.loopbackRules.set(spec, forward[1] !== undefined);
+          socket.end(`OKAYOKAY${frame(forward[2]!)}`);
         }
         return true;
       }

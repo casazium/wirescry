@@ -85,6 +85,8 @@ export interface CaptureRecord {
   previousProxy: string | null;
   devicePort: number;
   hostPort: number;
+  /** Whether the reverse rule was made as tcp:localhost:<port> (Android 11+). */
+  loopbackOnly?: boolean;
   startedAt: string;
 }
 
@@ -103,6 +105,7 @@ function isRecord(value: unknown): value is CaptureRecord {
     (r.previousProxy === null || (typeof r.previousProxy === 'string' && isPlainProxy(r.previousProxy))) &&
     port(r.devicePort) &&
     port(r.hostPort) &&
+    (r.loopbackOnly === undefined || typeof r.loopbackOnly === 'boolean') &&
     typeof r.startedAt === 'string'
   );
 }
@@ -154,8 +157,13 @@ export class CaptureRecords {
 /** What capture needs from ADB, for one device by its transport serial. */
 export interface CaptureIo {
   shell(serial: string, command: string): Promise<ShellResult>;
-  reverse(serial: string, devicePort: number, hostPort: number): Promise<number>;
-  reverseRemove(serial: string, devicePort: number): Promise<void>;
+  reverse(
+    serial: string,
+    devicePort: number,
+    hostPort: number,
+    loopbackOnly: boolean,
+  ): Promise<number | undefined>;
+  reverseRemove(serial: string, devicePort: number, loopbackOnly: boolean): Promise<void>;
   reverseList(serial: string): Promise<ReverseRule[]>;
 }
 
@@ -164,7 +172,15 @@ export interface CaptureTarget {
   id: string;
   serial: string;
   label: string;
+  /** Its Android API level, which decides how its tunnel is made. Needed to capture. */
+  apiLevel?: number;
 }
+
+/**
+ * From Android 11 (API 30), adbd's reverse port listens on every interface unless asked for
+ * tcp:localhost:<port>; before that it listens on loopback anyway (see adbReverse).
+ */
+export const LOOPBACK_SPEC_FROM_API = 30;
 
 export interface CaptureOptions {
   io: CaptureIo;
@@ -318,6 +334,12 @@ export class DeviceCapture {
     // Only the proxy the user agreed to replace: if it has changed since, ask again.
     if (judged.kind === 'plain' && replaceProxy !== judged.value) return { needsConfirmation: judged.value };
     const previousProxy = judged.kind === 'plain' ? judged.value : null;
+    if (target.apiLevel === undefined) {
+      throw new CaptureError(
+        'Wirescry couldn’t read this device’s Android version, so it can’t set up its tunnel safely.',
+      );
+    }
+    const loopbackOnly = target.apiLevel >= LOOPBACK_SPEC_FROM_API;
 
     const source: ExchangeSource = { kind: 'android', id: target.id, label: target.label };
     const { port: hostPort } = await listeners.open(source);
@@ -328,6 +350,7 @@ export class DeviceCapture {
       previousProxy,
       devicePort: 0,
       hostPort,
+      loopbackOnly,
       startedAt: new Date().toISOString(),
     };
     let wroteRecord = false;
@@ -347,11 +370,25 @@ export class DeviceCapture {
       wroteRecord = true;
       for (let attempt = 1; ; attempt++) {
         try {
-          await io.reverse(target.serial, record.devicePort, hostPort);
+          const reported = await io.reverse(target.serial, record.devicePort, hostPort, loopbackOnly);
           reversed = true;
+          // A device too old for the localhost form would listen on another port: don't use it.
+          if (loopbackOnly && reported !== record.devicePort) {
+            // Undo that rule, wherever it is (the outer cleanup only knows the port asked for).
+            reversed = false;
+            if (reported !== undefined)
+              await io.reverseRemove(target.serial, reported, false).catch(() => undefined);
+            throw new CaptureError(
+              `The device made its tunnel on port ${String(reported)} instead of ${record.devicePort}, so Wirescry undid it.`,
+            );
+          }
           break;
         } catch (error) {
-          const rebind = error instanceof AdbError && /cannot rebind/i.test(error.serverMessage ?? '');
+          // "cannot rebind" for tcp:N; adbd answers "cannot bind listener" for a localhost rule.
+          const rebind =
+            !reversed &&
+            error instanceof AdbError &&
+            /cannot rebind|cannot bind listener/i.test(error.serverMessage ?? '');
           if (!rebind || attempt >= REVERSE_TRIES) throw error;
           taken.add(record.devicePort);
           record.devicePort = this.pickPort(taken);
@@ -380,7 +417,8 @@ export class DeviceCapture {
           );
         }
       }
-      if (reversed) await io.reverseRemove(target.serial, record.devicePort).catch(() => undefined);
+      if (reversed)
+        await io.reverseRemove(target.serial, record.devicePort, loopbackOnly).catch(() => undefined);
       if (wroteRecord) await records.remove(target.id).catch(() => undefined);
       await listeners.close(target.id).catch(() => undefined);
       throw error;
@@ -432,7 +470,7 @@ export class DeviceCapture {
     const ours = (await io.reverseList(target.serial)).some(
       (r) => r.device === `tcp:${record.devicePort}` && r.host === `tcp:${record.hostPort}`,
     );
-    if (ours) await io.reverseRemove(target.serial, record.devicePort);
+    if (ours) await io.reverseRemove(target.serial, record.devicePort, record.loopbackOnly === true);
     await records.remove(target.id);
     this.active.delete(target.id);
     this.left.delete(target.id);
@@ -459,10 +497,12 @@ export class DeviceCapture {
       const ours = (await io.reverseList(target.serial)).some(
         (r) => r.device === `tcp:${record.devicePort}` && r.host === `tcp:${record.hostPort}`,
       );
-      if (ours) await io.reverseRemove(target.serial, record.devicePort);
+      if (ours) await io.reverseRemove(target.serial, record.devicePort, record.loopbackOnly === true);
       record.hostPort = hostPort;
+      // A record from before loopback-only rules: remake it the safe way if the device allows.
+      record.loopbackOnly = record.loopbackOnly ?? (target.apiLevel ?? 0) >= LOOPBACK_SPEC_FROM_API;
       await records.write(record);
-      await io.reverse(target.serial, record.devicePort, hostPort);
+      await io.reverse(target.serial, record.devicePort, hostPort, record.loopbackOnly);
     });
   }
 

@@ -76,6 +76,12 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
       await expect.poll(() => device()?.capture).toBeTruthy();
       const { devicePort } = device()!.capture!;
       expect(await adb('shell', 'settings', 'get', 'global', 'http_proxy')).toBe(`127.0.0.1:${devicePort}`);
+      // On Android 11+, the device's end of the tunnel listens on its own loopback only.
+      if ((device()!.apiLevel ?? 0) >= 30) {
+        const listening = (await adb('shell', `ss -ltn 2>/dev/null | grep ':${devicePort} '`)).trim();
+        expect(listening).toMatch(new RegExp(`127\\.0\\.0\\.1:${devicePort}\\s`));
+        expect(listening).not.toMatch(new RegExp(`\\*:${devicePort}\\s`));
+      }
 
       // Answered by Wirescry itself: proves the tunnel without the internet.
       expect(await fromDevice(devicePort, 'http://wirescry.internal/', 'wirescry.internal', 4)).toMatch(

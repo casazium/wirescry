@@ -18,7 +18,7 @@ import {
 import type { ExchangeSource } from '../src/shared/api';
 
 const ID = 'a'.repeat(32);
-const PIXEL = { id: ID, serial: 'R58', label: 'Pixel 8' };
+const PIXEL = { id: ID, serial: 'R58', label: 'Pixel 8', apiLevel: 35 };
 
 /** A device: its global settings and reverse rules, and switches for things going wrong. */
 class FakeDevice implements CaptureIo {
@@ -61,7 +61,18 @@ class FakeDevice implements CaptureIo {
     throw new Error(`unexpected command ${command}`);
   }
 
-  async reverse(_serial: string, devicePort: number, hostPort: number): Promise<number> {
+  /** Whether each rule was asked for loopback-only, by device port. */
+  loopbackOnly = new Map<number, boolean>();
+  /** Removals asked for, with the form. */
+  removals: Array<[number, boolean]> = [];
+
+  async reverse(
+    _serial: string,
+    devicePort: number,
+    hostPort: number,
+    loopbackOnly = false,
+  ): Promise<number | undefined> {
+    this.loopbackOnly.set(devicePort, loopbackOnly);
     if (this.gone) throw new AdbError('gone');
     if (this.reverseFails) throw this.reverseFails;
     if (this.rebindRefused.has(devicePort) || this.rules.some((r) => r.device === `tcp:${devicePort}`)) {
@@ -71,7 +82,8 @@ class FakeDevice implements CaptureIo {
     return devicePort;
   }
 
-  async reverseRemove(_serial: string, devicePort: number): Promise<void> {
+  async reverseRemove(_serial: string, devicePort: number, loopbackOnly = false): Promise<void> {
+    this.removals.push([devicePort, loopbackOnly]);
     const before = this.rules.length;
     this.rules = this.rules.filter((r) => r.device !== `tcp:${devicePort}`);
     if (this.rules.length === before)
@@ -478,8 +490,8 @@ describe('Quitting', () => {
     const phones: Record<string, FakeDevice> = { R58: new FakeDevice(), TAB: new FakeDevice() };
     const io: CaptureIo = {
       shell: (serial, command) => phones[serial]!.shell(serial, command),
-      reverse: (serial, d, h) => phones[serial]!.reverse(serial, d, h),
-      reverseRemove: (serial, d) => phones[serial]!.reverseRemove(serial, d),
+      reverse: (serial, d, h, l) => phones[serial]!.reverse(serial, d, h, l),
+      reverseRemove: (serial, d, l) => phones[serial]!.reverseRemove(serial, d, l),
       reverseList: (serial) => phones[serial]!.reverseList(),
     };
     const records = new CaptureRecords(dir);
@@ -491,7 +503,7 @@ describe('Quitting', () => {
       readBackIntervalMs: 10,
     });
     await capture.capture(PIXEL);
-    await capture.capture({ id: 'b'.repeat(32), serial: 'TAB', label: 'Tablet' });
+    await capture.capture({ id: 'b'.repeat(32), serial: 'TAB', label: 'Tablet', apiLevel: 33 });
     const started = Date.now();
     // The tablet isn't connected any more.
     await capture.stopAll((id) => (id === ID ? 'R58' : undefined), 500);
@@ -630,5 +642,115 @@ describe('What the review found', () => {
     await quitting;
     expect(device.settings.get('http_proxy')).toBe(':0');
     expect(device.rules).toEqual([]);
+  });
+});
+
+describe("Keeping the device's tunnel to itself", () => {
+  it.each([
+    [35, true],
+    [30, true],
+    [29, false],
+    [24, false],
+  ])('on API %i, asks for a loopback-only port: %s', async (apiLevel, loopbackOnly) => {
+    const { device, records, capture } = setup();
+    await capture.capture({ ...PIXEL, apiLevel });
+    const { devicePort } = capture.capturing(ID)!;
+    expect(device.loopbackOnly.get(devicePort)).toBe(loopbackOnly);
+    expect((await records.list())[0]!.loopbackOnly).toBe(loopbackOnly);
+    await capture.stop(PIXEL);
+    expect(device.removals).toEqual([[devicePort, loopbackOnly]]);
+  });
+
+  it("refuses a device whose Android version it couldn't read, changing nothing", async () => {
+    const { device, listeners, capture } = setup();
+    await expect(capture.capture({ ...PIXEL, apiLevel: undefined })).rejects.toThrow(/Android version/);
+    expect(device.rules).toEqual([]);
+    expect(listeners.opened.size).toBe(0);
+  });
+
+  it('removes a rule left by an earlier run the way it was made', async () => {
+    const first = setup();
+    await first.capture.capture(PIXEL);
+    const { devicePort } = first.capture.capturing(ID)!;
+    const { capture } = setup({ device: first.device });
+    await capture.load();
+    await capture.stop(PIXEL);
+    expect(first.device.removals).toEqual([[devicePort, true]]);
+  });
+});
+
+describe('Loopback-only rules, the hard cases', () => {
+  it('tries another port when adbd says a localhost rule cannot bind', async () => {
+    const device = new FakeDevice();
+    const ports = [0.5, 0.25];
+    const { capture } = setup({ device, random: () => ports.shift() ?? 0.75 });
+    const reverse = device.reverse.bind(device);
+    let first = true;
+    device.reverse = async (...args) => {
+      if (first) {
+        first = false;
+        throw new AdbError(
+          'ADB: cannot bind listener: Address already in use',
+          'cannot bind listener: Address already in use',
+        );
+      }
+      return reverse(...args);
+    };
+    await capture.capture(PIXEL);
+    expect(capture.capturing(ID)!.devicePort).toBe(30000);
+  });
+
+  it('undoes a tunnel the device made on another port than asked, changing nothing else', async () => {
+    const device = new FakeDevice();
+    const { records, capture } = setup({ device });
+    device.reverse = async (_s, _d, hostPort) => {
+      // As Android 7's adbd would: "localhost:N" read as port 0, a random port.
+      device.rules.push({ device: 'tcp:51234', host: `tcp:${hostPort}` });
+      return 51234;
+    };
+    await expect(capture.capture(PIXEL)).rejects.toThrow(/port 51234 instead of/);
+    expect(device.rules).toEqual([]);
+    expect(device.settings.get('http_proxy')).toBe(':0');
+    expect(await records.list()).toEqual([]);
+  });
+
+  it('refuses a localhost rule when the device reports no port at all', async () => {
+    const device = new FakeDevice();
+    const { capture } = setup({ device });
+    const reverse = device.reverse.bind(device);
+    device.reverse = async (...args) => {
+      await reverse(...args);
+      return undefined;
+    };
+    await expect(capture.capture(PIXEL)).rejects.toThrow(/instead of/);
+    expect(device.settings.get('http_proxy')).toBe(':0');
+  });
+
+  it("remakes an old record's rule loopback-only when its listener moves", async () => {
+    const device = new FakeDevice();
+    const record: CaptureRecord = {
+      version: 1,
+      id: ID,
+      label: 'Pixel 8',
+      previousProxy: null,
+      devicePort: 30000,
+      hostPort: 9001,
+      startedAt: 'earlier',
+    };
+    await new CaptureRecords(dir).write(record);
+    device.rules = [{ device: 'tcp:30000', host: 'tcp:9001' }];
+    device.settings.set('http_proxy', '127.0.0.1:30000');
+    const { capture } = setup({ device });
+    await capture.load();
+    // A leftover is only stopped, never moved; a capturing device is.
+    await capture.listenerMoved(PIXEL, 9555);
+    expect(device.rules).toEqual([{ device: 'tcp:30000', host: 'tcp:9001' }]);
+    const active = setup({ device: new FakeDevice() });
+    await active.capture.capture({ ...PIXEL, apiLevel: 35 });
+    const fresh = active.capture.capturing(ID)!;
+    delete fresh.loopbackOnly;
+    await active.capture.listenerMoved(PIXEL, 9777);
+    expect(active.device.loopbackOnly.get(fresh.devicePort)).toBe(true);
+    expect((await active.records.list())[0]!.loopbackOnly).toBe(true);
   });
 });
