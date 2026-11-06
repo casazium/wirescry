@@ -97,8 +97,8 @@ describe('HAR export and import', () => {
 
     // Into a fresh Wirescry.
     const second = (await start('second')).backend;
-    expect(await second.importHar(file)).toEqual({ imported: 3, skipped: 0, problems: [], removed: 0 });
     const api2 = await apiClient(second.apiPort);
+    expect(await second.importHar(file)).toEqual({ imported: 3, skipped: 0, problems: [], removed: 0 });
     await expect.poll(() => exchangesIn(api2.messages).length).toBe(3);
     const imported = exchangesIn(api2.messages);
     expect(imported.every((e) => e.imported === true)).toBe(true);
@@ -170,8 +170,10 @@ describe('HAR export and import', () => {
       });
     const source = path.join(dir, 'source.har');
     await writeFile(source, har(3));
-    await backend.importHar(source);
+    // Listen before importing: exchanges announced before the client connects come only in its
+    // first message, which exchangesIn doesn't read (this failed on slow Windows runners).
     const api = await apiClient(backend.apiPort);
+    await backend.importHar(source);
     await expect.poll(() => exchangesIn(api.messages).length).toBe(3);
     const ids = exchangesIn(api.messages).map((e) => e.id);
 
@@ -246,8 +248,8 @@ describe('HAR export and import', () => {
         },
       }),
     );
-    await backend.importHar(file);
     const api = await apiClient(backend.apiPort);
+    await backend.importHar(file);
     await expect.poll(() => exchangesIn(api.messages).length).toBe(1);
     const [socket] = exchangesIn(api.messages);
     expect(socket).toMatchObject({ websocket: true, messageCount: 2, status: 101 });
