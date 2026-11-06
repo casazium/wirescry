@@ -68,6 +68,8 @@ describe('Capturing a device through the backend', () => {
     expect(localAccess).toBe(false);
     expect(phone.settings.get('http_proxy')).toBe(`127.0.0.1:${devicePort}`);
     expect(phone.rules).toEqual([{ device: `tcp:${devicePort}`, host: `tcp:${hostPort}` }]);
+    // API 35: the device's end of the tunnel listens on its loopback only.
+    expect(phone.loopbackRules.get(`tcp:${devicePort}`)).toBe(true);
     expect(backend!.listeners.list().map((l) => [l.source.id, l.port])).toEqual([[id, hostPort]]);
 
     // What the device sends arrives on that listener, tagged with the device.

@@ -478,46 +478,74 @@ export interface ReverseRule {
  * Only the documented request forms are sent: the server ends itself (LOG(FATAL)) on a reverse
  * request it can't parse (AOSP sockets.cpp). Returns the device port the server reports.
  * Measured: OKAY, then OKAY and the port as a length-prefixed string; FAIL "cannot rebind
- * existing socket" if the device port is taken.
+ * existing socket" if the device port is taken (or "cannot bind listener" for a localhost rule).
  */
 export async function adbReverse(
   endpoint: AdbEndpoint,
   serial: string,
   devicePort: number,
   hostPort: number,
-  options?: AdbOptions,
-): Promise<number> {
+  options?: AdbOptions & { loopbackOnly?: boolean },
+): Promise<number | undefined> {
   checkPort(devicePort);
   checkPort(hostPort);
+  // Android 11+ adbd listens on every interface for tcp:<port>, so other machines on the device's
+  // network could use the tunnel; tcp:localhost:<port> binds 127.0.0.1 only (AOSP socket_spec.cpp,
+  // socket_spec_listen; measured with ss -ltn, test/fixtures/adb/reverse-localhost.json). Older
+  // adbd already binds loopback for tcp:<port>, and on Android 7 reads "localhost:<port>" as port
+  // 0, so callers ask for this only on API 30+. Google's adb CLI refuses the form; adbd doesn't.
+  const deviceSpec = options?.loopbackOnly ? `tcp:localhost:${devicePort}` : `tcp:${devicePort}`;
+  if (options?.loopbackOnly) {
+    // The ADB server notes each reverse rule by the name it was asked for, and with norebind never
+    // replaces a note. One left from an earlier rule on this port (one adbd refused, say) would
+    // point at an old host port, and the server ends itself when the device connects to one it
+    // has no note of. Clearing it first is harmless: adbd refuses this name, as it renames rules.
+    await deviceService(endpoint, serial, `reverse:killforward:${deviceSpec}`, options)
+      .then(
+        (c) => c.expectOkay().finally(() => c.close()),
+        () => undefined,
+      )
+      .catch(() => undefined);
+  }
   const connection = await deviceService(
     endpoint,
     serial,
-    `reverse:forward:norebind:tcp:${devicePort};tcp:${hostPort}`,
+    `reverse:forward:norebind:${deviceSpec};tcp:${hostPort}`,
     options,
   );
   try {
     await connection.expectOkay();
+    // The device port adbd reports (Android 10+ does), or undefined if it reports none.
     const reported = await connection.readString(true);
-    return reported && /^\d{1,5}$/.test(reported) ? Number(reported) : devicePort;
+    return reported && /^\d{1,5}$/.test(reported) ? Number(reported) : undefined;
   } finally {
     connection.close();
   }
 }
 
-/** Removes the reverse rule for this device port. FAIL "listener 'tcp:N' not found" if there's none. */
+/**
+ * Removes the reverse rule for this device port. FAIL "listener 'tcp:N' not found" if there's none.
+ * adbd renames a tcp:localhost:N rule to tcp:N, so that's the name to remove; the ADB server
+ * keeps its own note of the localhost spelling until told, so that's sent too (adbd refuses it,
+ * which doesn't matter).
+ */
 export async function adbReverseRemove(
   endpoint: AdbEndpoint,
   serial: string,
   devicePort: number,
-  options?: AdbOptions,
+  options?: AdbOptions & { loopbackOnly?: boolean },
 ): Promise<void> {
   checkPort(devicePort);
-  const connection = await deviceService(endpoint, serial, `reverse:killforward:tcp:${devicePort}`, options);
-  try {
-    await connection.expectOkay();
-  } finally {
-    connection.close();
-  }
+  const kill = async (spec: string): Promise<void> => {
+    const connection = await deviceService(endpoint, serial, `reverse:killforward:${spec}`, options);
+    try {
+      await connection.expectOkay();
+    } finally {
+      connection.close();
+    }
+  };
+  await kill(`tcp:${devicePort}`);
+  if (options?.loopbackOnly) await kill(`tcp:localhost:${devicePort}`).catch(() => undefined);
 }
 
 /**

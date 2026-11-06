@@ -79,8 +79,10 @@ export class AndroidSetup {
       this.capture = new DeviceCapture({
         io: {
           shell: (serial, command) => adbShell(io().endpoint, serial, command, io().options),
-          reverse: (serial, d, h) => adbReverse(io().endpoint, serial, d, h, io().options),
-          reverseRemove: (serial, d) => adbReverseRemove(io().endpoint, serial, d, io().options),
+          reverse: (serial, d, h, loopbackOnly) =>
+            adbReverse(io().endpoint, serial, d, h, { ...io().options, loopbackOnly }),
+          reverseRemove: (serial, d, loopbackOnly) =>
+            adbReverseRemove(io().endpoint, serial, d, { ...io().options, loopbackOnly }),
           reverseList: (serial) => adbReverseList(io().endpoint, serial, io().options),
         },
         listeners: options.capture.listeners,
@@ -91,7 +93,12 @@ export class AndroidSetup {
       options.capture.listeners.onPortChange((source, port) => {
         const device = this.current.devices.find((d) => d.id === source.id && d.state === 'ready');
         if (!device || !this.capture?.capturing(source.id)) return;
-        const target = { id: source.id, serial: device.serial, label: device.label };
+        const target = {
+          id: source.id,
+          serial: device.serial,
+          label: device.label,
+          apiLevel: device.apiLevel,
+        };
         void this.act(source.id, port === undefined ? 'stopping' : 'capturing', () =>
           this.capture!.listenerMoved(target, port),
         ).catch((error: unknown) => this.options.log?.(`couldn't follow a moved listener: ${String(error)}`));
@@ -262,7 +269,7 @@ export class AndroidSetup {
       );
     }
     if (purpose === 'capture' && device.unsupported) throw new Error(device.unsupported);
-    return { id, serial: device.serial, label: device.label };
+    return { id, serial: device.serial, label: device.label, apiLevel: device.apiLevel };
   }
 
   /** Runs an action on a device, showing it as busy, and keeping its outcome as the device's note. */

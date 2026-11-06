@@ -1,0 +1,154 @@
+{
+  "recordedAt": "2026-11-06T18:55:01.088Z",
+  "note": "Wirescry's client against adb 1.0.41 (platform-tools 37.0.1) on macOS with the API 37 emulator: reverse:forward:norebind:tcp:localhost:47997;tcp:18999 (adbd binds 127.0.0.1:47997 only, measured with ss -ltn, and lists it as tcp:47997), list-forward, then killforward of tcp:localhost:47997 (refused: adbd renamed it) and tcp:47997. The device ended as it started.",
+  "connections": [
+    {
+      "chunks": [
+        {
+          "from": "client",
+          "base64": "MDAxZmhvc3Q6dHBvcnQ6c2VyaWFsOmVtdWxhdG9yLTU1NTQ=",
+          "text": "001fhost:tport:serial:emulator-5554"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWQ==",
+          "text": "OKAY"
+        },
+        {
+          "from": "server",
+          "base64": "AwAAAAAAAAA=",
+          "text": "\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+        },
+        {
+          "from": "client",
+          "base64": "MDAzNnJldmVyc2U6Zm9yd2FyZDpub3JlYmluZDp0Y3A6bG9jYWxob3N0OjQ3OTk3O3RjcDoxODk5OQ==",
+          "text": "0036reverse:forward:norebind:tcp:localhost:47997;tcp:18999"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWQ==",
+          "text": "OKAY"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWTAwMDU0Nzk5Nw==",
+          "text": "OKAY000547997"
+        },
+        {
+          "from": "client",
+          "end": true
+        },
+        {
+          "from": "server",
+          "end": true
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "from": "client",
+          "base64": "MDAxZmhvc3Q6dHBvcnQ6c2VyaWFsOmVtdWxhdG9yLTU1NTQ=",
+          "text": "001fhost:tport:serial:emulator-5554"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWQMAAAAAAAAA",
+          "text": "OKAY\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+        },
+        {
+          "from": "client",
+          "base64": "MDAxNHJldmVyc2U6bGlzdC1mb3J3YXJk",
+          "text": "0014reverse:list-forward"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWTAwMWNob3N0LTE2IHRjcDo0Nzk5NyB0Y3A6MTg5OTkK",
+          "text": "OKAY001chost-16 tcp:47997 tcp:18999\\x0a"
+        },
+        {
+          "from": "server",
+          "end": true
+        },
+        {
+          "from": "client",
+          "end": true
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "from": "client",
+          "base64": "MDAxZmhvc3Q6dHBvcnQ6c2VyaWFsOmVtdWxhdG9yLTU1NTQ=",
+          "text": "001fhost:tport:serial:emulator-5554"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWQMAAAAAAAAA",
+          "text": "OKAY\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+        },
+        {
+          "from": "client",
+          "base64": "MDAyN3JldmVyc2U6a2lsbGZvcndhcmQ6dGNwOmxvY2FsaG9zdDo0Nzk5Nw==",
+          "text": "0027reverse:killforward:tcp:localhost:47997"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWQ==",
+          "text": "OKAY"
+        },
+        {
+          "from": "server",
+          "base64": "RkFJTDAwMjhsaXN0ZW5lciAndGNwOmxvY2FsaG9zdDo0Nzk5Nycgbm90IGZvdW5k",
+          "text": "FAIL0028listener 'tcp:localhost:47997' not found"
+        },
+        {
+          "from": "server",
+          "end": true
+        },
+        {
+          "from": "client",
+          "end": true
+        }
+      ]
+    },
+    {
+      "chunks": [
+        {
+          "from": "client",
+          "base64": "MDAxZmhvc3Q6dHBvcnQ6c2VyaWFsOmVtdWxhdG9yLTU1NTQ=",
+          "text": "001fhost:tport:serial:emulator-5554"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWQMAAAAAAAAA",
+          "text": "OKAY\\x03\\x00\\x00\\x00\\x00\\x00\\x00\\x00"
+        },
+        {
+          "from": "client",
+          "base64": "MDAxZHJldmVyc2U6a2lsbGZvcndhcmQ6dGNwOjQ3OTk3",
+          "text": "001dreverse:killforward:tcp:47997"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWQ==",
+          "text": "OKAY"
+        },
+        {
+          "from": "server",
+          "base64": "T0tBWQ==",
+          "text": "OKAY"
+        },
+        {
+          "from": "server",
+          "end": true
+        },
+        {
+          "from": "client",
+          "end": true
+        }
+      ]
+    }
+  ]
+}
