@@ -34,6 +34,11 @@ interface Props {
   empty: React.ReactNode;
 }
 
+/** A device's name as a badge: short enough to leave the path in view. */
+function deviceBadge(label: string): string {
+  return label.length > 16 ? `${label.slice(0, 15).trimEnd()}…` : label;
+}
+
 /** Plugin badges shown on one row. */
 const MAX_BADGES = 3;
 
@@ -156,6 +161,12 @@ export function TrafficList({
                   {e.composed && (
                     <span className="rule-badge imported-badge" title="Sent from the Compose tab">
                       Sent
+                    </span>
+                  )}
+                  {e.source && (
+                    <span className="rule-badge device-badge" title={`From ${e.source.label}`}>
+                      <span className="visually-hidden">From {e.source.label}</span>
+                      <span aria-hidden="true">{deviceBadge(e.source.label)}</span>
                     </span>
                   )}
                   {/* At most a few, so the path stays visible; each says what it means. */}

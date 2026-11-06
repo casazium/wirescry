@@ -42,6 +42,20 @@ export interface ExchangeSummary {
   composed?: true;
   /** Badges plugins put on it, e.g. whether it matches an API spec. At most one per plugin. */
   annotations?: PluginAnnotation[];
+  /**
+   * The device it came from, when that wasn't this computer: set by a proxy listener that
+   * serves one device (e.g. an Android phone). Unset for the computer's own traffic.
+   */
+  source?: ExchangeSource;
+}
+
+/** A device whose traffic reaches Wirescry through a listener of its own. */
+export interface ExchangeSource {
+  kind: 'android';
+  /** Stable for the device, so a filter can pick it. */
+  id: string;
+  /** What the traffic list shows, e.g. "Pixel 8". */
+  label: string;
 }
 
 /** A badge a plugin puts on an exchange: shown in the traffic list, with `title` on hover. */

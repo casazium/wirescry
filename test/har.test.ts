@@ -97,8 +97,8 @@ describe('HAR export and import', () => {
 
     // Into a fresh Wirescry.
     const second = (await start('second')).backend;
-    expect(await second.importHar(file)).toEqual({ imported: 3, skipped: 0, problems: [], removed: 0 });
     const api2 = await apiClient(second.apiPort);
+    expect(await second.importHar(file)).toEqual({ imported: 3, skipped: 0, problems: [], removed: 0 });
     await expect.poll(() => exchangesIn(api2.messages).length).toBe(3);
     const imported = exchangesIn(api2.messages);
     expect(imported.every((e) => e.imported === true)).toBe(true);
@@ -170,8 +170,10 @@ describe('HAR export and import', () => {
       });
     const source = path.join(dir, 'source.har');
     await writeFile(source, har(3));
-    await backend.importHar(source);
+    // Listen before importing: exchanges announced before the client connects come only in its
+    // first message, which exchangesIn doesn't read (this failed on slow Windows runners).
     const api = await apiClient(backend.apiPort);
+    await backend.importHar(source);
     await expect.poll(() => exchangesIn(api.messages).length).toBe(3);
     const ids = exchangesIn(api.messages).map((e) => e.id);
 
@@ -246,8 +248,8 @@ describe('HAR export and import', () => {
         },
       }),
     );
-    await backend.importHar(file);
     const api = await apiClient(backend.apiPort);
+    await backend.importHar(file);
     await expect.poll(() => exchangesIn(api.messages).length).toBe(1);
     const [socket] = exchangesIn(api.messages);
     expect(socket).toMatchObject({ websocket: true, messageCount: 2, status: 101 });
@@ -296,6 +298,27 @@ describe('parseHar', () => {
     ...overrides,
   });
   const har = (entries: unknown[]): string => JSON.stringify({ log: { version: '1.2', entries } });
+
+  it('keeps the device a request came from, and ignores a malformed one', async () => {
+    const pixel = { kind: 'android', id: 'serial-123', label: 'Pixel 8' };
+    const [kept] = (await parseHar(har([entry({ _wirescrySource: pixel })]), 10)).exchanges;
+    expect(kept!.summary.source).toEqual(pixel);
+    for (const bad of [
+      'Pixel 8',
+      { kind: 'ios', id: 'x', label: 'y' },
+      { kind: 'android', id: '', label: 'y' },
+      { kind: 'android', id: 'x', label: 'y'.repeat(101) },
+      { kind: 'android', id: 7, label: 'y' },
+      null,
+    ]) {
+      const [e] = (await parseHar(har([entry({ _wirescrySource: bad })]), 10)).exchanges;
+      expect(e!.summary.source, JSON.stringify(bad)).toBeUndefined();
+    }
+    // Only the known fields are kept.
+    const [extra] = (await parseHar(har([entry({ _wirescrySource: { ...pixel, secret: 'x' } })]), 10))
+      .exchanges;
+    expect(extra!.summary.source).toEqual(pixel);
+  });
 
   it("reads a browser's entry", async () => {
     const { exchanges, skipped } = await parseHar(har([entry()]), 100);
@@ -460,6 +483,19 @@ describe('harEntry', () => {
     size: text.length,
     truncated: false,
     ...extra,
+  });
+
+  it('writes the device a request came from, and nothing for this computer', () => {
+    const source = { kind: 'android' as const, id: 'serial-123', label: 'Pixel 8' };
+    const fromPhone = harEntry({
+      detail: detail({ summary: { ...detail().summary, source } }),
+      requestBody: null,
+      responseBody: null,
+    });
+    expect(fromPhone._wirescrySource).toEqual(source);
+    expect(
+      harEntry({ detail: detail(), requestBody: null, responseBody: null })._wirescrySource,
+    ).toBeUndefined();
   });
 
   it("lists a form's fields as postData.params, as browsers do", () => {

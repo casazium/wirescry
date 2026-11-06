@@ -989,6 +989,12 @@ button.help-button {
   color: color-mix(in srgb, var(--muted) 60%, var(--fg));
 }
 
+/* The device a request came from (e.g. an Android phone). */
+.device-badge {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: color-mix(in srgb, var(--accent) 70%, var(--fg));
+}
+
 .tab-badge {
   display: inline-block;
   min-width: 16px;

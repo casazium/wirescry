@@ -5,7 +5,14 @@
  *
  * Pure conversion only; reading bodies and writing files is in backend.ts.
  */
-import type { BodyContent, ExchangeDetail, ExchangeSummary, Header, WebSocketMessages } from '../shared/api';
+import type {
+  BodyContent,
+  ExchangeDetail,
+  ExchangeSource,
+  ExchangeSummary,
+  Header,
+  WebSocketMessages,
+} from '../shared/api';
 import type { ExchangeFailure, FailureKind } from '../shared/failure';
 
 /** The largest HAR file Wirescry imports. */
@@ -168,6 +175,8 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
     entry._wirescryFailure = summary.failure;
   }
   if (summary.handledBy) entry._wirescryRule = summary.handledBy.label;
+  // The device it came from (e.g. an Android phone), when not this computer.
+  if (summary.source) entry._wirescrySource = { ...summary.source };
   if (cut.length > 0) notes.unshift(`Wirescry kept only part of the ${cut.join(' and ')}.`);
   if (undecoded.length > 0) {
     // The text is the raw, still-encoded bytes: say so, as readers would take it as decoded.
@@ -461,6 +470,7 @@ function exchangeOf(entry: unknown): ImportedExchange {
       ...(status !== undefined && wireSize !== undefined ? { responseSize: Math.min(wireSize, MAX_MS) } : {}),
       ...(failure ? { failure } : {}),
       ...(websocket ? { websocket: true, messageCount: messages?.length ?? 0 } : {}),
+      ...(sourceOf(entry._wirescrySource) ?? {}),
     },
     requestHeaders,
     ...(status !== undefined ? { responseHeaders } : {}),
@@ -664,4 +674,13 @@ export async function parseHar(text: string, maxEntries: number): Promise<HarImp
     result.problems.push(`Only the first ${maxEntries.toLocaleString()} entries were imported.`);
   }
   return result;
+}
+
+/** A `_wirescrySource` written by Wirescry's export, checked: an imported file can hold anything. */
+function sourceOf(value: unknown): { source: ExchangeSource } | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const { kind, id, label } = value as Record<string, unknown>;
+  if (kind !== 'android' || typeof id !== 'string' || typeof label !== 'string') return undefined;
+  if (!id || id.length > 200 || !label || label.length > 100) return undefined;
+  return { source: { kind, id, label } };
 }
