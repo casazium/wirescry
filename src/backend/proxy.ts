@@ -2,6 +2,7 @@ import net from 'node:net';
 import * as mockttp from 'mockttp';
 import type { BodySide, ExchangeDetail, ExchangeSource, ExchangeTiming, HandledBy } from '../shared/api';
 import {
+  describeBlocked,
   describeFailure,
   describePartialFailure,
   describeRuleEnded,
@@ -10,6 +11,7 @@ import {
 import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
 import { HOST_NAME as DOCKER_HOST_NAME } from './docker/container';
+import { GUARD_HEADER, startEgressGuard, type EgressGuard, type EgressGuardOptions } from './egress-guard';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
 import type { RequestStore } from './store';
 import type { WebSocketStore } from './websocket-store';
@@ -61,12 +63,20 @@ export interface ProxyOptions {
    * says, like any other host). Only the main listener does this, for Docker containers.
    */
   dockerHostToLocalhost?: boolean;
+  /**
+   * Keeps this listener's traffic from this computer and its local networks (unless
+   * `allowLocal` says otherwise): every pass-through, plugin rules' included, goes upstream
+   * through an egress guard that checks each address after DNS. For device listeners.
+   */
+  egress?: EgressGuardOptions;
 }
 
 export interface RunningProxy {
   port: number;
   /** Re-reads `extraRules`, e.g. after a plugin changes its rules. */
   refreshRules(): Promise<void>;
+  /** With `egress`: closes open connections to destinations that are refused now. */
+  recheckDestinations?(): void;
   stop(): Promise<void>;
 }
 
@@ -210,6 +220,26 @@ function rawHeader(headers: mockttp.RawHeaders, name: string): string | undefine
 }
 
 export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
+  const guard = options.egress ? await startEgressGuard(options.egress) : undefined;
+  let running: RunningProxy;
+  try {
+    running = await startListener(options, guard);
+  } catch (error) {
+    await guard?.stop();
+    throw error;
+  }
+  return {
+    port: running.port,
+    refreshRules: running.refreshRules,
+    ...(guard ? { recheckDestinations: () => guard.recheck() } : {}),
+    stop: async () => {
+      await running.stop();
+      await guard?.stop();
+    },
+  };
+}
+
+async function startListener(options: ProxyOptions, guard: EgressGuard | undefined): Promise<RunningProxy> {
   const { ca, store, bodies, onExchange } = options;
   const server = mockttp.getLocal({
     https: { key: ca.key, cert: ca.cert },
@@ -397,20 +427,26 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
       setTimeout(() => brokenMidBody.delete(res.id), 5000).unref();
     }
     const code = upstream?.code ?? errorCode;
+    // The egress guard's own answer, when it refused or couldn't connect.
+    const verdict = guard?.verdict(rawHeader(res.rawHeaders, GUARD_HEADER));
     update(res.id, (existing) => ({
       ...existing,
       summary: {
         ...existing.summary,
-        failure: !code
-          ? undefined
-          : partial
-            ? describePartialFailure(code, existing.summary.host, upstream?.message)
-            : describeFailure(
-                code,
-                existing.summary.host,
-                // Over HTTP/2 Mockttp skips the rule event; its 502 body holds the same message.
-                upstream?.message ?? errorBodyMessage(res.body.buffer),
-              ),
+        failure: verdict
+          ? 'refused' in verdict
+            ? describeBlocked(existing.summary.host, verdict.refused.address, verdict.refused.description)
+            : describeFailure(verdict.error.code, existing.summary.host, verdict.error.message)
+          : !code
+            ? undefined
+            : partial
+              ? describePartialFailure(code, existing.summary.host, upstream?.message)
+              : describeFailure(
+                  code,
+                  existing.summary.host,
+                  // Over HTTP/2 Mockttp skips the rule event; its 502 body holds the same message.
+                  upstream?.message ?? errorBodyMessage(res.body.buffer),
+                ),
         status: res.statusCode,
         statusMessage: res.statusMessage,
         durationMs:
@@ -592,7 +628,8 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     completionChecker: new mockttp.completionCheckers.Always(),
   };
 
-  const passThrough = { additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })) };
+  const proxyConfig = guard ? { proxyUrl: guard.url } : undefined;
+  const passThrough = { additionalTrustedCAs: options.upstreamCAs?.map((cert) => ({ cert })), proxyConfig };
   const passThroughRule: mockttp.RequestRuleData = {
     matchers: [new mockttp.matchers.WildcardMatcher()],
     steps: [new mockttp.requestSteps.PassThroughStep(passThrough)],
@@ -627,11 +664,24 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     steps: rule.steps,
     completionChecker: new mockttp.completionCheckers.Always(),
   });
+  // Plugins' pass-through steps carry no proxy settings: behind a guard, rebuild each one with
+  // them. Matched by type rather than class, in case a plugin made one with its own Mockttp.
+  const guarded = (rule: mockttp.RequestRuleData): mockttp.RequestRuleData =>
+    proxyConfig
+      ? {
+          ...rule,
+          steps: rule.steps.map((step) =>
+            step.type === 'passthrough'
+              ? Object.assign(new mockttp.requestSteps.PassThroughStep(), step, { proxyConfig })
+              : step,
+          ),
+        }
+      : rule;
   const dockerHost = options.dockerHostToLocalhost ?? true;
   const applyRules = async (): Promise<void> => {
     await server.setRequestRules(
       setupRule,
-      ...(options.extraRules?.() ?? []).map(always),
+      ...(options.extraRules?.() ?? []).map(always).map(guarded),
       ...(dockerHost ? [dockerHostRule] : []),
       passThroughRule,
     );

@@ -336,6 +336,7 @@ const FAILURE_KINDS: FailureKind[] = [
   'unreachable',
   'client-closed',
   'rule',
+  'blocked',
   'other',
 ];
 

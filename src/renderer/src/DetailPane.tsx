@@ -245,7 +245,9 @@ export function DetailPane({
               summary.failure.kind !== 'client-closed' &&
               summary.status !== undefined && (
                 <span className="muted">
-                  The server never answered, so Wirescry replied to the client with {summary.status}.
+                  {summary.failure.kind === 'blocked'
+                    ? `Wirescry replied to the device with ${summary.status}.`
+                    : `The server never answered, so Wirescry replied to the client with ${summary.status}.`}
                 </span>
               )
             )}

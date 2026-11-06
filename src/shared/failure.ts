@@ -1,6 +1,15 @@
 /** Why an exchange didn't get a response from the real server. */
 export type FailureKind =
-  'dns' | 'refused' | 'tls' | 'timeout' | 'reset' | 'unreachable' | 'client-closed' | 'rule' | 'other';
+  | 'dns'
+  | 'refused'
+  | 'tls'
+  | 'timeout'
+  | 'reset'
+  | 'unreachable'
+  | 'client-closed'
+  | 'rule'
+  | 'blocked'
+  | 'other';
 
 export interface ExchangeFailure {
   kind: FailureKind;
@@ -23,6 +32,7 @@ export const FAILURE_LABELS: Record<FailureKind, string> = {
   unreachable: 'No route',
   'client-closed': 'Closed',
   rule: 'Rule',
+  blocked: 'Blocked',
   other: 'Failed',
 };
 
@@ -107,6 +117,23 @@ export function describePartialFailure(code: string, target: string, detail?: st
 /** Reads the error code from Mockttp's `passthrough-error:CODE` tag, if present. */
 export function upstreamErrorCode(tags: readonly string[]): string | undefined {
   return tags.find((t) => t.startsWith('passthrough-error:'))?.slice('passthrough-error:'.length);
+}
+
+/** The switch that lets a device reach this computer and its local networks, as the UI names it. */
+export const LOCAL_ACCESS_SWITCH = 'Let this device reach this computer and its local networks';
+
+/**
+ * A device's request that Wirescry didn't send, because `address` (what `target` resolved to)
+ * is this computer or on its local networks (`description`, e.g. "a private network address").
+ */
+export function describeBlocked(target: string, address: string, description: string): ExchangeFailure {
+  return {
+    kind: 'blocked',
+    code: 'BLOCKED',
+    message:
+      `Wirescry didn't send this request: ${target} is ${address}, ${description}. Devices can't reach ` +
+      `this computer or its local networks unless you turn on "${LOCAL_ACCESS_SWITCH}".`,
+  };
 }
 
 /** A request that a rule ended without a response, e.g. a "close connection" mock rule. */

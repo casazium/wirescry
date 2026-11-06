@@ -8,6 +8,7 @@ import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { loadOrCreateCA } from '../src/backend/ca';
 import { harEntry, MAX_HAR_IMPORT_BYTES, parseHar } from '../src/backend/har';
 import type { BodyContent, ExchangeDetail, ServerMessage, WebSocketMessages } from '../src/shared/api';
+import { describeBlocked } from '../src/shared/failure';
 import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
 const JSON_BODY = JSON.stringify({ users: [{ id: 1, name: 'Ada' }], note: 'héllo ✓' });
@@ -374,6 +375,16 @@ describe('parseHar', () => {
       code: 'IMPORTED',
       message: 'net::ERR_CONNECTION_REFUSED',
     });
+  });
+
+  it('keeps a device request that Wirescry blocked, as blocked', async () => {
+    const failure = describeBlocked('10.0.0.5:8080', '10.0.0.5', 'a private network address');
+    const blocked = entry({
+      response: { status: 403, headers: [], content: { size: 0 } },
+      _wirescryFailure: failure,
+    });
+    const [e] = (await parseHar(har([blocked]), 10)).exchanges;
+    expect(e!.summary.failure).toEqual(failure);
   });
 
   it('stops at the most the list can hold', async () => {
