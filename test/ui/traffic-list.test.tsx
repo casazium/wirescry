@@ -32,6 +32,25 @@ describe('TrafficList', () => {
     expect(rows[2]!.textContent).toContain('DNS');
   });
 
+  it("shows the device a request came from, and nothing for this computer's", () => {
+    list({
+      rows: [
+        summary('a', { source: { kind: 'android', id: 'p', label: 'Pixel 8' } }),
+        summary('b'),
+        summary('c', { source: { kind: 'android', id: 'g', label: 'Samsung Galaxy Tab S9 FE+' } }),
+      ],
+    });
+    const [phone, mac, tablet] = screen.getAllByTestId('exchange-row');
+    const badge = phone!.querySelector('.device-badge');
+    expect(badge?.textContent).toBe('From Pixel 8');
+    expect(badge?.getAttribute('title')).toBe('From Pixel 8');
+    expect(mac!.querySelector('.device-badge')).toBeNull();
+    // A long name is shortened, keeping the path in view; the full name is in the title.
+    const long = tablet!.querySelector('.device-badge');
+    expect(long?.textContent).toBe('From Samsung Galaxy…');
+    expect(long?.getAttribute('title')).toBe('From Samsung Galaxy Tab S9 FE+');
+  });
+
   it('selects on click, and clears the selection on a second click', () => {
     const props = list({ selectedId: 'a' });
     fireEvent.click(screen.getAllByTestId('exchange-row')[1]!);

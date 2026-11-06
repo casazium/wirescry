@@ -1,6 +1,6 @@
 import net from 'node:net';
 import * as mockttp from 'mockttp';
-import type { BodySide, ExchangeDetail, ExchangeTiming, HandledBy } from '../shared/api';
+import type { BodySide, ExchangeDetail, ExchangeSource, ExchangeTiming, HandledBy } from '../shared/api';
 import {
   describeFailure,
   describePartialFailure,
@@ -54,6 +54,13 @@ export interface ProxyOptions {
    * answer, which may take a lookup. Anything else (or a throw) drops it.
    */
   acceptConnection?: (address: string) => boolean | Promise<boolean>;
+  /** The device this listener serves, if not this computer: written onto every exchange. */
+  source?: ExchangeSource;
+  /**
+   * Whether requests for host.docker.internal go to this computer (false: they go where DNS
+   * says, like any other host). Only the main listener does this, for Docker containers.
+   */
+  dockerHostToLocalhost?: boolean;
 }
 
 export interface RunningProxy {
@@ -339,6 +346,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     save({
       summary: {
         ...(composed ? { composed: true as const } : {}),
+        ...(options.source ? { source: { ...options.source } } : {}),
         id: req.id,
         method: req.method,
         protocol: req.protocol,
@@ -492,6 +500,7 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     if (options.isPaused?.()) return;
     save({
       summary: {
+        ...(options.source ? { source: { ...options.source } } : {}),
         id: req.id,
         method: req.method,
         protocol: req.protocol,
@@ -618,21 +627,24 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
     steps: rule.steps,
     completionChecker: new mockttp.completionCheckers.Always(),
   });
+  const dockerHost = options.dockerHostToLocalhost ?? true;
   const applyRules = async (): Promise<void> => {
     await server.setRequestRules(
       setupRule,
       ...(options.extraRules?.() ?? []).map(always),
-      dockerHostRule,
+      ...(dockerHost ? [dockerHostRule] : []),
       passThroughRule,
     );
   };
   await applyRules();
   // The more specific WebSocket rule first: Mockttp uses the first that matches.
-  await server
-    .forAnyWebSocket()
-    .forHostname(DOCKER_HOST_NAME)
-    .always()
-    .thenPassThrough({ ...passThrough, transformRequest: toLocalhost });
+  if (dockerHost) {
+    await server
+      .forAnyWebSocket()
+      .forHostname(DOCKER_HOST_NAME)
+      .always()
+      .thenPassThrough({ ...passThrough, transformRequest: toLocalhost });
+  }
   await server.forAnyWebSocket().always().thenPassThrough(passThrough);
 
   if (options.port !== undefined) await assertLoopbackPortFree(options.port);

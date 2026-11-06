@@ -297,6 +297,27 @@ describe('parseHar', () => {
   });
   const har = (entries: unknown[]): string => JSON.stringify({ log: { version: '1.2', entries } });
 
+  it('keeps the device a request came from, and ignores a malformed one', async () => {
+    const pixel = { kind: 'android', id: 'serial-123', label: 'Pixel 8' };
+    const [kept] = (await parseHar(har([entry({ _wirescrySource: pixel })]), 10)).exchanges;
+    expect(kept!.summary.source).toEqual(pixel);
+    for (const bad of [
+      'Pixel 8',
+      { kind: 'ios', id: 'x', label: 'y' },
+      { kind: 'android', id: '', label: 'y' },
+      { kind: 'android', id: 'x', label: 'y'.repeat(101) },
+      { kind: 'android', id: 7, label: 'y' },
+      null,
+    ]) {
+      const [e] = (await parseHar(har([entry({ _wirescrySource: bad })]), 10)).exchanges;
+      expect(e!.summary.source, JSON.stringify(bad)).toBeUndefined();
+    }
+    // Only the known fields are kept.
+    const [extra] = (await parseHar(har([entry({ _wirescrySource: { ...pixel, secret: 'x' } })]), 10))
+      .exchanges;
+    expect(extra!.summary.source).toEqual(pixel);
+  });
+
   it("reads a browser's entry", async () => {
     const { exchanges, skipped } = await parseHar(har([entry()]), 100);
     expect(skipped).toBe(0);
@@ -460,6 +481,19 @@ describe('harEntry', () => {
     size: text.length,
     truncated: false,
     ...extra,
+  });
+
+  it('writes the device a request came from, and nothing for this computer', () => {
+    const source = { kind: 'android' as const, id: 'serial-123', label: 'Pixel 8' };
+    const fromPhone = harEntry({
+      detail: detail({ summary: { ...detail().summary, source } }),
+      requestBody: null,
+      responseBody: null,
+    });
+    expect(fromPhone._wirescrySource).toEqual(source);
+    expect(
+      harEntry({ detail: detail(), requestBody: null, responseBody: null })._wirescrySource,
+    ).toBeUndefined();
   });
 
   it("lists a form's fields as postData.params, as browsers do", () => {

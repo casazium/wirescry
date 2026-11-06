@@ -8,6 +8,7 @@ import type {
   BodySide,
   ClientCommand,
   ExchangeDetail,
+  ExchangeSource,
   ExchangeSummary,
   FormatLanguage,
   FormattedBody,
@@ -107,7 +108,24 @@ export interface RunningBackend {
   importHar(file: string, name?: string): Promise<HarImportCounts>;
   /** Writes one whole body of an exchange to a file, decoded where possible. */
   saveBody(file: string, exchangeId: string, side: BodySide): Promise<WrittenBody>;
+  /** Proxy listeners for single devices (Android setup), besides the main proxy. */
+  listeners: DeviceListeners;
   stop(): Promise<void>;
+}
+
+/**
+ * Extra proxy listeners, one per device: each on its own port on this computer's loopback,
+ * recording into the same traffic list with the device as the exchanges' source. They share
+ * the main proxy's certificate, plugin rules and pause, follow rule changes, and keep their
+ * port across a certificate reset (a device's tunnel points at it).
+ */
+export interface DeviceListeners {
+  /** Starts a listener for this source (or returns the running one). `port` reuses a port if free. */
+  open(source: ExchangeSource, port?: number): Promise<{ port: number }>;
+  /** Stops this source's listener, if running. */
+  close(sourceId: string): Promise<void>;
+  /** The running listeners. */
+  list(): Array<{ source: ExchangeSource; port: number }>;
 }
 
 /** How long a finished exchange's body may take to be stored before plugins are told anyway. */
@@ -210,7 +228,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     dataDir,
     encryptor: options.encryptor,
     app: options.app ?? { version: '0.0.0-test', releaseDate: new Date().toISOString() },
-    refreshRules: () => proxy.refreshRules(),
+    refreshRules: () => refreshAllRules(),
     passThroughStep: (transforms) =>
       new mockttp.requestSteps.PassThroughStep({
         // Only the transforms and callbacks; connection settings stay Wirescry's own.
@@ -315,6 +333,82 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     });
 
   let proxy = await openProxy(options.proxyPort ?? settings.proxyPort);
+
+  // Listeners for single devices: like the main proxy, minus what belongs to this computer
+  // only (Docker containers' host.docker.internal, the composer, Firefox trust, and Docker's
+  // non-loopback connections).
+  const deviceListeners = new Map<string, { source: ExchangeSource; proxy: RunningProxy }>();
+  const openDeviceProxy = (source: ExchangeSource, port: number | undefined): Promise<RunningProxy> =>
+    startProxy({
+      ca,
+      store,
+      bodies,
+      websockets,
+      port,
+      upstreamCAs: options.upstreamCAs,
+      onExchange: (exchange) => {
+        updates.change(exchange.summary);
+        noteCompleted(exchange.summary);
+      },
+      extraRules: () => pluginHost.rules(),
+      describeRule: (ruleId) => pluginHost.describeRule(ruleId),
+      ruleEndsWithoutResponse: (ruleId) => pluginHost.endsWithoutResponse(ruleId),
+      isPaused: () => paused,
+      source,
+      dockerHostToLocalhost: false,
+    });
+  const refreshAllRules = async (): Promise<void> => {
+    await Promise.all([
+      proxy.refreshRules(),
+      ...[...deviceListeners.values()].map((l) => l.proxy.refreshRules()),
+    ]);
+  };
+  /** Restarts every device listener, e.g. with a new certificate, on the port it had. */
+  const restartDeviceListeners = async (): Promise<void> => {
+    for (const [id, listener] of deviceListeners) {
+      const { port } = listener.proxy;
+      await listener.proxy.stop();
+      try {
+        listener.proxy = await openDeviceProxy(listener.source, port);
+      } catch (error) {
+        // Its port was taken meanwhile: the device's tunnel has to be pointed at a new one.
+        console.error(
+          `[wirescry] listener for ${listener.source.label} couldn't reopen port ${port}:`,
+          error,
+        );
+        listener.proxy = await openDeviceProxy(listener.source, undefined);
+      }
+      deviceListeners.set(id, listener);
+    }
+  };
+  const listeners: DeviceListeners = {
+    async open(source, port) {
+      const running = deviceListeners.get(source.id);
+      if (running) return { port: running.proxy.port };
+      let started: RunningProxy;
+      try {
+        started = await openDeviceProxy(source, port);
+      } catch (error) {
+        if (port === undefined) throw error;
+        started = await openDeviceProxy(source, undefined);
+      }
+      // A second open for the same source may have finished first.
+      const raced = deviceListeners.get(source.id);
+      if (raced) {
+        await started.stop();
+        return { port: raced.proxy.port };
+      }
+      deviceListeners.set(source.id, { source: { ...source }, proxy: started });
+      return { port: started.port };
+    },
+    async close(sourceId) {
+      const listener = deviceListeners.get(sourceId);
+      if (!listener) return;
+      deviceListeners.delete(sourceId);
+      await listener.proxy.stop();
+    },
+    list: () => [...deviceListeners.values()].map((l) => ({ source: { ...l.source }, port: l.proxy.port })),
+  };
   step('proxy');
   await docker.refresh();
   step('docker');
@@ -640,6 +734,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           await deleteFirefoxProfile(firefoxProfile);
           firefoxTrusted = false;
           await restartProxy(proxy.port);
+          await restartDeviceListeners();
           broadcast({ type: 'status', status: status() });
           return undefined;
         });
@@ -719,13 +814,16 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     exportHar,
     saveBody,
     importHar,
+    listeners,
     async stop() {
       composer.close();
       for (const timer of completionTimers.values()) clearTimeout(timer);
       completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
-      await Promise.all([api.stop(), proxy.stop(), formatter.close(), docker.stop()]);
+      const devices = [...deviceListeners.values()].map((l) => l.proxy.stop());
+      deviceListeners.clear();
+      await Promise.all([api.stop(), proxy.stop(), ...devices, formatter.close(), docker.stop()]);
       await bodies.close();
     },
   };
