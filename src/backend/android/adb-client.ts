@@ -435,3 +435,110 @@ export async function adbFeatures(
     connection.close();
   }
 }
+
+/** A port Wirescry names in a reverse request. Anything else is refused before sending. */
+function checkPort(port: number): void {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new AdbError(`Bad port ${String(port)}.`);
+}
+
+/**
+ * Opens a device service (`host:tport:serial:` then the service) and checks the server's OKAY.
+ * The connection is the caller's to close.
+ */
+async function deviceService(
+  endpoint: AdbEndpoint,
+  serial: string,
+  service: string,
+  options?: AdbOptions,
+): Promise<AdbConnection> {
+  if (!/^[\x21-\x7e]+$/.test(serial)) throw new AdbError('Bad device serial.');
+  const connection = await request(endpoint, `host:tport:serial:${serial}`, options);
+  try {
+    connection.limitTotal(SHELL_TOTAL_TIMEOUT_FACTOR * (options?.timeoutMs ?? DEFAULT_TIMEOUT_MS));
+    await connection.read(8);
+    connection.send(service);
+    await connection.expectOkay();
+    return connection;
+  } catch (error) {
+    connection.close();
+    throw error;
+  }
+}
+
+/** A reverse rule: a port on the device that leads to one on this computer. */
+export interface ReverseRule {
+  /** The device side, e.g. tcp:43210. */
+  device: string;
+  /** This computer's side, e.g. tcp:8001. */
+  host: string;
+}
+
+/**
+ * Adds a reverse rule, refusing to replace an existing one for that device port (norebind).
+ * Only the documented request forms are sent: the server ends itself (LOG(FATAL)) on a reverse
+ * request it can't parse (AOSP sockets.cpp). Returns the device port the server reports.
+ * Measured: OKAY, then OKAY and the port as a length-prefixed string; FAIL "cannot rebind
+ * existing socket" if the device port is taken.
+ */
+export async function adbReverse(
+  endpoint: AdbEndpoint,
+  serial: string,
+  devicePort: number,
+  hostPort: number,
+  options?: AdbOptions,
+): Promise<number> {
+  checkPort(devicePort);
+  checkPort(hostPort);
+  const connection = await deviceService(
+    endpoint,
+    serial,
+    `reverse:forward:norebind:tcp:${devicePort};tcp:${hostPort}`,
+    options,
+  );
+  try {
+    await connection.expectOkay();
+    const reported = await connection.readString(true);
+    return reported && /^\d{1,5}$/.test(reported) ? Number(reported) : devicePort;
+  } finally {
+    connection.close();
+  }
+}
+
+/** Removes the reverse rule for this device port. FAIL "listener 'tcp:N' not found" if there's none. */
+export async function adbReverseRemove(
+  endpoint: AdbEndpoint,
+  serial: string,
+  devicePort: number,
+  options?: AdbOptions,
+): Promise<void> {
+  checkPort(devicePort);
+  const connection = await deviceService(endpoint, serial, `reverse:killforward:tcp:${devicePort}`, options);
+  try {
+    await connection.expectOkay();
+  } finally {
+    connection.close();
+  }
+}
+
+/**
+ * The device's reverse rules. Each line is "<name> <device> <host>"; the name is the transport's
+ * (measured: host-16), not useful, so it's skipped.
+ */
+export async function adbReverseList(
+  endpoint: AdbEndpoint,
+  serial: string,
+  options?: AdbOptions,
+): Promise<ReverseRule[]> {
+  const connection = await deviceService(endpoint, serial, 'reverse:list-forward', options);
+  try {
+    const text = (await connection.readString()) ?? '';
+    return text
+      .split('\n')
+      .map((line) => line.trim().split(/\s+/))
+      .filter((fields) => fields.length === 3)
+      .slice(0, 256)
+      .map(([, device, host]) => ({ device: device!.slice(0, 100), host: host!.slice(0, 100) }));
+  } finally {
+    connection.close();
+  }
+}

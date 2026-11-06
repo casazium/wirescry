@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { AndroidStatus, ProxyStatus } from '../../src/shared/api';
+import type { AndroidDevice, AndroidStatus, ProxyStatus } from '../../src/shared/api';
 import { AndroidSection } from '../../src/renderer/src/AndroidSection';
 import { status } from './fixtures';
 
@@ -102,4 +102,137 @@ describe('Android section', () => {
     rerender(<AndroidSection status={withAndroid({ state: 'starting', devices: [] })} send={send} />);
     expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
   });
+});
+
+describe('Android section: capturing', () => {
+  const ready = (extra: Partial<AndroidDevice> = {}): ProxyStatus =>
+    withAndroid({
+      state: 'ready',
+      devices: [
+        {
+          serial: 'R58',
+          state: 'ready',
+          label: 'Pixel 8',
+          emulator: false,
+          apiLevel: 35,
+          id: 'a'.repeat(32),
+          ...extra,
+        },
+      ],
+    });
+  const id = 'a'.repeat(32);
+
+  it('captures a device, warning about other apps first', () => {
+    const send = vi.fn().mockResolvedValue({});
+    render(<AndroidSection status={ready()} send={send} />);
+    expect(screen.getByText(/Other apps on the device may stop working/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+    expect(send).toHaveBeenCalledWith({ command: 'androidCapture', deviceId: id, replaceProxy: undefined });
+  });
+
+  it('asks before replacing a proxy the device already has, and can be cancelled', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ needsConfirmation: 'proxy.corp:3128' })
+      .mockResolvedValue({});
+    render(<AndroidSection status={ready()} send={send} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('proxy.corp:3128'));
+    fireEvent.click(screen.getByRole('button', { name: 'Replace and capture' }));
+    expect(send).toHaveBeenLastCalledWith({
+      command: 'androidCapture',
+      deviceId: id,
+      replaceProxy: 'proxy.corp:3128',
+    });
+    send.mockResolvedValueOnce({ needsConfirmation: 'proxy.corp:3128' });
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Capture' })).toBeTruthy();
+  });
+
+  it('shows a capturing device with Stop and the destination switch', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AndroidSection
+        status={ready({ capture: { devicePort: 40000, hostPort: 8001, localAccess: false } })}
+        send={send}
+      />,
+    );
+    expect(screen.getByText(/Stop capture before unplugging it/)).toBeTruthy();
+    const box = screen.getByRole('checkbox', {
+      name: 'Let this device reach this computer and its local networks',
+    }) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(box);
+    expect(send).toHaveBeenCalledWith({ command: 'androidSetLocalAccess', deviceId: id, allowed: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(send).toHaveBeenLastCalledWith({ command: 'androidStop', deviceId: id });
+  });
+
+  it('tells emulator users to stop before closing it', () => {
+    render(
+      <AndroidSection
+        status={ready({ emulator: true, capture: { devicePort: 40000, hostPort: 8001, localAccess: true } })}
+        send={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/Stop capture before closing the emulator/)).toBeTruthy();
+  });
+
+  it('offers Restore for a device left set up, and Clear for a stray proxy', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(<AndroidSection status={ready({ leftover: true })} send={send} />);
+    expect(screen.getByText(/left this device set up last time/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Capture' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
+    expect(send).toHaveBeenLastCalledWith({ command: 'androidStop', deviceId: id });
+    rerender(<AndroidSection status={ready({ strayProxy: '127.0.0.1:41111' })} send={send} />);
+    expect(screen.getByText(/127\.0\.0\.1:41111/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear proxy' }));
+    expect(send).toHaveBeenLastCalledWith({ command: 'androidClearProxy', deviceId: id });
+  });
+
+  it('disables actions while busy or disconnected, and shows what went wrong', async () => {
+    const send = vi.fn().mockRejectedValue(new Error('The device refused.'));
+    const { rerender } = render(<AndroidSection status={ready({ busy: 'capturing' })} send={send} />);
+    expect((screen.getByRole('button', { name: 'Capturing…' }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<AndroidSection status={ready()} send={send} connected={false} />);
+    expect((screen.getByRole('button', { name: 'Capture' }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<AndroidSection status={ready({ note: 'Its proxy setting had been changed.' })} send={send} />);
+    expect(screen.getByText('Its proxy setting had been changed.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+    await waitFor(() =>
+      expect(screen.getAllByRole('alert').some((a) => a.textContent === 'The device refused.')).toBe(true),
+    );
+  });
+
+  it('offers nothing for a device that is unsupported, unauthorized or unread', () => {
+    const send = vi.fn();
+    const { rerender } = render(<AndroidSection status={ready({ unsupported: 'Too old.' })} send={send} />);
+    expect(screen.queryByRole('button', { name: 'Capture' })).toBeNull();
+    rerender(<AndroidSection status={ready({ state: 'unauthorized' })} send={send} />);
+    expect(screen.queryByRole('button', { name: 'Capture' })).toBeNull();
+    rerender(<AndroidSection status={ready({ id: undefined })} send={send} />);
+    expect(screen.queryByRole('button', { name: 'Capture' })).toBeNull();
+  });
+});
+
+it('says what to do about set-up devices that are not connected', () => {
+  render(
+    <AndroidSection
+      status={withAndroid({
+        state: 'ready',
+        devices: [],
+        notConnected: [
+          { label: 'Pixel 8', capturing: true },
+          { label: 'Galaxy Tab', capturing: false },
+        ],
+      })}
+    />,
+  );
+  const notes = screen.getAllByRole('status').map((n) => n.textContent ?? '');
+  expect(notes.some((t) => /Pixel 8 was disconnected while capturing.*use Stop/.test(t))).toBe(true);
+  expect(notes.some((t) => /Galaxy Tab was left set up last time.*use Restore/.test(t))).toBe(true);
+  expect(notes.every((t) => !t.includes('Pixel 8') || t.includes('http_proxy :0'))).toBe(true);
 });

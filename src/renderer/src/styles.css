@@ -1193,3 +1193,12 @@ button.help-button {
   font-weight: 600;
   unicode-bidi: isolate;
 }
+
+.device-actions {
+  margin-top: 6px;
+}
+
+.device-actions .note,
+.device-actions p {
+  margin: 4px 0;
+}

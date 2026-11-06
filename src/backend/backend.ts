@@ -53,6 +53,9 @@ import { PluginHost } from './plugin-host';
 import * as mockttp from 'mockttp';
 import { WebSocketStore } from './websocket-store';
 
+/** How long quitting waits to put capturing Android devices back: the app kills the backend after 3 s. */
+const ANDROID_STOP_TIMEOUT_MS = 2000;
+
 export interface BackendOptions {
   /** Folder for this install's data, e.g. the CA. */
   dataDir: string;
@@ -391,6 +394,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     ? new AndroidSetup({
         findAdb: () => findAdb({ setting: settings.adbPath }),
         log: (message) => console.log(`[wirescry] android: ${message}`),
+        capture: { listeners, recordsDir: path.join(dataDir, 'android-capture') },
         ...(options.android || {}),
         onStatusChange: () => broadcast({ type: 'status', status: status() }),
       })
@@ -682,6 +686,24 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         if (!android) throw new Error('Android setup is off.');
         await android.refresh();
         return undefined;
+      case 'androidCapture':
+        if (!android) throw new Error('Android setup is off.');
+        return android.captureDevice(
+          String(command.deviceId),
+          typeof command.replaceProxy === 'string' ? command.replaceProxy : undefined,
+        );
+      case 'androidStop':
+        if (!android) throw new Error('Android setup is off.');
+        await android.stopDevice(String(command.deviceId));
+        return undefined;
+      case 'androidClearProxy':
+        if (!android) throw new Error('Android setup is off.');
+        await android.clearProxy(String(command.deviceId));
+        return undefined;
+      case 'androidSetLocalAccess':
+        if (!android) throw new Error('Android setup is off.');
+        android.setLocalAccess(String(command.deviceId), command.allowed === true);
+        return undefined;
       case 'setDockerSetup': {
         docker.setActive(command.enabled === true);
         settings = { ...settings, dockerSetup: command.enabled === true ? undefined : false };
@@ -807,12 +829,16 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     importHar,
     listeners,
     async stop() {
+      // First, and quickly: put capturing devices back before their listeners go (a device left
+      // pointing at a closed port has no internet), well inside the time the app gives the
+      // backend to stop. Any it can't reach keep their records, and are offered Restore next time.
+      await android?.stopAll(ANDROID_STOP_TIMEOUT_MS);
+      android?.stop();
       composer.close();
       for (const timer of completionTimers.values()) clearTimeout(timer);
       completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
-      android?.stop();
       await Promise.all([api.stop(), proxy.stop(), devices.stopAll(), formatter.close(), docker.stop()]);
       await bodies.close();
     },

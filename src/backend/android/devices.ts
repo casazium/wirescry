@@ -33,6 +33,8 @@ export interface DeviceInfo {
   identityParts: string[];
   /** Why Wirescry can't set it up, found before its version could be read. */
   unsupported?: string;
+  /** Its global http_proxy setting when it was read, if that could be read. */
+  proxy?: string;
 }
 
 /** For a device whose adbd has no shell v2: older than Android 7. */
@@ -69,6 +71,11 @@ export async function readDeviceInfo(
   }
   const props = parseGetprop(okOutput(await shell(endpoint, serial, 'getprop')));
   const androidId = okOutput(await shell(endpoint, serial, 'settings get secure android_id')).trim();
+  // To notice a proxy left pointing at a dead tunnel. Not being able to read it isn't fatal.
+  const proxy = await shell(endpoint, serial, 'settings get global http_proxy').then(
+    (r) => (r.exitCode === 0 ? r.stdout.trim().slice(0, 300) : undefined),
+    () => undefined,
+  );
   const avd = props.get('ro.boot.qemu.avd_name') || props.get('ro.kernel.qemu.avd_name') || undefined;
   const emulator =
     props.get('ro.boot.qemu') === '1' || props.get('ro.kernel.qemu') === '1' || avd !== undefined;
@@ -96,6 +103,7 @@ export async function readDeviceInfo(
       androidId === 'null' ? '' : androidId,
       avd ?? '',
     ],
+    ...(proxy !== undefined ? { proxy } : {}),
   };
 }
 
@@ -153,6 +161,9 @@ export function devicesFrom(
             }
           : {}),
       ...(identityOf(known.identityParts) ? { id: identityOf(known.identityParts) } : {}),
+      ...(known.proxy && /^(127\.0\.0\.1|localhost):\d{1,5}$/.test(known.proxy)
+        ? { strayProxy: known.proxy }
+        : {}),
     };
   });
   const counts = new Map<string, number>();
