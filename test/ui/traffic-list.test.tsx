@@ -41,14 +41,17 @@ describe('TrafficList', () => {
       ],
     });
     const [phone, mac, tablet] = screen.getAllByTestId('exchange-row');
-    const badge = phone!.querySelector('.device-badge');
-    expect(badge?.textContent).toBe('From Pixel 8');
-    expect(badge?.getAttribute('title')).toBe('From Pixel 8');
+    const badge = phone!.querySelector('.device-badge')!;
+    expect(badge.getAttribute('title')).toBe('From Pixel 8');
+    // Screen readers get the full name; the visible, possibly shortened one is hidden from them.
+    expect(badge.querySelector('.visually-hidden')?.textContent).toBe('From Pixel 8');
+    expect(badge.querySelector('[aria-hidden="true"]')?.textContent).toBe('Pixel 8');
     expect(mac!.querySelector('.device-badge')).toBeNull();
     // A long name is shortened, keeping the path in view; the full name is in the title.
-    const long = tablet!.querySelector('.device-badge');
-    expect(long?.textContent).toBe('From Samsung Galaxy…');
-    expect(long?.getAttribute('title')).toBe('From Samsung Galaxy Tab S9 FE+');
+    const long = tablet!.querySelector('.device-badge')!;
+    expect(long.querySelector('[aria-hidden="true"]')?.textContent).toBe('Samsung Galaxy…');
+    expect(long.querySelector('.visually-hidden')?.textContent).toBe('From Samsung Galaxy Tab S9 FE+');
+    expect(long.getAttribute('title')).toBe('From Samsung Galaxy Tab S9 FE+');
   });
 
   it('selects on click, and clears the selection on a second click', () => {

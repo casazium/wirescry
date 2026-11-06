@@ -165,8 +165,8 @@ export function TrafficList({
                   )}
                   {e.source && (
                     <span className="rule-badge device-badge" title={`From ${e.source.label}`}>
-                      <span className="visually-hidden">From </span>
-                      {deviceBadge(e.source.label)}
+                      <span className="visually-hidden">From {e.source.label}</span>
+                      <span aria-hidden="true">{deviceBadge(e.source.label)}</span>
                     </span>
                   )}
                   {/* At most a few, so the path stays visible; each says what it means. */}

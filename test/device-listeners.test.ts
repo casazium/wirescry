@@ -173,11 +173,24 @@ describe('Device listeners', () => {
     expect((await httpViaProxy(port, `http://host.docker.internal:${upstreamPort}/`)).status).toBe(502);
   });
 
-  it('takes connections from this computer only', async () => {
+  // Needs a network address besides loopback to try from; CI machines may have none.
+  it.skipIf(!lanAddress())('takes connections from this computer only', async () => {
     const { port } = await backend.listeners.open(PIXEL);
     expect(await isRefused('127.0.0.1', port)).toBe(false);
-    const lan = lanAddress();
-    if (lan) expect(await isRefused(lan, port)).toBe(true);
+    expect(await isRefused(lanAddress()!, port)).toBe(true);
+    // The same address does reach the main proxy's machine: it's the listener refusing.
+    const sockets = new Set<net.Socket>();
+    const control = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.end('HTTP/1.1 200 OK\r\n\r\n');
+    });
+    await new Promise<void>((resolve) => control.listen(0, '0.0.0.0', resolve));
+    try {
+      expect(await isRefused(lanAddress()!, (control.address() as net.AddressInfo).port)).toBe(false);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise((resolve) => control.close(resolve));
+    }
   });
 
   it('keeps its port across a certificate reset, serving HTTPS with the new certificate', async () => {
@@ -224,6 +237,59 @@ describe('Device listeners', () => {
     } finally {
       await new Promise((resolve) => blocker.close(resolve));
     }
+  });
+
+  it("doesn't bring back a listener closed during a certificate reset", async () => {
+    const api = await apiClient(backend.apiPort);
+    // Enough listeners that restarting them all takes a while, and the last one is closed
+    // while the reset is still restarting the ones before it.
+    const devices = Array.from({ length: 15 }, (_, i): ExchangeSource => ({
+      kind: 'android',
+      id: `device-${i}`,
+      label: `Phone ${i}`,
+    }));
+    for (const device of devices) await backend.listeners.open(device);
+    const last = devices.at(-1)!;
+    const lastPort = backend.listeners.list().find((l) => l.source.id === last.id)!.port;
+    const watched: Array<[string, number | undefined]> = [];
+    backend.listeners.onPortChange((source, moved) => watched.push([source.id, moved]));
+    const oldCa = await readFile(backend.caCertPath, 'utf8');
+    const reset = api.send({ command: 'resetCertificate' });
+    // Wait until the first device's listener serves the new certificate: the restarts are then
+    // under way, and the last device's hasn't been restarted yet.
+    const firstPort = backend.listeners.list().find((l) => l.source.id === devices[0]!.id)!.port;
+    await expect
+      .poll(
+        async () => {
+          const ca = await readFile(backend.caCertPath, 'utf8');
+          if (ca === oldCa) return false;
+          return requestViaProxy(firstPort, 'https://mocked.test/', ca).then(
+            () => true,
+            () => false,
+          );
+        },
+        { interval: 1, timeout: 10_000 },
+      )
+      .toBe(true);
+    await backend.listeners.close(last.id);
+    await reset;
+    expect(backend.listeners.list().map((l) => l.source.id)).not.toContain(last.id);
+    expect(backend.listeners.list()).toHaveLength(devices.length - 1);
+    expect(await isListening(lastPort)).toBe(false);
+    expect(watched).toEqual([]);
+    api.close();
+  });
+
+  it("doesn't leave a listener running that was opened while the backend stopped", async () => {
+    const opening = backend.listeners.open(PIXEL).then(
+      (result) => result.port,
+      () => undefined,
+    );
+    await backend.stop();
+    stopped = true;
+    const port = await opening;
+    if (port !== undefined) expect(await isListening(port)).toBe(false);
+    await expect(backend.listeners.open(TABLET)).rejects.toThrow(/stopping/);
   });
 
   it('stops listening when closed, and when the backend stops', async () => {

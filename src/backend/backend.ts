@@ -126,6 +126,12 @@ export interface DeviceListeners {
   close(sourceId: string): Promise<void>;
   /** The running listeners. */
   list(): Array<{ source: ExchangeSource; port: number }>;
+  /**
+   * Calls `watch` when a listener had to move to another port (`port`) or couldn't restart at
+   * all (`undefined`), e.g. after a certificate reset: a device's tunnel must follow. Returns a
+   * function that stops watching.
+   */
+  onPortChange(watch: (source: ExchangeSource, port: number | undefined) => void): () => void;
 }
 
 /** How long a finished exchange's body may take to be stored before plugins are told anyway. */
@@ -363,52 +369,99 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       ...[...deviceListeners.values()].map((l) => l.proxy.refreshRules()),
     ]);
   };
-  /** Restarts every device listener, e.g. with a new certificate, on the port it had. */
-  const restartDeviceListeners = async (): Promise<void> => {
-    for (const [id, listener] of deviceListeners) {
-      const { port } = listener.proxy;
-      await listener.proxy.stop();
+  // Opening, closing and restarting device listeners run one at a time, so none of them can
+  // see another half done (e.g. a close during a certificate reset, or an open during stop).
+  let listenerQueue: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(task: () => Promise<T>): Promise<T> => {
+    const result = listenerQueue.then(task, task);
+    listenerQueue = result.catch(() => undefined);
+    return result;
+  };
+  let listenersStopped = false;
+  const portWatchers = new Set<(source: ExchangeSource, port: number | undefined) => void>();
+  const portChanged = (source: ExchangeSource, port: number | undefined): void => {
+    for (const watch of portWatchers) {
       try {
-        listener.proxy = await openDeviceProxy(listener.source, port);
+        watch({ ...source }, port);
       } catch (error) {
-        // Its port was taken meanwhile: the device's tunnel has to be pointed at a new one.
-        console.error(
-          `[wirescry] listener for ${listener.source.label} couldn't reopen port ${port}:`,
-          error,
-        );
-        listener.proxy = await openDeviceProxy(listener.source, undefined);
+        console.error('[wirescry] a listener port watcher failed:', error);
       }
-      deviceListeners.set(id, listener);
     }
   };
+  /**
+   * Restarts every device listener, e.g. with a new certificate, on the port it had. If that
+   * port was taken meanwhile it moves, and if it can't start at all it's dropped; watchers are
+   * told either way, since a device's tunnel points at the old port.
+   */
+  const restartDeviceListeners = (): Promise<void> =>
+    oneAtATime(async () => {
+      if (listenersStopped) return;
+      for (const [id, listener] of [...deviceListeners]) {
+        const { port } = listener.proxy;
+        await listener.proxy.stop().catch(() => undefined);
+        let reopened: RunningProxy | undefined;
+        try {
+          reopened = await openDeviceProxy(listener.source, port);
+        } catch (error) {
+          console.error(
+            `[wirescry] listener for ${listener.source.label} couldn't reopen port ${port}:`,
+            error,
+          );
+          reopened = await openDeviceProxy(listener.source, undefined).catch((again: unknown) => {
+            console.error(`[wirescry] listener for ${listener.source.label} couldn't start:`, again);
+            return undefined;
+          });
+        }
+        if (!reopened) {
+          deviceListeners.delete(id);
+          portChanged(listener.source, undefined);
+          continue;
+        }
+        listener.proxy = reopened;
+        // Plugins may have changed their rules while it was starting.
+        await reopened.refreshRules();
+        if (reopened.port !== port) portChanged(listener.source, reopened.port);
+      }
+    });
   const listeners: DeviceListeners = {
-    async open(source, port) {
-      const running = deviceListeners.get(source.id);
-      if (running) return { port: running.proxy.port };
-      let started: RunningProxy;
-      try {
-        started = await openDeviceProxy(source, port);
-      } catch (error) {
-        if (port === undefined) throw error;
-        started = await openDeviceProxy(source, undefined);
-      }
-      // A second open for the same source may have finished first.
-      const raced = deviceListeners.get(source.id);
-      if (raced) {
-        await started.stop();
-        return { port: raced.proxy.port };
-      }
-      deviceListeners.set(source.id, { source: { ...source }, proxy: started });
-      return { port: started.port };
-    },
-    async close(sourceId) {
-      const listener = deviceListeners.get(sourceId);
-      if (!listener) return;
-      deviceListeners.delete(sourceId);
-      await listener.proxy.stop();
-    },
+    open: (source, port) =>
+      oneAtATime(async () => {
+        if (listenersStopped) throw new Error('Wirescry is stopping.');
+        const running = deviceListeners.get(source.id);
+        if (running) return { port: running.proxy.port };
+        let started: RunningProxy;
+        try {
+          started = await openDeviceProxy(source, port);
+        } catch (error) {
+          if (port === undefined) throw error;
+          started = await openDeviceProxy(source, undefined);
+        }
+        deviceListeners.set(source.id, { source: { ...source }, proxy: started });
+        // Plugins may have changed their rules while it was starting.
+        await started.refreshRules();
+        return { port: started.port };
+      }),
+    close: (sourceId) =>
+      oneAtATime(async () => {
+        const listener = deviceListeners.get(sourceId);
+        if (!listener) return;
+        deviceListeners.delete(sourceId);
+        await listener.proxy.stop();
+      }),
     list: () => [...deviceListeners.values()].map((l) => ({ source: { ...l.source }, port: l.proxy.port })),
+    onPortChange(watch) {
+      portWatchers.add(watch);
+      return () => portWatchers.delete(watch);
+    },
   };
+  /** Stops every device listener for good (the backend is stopping). */
+  const stopDeviceListeners = (): Promise<void> =>
+    oneAtATime(async () => {
+      listenersStopped = true;
+      const all = [...deviceListeners.values()];
+      deviceListeners.clear();
+      await Promise.all(all.map((l) => l.proxy.stop().catch(() => undefined)));
+    });
   step('proxy');
   await docker.refresh();
   step('docker');
@@ -733,8 +786,12 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           // The old Firefox profile trusts the old CA; start it over.
           await deleteFirefoxProfile(firefoxProfile);
           firefoxTrusted = false;
-          await restartProxy(proxy.port);
-          await restartDeviceListeners();
+          try {
+            await restartProxy(proxy.port);
+          } finally {
+            // Even if the main proxy had to move: device listeners must not keep the old CA.
+            await restartDeviceListeners();
+          }
           broadcast({ type: 'status', status: status() });
           return undefined;
         });
@@ -821,9 +878,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
-      const devices = [...deviceListeners.values()].map((l) => l.proxy.stop());
-      deviceListeners.clear();
-      await Promise.all([api.stop(), proxy.stop(), ...devices, formatter.close(), docker.stop()]);
+      await Promise.all([api.stop(), proxy.stop(), stopDeviceListeners(), formatter.close(), docker.stop()]);
       await bodies.close();
     },
   };
