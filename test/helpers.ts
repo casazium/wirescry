@@ -1,3 +1,4 @@
+import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
@@ -157,4 +158,17 @@ export function httpViaProxy(
     req.once('error', reject);
     req.end();
   });
+}
+
+/**
+ * A free port the system picked (from the ephemeral range), for a test's proxy that must keep its
+ * port across a restart: Mockttp's own choice is the lowest free port from 8000, which other test
+ * files running at the same time also pick, so a port freed for a moment gets taken.
+ */
+export async function systemPickedPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as net.AddressInfo;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }

@@ -38,7 +38,10 @@ export interface ProxyOptions {
     remoteAddress: string | undefined,
     exchangeId: string,
   ) => boolean;
-  /** Fixed port. Picks a free one if omitted. */
+  /**
+   * Fixed port. Omitted, Mockttp picks the lowest free one from 8000; 0, the system picks any
+   * free one (for ports nobody types in, like device listeners').
+   */
   port?: number;
   /** Extra CAs to trust for upstream servers (PEM). */
   upstreamCAs?: string[];
@@ -697,7 +700,8 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
   }
   await server.forAnyWebSocket().always().thenPassThrough(passThrough);
 
-  if (options.port !== undefined) await assertLoopbackPortFree(options.port);
+  // 0 asks the system for any free port, as with listen(0); there's nothing to check first.
+  if (options.port !== undefined && options.port !== 0) await assertLoopbackPortFree(options.port);
   await server.start(options.port);
   let restriction: { stop(): void };
   try {

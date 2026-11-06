@@ -10,7 +10,15 @@ import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import { WebSocketServer } from 'ws';
 import type { BodyContent, ExchangeSource, ExchangeSummary } from '../src/shared/api';
-import { apiClient, exchangesIn, httpViaProxy, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  httpViaProxy,
+  requestViaProxy,
+  systemPickedPort,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 const PIXEL: ExchangeSource = { kind: 'android', id: 'serial-123', label: 'Pixel 8' };
 const TABLET: ExchangeSource = { kind: 'android', id: 'serial-456', label: 'Galaxy Tab' };
@@ -108,6 +116,8 @@ describe('Device listeners', () => {
     plugin = rulePlugin();
     stopped = false;
     backend = await startBackend({
+      // Kept across certificate resets: see systemPickedPort.
+      proxyPort: await systemPickedPort(),
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
@@ -397,6 +407,8 @@ describe('Device listeners, beside the rest of Wirescry', () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-device-beside-'));
     plugin = rulePlugin();
     backend = await startBackend({
+      // Kept across certificate resets: see systemPickedPort.
+      proxyPort: await systemPickedPort(),
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],

@@ -16,7 +16,7 @@ import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import type { ExchangeSource, ExchangeSummary } from '../src/shared/api';
 import { LOCAL_ACCESS_SWITCH } from '../src/shared/failure';
-import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import { apiClient, exchangesIn, requestViaProxy, systemPickedPort, TOKEN, UI_ORIGIN } from './helpers';
 
 const PIXEL: ExchangeSource = { kind: 'android', id: 'serial-123', label: 'Pixel 8' };
 const TABLET: ExchangeSource = { kind: 'android', id: 'serial-456', label: 'Galaxy Tab' };
@@ -156,6 +156,8 @@ describe('What a device may reach', () => {
       'rebind.example': () => (rebinds++ === 0 ? [PUBLIC] : ['127.0.0.1']),
     };
     backend = await startBackend({
+      // Kept across certificate resets: see systemPickedPort.
+      proxyPort: await systemPickedPort(),
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],

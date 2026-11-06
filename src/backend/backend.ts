@@ -354,7 +354,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       store,
       bodies,
       websockets,
-      port,
+      // A port nobody types in: let the system pick one. Mockttp's own choice is the lowest free
+      // port from 8000, which developers' servers want, and which anything starting at the same
+      // moment would also pick (e.g. while a listener restarts on its port in a certificate reset).
+      port: port ?? 0,
       upstreamCAs: options.upstreamCAs,
       onExchange: (exchange) => {
         updates.change(exchange.summary);
@@ -409,7 +412,22 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     try {
       proxy = await openProxy(port);
     } catch (error) {
-      proxy = await openProxy(previousPort);
+      try {
+        proxy = await openProxy(previousPort);
+      } catch (again) {
+        // Its old port was taken while it was closed (a certificate reset reopens on the same
+        // port). A proxy on another port beats none: clients set to the old one need changing,
+        // which the error and the status say.
+        console.error(`[wirescry] proxy couldn't reopen port ${previousPort}:`, again);
+        proxy = await openProxy(undefined);
+        await proxy.refreshRules();
+        terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+        broadcast({ type: 'status', status: status() });
+        throw new Error(
+          `Port ${previousPort} was taken while the proxy restarted, so it's on port ${proxy.port} now.`,
+          { cause: again },
+        );
+      }
       await proxy.refreshRules();
       throw error;
     }
