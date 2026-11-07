@@ -127,7 +127,12 @@ describe('Android section: capturing', () => {
     render(<AndroidSection status={ready()} send={send} />);
     expect(screen.getByText(/Other apps on the device may stop working/)).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
-    expect(send).toHaveBeenCalledWith({ command: 'androidCapture', deviceId: id, replaceProxy: undefined });
+    expect(send).toHaveBeenCalledWith({
+      command: 'androidCapture',
+      deviceId: id,
+      replaceProxy: undefined,
+      confirmWireless: false,
+    });
   });
 
   it('asks before replacing a proxy the device already has, and can be cancelled', async () => {
@@ -143,6 +148,7 @@ describe('Android section: capturing', () => {
       command: 'androidCapture',
       deviceId: id,
       replaceProxy: 'proxy.corp:3128',
+      confirmWireless: false,
     });
     send.mockResolvedValueOnce({ needsConfirmation: 'proxy.corp:3128' });
     fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
@@ -180,11 +186,13 @@ describe('Android section: capturing', () => {
     expect(screen.getByText(/Stop capture before closing the emulator/)).toBeTruthy();
   });
 
-  it('offers Restore for a device left set up, and Clear for a stray proxy', () => {
+  it('offers Resume and Restore for a device left set up, and Clear for a stray proxy', () => {
     const send = vi.fn().mockResolvedValue(undefined);
     const { rerender } = render(<AndroidSection status={ready({ leftover: true })} send={send} />);
     expect(screen.getByText(/left this device set up last time/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Capture' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }));
+    expect(send).toHaveBeenLastCalledWith({ command: 'androidResume', deviceId: id });
     fireEvent.click(screen.getByRole('button', { name: 'Restore' }));
     expect(send).toHaveBeenLastCalledWith({ command: 'androidStop', deviceId: id });
     rerender(<AndroidSection status={ready({ strayProxy: '127.0.0.1:41111' })} send={send} />);
@@ -205,6 +213,44 @@ describe('Android section: capturing', () => {
     await waitFor(() =>
       expect(screen.getAllByRole('alert').some((a) => a.textContent === 'The device refused.')).toBe(true),
     );
+  });
+
+  it('asks before capturing a device on Wi-Fi, then still asks about its proxy', async () => {
+    const send = vi
+      .fn()
+      .mockResolvedValueOnce({ needsWirelessConfirmation: true })
+      .mockResolvedValueOnce({ needsConfirmation: 'proxy.corp:3128' })
+      .mockResolvedValue({});
+    render(<AndroidSection status={ready({ wireless: true, serial: '192.168.1.20:5555' })} send={send} />);
+    expect(screen.getAllByRole('listitem')[0]!.textContent).toContain('Device over Wi-Fi');
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/connected over Wi-Fi/));
+    fireEvent.click(screen.getByRole('button', { name: 'Capture over Wi-Fi' }));
+    expect(send).toHaveBeenLastCalledWith({
+      command: 'androidCapture',
+      deviceId: id,
+      replaceProxy: undefined,
+      confirmWireless: true,
+    });
+    await waitFor(() => screen.getByRole('button', { name: 'Replace and capture' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Replace and capture' }));
+    // The Wi-Fi answer carries over.
+    expect(send).toHaveBeenLastCalledWith({
+      command: 'androidCapture',
+      deviceId: id,
+      replaceProxy: 'proxy.corp:3128',
+      confirmWireless: true,
+    });
+  });
+
+  it('can cancel capturing over Wi-Fi', async () => {
+    const send = vi.fn().mockResolvedValue({ needsWirelessConfirmation: true });
+    render(<AndroidSection status={ready({ wireless: true })} send={send} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Capture' }));
+    await waitFor(() => screen.getByRole('button', { name: 'Cancel' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.getByRole('button', { name: 'Capture' })).toBeTruthy();
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('offers nothing for a device that is unsupported, unauthorized or unread', () => {
@@ -232,7 +278,27 @@ it('says what to do about set-up devices that are not connected', () => {
     />,
   );
   const notes = screen.getAllByRole('status').map((n) => n.textContent ?? '');
-  expect(notes.some((t) => /Pixel 8 was disconnected while capturing.*use Stop/.test(t))).toBe(true);
-  expect(notes.some((t) => /Galaxy Tab was left set up last time.*use Restore/.test(t))).toBe(true);
+  expect(notes.some((t) => /Pixel 8 was disconnected while capturing.*capture carries on/.test(t))).toBe(
+    true,
+  );
+  expect(notes.some((t) => /Galaxy Tab was left set up last time.*Resume or Restore/.test(t))).toBe(true);
   expect(notes.every((t) => !t.includes('Pixel 8') || t.includes('http_proxy :0'))).toBe(true);
+});
+
+it('words it for emulators, which come back from a saved state', () => {
+  render(
+    <AndroidSection
+      status={withAndroid({
+        state: 'ready',
+        devices: [],
+        notConnected: [
+          { label: 'Pixel 8 API 35', capturing: true, emulator: true },
+          { label: 'Small Phone', capturing: false, emulator: true },
+        ],
+      })}
+    />,
+  );
+  const notes = screen.getAllByRole('status').map((n) => n.textContent ?? '');
+  expect(notes.some((t) => /Pixel 8 API 35 closed while capturing\. Start it again/.test(t))).toBe(true);
+  expect(notes.some((t) => /Small Phone was left set up last time and isn’t running/.test(t))).toBe(true);
 });

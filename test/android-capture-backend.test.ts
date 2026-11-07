@@ -30,7 +30,7 @@ async function start(): Promise<void> {
     token: TOKEN,
     allowedOrigins: [UI_ORIGIN],
     docker: false,
-    android: { endpoint: () => endpoint, findAdb: () => undefined },
+    android: { endpoint: () => endpoint, findAdb: () => undefined, capture: { graceMs: 200 } },
   });
   api = await apiClient(backend.apiPort);
   await expect.poll(() => device()?.id).toBeTruthy();
@@ -163,6 +163,44 @@ describe('Capturing a device through the backend', () => {
     await expect
       .poll(() => last(api.messages)?.android?.notConnected, { timeout: 10_000 })
       .toEqual([{ label: 'Pixel 8', capturing: true }]);
+  });
+
+  it('resumes a device an earlier run left set up, recording its traffic again', async () => {
+    await start();
+    const id = device()!.id!;
+    await api.send({ command: 'androidCapture', deviceId: id });
+    await expect.poll(() => device()?.capture).toBeTruthy();
+    const { devicePort } = device()!.capture!;
+    // The device goes away before Wirescry quits, so it can't be put back.
+    const saved = phone.serial;
+    phone.serial = 'gone';
+    await stopBackend();
+    phone.serial = saved;
+
+    await start();
+    await expect.poll(() => device()?.leftover).toBe(true);
+    await api.send({ command: 'androidResume', deviceId: id });
+    await expect.poll(() => device()?.capture).toBeTruthy();
+    expect(device()?.leftover).toBeUndefined();
+    const { hostPort } = device()!.capture!;
+    expect(phone.settings.get('http_proxy')).toBe(`127.0.0.1:${devicePort}`);
+    expect(phone.rules).toEqual([{ device: `tcp:${devicePort}`, host: `tcp:${hostPort}` }]);
+    expect((await httpViaProxy(hostPort, 'http://wirescry.internal/')).status).toBe(200);
+    await expect
+      .poll(() => exchangesIn(api.messages).find((e) => e.host === 'wirescry.internal')?.source?.id)
+      .toBe(id);
+  });
+
+  it('asks before capturing a device on Wi-Fi', async () => {
+    phone.serial = '192.168.1.20:5555';
+    await start();
+    const id = device()!.id!;
+    expect(await api.send({ command: 'androidCapture', deviceId: id })).toEqual({
+      needsWirelessConfirmation: true,
+    });
+    expect(phone.rules).toEqual([]);
+    await api.send({ command: 'androidCapture', deviceId: id, confirmWireless: true });
+    await expect.poll(() => device()?.capture).toBeTruthy();
   });
 
   it("offers to clear a 127.0.0.1 proxy that isn't Wirescry's", async () => {

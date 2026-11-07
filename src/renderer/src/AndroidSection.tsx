@@ -41,6 +41,9 @@ function DeviceActions({
 }): React.JSX.Element | null {
   const [error, setError] = useState<string>();
   const [confirm, setConfirm] = useState<string>();
+  const [confirmWireless, setConfirmWireless] = useState(false);
+  /** The user has agreed to capture over Wi-Fi, for the proxy confirmation that may follow. */
+  const [wirelessOk, setWirelessOk] = useState(false);
   const id = device.id;
   if (!id || device.state !== 'ready') return null;
   const busy = device.busy !== undefined;
@@ -50,12 +53,25 @@ function DeviceActions({
       .then((value) => then?.(value))
       .catch((e: Error) => setError(e.message));
   };
-  const capture = (replaceProxy?: string): void => {
+  const capture = (options: { replaceProxy?: string; wireless?: boolean } = {}): void => {
     setConfirm(undefined);
-    run({ command: 'androidCapture', deviceId: id, replaceProxy }, (value) => {
-      const proxy = (value as { needsConfirmation?: string } | undefined)?.needsConfirmation;
-      if (proxy) setConfirm(proxy);
-    });
+    setConfirmWireless(false);
+    const wireless = options.wireless ?? wirelessOk;
+    setWirelessOk(wireless);
+    run(
+      {
+        command: 'androidCapture',
+        deviceId: id,
+        replaceProxy: options.replaceProxy,
+        confirmWireless: wireless,
+      },
+      (value) => {
+        const reply = value as
+          { needsConfirmation?: string; needsWirelessConfirmation?: boolean } | undefined;
+        if (reply?.needsWirelessConfirmation) setConfirmWireless(true);
+        else if (reply?.needsConfirmation) setConfirm(reply.needsConfirmation);
+      },
+    );
   };
   const disabled = !connected || busy;
   return (
@@ -63,8 +79,16 @@ function DeviceActions({
       {device.leftover ? (
         <>
           <p className="note" role="status">
-            Wirescry left this device set up last time, so its internet may not work.
+            Wirescry left this device set up last time, so its internet may not work. Resume carries on
+            capturing it; Restore puts it back as it was.
           </p>
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => run({ command: 'androidResume', deviceId: id })}
+          >
+            {device.busy === 'capturing' ? 'Resuming…' : 'Resume'}
+          </button>{' '}
           <button
             type="button"
             disabled={disabled}
@@ -116,13 +140,28 @@ function DeviceActions({
             {device.busy === 'stopping' ? 'Stopping…' : 'Stop'}
           </button>
         </>
-      ) : device.unsupported ? null : confirm ? (
+      ) : device.unsupported ? null : confirmWireless ? (
+        <div className="callout warn" role="alert">
+          <p>
+            This device is connected over Wi-Fi. Wireless debugging turns itself off when the device sleeps or
+            changes network, and Android’s Wi-Fi settings don’t show this proxy, so the device could be left
+            without internet until you connect it here again, or run{' '}
+            <code>adb shell settings put global http_proxy :0</code>. Capture anyway?
+          </p>
+          <button type="button" disabled={disabled} onClick={() => capture({ wireless: true })}>
+            Capture over Wi-Fi
+          </button>{' '}
+          <button type="button" onClick={() => setConfirmWireless(false)}>
+            Cancel
+          </button>
+        </div>
+      ) : confirm ? (
         <div className="callout warn" role="alert">
           <p>
             This device already uses the proxy {confirm}, set by you or another tool. Replace it while
             capturing? Wirescry puts it back when you stop.
           </p>
-          <button type="button" disabled={disabled} onClick={() => capture(confirm)}>
+          <button type="button" disabled={disabled} onClick={() => capture({ replaceProxy: confirm })}>
             Replace and capture
           </button>{' '}
           <button type="button" onClick={() => setConfirm(undefined)}>
@@ -131,7 +170,7 @@ function DeviceActions({
         </div>
       ) : (
         <>
-          <button type="button" disabled={disabled} onClick={() => capture()}>
+          <button type="button" disabled={disabled} onClick={() => capture({ wireless: false })}>
             {device.busy === 'capturing' ? 'Capturing…' : 'Capture'}
           </button>{' '}
           <span className="muted">Other apps on the device may stop working until you stop capturing.</span>
@@ -187,7 +226,7 @@ export function AndroidSection({ status, connected = true, send }: Props): React
                 <span className="device-name">{device.label}</span>{' '}
                 <span className="muted">
                   {[
-                    device.emulator ? 'Emulator' : 'Device',
+                    device.emulator ? 'Emulator' : device.wireless ? 'Device over Wi-Fi' : 'Device',
                     device.apiLevel !== undefined ? `API ${device.apiLevel}` : undefined,
                     device.serial,
                   ]
@@ -201,14 +240,26 @@ export function AndroidSection({ status, connected = true, send }: Props): React
           })}
         </ul>
       )}
-      {android.notConnected?.map((d, i) => (
-        <p key={i} className="note" role="status">
-          <span className="device-name">{d.label}</span>{' '}
-          {d.capturing ? 'was disconnected while capturing' : 'was left set up last time and isn’t connected'}
-          . Its internet won’t work until you connect it here and use {d.capturing ? 'Stop' : 'Restore'}, or
-          run <code>adb shell settings put global http_proxy :0</code> with only that device connected.
-        </p>
-      ))}
+      {android.notConnected?.map((d, i) =>
+        d.emulator ? (
+          <p key={i} className="note" role="status">
+            <span className="device-name">{d.label}</span>{' '}
+            {d.capturing
+              ? 'closed while capturing. Start it again while Wirescry is running and capture carries on.'
+              : 'was left set up last time and isn’t running. Start it while Wirescry is running, then Resume or Restore.'}{' '}
+            Until then it has no internet.
+          </p>
+        ) : (
+          <p key={i} className="note" role="status">
+            <span className="device-name">{d.label}</span>{' '}
+            {d.capturing
+              ? 'was disconnected while capturing. Connect it again and capture carries on.'
+              : 'was left set up last time and isn’t connected. Connect it here, then Resume or Restore.'}{' '}
+            Until then it has no internet, unless you run{' '}
+            <code>adb shell settings put global http_proxy :0</code> with only that device connected.
+          </p>
+        ),
+      )}
       {send && android.state !== 'starting' && (
         <p>
           <button type="button" onClick={checkAgain} disabled={!connected || checking}>

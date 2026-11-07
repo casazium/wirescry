@@ -112,6 +112,22 @@ function okOutput(result: ShellResult): string {
   return result.stdout;
 }
 
+/**
+ * Whether the ADB server reaches this device over the network rather than USB or the emulator's
+ * own link. `adb connect host:port` lists it as "host:port" (developer.android.com/tools/adb,
+ * "Connect to a device over Wi-Fi"); wireless debugging's mDNS service is _adb-tls-connect._tcp
+ * (same page, `adb mdns`), and an auto-connected device's serial is assumed to end with it
+ * (not yet measured). An emulator reached with `adb connect` isn't on Wi-Fi: checked by the caller.
+ */
+export function isNetworkSerial(serial: string): boolean {
+  return (
+    // Loopback isn't Wi-Fi: Android containers and emulators connected with `adb connect`.
+    (/^(?:\[[0-9A-Fa-f:.]+(?:%[\w.-]+)?\]|[A-Za-z0-9.-]+):\d{1,5}$/.test(serial) &&
+      !/^(?:localhost|127\.\d+\.\d+\.\d+|\[::1\]):/.test(serial)) ||
+    /\._adb(?:-tls-connect)?\._tcp\.?$/.test(serial)
+  );
+}
+
 /** A stable, opaque id from a device's identity parts (never the transport serial alone). */
 export function identityOf(parts: string[]): string | undefined {
   if (parts.every((p) => !p)) return undefined;
@@ -152,6 +168,7 @@ export function devicesFrom(
       ...base,
       label: known.label,
       emulator: known.emulator,
+      ...(!known.emulator && isNetworkSerial(line.serial) ? { wireless: true } : {}),
       ...(known.apiLevel !== undefined ? { apiLevel: known.apiLevel } : {}),
       ...(known.unsupported
         ? { unsupported: known.unsupported }

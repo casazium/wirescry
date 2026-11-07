@@ -6,6 +6,7 @@ import {
   devicesFrom,
   identityOf,
   infoKey,
+  isNetworkSerial,
   parseGetprop,
   readDeviceInfo,
   TOO_OLD,
@@ -269,4 +270,46 @@ describe('The device list', () => {
     expect(d!.id).not.toContain('emulator-5554');
     expect(d!.id).toMatch(/^[0-9a-f]{32}$/);
   });
+});
+
+describe('Devices on Wi-Fi', () => {
+  it('knows network transports by their serial', () => {
+    for (const serial of [
+      '192.168.1.20:5555',
+      'phone.lan:37155',
+      '[fe80::1]:5555',
+      '[fe80::1%wlan0]:5555',
+      'adb-35121FDJH000R8-xyMD0H._adb-tls-connect._tcp',
+      'adb-35121FDJH000R8-xyMD0H._adb-tls-connect._tcp.',
+    ]) {
+      expect(isNetworkSerial(serial), serial).toBe(true);
+    }
+    // Loopback: Android containers, and emulators reached with adb connect.
+    for (const serial of [
+      'emulator-5554',
+      'R58M123ABC',
+      '0a388e93',
+      '',
+      'a b:5555',
+      'localhost:5555',
+      '127.0.0.1:5555',
+      '[::1]:5555',
+    ]) {
+      expect(isNetworkSerial(serial), serial).toBe(false);
+    }
+  });
+});
+
+it('never asks about Wi-Fi for an emulator, whatever its serial', () => {
+  const line = {
+    serial: '192.168.56.101:5555',
+    state: 'device',
+    fields: { transport_id: '1' },
+  } as AdbDeviceLine;
+  const info = new Map([
+    [infoKey(line), { label: 'Pixel', emulator: true, apiLevel: 35, identityParts: ['s', 'a', 'avd'] }],
+  ]);
+  expect(devicesFrom([line], info)[0]?.wireless).toBeUndefined();
+  const phone = new Map([[infoKey(line), { ...info.get(infoKey(line))!, emulator: false }]]);
+  expect(devicesFrom([line], phone)[0]?.wireless).toBe(true);
 });

@@ -174,6 +174,10 @@ export interface FakeDeviceState {
   loopbackRules: Map<string, boolean>;
   /** Shell commands it ran, in order. */
   commands: string[];
+  /** The ADB transport id it's listed with; a reconnect gets a new one. */
+  transportId?: number;
+  /** Its shell commands fail (exit code 1), as on a device too busy to answer. */
+  failShell?: boolean;
 }
 
 export function fakeDeviceState(serial = 'R58', props: Record<string, string> = {}): FakeDeviceState {
@@ -211,15 +215,29 @@ function shellPackets(stdout: string, exitCode = 0): Buffer {
  * emulator was measured to (test/fixtures/adb): version, track-devices-l, features, shell v2
  * getprop and settings, and reverse rules, which it keeps.
  */
-export async function startDeviceServer(devices: FakeDeviceState[]): Promise<FakeAdb> {
-  return startFakeAdb({
+export async function startDeviceServer(
+  devices: FakeDeviceState[],
+): Promise<
+  FakeAdb & { /** Sends the device list again to every tracker (devices came or went). */ update(): void }
+> {
+  const trackers = new Set<net.Socket>();
+  const list = () =>
+    frame(
+      devices
+        .map(
+          (d, i) =>
+            `${d.serial}\tdevice product:x model:Pixel_8 device:x transport_id:${d.transportId ?? i + 1}\n`,
+        )
+        .join(''),
+    );
+  const fake = await startFakeAdb({
     script: (requests, socket) => {
       const [first, second] = requests;
       if (first === 'host:version') return (void socket.end('OKAY00040029'), true);
       if (first === 'host:track-devices-l') {
-        socket.write(
-          `OKAY${frame(devices.map((d, i) => `${d.serial}\tdevice product:x model:Pixel_8 device:x transport_id:${i + 1}\n`).join(''))}`,
-        );
+        trackers.add(socket);
+        socket.on('close', () => trackers.delete(socket));
+        socket.write(`OKAY${list()}`);
         return true;
       }
       const features = /^host-serial:(.+):features$/.exec(first ?? '');
@@ -239,6 +257,7 @@ export async function startDeviceServer(devices: FakeDeviceState[]): Promise<Fak
       if (shell) {
         const command = shell[1]!;
         device.commands.push(command);
+        if (device.failShell) return (void socket.end(shellPackets('', 1)), true);
         const get = /^settings get global (\S+)$/.exec(command);
         if (command === 'getprop') {
           socket.end(
@@ -291,6 +310,11 @@ export async function startDeviceServer(devices: FakeDeviceState[]): Promise<Fak
         return true;
       }
       return false;
+    },
+  });
+  return Object.assign(fake, {
+    update() {
+      for (const socket of trackers) socket.write(list());
     },
   });
 }
