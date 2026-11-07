@@ -473,9 +473,9 @@ export class AndroidSetup {
   }
 
   /** Sets a stray 127.0.0.1 proxy back to none. */
-  clearProxy(id: string): Promise<void> {
+  async clearProxy(id: string): Promise<void> {
     const target = this.target(id, 'stop');
-    return this.act(id, 'stopping', () => this.capture!.clearStrayProxy(target));
+    await this.act(id, 'stopping', () => this.capture!.clearStrayProxy(target));
   }
 
   /** Whether a device may reach this computer and its local networks. */

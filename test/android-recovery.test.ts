@@ -320,3 +320,48 @@ describe('Wi-Fi debugging', () => {
     expect(device()?.wireless).toBeUndefined();
   });
 });
+
+describe('Requests it refuses (from the coverage review)', () => {
+  it('refuses every device action while Android capture is off', async () => {
+    const setup = new AndroidSetup({
+      endpoint: () => fake.endpoint,
+      findAdb: () => undefined,
+      retryDelaysMs: [30],
+      timeoutMs: 1000,
+    });
+    stops.push(() => setup.stop());
+    await setup.start();
+    await expect.poll(() => setup.status().devices[0]?.id).toBeTruthy();
+    const id = setup.status().devices[0]!.id!;
+    await expect(setup.captureDevice(id)).rejects.toThrow('Android capture is off.');
+    await expect(setup.resumeDevice(id)).rejects.toThrow('Android capture is off.');
+    await expect(setup.stopDevice(id)).rejects.toThrow('Android capture is off.');
+    await expect(setup.clearProxy(id)).rejects.toThrow('Android capture is off.');
+    expect(() => setup.setLocalAccess(id, true)).toThrow('Android capture is off.');
+    expect(phone.commands.filter((c) => c.startsWith('settings put'))).toEqual([]);
+  });
+
+  it('refuses to capture a device older than Android 7, changing nothing', async () => {
+    phone.props['ro.build.version.sdk'] = '23';
+    const { setup, device } = start();
+    await setup.start();
+    await expect.poll(() => device()?.unsupported).toMatch(/Android 7/);
+    await expect(setup.captureDevice(device()!.id!)).rejects.toThrow(/Android 7/);
+    expect(phone.commands.filter((c) => c.startsWith('settings put'))).toEqual([]);
+    expect(phone.rules).toEqual([]);
+  });
+
+  it('refuses devices that aren’t connected, and local access for one not capturing', async () => {
+    const { setup, device } = start();
+    await setup.start();
+    await expect.poll(() => device()?.id).toBeTruthy();
+    const id = device()!.id!;
+    expect(() => setup.setLocalAccess(id, true)).toThrow('Capture the device first.');
+    await expect(setup.captureDevice('f'.repeat(32))).rejects.toThrow(/isn’t connected and ready/);
+    await expect(setup.stopDevice('f'.repeat(32))).rejects.toThrow(/Connect the device to put it back/);
+    unplug();
+    await expect.poll(() => device()).toBeUndefined();
+    await expect(setup.captureDevice(id)).rejects.toThrow(/isn’t connected and ready/);
+    await expect(setup.resumeDevice(id)).rejects.toThrow(/Connect the device to put it back.*http_proxy :0/);
+  });
+});

@@ -32,6 +32,8 @@ class FakeDevice implements CaptureIo {
   rebindRefused = new Set<number>();
   /** The device ignores proxy writes (Xiaomi without "USB debugging (Security settings)"). */
   ignoresWrites = false;
+  /** Proxy writes fail with this on stderr and exit code 1 ('' for no message). */
+  refusesWrites: string | undefined;
   /** Reads fail (e.g. unplugged). */
   gone = false;
   /** Fails `reverse` with another error. */
@@ -54,6 +56,7 @@ class FakeDevice implements CaptureIo {
     if (get) return this.ok(`${this.settings.get(get[1]!) ?? ''}\n`);
     const put = /^settings put global http_proxy (\S+)$/.exec(command);
     if (put) {
+      if (this.refusesWrites !== undefined) return { stdout: '', stderr: this.refusesWrites, exitCode: 1 };
       if (this.ignoresWrites) return this.ok();
       const value = put[1]!;
       this.settings.set('http_proxy', value);
@@ -1048,5 +1051,141 @@ describe('Resume', () => {
   it('refuses a device with nothing to resume', async () => {
     const { capture } = setup();
     await expect(capture.resume(PIXEL)).rejects.toThrow(/nothing to resume/);
+  });
+});
+
+describe('Failure paths (from the coverage review)', () => {
+  it('says why when the device refuses the proxy setting, and changes nothing', async () => {
+    for (const [stderr, why] of [
+      ['Permission denial: writing to settings requires WRITE_SECURE_SETTINGS', /refused.*Permission denial/],
+      ['', /refused the proxy setting: exit code 1/],
+    ] as const) {
+      const device = new FakeDevice();
+      device.refusesWrites = stderr;
+      const { listeners, records, capture } = setup({ device });
+      await expect(capture.capture(PIXEL)).rejects.toThrow(why);
+      expect(device.rules).toEqual([]);
+      expect(device.settings.get('http_proxy')).toBe(':0');
+      expect(listeners.opened.size).toBe(0);
+      expect(await records.list()).toEqual([]);
+      expect(capture.capturing(ID)).toBeUndefined();
+    }
+  });
+
+  it('keeps capturing, and says how to fix it by hand, when Stop can’t put the proxy back', async () => {
+    for (const fail of ['ignores', 'refuses'] as const) {
+      const { device, listeners, records, capture } = setup();
+      await capture.capture(PIXEL);
+      const { devicePort, hostPort } = capture.capturing(ID)!;
+      if (fail === 'ignores') device.ignoresWrites = true;
+      else device.refusesWrites = 'Security exception';
+      await expect(capture.stop(PIXEL)).rejects.toThrow(
+        fail === 'ignores' ? /didn’t take back its proxy setting. Run: .*http_proxy :0/ : /refused/,
+      );
+      // Nothing forgotten: the tunnel still works, and Stop can be tried again.
+      expect(capture.capturing(ID)).toBeDefined();
+      expect(device.rules).toEqual([rule(devicePort, hostPort)]);
+      expect(await records.list()).toHaveLength(1);
+      expect(listeners.opened.has(ID)).toBe(true);
+      device.ignoresWrites = false;
+      device.refusesWrites = undefined;
+      await capture.stop(PIXEL);
+      expect(device.settings.get('http_proxy')).toBe(':0');
+      expect(device.rules).toEqual([]);
+      expect(await records.list()).toEqual([]);
+    }
+  });
+
+  it('says how to fix it by hand when a stray proxy won’t clear', async () => {
+    const device = new FakeDevice();
+    device.settings.set('http_proxy', '127.0.0.1:41111');
+    device.settings.set('global_http_proxy_host', '127.0.0.1');
+    device.ignoresWrites = true;
+    const { capture } = setup({ device });
+    await expect(capture.clearStrayProxy(PIXEL)).rejects.toThrow(
+      /didn’t clear its proxy. Run: .*http_proxy :0/,
+    );
+  });
+
+  it('on Resume, removes only the earlier run’s rule, not other rules to the same ports', async () => {
+    const first = setup();
+    await first.capture.capture(PIXEL);
+    const { devicePort, hostPort } = first.capture.capturing(ID)!;
+    const device = first.device;
+    // A developer's own rules: one to the old listener's port from another device port, one
+    // elsewhere.
+    device.rules.push(rule(41_000, hostPort), rule(41_001, 5555));
+    const listeners = fakeListeners();
+    listeners.taken.add(hostPort);
+    const next = setup({ device, listeners });
+    await next.capture.load();
+    await next.capture.resume(PIXEL);
+    const now = next.capture.capturing(ID)!;
+    expect(now.hostPort).not.toBe(hostPort);
+    expect(device.rules).toEqual(
+      expect.arrayContaining([rule(devicePort, now.hostPort), rule(41_000, hostPort), rule(41_001, 5555)]),
+    );
+    expect(device.rules).toHaveLength(3);
+    expect(device.removals.map(([port]) => port)).toEqual([devicePort]);
+  });
+
+  it('on Resume, leaves a rule another tool put on its device port while Wirescry was gone', async () => {
+    const first = setup();
+    await first.capture.capture(PIXEL);
+    const { devicePort, hostPort } = first.capture.capturing(ID)!;
+    const device = first.device;
+    device.rules = [rule(devicePort, 5555)];
+    const listeners = fakeListeners();
+    listeners.taken.add(hostPort);
+    const next = setup({ device, listeners });
+    await next.capture.load();
+    await next.capture.resume(PIXEL);
+    // It moves to another device port, the proxy following.
+    const now = next.capture.capturing(ID)!;
+    expect(now.devicePort).not.toBe(devicePort);
+    expect(device.rules).toEqual([rule(devicePort, 5555), rule(now.devicePort, now.hostPort)]);
+    expect(device.settings.get('http_proxy')).toBe(`127.0.0.1:${now.devicePort}`);
+    expect(device.removals.map(([port]) => port)).not.toContain(devicePort);
+  });
+
+  it('points the tunnel at a moved listener when its rule is already gone, removing nothing', async () => {
+    const { device, capture } = setup();
+    await capture.capture(PIXEL);
+    const { devicePort } = capture.capturing(ID)!;
+    device.rules = [rule(41_000, 5555)];
+    device.removals = [];
+    await capture.listenerMoved(PIXEL, 9555);
+    expect(device.removals).toEqual([]);
+    expect(device.rules).toEqual([rule(41_000, 5555), rule(devicePort, 9555)]);
+  });
+
+  it('refuses records with bad former ports or fields, and ids that aren’t ids', async () => {
+    const valid: CaptureRecord = {
+      version: 1,
+      id: 'b'.repeat(32),
+      label: 'Tablet',
+      previousProxy: null,
+      devicePort: 30000,
+      hostPort: 9001,
+      formerPorts: [30001],
+      emulator: true,
+      startedAt: new Date().toISOString(),
+    };
+    const bad: Array<[string, Record<string, unknown>]> = [
+      ['c', { formerPorts: Array.from({ length: 11 }, (_, i) => 30_002 + i) }],
+      ['d', { formerPorts: [0] }],
+      ['e', { formerPorts: 'nope' }],
+      ['f', { emulator: 'yes' }],
+      ['0', { loopbackOnly: 1 }],
+    ];
+    await writeFile(path.join(dir, `${valid.id}.json`), JSON.stringify(valid));
+    for (const [c, change] of bad) {
+      const id = c.repeat(32);
+      await writeFile(path.join(dir, `${id}.json`), JSON.stringify({ ...valid, id, ...change }));
+    }
+    const records = new CaptureRecords(dir);
+    expect(await records.list()).toEqual([valid]);
+    await expect(records.write({ ...valid, id: '../../x' })).rejects.toThrow('Bad device id.');
+    await expect(records.remove('../x')).rejects.toThrow('Bad device id.');
   });
 });
