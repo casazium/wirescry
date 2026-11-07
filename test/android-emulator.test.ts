@@ -162,7 +162,8 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
       // What a crash leaves while the device stays plugged in: a record, a rule to a listener
       // that's gone, and the device's proxy still on the tunnel. The old listener's port is
       // taken now, so Resume has to move to another one.
-      const taken = net.createServer();
+      // Drops what connects, as nothing answers there: an open connection would keep close() waiting.
+      const taken = net.createServer((socket) => socket.destroy());
       await new Promise<void>((resolve) => taken.listen(0, '127.0.0.1', resolve));
       const oldPort = (taken.address() as net.AddressInfo).port;
       const inUse = await adb('reverse', '--list');
@@ -200,6 +201,8 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
         const there = (): AndroidDevice | undefined =>
           last(api2.messages)?.android?.devices.find((d) => d.serial === SERIAL);
         await expect.poll(() => there()?.leftover, { timeout: 30_000 }).toBe(true);
+        // Until Resume, the device's traffic reaches nothing that answers.
+        expect(await fromDevice(devicePort, 'http://wirescry.internal/', 'wirescry.internal', 1)).toBe('');
         await api2.send({ command: 'androidResume', deviceId: id });
         await expect.poll(() => there()?.capture).toBeTruthy();
         const { hostPort } = there()!.capture!;
