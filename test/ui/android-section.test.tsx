@@ -302,3 +302,102 @@ it('words it for emulators, which come back from a saved state', () => {
   expect(notes.some((t) => /Pixel 8 API 35 closed while capturing\. Start it again/.test(t))).toBe(true);
   expect(notes.some((t) => /Small Phone was left set up last time and isn’t running/.test(t))).toBe(true);
 });
+
+describe('Android section: certificate', () => {
+  const id = 'a'.repeat(32);
+  const certificate = {
+    commonName: 'Wirescry CA (1234abcd)',
+    spkiFingerprint: 'x',
+    sha256: 'AB:CD:EF',
+    validTo: '2030-01-01',
+    path: '/data/ca.pem',
+  };
+  const capturing = (extra: Partial<AndroidDevice> = {}): ProxyStatus => ({
+    ...withAndroid({
+      state: 'ready',
+      devices: [
+        {
+          serial: 'R58',
+          state: 'ready',
+          label: 'Pixel 8',
+          emulator: false,
+          apiLevel: 35,
+          id,
+          capture: { devicePort: 40000, hostPort: 8001, localAccess: false },
+          certificate: { trusted: false, sent: false },
+          ...extra,
+        },
+      ],
+    }),
+    certificate,
+  });
+  const CopyButton = ({ text }: { text: string }) => (
+    <button type="button" data-copy={text}>
+      Copy
+    </button>
+  );
+
+  it('walks through sending, installing, checking and checking the name and SHA-256', async () => {
+    const send = vi.fn().mockResolvedValue({ settingsOpened: true });
+    render(<AndroidSection status={capturing()} send={send} CopyButton={CopyButton} />);
+    const steps = document.querySelector('.device-https')!.textContent!;
+    expect(steps).toMatch(
+      /Encryption & credentials › Install a certificate › CA certificate › Install anyway/,
+    );
+    expect(steps).toContain('Wirescry CA (1234abcd)');
+    expect(steps).toContain('AB:CD:EF');
+    fireEvent.click(screen.getByRole('button', { name: 'Send certificate' }));
+    expect(send).toHaveBeenCalledWith({ command: 'androidSendCertificate', deviceId: id });
+    await waitFor(() =>
+      expect(screen.getByText('Sent. Security settings are open on the device.')).toBeTruthy(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Check in Chrome' }));
+    expect(send).toHaveBeenLastCalledWith({ command: 'androidCheckCertificate', deviceId: id });
+    fireEvent.click(screen.getByRole('button', { name: 'installed certificates' }));
+    expect(send).toHaveBeenLastCalledWith({ command: 'androidShowCertificates', deviceId: id });
+  });
+
+  it('says to open Settings when the device didn’t, and shows a failure', async () => {
+    const send = vi.fn().mockResolvedValueOnce({ settingsOpened: false });
+    render(<AndroidSection status={capturing()} send={send} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Send certificate' }));
+    await waitFor(() => expect(screen.getByText('Sent. Open Settings on the device.')).toBeTruthy());
+    send.mockRejectedValueOnce(new Error('No browser on the device opened http://wirescry.internal/.'));
+    fireEvent.click(screen.getByRole('button', { name: 'Check in Chrome' }));
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/No browser on the device/));
+  });
+
+  it('says when it was sent earlier, and when the device trusts the certificate', () => {
+    const { rerender } = render(
+      <AndroidSection status={capturing({ certificate: { trusted: false, sent: true } })} send={vi.fn()} />,
+    );
+    expect(screen.getByText('Sent to the device’s Downloads.')).toBeTruthy();
+    rerender(
+      <AndroidSection status={capturing({ certificate: { trusted: true, sent: true } })} send={vi.fn()} />,
+    );
+    expect(screen.getByText(/trusts Wirescry’s certificate, so its HTTPS shows in Traffic/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Send certificate' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'installed certificates' })).toBeTruthy();
+  });
+
+  it('gives the snippet for your own app, with Copy', () => {
+    render(<AndroidSection status={capturing()} send={vi.fn()} CopyButton={CopyButton} />);
+    const copies = [...document.querySelectorAll('[data-copy]')].map((b) => b.getAttribute('data-copy'));
+    expect(copies[0]).toMatch(/<debug-overrides>\s*<trust-anchors>\s*<certificates src="user" \/>/);
+    expect(copies[1]).toBe('android:networkSecurityConfig="@xml/network_security_config"');
+    expect(screen.getByText('Your own app')).toBeTruthy();
+  });
+
+  it('shows no certificate steps until capturing, or while disconnected or busy can’t act', () => {
+    const { rerender } = render(<AndroidSection status={capturing({ capture: undefined })} send={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: 'Send certificate' })).toBeNull();
+    rerender(<AndroidSection status={capturing({ busy: 'stopping' })} send={vi.fn()} />);
+    expect((screen.getByRole('button', { name: 'Send certificate' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    rerender(<AndroidSection status={capturing()} send={vi.fn()} connected={false} />);
+    expect((screen.getByRole('button', { name: 'Check in Chrome' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+});

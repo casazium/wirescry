@@ -32,6 +32,7 @@ import type { DockerEndpoint } from './docker/endpoint';
 import { DockerSetup } from './docker/setup';
 import { AndroidSetup, type AndroidSetupOptions } from './android/setup';
 import { findAdb } from './android/adb-server';
+import { certificateSha256 } from './android/certificates';
 import { ANDROID_RECORDS_DIR } from '../shared/ipc';
 import { Composer } from './composer';
 import { terminalEnv } from '../shared/terminal-env';
@@ -56,6 +57,17 @@ import { WebSocketStore } from './websocket-store';
 
 /** How long quitting waits to put capturing Android devices back: the app kills the backend after 3 s. */
 const ANDROID_STOP_TIMEOUT_MS = 2000;
+/** Which Android devices trust which certificate, in the data folder. */
+const ANDROID_TRUST_FILE = 'android-trust.json';
+
+/** The certificate's SHA-256 for status, worked out once per certificate. */
+const sha256Of = (() => {
+  let last: { cert: string; sha256: string } | undefined;
+  return (cert: string): string => {
+    if (last?.cert !== cert) last = { cert, sha256: certificateSha256(cert) };
+    return last.sha256;
+  };
+})();
 
 export interface BackendOptions {
   /** Folder for this install's data, e.g. the CA. */
@@ -202,6 +214,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     certificate: {
       commonName: ca.commonName,
       spkiFingerprint: ca.spkiFingerprint,
+      sha256: sha256Of(ca.cert),
       validTo: ca.validTo,
       path: ca.certPath,
     },
@@ -380,6 +393,12 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       ruleEndsWithoutResponse: (ruleId) => pluginHost.endsWithoutResponse(ruleId),
       isPaused: () => paused,
       source,
+      // Its HTTPS check arrived on this device's own listener: a browser there trusts the CA.
+      onCATrusted: () => {
+        void android
+          ?.markTrusted(source.id)
+          .catch((error: unknown) => console.error('[wirescry] could not record device trust:', error));
+      },
       dockerHostToLocalhost: false,
       egress: { allowLocal, ...options.deviceEgress },
     });
@@ -415,6 +434,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         capture: {
           listeners,
           recordsDir: path.join(dataDir, ANDROID_RECORDS_DIR),
+          certificate: () => ({ cert: ca.cert, spki: ca.spkiFingerprint }),
+          trustFile: path.join(dataDir, ANDROID_TRUST_FILE),
           ...androidOptions.capture,
         },
         onStatusChange: () => broadcast({ type: 'status', status: status() }),
@@ -741,6 +762,16 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         if (!android) throw new Error('Android setup is off.');
         await android.clearProxy(String(command.deviceId));
         return undefined;
+      case 'androidSendCertificate':
+        if (!android) throw new Error('Android setup is off.');
+        return android.sendCertificate(String(command.deviceId));
+      case 'androidCheckCertificate':
+        if (!android) throw new Error('Android setup is off.');
+        return android.checkCertificate(String(command.deviceId));
+      case 'androidShowCertificates':
+        if (!android) throw new Error('Android setup is off.');
+        await android.showInstalledCertificates(String(command.deviceId));
+        return undefined;
       case 'androidSetLocalAccess':
         if (!android) throw new Error('Android setup is off.');
         android.setLocalAccess(String(command.deviceId), command.allowed === true);
@@ -788,6 +819,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           } finally {
             // Even if the main proxy had to move: device listeners must not keep the old CA.
             await devices.restartAll();
+            android?.certificateChanged();
           }
           broadcast({ type: 'status', status: status() });
           return undefined;

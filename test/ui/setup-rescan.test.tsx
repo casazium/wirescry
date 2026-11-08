@@ -13,6 +13,7 @@ const setupStatus = (browsers: BrowserInfo[]): ProxyStatus => ({
   certificate: {
     commonName: 'Wirescry CA (test)',
     spkiFingerprint: 'x',
+    sha256: 'AA:BB',
     validTo: '2030-01-01',
     path: '/data/ca.pem',
   },

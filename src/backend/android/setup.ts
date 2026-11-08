@@ -13,6 +13,7 @@ import {
 } from './adb-client';
 import { ensureAdbServer, findAdb, NO_ADB, type RunFile } from './adb-server';
 import { CaptureRecords, DeviceCapture, MANUAL_FIX, type CaptureTarget } from './capture';
+import { DeviceCertificates } from './certificates';
 import { devicesFrom, infoKey, readDeviceInfo, type DeviceInfo } from './devices';
 
 export interface AndroidSetupOptions {
@@ -41,6 +42,12 @@ export interface AndroidSetupOptions {
     pollMs?: number;
     /** How long a capturing device may be gone (a reconnect, a re-read) before the user is told. */
     graceMs?: number;
+    /**
+     * Wirescry's certificate now (PEM, and its SPKI fingerprint), and where to remember which
+     * devices trust it. Without them, certificates aren't offered.
+     */
+    certificate?: () => { cert: string; spki: string };
+    trustFile?: string;
   };
   /** Shows an OS notification: Wirescry may be in the background when a device goes. */
   notify?: (title: string, body: string) => void;
@@ -75,6 +82,9 @@ export class AndroidSetup {
   private stopped = false;
   private endpoint: AdbEndpoint | undefined;
   private readonly capture: DeviceCapture | undefined;
+  private readonly certificates: DeviceCertificates | undefined;
+  /** Devices Wirescry copied its current certificate to, by id. */
+  private readonly sent = new Set<string>();
   /** What Wirescry is doing to each device, by device id: actions can overlap, the latest shows. */
   private readonly busy = new Map<string, Array<'capturing' | 'stopping'>>();
   private pollTimer: NodeJS.Timeout | undefined;
@@ -108,6 +118,16 @@ export class AndroidSetup {
         records: new CaptureRecords(options.capture.recordsDir),
         readBackMs: options.capture.readBackMs,
       });
+      const { certificate, trustFile } = options.capture;
+      if (certificate && trustFile) {
+        this.certificates = new DeviceCertificates({
+          io: {
+            shell: (serial, command, input) =>
+              adbShell(io().endpoint, serial, command, { ...io().options, input }),
+          },
+          trustFile,
+        });
+      }
       // A capturing device's listener can move (certificate reset): its tunnel must follow.
       options.capture.listeners.onPortChange((source, port) => {
         const device = this.current.devices.find((d) => d.id === source.id && d.state === 'ready');
@@ -126,6 +146,7 @@ export class AndroidSetup {
 
   /** Finds or starts the server and follows its devices, after reading what an earlier run left. */
   async start(): Promise<void> {
+    await this.certificates?.load();
     await this.capture
       ?.load()
       .catch((error: unknown) => this.options.log?.(`couldn't read capture records: ${String(error)}`));
@@ -380,6 +401,14 @@ export class AndroidSetup {
       ...(leftover ? { leftover: true } : {}),
       // A 127.0.0.1 proxy that's Wirescry's own isn't stray.
       ...(strayProxy && !record && !leftover ? { strayProxy } : {}),
+      ...(this.certificates
+        ? {
+            certificate: {
+              trusted: this.certificates.trusted(id, this.options.capture!.certificate!().spki),
+              sent: this.sent.has(id),
+            },
+          }
+        : {}),
       ...(this.busy.has(id) ? { busy: this.busy.get(id)!.at(-1) } : {}),
       ...(this.notes.has(id) ? { note: this.notes.get(id) } : {}),
     };
@@ -470,6 +499,61 @@ export class AndroidSetup {
       this.notes.set(id, note);
       this.publishDevices();
     }
+    await this.removeCertificateFile(id, target.serial);
+  }
+
+  /** Copies Wirescry's certificate to a device and opens Security settings there. */
+  async sendCertificate(id: string): Promise<{ settingsOpened: boolean }> {
+    const certificates = this.certificatesOn();
+    const target = this.target(id, 'capture');
+    const result = await certificates.send(target.serial, this.options.capture!.certificate!().cert);
+    this.sent.add(id);
+    this.publishDevices();
+    return result;
+  }
+
+  /** Opens Wirescry's setup page in a browser on a capturing device: it says whether the certificate is trusted. */
+  async checkCertificate(id: string): Promise<{ browser: 'chrome' | 'default' }> {
+    const certificates = this.certificatesOn();
+    const target = this.target(id, 'capture');
+    // The page is answered by the device's listener: only reachable while capturing.
+    if (!this.capture!.capturing(id)) throw new Error('Capture the device first.');
+    return certificates.openCheck(target.serial);
+  }
+
+  /** Opens the device's list of certificates the user installed. */
+  async showInstalledCertificates(id: string): Promise<void> {
+    const certificates = this.certificatesOn();
+    await certificates.openInstalled(this.target(id, 'capture').serial);
+  }
+
+  /** A browser on this device trusts Wirescry's certificate (its HTTPS check arrived on the device's listener). */
+  async markTrusted(id: string): Promise<void> {
+    if (!this.certificates || !this.options.capture?.certificate) return;
+    if (await this.certificates.markTrusted(id, this.options.capture.certificate().spki))
+      this.publishDevices();
+  }
+
+  /** Wirescry has a new certificate: copies of the old one are out of date (trust follows by itself). */
+  certificateChanged(): void {
+    this.sent.clear();
+    this.publishDevices();
+  }
+
+  private certificatesOn(): DeviceCertificates {
+    if (!this.certificates) throw new Error('Android capture is off.');
+    return this.certificates;
+  }
+
+  /** Best effort: the file is only the public certificate, and the user may still want it. */
+  private async removeCertificateFile(id: string, serial: string): Promise<void> {
+    if (!this.certificates || !this.sent.delete(id)) return;
+    this.publishDevices();
+    await this.certificates
+      .remove(serial, this.options.capture!.certificate!().cert)
+      .catch((error: unknown) =>
+        this.options.log?.(`couldn't remove the certificate file: ${String(error)}`),
+      );
   }
 
   /** Sets a stray 127.0.0.1 proxy back to none. */

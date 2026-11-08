@@ -624,7 +624,7 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
         return {
           statusCode: 200,
           headers: { 'content-type': 'text/html; charset=utf-8' },
-          body: setupPageHtml(),
+          body: setupPageHtml(req.headers['user-agent'] ?? ''),
         };
       }),
     ],

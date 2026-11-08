@@ -3,9 +3,16 @@ export const SETUP_HOST = 'wirescry.internal';
 
 /**
  * Served at http://wirescry.internal/ to a browser using the proxy. It links to the
- * certificate, then checks over HTTPS whether the browser now trusts it.
+ * certificate, then checks over HTTPS whether the browser now trusts it. On Android, where
+ * browsers can't install CA certificates (Settings does), it only checks.
  */
-export function setupPageHtml(): string {
+export function setupPageHtml(userAgent = ''): string {
+  const android = /\bAndroid\b/.test(userAgent);
+  const steps = android
+    ? `<p>On Android, install the certificate from Settings: Wirescry on your computer shows the steps, under Setup › Android.</p>
+<p>This page turns green by itself once this browser trusts it.</p>`
+    : `<p><a class="button" href="/certificate">Install certificate</a></p>
+<p>When Firefox asks, tick <strong>Trust this CA to identify websites</strong>, then click <strong>OK</strong>.</p>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -23,8 +30,7 @@ export function setupPageHtml(): string {
 <body>
 <h1>Wirescry setup</h1>
 <p>This browser is sending its traffic through Wirescry. To see HTTPS traffic, it needs to trust Wirescry's certificate once.</p>
-<p><a class="button" href="/certificate">Install certificate</a></p>
-<p>When Firefox asks, tick <strong>Trust this CA to identify websites</strong>, then click <strong>OK</strong>.</p>
+${steps}
 <p id="status">Checking whether this browser trusts the certificate…</p>
 <script>
   const status = document.getElementById('status');
@@ -37,7 +43,7 @@ export function setupPageHtml(): string {
         return;
       }
     } catch {}
-    status.textContent = 'Not trusted yet. Install the certificate above.';
+    status.textContent = ${android ? `'Not trusted yet.'` : `'Not trusted yet. Install the certificate above.'`};
     setTimeout(check, 1500);
   }
   check();
