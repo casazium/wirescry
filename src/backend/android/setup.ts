@@ -53,7 +53,11 @@ export interface AndroidSetupOptions {
   notify?: (title: string, body: string) => void;
 }
 
+type Busy = NonNullable<AndroidDevice['busy']>;
+
 const RETRY_DELAYS_MS = [1000, 2000, 5000, 10_000];
+/** How long quitting waits, after putting devices back, to remove copied certificates. */
+const REMOVE_ON_QUIT_MS = 500;
 const POLL_MS = 5000;
 const GRACE_MS = 5000;
 /** Starts a note about a check that failed, so a later good check can clear it. */
@@ -85,8 +89,10 @@ export class AndroidSetup {
   private readonly certificates: DeviceCertificates | undefined;
   /** Devices Wirescry copied its current certificate to, by id. */
   private readonly sent = new Set<string>();
+  /** Every certificate copied to a device this run (a reset makes a new one): what removal may delete. */
+  private readonly copied = new Set<string>();
   /** What Wirescry is doing to each device, by device id: actions can overlap, the latest shows. */
-  private readonly busy = new Map<string, Array<'capturing' | 'stopping'>>();
+  private readonly busy = new Map<string, Array<Busy>>();
   private pollTimer: NodeJS.Timeout | undefined;
   /** Whether the server has sent its device list since the last (re)connect. */
   private listed = false;
@@ -440,7 +446,7 @@ export class AndroidSetup {
   }
 
   /** Runs an action on a device, showing it as busy, and keeping its outcome as the device's note. */
-  private async act<T>(id: string, busy: 'capturing' | 'stopping', task: () => Promise<T>): Promise<T> {
+  private async act<T>(id: string, busy: Busy, task: () => Promise<T>): Promise<T> {
     this.busy.set(id, [...(this.busy.get(id) ?? []), busy]);
     this.notes.delete(id);
     this.publishDevices();
@@ -506,10 +512,20 @@ export class AndroidSetup {
   async sendCertificate(id: string): Promise<{ settingsOpened: boolean }> {
     const certificates = this.certificatesOn();
     const target = this.target(id, 'capture');
-    const result = await certificates.send(target.serial, this.options.capture!.certificate!().cert);
-    this.sent.add(id);
-    this.publishDevices();
-    return result;
+    // One at a time with Capture and Stop (and Stop's removal of the copy).
+    return this.act(id, 'sending', () =>
+      this.capture!.exclusive(id, async () => {
+        const { cert } = this.options.capture!.certificate!();
+        this.copied.add(cert);
+        const result = await certificates.send(target.serial, cert);
+        // A certificate reset while it was on its way: the copy is the old one.
+        if (this.options.capture!.certificate!().cert !== cert) {
+          throw new Error('Wirescry’s certificate changed while sending it. Send it again.');
+        }
+        this.sent.add(id);
+        return result;
+      }),
+    );
   }
 
   /** Opens Wirescry's setup page in a browser on a capturing device: it says whether the certificate is trusted. */
@@ -527,11 +543,28 @@ export class AndroidSetup {
     await certificates.openInstalled(this.target(id, 'capture').serial);
   }
 
-  /** A browser on this device trusts Wirescry's certificate (its HTTPS check arrived on the device's listener). */
-  async markTrusted(id: string): Promise<void> {
-    if (!this.certificates || !this.options.capture?.certificate) return;
-    if (await this.certificates.markTrusted(id, this.options.capture.certificate().spki))
+  /**
+   * A browser on this device trusts the certificate with SPKI `spki`: its HTTPS check arrived on
+   * the device's listener, which serves that certificate. Ignored unless it's Wirescry's current
+   * one (a listener still restarting after a reset serves the old one).
+   */
+  async markTrusted(id: string, spki: string): Promise<void> {
+    if (!this.certificates || this.options.capture?.certificate?.().spki !== spki) return;
+    try {
+      await this.certificates.markTrusted(id, spki);
+    } finally {
       this.publishDevices();
+    }
+  }
+
+  /** A browser on this device refused the certificate with SPKI `spki` (its HTTPS check failed). */
+  async markUntrusted(id: string, spki: string): Promise<void> {
+    if (!this.certificates || this.options.capture?.certificate?.().spki !== spki) return;
+    try {
+      await this.certificates.forget(id, spki);
+    } finally {
+      this.publishDevices();
+    }
   }
 
   /** Wirescry has a new certificate: copies of the old one are out of date (trust follows by itself). */
@@ -545,15 +578,21 @@ export class AndroidSetup {
     return this.certificates;
   }
 
-  /** Best effort: the file is only the public certificate, and the user may still want it. */
+  /** What removal may delete: the current certificate (a copy from an earlier run), and any copied this run. */
+  private copies(): string[] {
+    return [this.options.capture!.certificate!().cert, ...this.copied];
+  }
+
+  /**
+   * Removes a copy of Wirescry's certificate from the device, whether this run or an earlier one
+   * made it. Best effort: it's only the public certificate.
+   */
   private async removeCertificateFile(id: string, serial: string): Promise<void> {
-    if (!this.certificates || !this.sent.delete(id)) return;
-    this.publishDevices();
-    await this.certificates
-      .remove(serial, this.options.capture!.certificate!().cert)
-      .catch((error: unknown) =>
-        this.options.log?.(`couldn't remove the certificate file: ${String(error)}`),
-      );
+    if (!this.certificates) return;
+    if (this.sent.delete(id)) this.publishDevices();
+    await this.capture!.exclusive(id, () => this.certificates!.remove(serial, this.copies())).catch(
+      (error: unknown) => this.options.log?.(`couldn't remove the certificate file: ${String(error)}`),
+    );
   }
 
   /** Sets a stray 127.0.0.1 proxy back to none. */
@@ -580,6 +619,19 @@ export class AndroidSetup {
         const device = this.current.devices.find((d) => d.id === id && d.state === 'ready');
         return device?.serial;
       }, timeoutMs);
+      // Then, briefly, the copies made this run: putting devices back comes first.
+      const certificates = this.certificates;
+      const removals = [...this.sent].flatMap((id) => {
+        const device = this.current.devices.find((d) => d.id === id && d.state === 'ready');
+        if (!certificates || !device) return [];
+        this.sent.delete(id);
+        return [certificates.remove(device.serial, this.copies()).catch(() => undefined)];
+      });
+      if (removals.length)
+        await Promise.race([
+          Promise.all(removals),
+          new Promise((resolve) => setTimeout(resolve, REMOVE_ON_QUIT_MS)),
+        ]);
     } finally {
       // Still running (an update install that didn't go ahead): any device left keeps being checked.
       this.quitting = false;

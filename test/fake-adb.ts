@@ -190,6 +190,8 @@ export interface FakeDeviceState {
   started: string[];
   /** The sizes of the stdin packets the last `tee` got. */
   stdinPackets?: number[];
+  /** Called with each shell command as it arrives, before it's answered. */
+  onCommand?: (command: string) => void;
 }
 
 export function fakeDeviceState(serial = 'R58', props: Record<string, string> = {}): FakeDeviceState {
@@ -323,6 +325,7 @@ export async function startDeviceServer(
       if (shell) {
         const command = shell[1]!;
         device.commands.push(command);
+        device.onCommand?.(command);
         if (device.failShell) return (void socket.end(shellPackets('', 1)), true);
         const get = /^settings get global (\S+)$/.exec(command);
         const tee = /^tee (\S+)$/.exec(command);

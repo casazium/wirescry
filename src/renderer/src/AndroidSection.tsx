@@ -42,8 +42,10 @@ function CertificateSteps({
   CopyButton?: CopyButtonType;
 }): React.JSX.Element | null {
   const [sentNote, setSentNote] = useState<string>();
+  const [checkNote, setCheckNote] = useState<string>();
   const id = device.id;
   if (!id || !device.certificate) return null;
+  const { trusted, sent } = device.certificate;
   const showInstalled = (
     <button
       type="button"
@@ -54,12 +56,34 @@ function CertificateSteps({
       installed certificates
     </button>
   );
+  const check = (label: string): React.JSX.Element => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        setCheckNote(undefined);
+        run({ command: 'androidCheckCertificate', deviceId: id }, (value) => {
+          const reply = value as { browser?: string } | undefined;
+          setCheckNote(
+            reply?.browser === 'default'
+              ? 'Opened in the device’s default browser, as it has no Chrome. A browser other than Chrome may not use certificates installed in Settings.'
+              : undefined,
+          );
+        });
+      }}
+    >
+      {label}
+    </button>
+  );
+  // Android 11 moved installing CA certificates into its own screen (API 30).
+  const older = device.apiLevel !== undefined && device.apiLevel < 30;
   return (
     <div className="device-https">
-      {device.certificate.trusted ? (
+      {trusted ? (
         <p role="status">
-          A browser on this device trusts Wirescry’s certificate, so its HTTPS shows in Traffic. To remove the
-          certificate later, open the device’s {showInstalled}.
+          Chrome on this device trusts Wirescry’s certificate, so HTTPS from Chrome shows in Traffic. Apps
+          trust it only if they say so: see <strong>Your own app</strong>. {check('Check in Chrome again')} To
+          remove the certificate, open the device’s {showInstalled}.
         </p>
       ) : (
         <>
@@ -80,23 +104,34 @@ function CertificateSteps({
                   })
                 }
               >
-                Send certificate
+                {device.busy === 'sending' ? 'Sending…' : 'Send certificate'}
               </button>{' '}
-              <span className="muted">
-                {sentNote ??
-                  (device.certificate.sent
-                    ? 'Sent to the device’s Downloads.'
-                    : 'Copies it to the device’s Downloads and opens Security settings there.')}
+              <span className="muted" role="status">
+                {sent
+                  ? (sentNote ?? 'Sent to the device’s Downloads.')
+                  : 'Copies it to the device’s Downloads and opens Security settings there.'}
               </span>
             </li>
             <li>
-              On the device: <strong>More security &amp; privacy</strong> ›{' '}
-              <strong>Encryption &amp; credentials</strong> › <strong>Install a certificate</strong> ›{' '}
-              <strong>CA certificate</strong> › <strong>Install anyway</strong>, then ☰ ›{' '}
-              <strong>Downloads</strong> › <strong>Wirescry-CA.crt</strong>.{' '}
+              {older ? (
+                <>
+                  On the device: <strong>Security</strong> (on some devices, <strong>Security</strong> ›{' '}
+                  <strong>Advanced</strong>) › <strong>Encryption &amp; credentials</strong> ›{' '}
+                  <strong>Install from storage</strong> (or <strong>Install from SD card</strong>), then pick{' '}
+                  <strong>Wirescry-CA.crt</strong> in <strong>Downloads</strong> and give it any name.
+                </>
+              ) : (
+                <>
+                  On the device: <strong>More security &amp; privacy</strong> ›{' '}
+                  <strong>Encryption &amp; credentials</strong> › <strong>Install a certificate</strong> ›{' '}
+                  <strong>CA certificate</strong> › <strong>Install anyway</strong>, then{' '}
+                  <span aria-label="the menu">☰</span> › <strong>Downloads</strong> ›{' '}
+                  <strong>Wirescry-CA.crt</strong>.
+                </>
+              )}{' '}
               <span className="muted">
-                Names vary between devices: search Settings for “CA certificate”. It may ask you to set a
-                screen lock first.
+                Names vary between devices: search Settings for “CA certificate” or “Install certificates”. It
+                may ask you to set a screen lock first.
               </span>
             </li>
             <li>
@@ -105,19 +140,19 @@ function CertificateSteps({
               <code className="wrap">{certificate.sha256}</code>.
             </li>
             <li>
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() => run({ command: 'androidCheckCertificate', deviceId: id })}
-              >
-                Check in Chrome
-              </button>{' '}
+              {check('Check in Chrome')}{' '}
               <span className="muted">
-                Opens Wirescry’s page on the device. This says so here once the device trusts the certificate.
+                Opens Wirescry’s page on the device. This says so here once Chrome there trusts the
+                certificate.
               </span>
             </li>
           </ol>
         </>
+      )}
+      {checkNote && (
+        <p className="muted" role="status">
+          {checkNote}
+        </p>
       )}
       <details>
         <summary>Your own app</summary>

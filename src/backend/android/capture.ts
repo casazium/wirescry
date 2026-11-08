@@ -296,6 +296,11 @@ export class DeviceCapture {
     return [...this.active.keys()];
   }
 
+  /** Runs `task` for this device one at a time with capturing, checking and stopping it. */
+  exclusive<T>(id: string, task: () => Promise<T>): Promise<T> {
+    return this.oneAtATime(id, task);
+  }
+
   private oneAtATime<T>(id: string, task: () => Promise<T>): Promise<T> {
     const previous = this.queues.get(id) ?? Promise.resolve();
     const result = previous.then(task, task);

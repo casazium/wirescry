@@ -135,19 +135,22 @@ describe('Copying the certificate to a device', () => {
 });
 
 describe('Removing the copied certificate', () => {
-  it('removes it while it’s still Wirescry’s, and leaves anything else', async () => {
+  it('removes it while it’s still one Wirescry copied, and leaves anything else', async () => {
     phone.files.set(FILE, ca.cert);
-    await certificates().remove('R58', ca.cert);
+    await certificates().remove('R58', [ca.cert]);
     expect(phone.files.has(FILE)).toBe(false);
 
     phone.files.set(FILE, other.cert);
-    await certificates().remove('R58', ca.cert);
+    await certificates().remove('R58', [ca.cert]);
     expect(phone.files.get(FILE)).toBe(other.cert);
     expect(phone.commands.filter((c) => c.startsWith('rm'))).toEqual([`rm -f ${FILE}`]);
+    // Any of the ones copied (before a certificate reset, say).
+    await certificates().remove('R58', [ca.cert, other.cert]);
+    expect(phone.files.has(FILE)).toBe(false);
 
     phone.files.clear();
-    await certificates().remove('R58', ca.cert);
-    expect(phone.commands.filter((c) => c.startsWith('rm'))).toHaveLength(1);
+    await certificates().remove('R58', [ca.cert]);
+    expect(phone.commands.filter((c) => c.startsWith('rm'))).toHaveLength(2);
   });
 });
 
@@ -213,6 +216,16 @@ describe('Remembering which devices trust which certificate', () => {
       expect(fresh.trusted(A, ca.spki)).toBe(false);
     }
     expect(await certificates().markTrusted('../x', ca.spki)).toBe(false);
+  });
+
+  it('forgets a device’s trust only for the certificate it was refused', async () => {
+    const store = certificates();
+    await store.markTrusted(A, ca.spki);
+    expect(await store.forget(A, other.spki)).toBe(false);
+    expect(store.trusted(A, ca.spki)).toBe(true);
+    expect(await store.forget(A, ca.spki)).toBe(true);
+    expect(store.trusted(A, ca.spki)).toBe(false);
+    expect(await store.forget(A, ca.spki)).toBe(false);
     expect(await certificates().markTrusted(A, 'nope')).toBe(false);
   });
 
@@ -310,12 +323,110 @@ describe('Certificates through Android setup', () => {
   it('shows the device trusted once its check arrives, until the certificate changes', async () => {
     const { android, device, id } = await setup();
     await android.sendCertificate(id);
-    await android.markTrusted(id);
+    await android.markTrusted(id, ca.spki);
     expect(device()!.certificate).toEqual({ trusted: true, sent: true });
     // A certificate reset: the copy and the trust are for the old one.
     current = other;
     android.certificateChanged();
     expect(device()!.certificate).toEqual({ trusted: false, sent: false });
+  });
+
+  it('ignores a check over the old certificate after a reset (a listener not yet restarted)', async () => {
+    const { android, device, id } = await setup();
+    current = other;
+    android.certificateChanged();
+    await android.markTrusted(id, ca.spki);
+    expect(device()!.certificate!.trusted).toBe(false);
+    await android.markTrusted(id, other.spki);
+    expect(device()!.certificate!.trusted).toBe(true);
+    // A late check over the old certificate doesn't replace trust in the new one.
+    await android.markTrusted(id, ca.spki);
+    expect(device()!.certificate!.trusted).toBe(true);
+    // A refusal over the old certificate doesn't undo trust in the new one.
+    await android.markUntrusted(id, ca.spki);
+    expect(device()!.certificate!.trusted).toBe(true);
+  });
+
+  it('shows the device untrusted when its browser refuses the certificate later', async () => {
+    const { android, device, id } = await setup();
+    await android.markTrusted(id, ca.spki);
+    await android.markUntrusted(id, ca.spki);
+    expect(device()!.certificate!.trusted).toBe(false);
+    const saved = JSON.parse(await readFile(path.join(dir, 'trust.json'), 'utf8')) as {
+      devices: Record<string, string>;
+    };
+    expect(saved.devices).toEqual({});
+  });
+
+  it('shows Sending, and sends one at a time with Stop', async () => {
+    const { android, device, id } = await setup();
+    await android.captureDevice(id);
+    const busyAtTee: unknown[] = [];
+    phone.onCommand = (command) => {
+      if (command.startsWith('tee')) busyAtTee.push(device()!.busy);
+    };
+    phone.commands = [];
+    // Two sends at once: one after the other, never interleaved.
+    await Promise.all([android.sendCertificate(id), android.sendCertificate(id)]);
+    expect(busyAtTee).toEqual(['sending', 'sending']);
+    // (Each action also reads the device again: getprop and settings, left out here.)
+    const names = phone.commands
+      .filter((c) => /^(am|tee|cat|rm) /.test(c))
+      .map((c) => c.split(' ').slice(0, 2).join(' '));
+    expect(names).toEqual([
+      'am get-current-user',
+      `tee ${FILE}`,
+      `cat ${FILE}`,
+      'am start',
+      'am get-current-user',
+      `tee ${FILE}`,
+      `cat ${FILE}`,
+      'am start',
+    ]);
+    // Send and Stop at once: the copy is gone afterwards, and not shown as sent.
+    await Promise.all([android.sendCertificate(id).catch(() => undefined), android.stopDevice(id)]);
+    expect(phone.files.has(FILE)).toBe(false);
+    expect(device()!.certificate!.sent).toBe(false);
+    expect(device()!.busy).toBeUndefined();
+  });
+
+  it('says to send again when the certificate changed on the way, and removes the old copy on Stop', async () => {
+    const { android, device, id } = await setup();
+    await android.captureDevice(id);
+    phone.onCommand = (command) => {
+      if (command.startsWith('cat')) {
+        current = other;
+        android.certificateChanged();
+      }
+    };
+    await expect(android.sendCertificate(id)).rejects.toThrow(/changed while sending it. Send it again/);
+    phone.onCommand = undefined;
+    expect(device()!.certificate!.sent).toBe(false);
+    expect(phone.files.get(FILE)).toBe(ca.cert);
+    await android.stopDevice(id);
+    expect(phone.files.has(FILE)).toBe(false);
+  });
+
+  it('removes a copy an earlier run left, on Restore', async () => {
+    const first = await setup();
+    await first.android.captureDevice(first.id);
+    await first.android.sendCertificate(first.id);
+    // Wirescry crashes: nothing put back.
+    first.android.stop();
+    const next = await setup();
+    await expect.poll(() => next.device()?.leftover).toBe(true);
+    await next.android.stopDevice(next.id);
+    expect(phone.settings.get('http_proxy')).toBe(':0');
+    expect(phone.files.has(FILE)).toBe(false);
+  });
+
+  it('removes the copies when quitting, after putting devices back', async () => {
+    const { android, id } = await setup();
+    await android.captureDevice(id);
+    await android.sendCertificate(id);
+    await android.stopAll(2000);
+    expect(phone.settings.get('http_proxy')).toBe(':0');
+    expect(phone.files.has(FILE)).toBe(false);
   });
 
   it('refuses devices that aren’t ready or supported, and works without certificates set up', async () => {
@@ -331,7 +442,7 @@ describe('Certificates through Android setup', () => {
     const { android, device, id } = await setup(false);
     expect(device()!.certificate).toBeUndefined();
     await expect(android.sendCertificate(id)).rejects.toThrow('Android capture is off.');
-    await android.markTrusted(id);
+    await android.markTrusted(id, ca.spki);
     expect(device()!.certificate).toBeUndefined();
   });
 });
@@ -391,6 +502,22 @@ describe('The trust check through the backend', () => {
       );
       expect(check.status).toBe(200);
       await expect.poll(() => device()?.certificate?.trusted).toBe(true);
+      // A client that doesn't trust the certificate refuses it on the way to the check: no longer trusted.
+      await expect(
+        requestViaProxy(device()!.capture!.hostPort, 'https://wirescry.internal:443/check', other.cert),
+      ).rejects.toThrow();
+      await expect.poll(() => device()?.certificate?.trusted).toBe(false);
+      // Refusing another host's certificate says nothing about the check.
+      expect(
+        (await requestViaProxy(device()!.capture!.hostPort, 'https://wirescry.internal:443/check', pem))
+          .status,
+      ).toBe(200);
+      await expect.poll(() => device()?.certificate?.trusted).toBe(true);
+      await expect(
+        requestViaProxy(device()!.capture!.hostPort, 'https://example.test:443/', other.cert),
+      ).rejects.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(device()!.certificate!.trusted).toBe(true);
 
       // Remembered, and forgotten when the certificate changes.
       const saved = JSON.parse(await readFile(path.join(dataDir, 'android-trust.json'), 'utf8')) as {

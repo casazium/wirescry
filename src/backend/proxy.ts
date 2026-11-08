@@ -51,8 +51,14 @@ export interface ProxyOptions {
   describeRule?: (ruleId: string | undefined) => HandledBy | undefined;
   /** Whether that rule closes the connection or never answers. */
   ruleEndsWithoutResponse?: (ruleId: string | undefined) => boolean;
-  /** Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. */
+  /**
+   * Called when a browser proves over HTTPS that it trusts the CA, with its User-Agent. Strictly,
+   * that some HTTPS client reached the check without refusing the certificate: one that doesn't
+   * check certificates at all passes too. Good enough for showing setup progress.
+   */
   onCATrusted?: (userAgent: string) => void;
+  /** Called when a client refuses the certificate on its way to the setup page's check. */
+  onCAUntrusted?: () => void;
   /**
    * Whether to accept a connection from this non-loopback address: a Docker container on
    * Linux, whose connections come from Docker's bridge networks. The connection waits for the
@@ -580,6 +586,14 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
   };
   await server.on('websocket-message-received', onWebSocketMessage);
   await server.on('websocket-message-sent', onWebSocketMessage);
+
+  // A browser refusing the certificate on its way to the check: it doesn't trust the CA (any more).
+  if (options.onCAUntrusted) {
+    await server.on('tls-client-error', (failure) => {
+      if (failure.tlsMetadata?.sniHostname !== SETUP_HOST) return;
+      if (['cert-rejected', 'closed', 'reset'].includes(failure.failureCause)) options.onCAUntrusted?.();
+    });
+  }
 
   await server.on('websocket-close', (close) => {
     update(close.streamId, (existing) => {

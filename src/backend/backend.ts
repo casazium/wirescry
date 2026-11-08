@@ -373,8 +373,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     source: ExchangeSource,
     port: number | undefined,
     allowLocal: () => boolean,
-  ): Promise<RunningProxy> =>
-    startProxy({
+  ): Promise<RunningProxy> => {
+    // The certificate this listener serves: after a reset, it keeps the old one until restarted.
+    const spki = ca.spkiFingerprint;
+    const record = (task: Promise<void> | undefined): void => {
+      void task?.catch((error: unknown) => console.error('[wirescry] could not record device trust:', error));
+    };
+    return startProxy({
       ca,
       store,
       bodies,
@@ -394,14 +399,12 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       isPaused: () => paused,
       source,
       // Its HTTPS check arrived on this device's own listener: a browser there trusts the CA.
-      onCATrusted: () => {
-        void android
-          ?.markTrusted(source.id)
-          .catch((error: unknown) => console.error('[wirescry] could not record device trust:', error));
-      },
+      onCATrusted: () => record(android?.markTrusted(source.id, spki)),
+      onCAUntrusted: () => record(android?.markUntrusted(source.id, spki)),
       dockerHostToLocalhost: false,
       egress: { allowLocal, ...options.deviceEgress },
     });
+  };
   const devices = deviceListenerSet({ start: openDeviceProxy });
   const refreshAllRules = async (): Promise<void> => {
     await Promise.all([proxy.refreshRules(), devices.refreshRules()]);

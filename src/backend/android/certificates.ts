@@ -78,12 +78,12 @@ export class DeviceCertificates {
     return { settingsOpened: opened.exitCode === 0 };
   }
 
-  /** Removes the copied certificate, if it's still the one Wirescry copied. */
-  async remove(serial: string, pem: string): Promise<void> {
+  /** Removes the copied certificate, if it's still one of these (certificates Wirescry copied). */
+  async remove(serial: string, pems: string[]): Promise<void> {
     const { io } = this.options;
     const file = await this.filePath(serial);
     const now = await io.shell(serial, `cat ${file}`);
-    if (now.exitCode !== 0 || !sameText(now.stdout, pem)) return;
+    if (now.exitCode !== 0 || !pems.some((pem) => sameText(now.stdout, pem))) return;
     await io.shell(serial, `rm -f ${file}`);
   }
 
@@ -127,6 +127,14 @@ export class DeviceCertificates {
     } catch {
       // Nothing remembered yet.
     }
+  }
+
+  /** Forgets that this device trusts this certificate (its check failed). Returns whether that's news. */
+  async forget(id: string, spki: string): Promise<boolean> {
+    if (this.trust.get(id) !== spki) return false;
+    this.trust.delete(id);
+    await this.save();
+    return true;
   }
 
   /** Remembers that this device trusts this certificate. Returns whether that's news. */

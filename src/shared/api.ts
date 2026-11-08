@@ -283,7 +283,7 @@ export interface AndroidDevice {
   /** Wirescry's certificate on this device: whether a browser there trusts it, and whether it was copied over. */
   certificate?: { trusted: boolean; sent: boolean };
   /** What Wirescry is doing to it right now. */
-  busy?: 'capturing' | 'stopping';
+  busy?: 'capturing' | 'stopping' | 'sending';
   /** What went wrong with the last thing Wirescry did to it, or what the user should know. */
   note?: string;
 }
