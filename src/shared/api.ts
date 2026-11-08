@@ -239,7 +239,7 @@ export interface AndroidStatus {
    * Devices Wirescry set up that aren't connected now: they have no internet until they're
    * connected here and put back (or fixed by hand).
    */
-  notConnected?: Array<{ label: string; capturing: boolean }>;
+  notConnected?: Array<{ label: string; capturing: boolean; emulator?: boolean }>;
 }
 
 /** A device the ADB server lists. Its strings come from the device: show them as text only. */
@@ -256,6 +256,8 @@ export interface AndroidDevice {
   /** A name to show, e.g. "Pixel 8" or the emulator's AVD name. */
   label: string;
   emulator: boolean;
+  /** Connected over Wi-Fi (wireless debugging or `adb connect`): capture asks first. */
+  wireless?: boolean;
   apiLevel?: number;
   /** Who the device is across reconnects (opaque), once its properties are read. */
   id?: string;
@@ -272,7 +274,7 @@ export interface AndroidDevice {
     /** Whether the device may reach this computer and its local networks. */
     localAccess: boolean;
   };
-  /** Wirescry set this device up before and didn't undo it (it quit or crashed): offer Restore. */
+  /** Wirescry set this device up before and didn't undo it (it quit or crashed): offer Resume and Restore. */
   leftover?: boolean;
   /** Its proxy points at 127.0.0.1 with nothing behind it that Wirescry knows of: offer Clear. */
   strayProxy?: string;
@@ -340,9 +342,18 @@ export type ClientCommand =
   /**
    * Routes a device's traffic through Wirescry. Replies `{ needsConfirmation: proxy }` instead if
    * the device already uses another proxy; send again with `replaceProxy` set to that proxy to
-   * go ahead (if the device's proxy has changed meanwhile, it asks again).
+   * go ahead (if the device's proxy has changed meanwhile, it asks again). For a device on Wi-Fi it
+   * first replies `{ needsWirelessConfirmation: true }`; send again with `confirmWireless`.
    */
-  | { id: number; command: 'androidCapture'; deviceId: string; replaceProxy?: string }
+  | {
+      id: number;
+      command: 'androidCapture';
+      deviceId: string;
+      replaceProxy?: string;
+      confirmWireless?: boolean;
+    }
+  /** Captures again a device an earlier run left set up, if its proxy still points where Wirescry set it. */
+  | { id: number; command: 'androidResume'; deviceId: string }
   /** Puts a capturing device back as it was. Also undoes what's left from an earlier run (Restore). */
   | { id: number; command: 'androidStop'; deviceId: string }
   /** Sets a device's proxy back to none, when it points at 127.0.0.1 and Wirescry didn't set it. */

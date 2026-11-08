@@ -8,6 +8,7 @@ import {
   dialog,
   ipcMain,
   Menu,
+  Notification,
   safeStorage,
   session,
   shell,
@@ -24,6 +25,9 @@ import { guarded, isOnOrigin } from './ipc-guard';
 import { clearScratch, exportHar, importHar, saveBody } from './har-files';
 import { chooseFilePath, openTextFile, saveTextFile } from './text-files';
 import { Updater } from './updater';
+
+/** How long an update install or Windows logging off waits for Android devices to be put back. */
+const ANDROID_QUIT_UNDO_MS = 2000;
 
 /**
  * `--wirescry-self-test=<file>`: start the backend without a window, write what loaded
@@ -115,9 +119,18 @@ const backend = new BackendSupervisor({
   pluginsEnabled: true,
   logger,
   selfCheck: !!selfTestFile,
+  notify: (title, body) => {
+    if (Notification.isSupported()) new Notification({ title, body }).show();
+  },
 });
 logger.addSecret(backend.token);
-const updater = new Updater(logger, () => mainWindow);
+// Before an update install quits the app, which doesn't wait for the backend to stop: Android
+// devices still pointing at Wirescry would have no internet until it's running again.
+const updater = new Updater(
+  logger,
+  () => mainWindow,
+  () => backend.undoAndroid(ANDROID_QUIT_UNDO_MS),
+);
 
 const isFromOurUi = (url: string): boolean => isOnOrigin(url, uiOrigin);
 /** Registers an IPC handler that only Wirescry's own UI can call. */
@@ -187,7 +200,10 @@ function createWindow(): void {
   window.on('unresponsive', () => logger.write('renderer', 'warn', 'Window stopped responding'));
   // Windows logging off or shutting down skips before-quit. Delete what we can now; the
   // next start empties the rest.
-  window.on('session-end', () => backend.removeBodiesSync());
+  // Capturing Android devices are put back too, as far as can be within a short wait.
+  window.on('session-end', () => {
+    backend.undoAndroidSync(ANDROID_QUIT_UNDO_MS, () => backend.removeBodiesSync());
+  });
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = undefined;
     // Nothing for the menu's commands to act on until a window opens again.

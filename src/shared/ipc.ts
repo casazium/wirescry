@@ -27,11 +27,38 @@ export type BackendMessage =
       startup?: Array<[step: string, ms: number]>;
     }
   | { type: 'error'; message: string }
+  /** Show an OS notification (e.g. a capturing Android device was disconnected). */
+  | { type: 'notify'; title: string; body: string }
+  /** The answer to an android-undo request: done, or out of time. */
+  | { type: 'android-undone'; id: number }
   | CryptoRequest
   | HarReply;
 
 /** What the main process sends the backend. */
-export type MainToBackendMessage = BackendStartMessage | CryptoReply | HarRequest | BackendShutdownMessage;
+export type MainToBackendMessage =
+  BackendStartMessage | CryptoReply | HarRequest | BackendShutdownMessage | AndroidUndoMessage;
+
+/** Where, in the data folder, the backend keeps a record of each Android device it has set up. */
+export const ANDROID_RECORDS_DIR = 'android-capture';
+
+/**
+ * Main to backend: put capturing Android devices back now, within `timeoutMs`, before a quit
+ * that may not wait for the backend to stop (an update install, Windows logging off).
+ */
+export interface AndroidUndoMessage {
+  type: 'android-undo';
+  id: number;
+  timeoutMs: number;
+  /**
+   * Also write the file `androidUndoneFile(dataDir, id)` when done, for a main process that
+   * can't receive the answer (it's blocked, waiting, while Windows logs off).
+   */
+  markDone?: boolean;
+}
+
+/** The file the backend writes when an android-undo with markDone is done. */
+export const androidUndoneFile = (dataDir: string, id: number): string =>
+  `${dataDir}/${ANDROID_RECORDS_DIR}/undone-${Math.trunc(id)}`;
 
 /**
  * Main to backend: stop and delete stored bodies, then exit. Sent on quit instead of a

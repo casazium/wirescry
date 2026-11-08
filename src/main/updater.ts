@@ -33,6 +33,8 @@ export class Updater {
   constructor(
     private readonly logger: FileLogger,
     private readonly getWindow: () => BrowserWindow | undefined,
+    /** Runs (briefly: it must not hold up the install) just before quitting to install. */
+    private readonly beforeInstall: () => Promise<void> = async () => undefined,
   ) {
     const decision = updateDecision({
       isPackaged: app.isPackaged,
@@ -155,6 +157,7 @@ export class Updater {
         this.installing = true;
         // If the install doesn't go ahead (it can fail without quitting), later quits clean up again.
         setTimeout(() => (this.installing = false), 15_000).unref();
+        await this.beforeInstall().catch(() => undefined);
         autoUpdater.quitAndInstall();
       }
     } finally {

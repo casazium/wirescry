@@ -10,16 +10,23 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { adbEndpoint, adbReverse } from '../src/backend/android/adb-client';
 import { findAdb } from '../src/backend/android/adb-server';
+import type { CaptureRecord } from '../src/backend/android/capture';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { AndroidDevice, ProxyStatus, ServerMessage } from '../src/shared/api';
 import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
 
 const SERIAL = process.env.WIRESCRY_ANDROID_DEVICE;
+/** Checks the tunnel often, so a lost one comes back within the test. */
+const ANDROID = { capture: { pollMs: 500, graceMs: 3000 } };
+// Stop clears the proxy with ':0'; a fresh device starts with the setting unset ('null'). Both mean no proxy.
+const noProxy = (value: string): string => (['', 'null', ':0'].includes(value) ? ':0' : value);
 
 describe.skipIf(!SERIAL)('Capture on a real device', () => {
   const adbPath = findAdb() ?? 'adb';
@@ -50,7 +57,7 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
       docker: false,
-      android: {},
+      android: ANDROID,
     });
     api = await apiClient(backend.apiPort);
     // Not expect.poll: that only works inside a test.
@@ -111,8 +118,120 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
 
       await api.send({ command: 'androidStop', deviceId: id });
       await expect.poll(() => device()?.capture).toBeUndefined();
-      expect(await adb('shell', 'settings', 'get', 'global', 'http_proxy')).toBe(before);
+      expect(noProxy(await adb('shell', 'settings', 'get', 'global', 'http_proxy'))).toBe(noProxy(before));
       expect(await adb('reverse', '--list')).toBe(rulesBefore);
+    },
+  );
+
+  it('adds back a tunnel removed from under it, and after a reconnect', { timeout: 120_000 }, async () => {
+    const id = device()!.id!;
+    await api.send({ command: 'androidCapture', deviceId: id });
+    await expect.poll(() => device()?.capture).toBeTruthy();
+    const { devicePort, hostPort } = device()!.capture!;
+    const ours = `tcp:${devicePort} tcp:${hostPort}`;
+    const rules = () => adb('reverse', '--list').catch(() => '');
+
+    // Another tool removes it (only ours: a developer's own rules stay).
+    await adb('reverse', '--remove', `tcp:${devicePort}`);
+    await expect.poll(rules, { timeout: 10_000, interval: 250 }).toContain(ours);
+    expect(await fromDevice(devicePort, 'http://wirescry.internal/', 'wirescry.internal', 4)).toMatch(
+      /^HTTP\/1\.1 200/,
+    );
+
+    // A reconnect drops adbd's reverse rules (measured): it comes back, on the same port.
+    await adb('reconnect');
+    await expect.poll(rules, { timeout: 30_000, interval: 500 }).toContain(ours);
+    expect(device()?.capture?.devicePort).toBe(devicePort);
+    expect(await fromDevice(devicePort, 'http://wirescry.internal/', 'wirescry.internal', 4)).toMatch(
+      /^HTTP\/1\.1 200/,
+    );
+    expect(last(api.messages)?.android?.notConnected).toBeUndefined();
+
+    await api.send({ command: 'androidStop', deviceId: id });
+    await expect.poll(() => device()?.capture).toBeUndefined();
+    expect(await rules()).not.toContain(`tcp:${devicePort}`);
+  });
+
+  it(
+    'resumes a capture a crashed run left, replacing the rule that led to its old listener',
+    { timeout: 120_000 },
+    async () => {
+      const before = await adb('shell', 'settings', 'get', 'global', 'http_proxy');
+      const id = device()!.id!;
+      const apiLevel = device()!.apiLevel!;
+      // What a crash leaves while the device stays plugged in: a record, a rule to a listener
+      // that's gone, and the device's proxy still on the tunnel. The old listener's port is
+      // taken now, so Resume has to move to another one.
+      // Drops what connects, as nothing answers there: an open connection would keep close() waiting.
+      const taken = net.createServer((socket) => socket.destroy());
+      await new Promise<void>((resolve) => taken.listen(0, '127.0.0.1', resolve));
+      const oldPort = (taken.address() as net.AddressInfo).port;
+      const inUse = await adb('reverse', '--list');
+      let devicePort = 40_000;
+      while (inUse.includes(`tcp:${devicePort} `)) devicePort++;
+      const loopbackOnly = apiLevel >= 30;
+      const recordsDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-records-'));
+      const otherDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-device-2-'));
+      let other: RunningBackend | undefined;
+      let otherApi: Awaited<ReturnType<typeof apiClient>> | undefined;
+      try {
+        await adbReverse(adbEndpoint(), SERIAL!, devicePort, oldPort, { loopbackOnly });
+        await adb('shell', 'settings', 'put', 'global', 'http_proxy', `127.0.0.1:${devicePort}`);
+        const record: CaptureRecord = {
+          version: 1,
+          id,
+          label: device()!.label,
+          previousProxy: [':0', '', 'null'].includes(before) ? null : before,
+          devicePort,
+          hostPort: oldPort,
+          loopbackOnly,
+          startedAt: new Date().toISOString(),
+        };
+        await writeFile(path.join(recordsDir, `${id}.json`), JSON.stringify(record));
+
+        other = await startBackend({
+          dataDir: otherDir,
+          token: TOKEN,
+          allowedOrigins: [UI_ORIGIN],
+          docker: false,
+          android: { capture: { ...ANDROID.capture, recordsDir } },
+        });
+        otherApi = await apiClient(other.apiPort);
+        const api2 = otherApi;
+        const there = (): AndroidDevice | undefined =>
+          last(api2.messages)?.android?.devices.find((d) => d.serial === SERIAL);
+        await expect.poll(() => there()?.leftover, { timeout: 30_000 }).toBe(true);
+        // Until Resume, the device's traffic reaches nothing that answers.
+        expect(await fromDevice(devicePort, 'http://wirescry.internal/', 'wirescry.internal', 1)).toBe('');
+        await api2.send({ command: 'androidResume', deviceId: id });
+        await expect.poll(() => there()?.capture).toBeTruthy();
+        const { hostPort } = there()!.capture!;
+        expect(hostPort).not.toBe(oldPort);
+        expect(there()!.capture!.devicePort).toBe(devicePort);
+        const rules = await adb('reverse', '--list');
+        expect(rules).toContain(`tcp:${devicePort} tcp:${hostPort}`);
+        expect(rules).not.toContain(`tcp:${oldPort}`);
+        expect(await fromDevice(devicePort, 'http://wirescry.internal/', 'wirescry.internal', 4)).toMatch(
+          /^HTTP\/1\.1 200/,
+        );
+        await expect
+          .poll(() => exchangesIn(api2.messages).find((e) => e.host === 'wirescry.internal')?.source?.id)
+          .toBe(id);
+        await api2.send({ command: 'androidStop', deviceId: id });
+        expect(noProxy(await adb('shell', 'settings', 'get', 'global', 'http_proxy'))).toBe(noProxy(before));
+        expect(await adb('reverse', '--list')).toBe(inUse);
+        expect(await readdir(recordsDir)).toEqual([]);
+      } finally {
+        otherApi?.close();
+        await other?.stop();
+        // Whatever happened, leave the device as it was.
+        if (noProxy(await adb('shell', 'settings', 'get', 'global', 'http_proxy')) !== noProxy(before))
+          await adb('shell', 'settings', 'put', 'global', 'http_proxy', noProxy(before));
+        await adb('reverse', '--remove', `tcp:${devicePort}`).catch(() => undefined);
+        await new Promise((resolve) => taken.close(resolve));
+        await rm(recordsDir, { recursive: true, force: true });
+        await rm(otherDir, { recursive: true, force: true });
+      }
     },
   );
 
@@ -123,14 +242,14 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
     await expect.poll(() => device()?.capture).toBeTruthy();
     api.close();
     await backend.stop();
-    expect(await adb('shell', 'settings', 'get', 'global', 'http_proxy')).toBe(before);
+    expect(noProxy(await adb('shell', 'settings', 'get', 'global', 'http_proxy'))).toBe(noProxy(before));
     // Start again for afterAll.
     backend = await startBackend({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
       docker: false,
-      android: {},
+      android: ANDROID,
     });
     api = await apiClient(backend.apiPort);
   });

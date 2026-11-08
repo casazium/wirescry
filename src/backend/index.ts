@@ -2,7 +2,9 @@
  * Entry point for the backend, run by the main process as an Electron utility process.
  * It waits for a `start` message with its settings, then reports back the ports it's using.
  */
-import type { BackendMessage, MainToBackendMessage } from '../shared/ipc';
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { androidUndoneFile, type BackendMessage, type MainToBackendMessage } from '../shared/ipc';
 import { backendPlugins } from '@wirescry/pro/backend';
 import { startBackend, type RunningBackend } from './backend';
 import { ipcEncryptor } from './secure-store';
@@ -23,6 +25,7 @@ const mark = (step: string, at = performance.now()): void => {
 const parentPort = process.parentPort;
 let backend: RunningBackend | undefined;
 let starting = false;
+let dataDir: string | undefined;
 
 const post = (message: BackendMessage): void => parentPort.postMessage(message);
 
@@ -59,8 +62,25 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
     void shutdown();
     return;
   }
+  if (data?.type === 'android-undo') {
+    const { id } = data;
+    const timeoutMs = Math.min(Math.max(Number(data.timeoutMs) || 0, 0), 10_000);
+    void (backend?.stopAndroid(timeoutMs) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(async () => {
+        if (data.markDone && dataDir) {
+          const file = androidUndoneFile(dataDir, id);
+          await mkdir(path.dirname(file), { recursive: true });
+          await writeFile(file, '');
+        }
+      })
+      .catch(() => undefined)
+      .then(() => post({ type: 'android-undone', id }));
+    return;
+  }
   if (data?.type !== 'start' || starting) return;
   starting = true;
+  dataDir = data.dataDir;
   if (firstLineAt !== undefined) mark('first line of the backend ran', firstLineAt);
   mark('dependencies and Pro loaded', loadedAt);
   mark('start requested');
@@ -75,6 +95,7 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
       encryptor:
         backendPlugins.length > 0 && (await encryptor.available().catch(() => false)) ? encryptor : undefined,
       app: data.app,
+      notify: (title, body) => post({ type: 'notify', title, body }),
       onStartupStep: (name) => mark(`${name} done`),
     });
     const checked = data.selfCheck ? await selfCheck() : undefined;
