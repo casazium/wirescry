@@ -124,6 +124,45 @@ export function isLoopback(address: string | undefined): boolean {
   return v4.startsWith('127.') || address === '::1';
 }
 
+/**
+ * Alerts OpenSSL words without "alert", so Mockttp doesn't count them as refusals under Node:
+ * nor should it in the app.
+ */
+const UNWORDED_ALERTS = new Set([
+  'TLSV1_ALERT_CERTIFICATE_UNOBTAINABLE',
+  'TLSV1_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE',
+  'TLSV1_ALERT_BAD_CERTIFICATE_HASH_VALUE',
+]);
+
+/**
+ * Adds words for a TLS alert the client sent to the error, from its code, as OpenSSL words it.
+ * Mockttp tells a refused certificate from other failures by OpenSSL's words ("alert unknown
+ * ca"), but Electron's Node uses BoringSSL, which words them differently
+ * ("TLSV1_ALERT_UNKNOWN_CA"), so in the app every refusal was an unknown error.
+ */
+export function addOpenSslAlertReason(error: unknown): void {
+  if (!(error instanceof Error)) return;
+  const code = String((error as { code?: unknown }).code);
+  const alert = /^ERR_SSL_((?:SSLV3|TLSV1)_ALERT_[A-Z0-9_]+)$/.exec(code)?.[1];
+  if (!alert || UNWORDED_ALERTS.has(alert)) return;
+  const reason = alert.toLowerCase().replace(/_/g, ' ');
+  if (!error.message.includes(reason)) error.message += ` (${reason})`;
+}
+
+/**
+ * Has every failed handshake's error worded for Mockttp before Mockttp reads it. The server
+ * hands each listener on to the TLS server inside it in the order added (prepending doesn't
+ * carry over), so Mockttp's own listeners are added again after this one.
+ */
+function recognizeTlsAlerts(server: mockttp.Mockttp): void {
+  const listener = (server as unknown as { server?: net.Server }).server;
+  if (!listener) throw new Error("Can't read the proxy's TLS failures");
+  const mockttpListeners = listener.rawListeners('tlsClientError') as ((...args: unknown[]) => void)[];
+  for (const other of mockttpListeners) listener.removeListener('tlsClientError', other);
+  listener.on('tlsClientError', addOpenSslAlertReason);
+  for (const other of mockttpListeners) listener.on('tlsClientError', other);
+}
+
 /** How long a connection from another address may wait to be accepted. */
 const ACCEPT_TIMEOUT_MS = 5000;
 
@@ -733,6 +772,7 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
   await server.start(options.port);
   let restriction: { stop(): void };
   try {
+    recognizeTlsAlerts(server);
     restriction = restrictToLoopback(server, options.acceptConnection);
   } catch (error) {
     await server.stop();
