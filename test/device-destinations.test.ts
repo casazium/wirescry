@@ -11,12 +11,19 @@ import path from 'node:path';
 import * as mockttp from 'mockttp';
 import { WebSocketServer } from 'ws';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { startBackend, type RunningBackend } from '../src/backend/backend';
+import type { RunningBackend } from '../src/backend/backend';
 import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import type { ExchangeSource, ExchangeSummary } from '../src/shared/api';
 import { LOCAL_ACCESS_SWITCH } from '../src/shared/failure';
-import { apiClient, exchangesIn, requestViaProxy, systemPickedPort, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  requestViaProxy,
+  startBackendOnPickedPort,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 const PIXEL: ExchangeSource = { kind: 'android', id: 'serial-123', label: 'Pixel 8' };
 const TABLET: ExchangeSource = { kind: 'android', id: 'serial-456', label: 'Galaxy Tab' };
@@ -155,9 +162,8 @@ describe('What a device may reach', () => {
       'mixed.example': () => [PUBLIC, '10.0.0.7'],
       'rebind.example': () => (rebinds++ === 0 ? [PUBLIC] : ['127.0.0.1']),
     };
-    backend = await startBackend({
-      // Kept across certificate resets: see systemPickedPort.
-      proxyPort: await systemPickedPort(),
+    // Kept across certificate resets: see startBackendOnPickedPort.
+    backend = await startBackendOnPickedPort({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],

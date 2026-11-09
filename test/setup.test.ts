@@ -4,12 +4,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { generateCACertificate, getLocal, type Mockttp } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { startBackend, type RunningBackend } from '../src/backend/backend';
+import type { RunningBackend } from '../src/backend/backend';
 import { FIREFOX_PROFILE_DIR, firefoxPrefs } from '../src/backend/firefox';
 import { isLoopback } from '../src/backend/proxy';
 import { loadSettings } from '../src/backend/settings';
 import type { ProxyStatus } from '../src/shared/api';
-import { apiClient, httpViaProxy, requestViaProxy, systemPickedPort, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  httpViaProxy,
+  requestViaProxy,
+  startBackendOnPickedPort,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 async function freePort(): Promise<number> {
   const server = net.createServer();
@@ -58,9 +65,8 @@ describe('setup', () => {
     upstream = getLocal({ https: upstreamCA });
     await upstream.start();
     await upstream.forGet('/hello').thenReply(200, 'hello');
-    backend = await startBackend({
-      // Kept across certificate resets: see systemPickedPort.
-      proxyPort: await systemPickedPort(),
+    // Kept across certificate resets: see startBackendOnPickedPort.
+    backend = await startBackendOnPickedPort({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
