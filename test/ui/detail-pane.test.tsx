@@ -117,6 +117,13 @@ describe('DetailPane', () => {
     expect(protocolLine()).toBe('HTTP/1.1 (http://)');
   });
 
+  it('says an imported request’s HTTP version is unknown when its file didn’t say', async () => {
+    const imported = summary('i', { httpVersion: '', imported: true });
+    render(pane({ summary: imported, send: vi.fn(async () => detail(imported, 'm')) }));
+    await act(async () => undefined);
+    expect(protocolLine()).toBe('HTTP version unknown (https://)');
+  });
+
   it('doesn’t call an https:// URL sent in plain text encrypted (BusyBox wget’s)', async () => {
     const wget = summary('w', { protocol: 'https', httpVersion: '1.1', url: 'https://api.test/w' });
     render(pane({ summary: wget, send: vi.fn(async () => detail(wget, 'm')) }));

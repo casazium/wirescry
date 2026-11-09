@@ -34,4 +34,11 @@ describe('protocolText', () => {
     expect(protocolText('ftp', '1.1')).toBe('HTTP/1.1');
     expect(protocolText('', '1.1')).toBe('HTTP/1.1');
   });
+
+  it('says the version is unknown when an imported file didn’t give one, never “HTTP/”', () => {
+    expect(protocolText('https', '')).toBe('HTTP version unknown (https://)');
+    expect(protocolText('ws', '')).toBe('HTTP version unknown (ws://)');
+    expect(protocolText('', '')).toBe('HTTP version unknown');
+    expect(protocolText('https', '')).not.toContain('HTTP/');
+  });
 });

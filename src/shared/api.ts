@@ -9,7 +9,9 @@ import type { ShellKind } from './terminal-env';
 export interface ExchangeSummary {
   id: string;
   method: string;
+  /** The URL's scheme: http, https, or ws or wss for a captured WebSocket (imported ones are http or https). */
   protocol: string;
+  /** Mockttp's, e.g. "1.1" or "2.0"; "" for an imported request whose file didn't say. */
   httpVersion: string;
   host: string;
   path: string;

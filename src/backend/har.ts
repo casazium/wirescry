@@ -58,9 +58,9 @@ const headerValue = (headers: Header[] | undefined, name: string): string | unde
 const harHeaders = (headers: Header[] | undefined): Array<{ name: string; value: string }> =>
   (headers ?? []).map(([name, value]) => ({ name, value }));
 
-/** HAR's httpVersion from Mockttp's ("1.1", "2.0"). */
+/** HAR's httpVersion from Mockttp's ("1.1", "2.0"); "" for one that isn't known, as browsers write. */
 const harHttpVersion = (version: string): string =>
-  version.startsWith('2') ? 'HTTP/2.0' : `HTTP/${version}`;
+  version === '' ? '' : version.startsWith('2') ? 'HTTP/2.0' : `HTTP/${version}`;
 
 /** Whether a Content-Type is an HTML form's default, whose fields HAR lists as postData.params. */
 const isFormEncoded = (type: string | undefined): boolean =>
@@ -319,13 +319,20 @@ function requestBodyOf(postData: Record<string, unknown> | undefined): Buffer | 
 const ms = (value: unknown): number =>
   typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.min(value, MAX_MS) : 0;
 
-/** Mockttp's httpVersion ("1.1", "2.0") from HAR's ("HTTP/1.1", "h2", "HTTP/2.0", …). */
-function httpVersionOf(value: unknown): string {
-  const text = typeof value === 'string' ? value.toLowerCase() : '';
-  if (/^(h2|http\/2)/.test(text)) return '2.0';
-  if (/^(h3|http\/3)/.test(text)) return '3.0';
-  if (text === 'http/1.0') return '1.0';
-  return '1.1';
+/**
+ * Mockttp's httpVersion ("1.1", "2.0") from HAR's ("HTTP/1.1", "h2", "HTTP/2.0", …): the first of
+ * `values` that says. "" when none does: browsers write "", "unknown" or nothing at all, and
+ * guessing HTTP/1.1 would show a version nobody recorded.
+ */
+function httpVersionOf(...values: unknown[]): string {
+  for (const value of values) {
+    const text = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (/^(h2|http\/2)/.test(text)) return '2.0';
+    if (/^(h3|http\/3)/.test(text)) return '3.0';
+    if (text === 'http/1.0') return '1.0';
+    if (text === 'http/1.1') return '1.1';
+  }
+  return '';
 }
 
 const FAILURE_KINDS: FailureKind[] = [
@@ -456,7 +463,7 @@ function exchangeOf(entry: unknown): ImportedExchange {
     summary: {
       method: request.method.toUpperCase(),
       protocol: url.protocol.replace(/:$/, '').replace(/^ws/, 'http'),
-      httpVersion: httpVersionOf(request.httpVersion ?? response.httpVersion),
+      httpVersion: httpVersionOf(request.httpVersion, response.httpVersion),
       host: url.host,
       path: url.pathname + url.search,
       url: url.href,
