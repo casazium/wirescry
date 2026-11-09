@@ -15,6 +15,7 @@ import type {
   Header,
   PluginStatus,
   ProxyStatus,
+  RefusedConnections,
   ServerMessage,
   WebSocketMessages,
 } from '../shared/api';
@@ -48,6 +49,7 @@ import {
 import type { EgressGuardOptions } from './egress-guard';
 import { deviceListenerSet, type DeviceListeners } from './device-listeners';
 import { startProxy, type RunningProxy } from './proxy';
+import { cleanHost, Refusals } from './refusals';
 import { isValidPort, loadSettings, saveSettings, type Settings } from './settings';
 import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
@@ -58,6 +60,10 @@ import { WebSocketStore } from './websocket-store';
 
 /** How long quitting waits to put capturing Android devices back: the app kills the backend after 3 s. */
 const ANDROID_STOP_TIMEOUT_MS = 2000;
+/** The source the main proxy's refusals are counted under (see ProxyStatus.refused). */
+const COMPUTER = 'computer';
+/** Refusals are sent to the UI together, this long after the first of them. */
+export const REFUSALS_PUBLISH_MS = 250;
 /** Which Android devices trust which certificate, in the data folder. */
 const ANDROID_TRUST_FILE = 'android-trust.json';
 
@@ -199,6 +205,22 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   let android: AndroidSetup | undefined;
   const updates = new UpdateBatcher((message) => broadcast(message));
   let paused = false;
+  // HTTPS connections through the main proxy that refused the certificate: see ProxyStatus.refused.
+  const refusals = new Refusals();
+  let refusalsTimer: NodeJS.Timeout | undefined;
+  /** See RefusedConnections.epoch. */
+  let refusalsEpoch = 1;
+  let stopping = false;
+  const clearRefusals = (): void => {
+    refusals.clearAll();
+    refusalsEpoch += 1;
+    clearTimeout(refusalsTimer);
+    refusalsTimer = undefined;
+  };
+  const refused = (): RefusedConnections | undefined => {
+    const now = refusals.of(COMPUTER);
+    return now && { ...now, epoch: refusalsEpoch };
+  };
 
   const websockets = new WebSocketStore();
   // Exchanges plugins have been told have finished, and ones waiting a moment for their body.
@@ -235,6 +257,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     plugins: pluginHost.statuses(),
     docker: docker.status(),
     ...(android ? { android: android.status() } : {}),
+    ...(refused() ? { refused: refused() } : {}),
   });
 
   const currentTerminalEnv = (): Record<string, string> => ({
@@ -359,9 +382,25 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       isPaused: () => paused,
       isComposed: (remotePort, remoteAddress, id) => composer.claim(remotePort, remoteAddress, id),
       acceptConnection: (address) => docker.acceptsConnection(address),
+      onCertificateRefused: (host) => {
+        // Not while recording is paused: it's about traffic missing from the list.
+        if (paused || stopping) return;
+        // Without a hostname (HTTPS to an IP address) the proxy's certificate is for another name,
+        // which a client can refuse even when it trusts Wirescry: not a sign of distrust.
+        if (!cleanHost(host)) return;
+        refusals.add(COMPUTER, host);
+        // Together, a moment later: a program retrying would otherwise send a status each time.
+        refusalsTimer ??= setTimeout(() => {
+          refusalsTimer = undefined;
+          broadcast({ type: 'status', status: status() });
+        }, REFUSALS_PUBLISH_MS);
+        refusalsTimer.unref?.();
+      },
       onCATrusted: (userAgent) => {
         if (!/Firefox\//.test(userAgent) || firefoxTrusted) return;
         firefoxTrusted = true;
+        // Firefox's own connections refused the certificate until now: they're settled.
+        clearRefusals();
         // Save before telling the UI, so the state on disk is never behind what's shown.
         markProfileTrusted(firefoxProfile, ca.spkiFingerprint).then(
           () => broadcast({ type: 'status', status: status() }),
@@ -753,7 +792,23 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         await importWrite;
         await bodies.clear();
         broadcast({ type: 'cleared' });
+        // What refused the certificate belongs with the traffic that's gone.
+        if (refusals.of(COMPUTER)) {
+          clearRefusals();
+          broadcast({ type: 'status', status: status() });
+        }
         return undefined;
+      case 'clearRefused': {
+        const seen = command.seen;
+        // Started over since the window saw them: those are gone already.
+        if (!refusals.of(COMPUTER) || (seen && seen.epoch !== refusalsEpoch)) return undefined;
+        if (seen) {
+          refusals.subtract(COMPUTER, seen);
+          refusalsEpoch += 1;
+        } else clearRefusals();
+        broadcast({ type: 'status', status: status() });
+        return undefined;
+      }
       case 'setPaused':
         paused = command.paused;
         broadcast({ type: 'paused', paused });
@@ -843,6 +898,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
             // Even if the main proxy had to move: device listeners must not keep the old CA.
             await devices.restartAll();
             android?.certificateChanged();
+            // Refusals were of the old certificate, which the proxy served until just now.
+            clearRefusals();
           }
           broadcast({ type: 'status', status: status() });
           return undefined;
@@ -928,12 +985,14 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       await android?.stopAll(timeoutMs);
     },
     async stop() {
+      stopping = true;
       // First, and quickly: put capturing devices back before their listeners go (a device left
       // pointing at a closed port has no internet), well inside the time the app gives the
       // backend to stop. Any it can't reach keep their records, and are offered Restore next time.
       await android?.stopAll(ANDROID_STOP_TIMEOUT_MS);
       android?.stop();
       composer.close();
+      clearRefusals();
       for (const timer of completionTimers.values()) clearTimeout(timer);
       completionTimers.clear();
       await pluginHost.stopAll();

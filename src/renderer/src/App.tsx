@@ -1,6 +1,12 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
-import type { ComposerRequest, ExchangeDetail, BodyContent, ExchangeSummary } from '../../shared/api';
+import type {
+  ComposerRequest,
+  ExchangeDetail,
+  BodyContent,
+  ExchangeSummary,
+  RefusedConnections,
+} from '../../shared/api';
 import type { MenuChoice, MenuCommand } from '../../shared/ipc';
 import { fetchCurlCommand } from './curl-command';
 import { DetailPane, type DetailSection, type ExchangeActionButton } from './DetailPane';
@@ -21,6 +27,7 @@ import {
 import { uiPlugins } from '@wirescry/pro/ui';
 import { PLUGIN_API_VERSION } from '../../plugin-api/version';
 import { followingRequest } from './redirect';
+import { alreadyDismissed, REFUSED_HELP_URL, refusedSummary, refusedWhy } from './refused-text';
 import { SetupPage } from './SetupPage';
 import { loadDetailSize, saveDetailSize, useStacked } from './detail-size';
 import { Splitter } from './Splitter';
@@ -66,6 +73,8 @@ export function App(): React.JSX.Element {
   const [message, setMessage] = useState<string>();
   /** The last HAR import or export, until dismissed. */
   const [notice, setNotice] = useState<string>();
+  // The refusals dismissed: the bar comes back for a host not among them, or once they start over.
+  const [refusedDismissed, setRefusedDismissed] = useState<RefusedConnections>();
   const [pillCopied, setPillCopied] = useState(false);
   const [harBusy, setHarBusy] = useState(false);
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
@@ -108,8 +117,24 @@ export function App(): React.JSX.Element {
   // Requests from before a backend restart come first, read-only (only their summaries are left).
   const staleIds = useMemo(() => new Set(previous.map((e) => e.id)), [previous]);
   // Clear hides rows first, so it can be undone, and deletes them after.
-  const clearing = useUndoableClear(removeExchanges);
+  // Once a Clear goes through (no Undo), the refusals shown when it was clicked go with the
+  // traffic: they're about it. Any that came while Undo was offered stay.
+  const refusedAtClear = useRef<RefusedConnections | undefined>(undefined);
+  const forgetRefused = (seen: RefusedConnections | undefined): void => {
+    if (seen) void send({ command: 'clearRefused', seen }).catch(() => undefined);
+  };
+  const clearing = useUndoableClear((ids) => {
+    removeExchanges(ids);
+    forgetRefused(refusedAtClear.current);
+  });
   const hidden = clearing.pending?.ids;
+  // Hidden with the cleared list while Undo is offered, and once dismissed, unless a new host
+  // has refused since or they've started over.
+  const refusedShown =
+    view === 'traffic' &&
+    !clearing.pending &&
+    !!status?.refused &&
+    !alreadyDismissed(status.refused, refusedDismissed);
   const allExchanges = useMemo(() => {
     const all = previous.length > 0 ? [...previous, ...exchanges] : exchanges;
     return hidden ? all.filter((e) => !hidden.has(e.id)) : all;
@@ -374,6 +399,9 @@ export function App(): React.JSX.Element {
 
   const clearAll = (): void => {
     setSelectedId(undefined);
+    refusedAtClear.current = status?.refused;
+    // Nothing listed, so nothing to undo: the refusals go now.
+    if (allExchanges.length === 0) forgetRefused(status?.refused);
     clearing.clear(allExchanges.map((e) => e.id));
   };
 
@@ -807,6 +835,28 @@ export function App(): React.JSX.Element {
             Undo
           </button>
           <button type="button" className="icon" aria-label="Dismiss" onClick={clearing.dismiss}>
+            ×
+          </button>
+        </div>
+      )}
+      {/* Announced once as it appears, not each time its count changes. */}
+      <div className="visually-hidden" role="status">
+        {refusedShown ? 'Some HTTPS connections refused Wirescry’s certificate.' : ''}
+      </div>
+      {refusedShown && status?.refused && (
+        <div className="banner notice refused-notice">
+          <span>
+            {refusedSummary(status.refused)} {refusedWhy(status.refused.count)}{' '}
+            <a href={REFUSED_HELP_URL} target="_blank" rel="noreferrer">
+              How to fix this
+            </a>
+          </span>
+          <button
+            type="button"
+            className="icon"
+            aria-label="Dismiss"
+            onClick={() => setRefusedDismissed(status.refused)}
+          >
             ×
           </button>
         </div>

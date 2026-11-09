@@ -14,7 +14,7 @@ import {
 import { ensureAdbServer, findAdb, noAdb, type RunFile } from './adb-server';
 import { CaptureRecords, DeviceCapture, MANUAL_FIX, type CaptureTarget } from './capture';
 import { DeviceCertificates } from './certificates';
-import { Refusals } from './refusals';
+import { Refusals } from '../refusals';
 import { devicesFrom, infoKey, readDeviceInfo, type DeviceInfo } from './devices';
 
 export interface AndroidSetupOptions {
