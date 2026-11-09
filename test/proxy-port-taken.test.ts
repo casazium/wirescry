@@ -20,44 +20,48 @@ afterEach(async () => {
 const last = (messages: ServerMessage[]): ProxyStatus | undefined =>
   messages.flatMap((m) => (m.type === 'status' || m.type === 'hello' ? [m.status] : [])).at(-1);
 
-it('moves to another port, and says so, when its own is taken during a certificate reset', async () => {
-  dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-port-taken-'));
-  const port = await systemPickedPort();
-  backend = await startBackend({
-    dataDir,
-    token: TOKEN,
-    allowedOrigins: [UI_ORIGIN],
-    proxyPort: port,
-    docker: false,
-  });
-  const api = await apiClient(backend.apiPort);
-  // Something else grabs the port the moment it's free.
-  thief = net.createServer();
-  thief.on('error', () => undefined);
-  let grabbing = true;
-  const grab = (): void => {
-    if (!grabbing || thief!.listening) return;
-    thief!.listen(port, '127.0.0.1');
-    setImmediate(grab);
-  };
-  thief.once('listening', () => (grabbing = false));
-  grab();
-  const result = await api.send({ command: 'resetCertificate' }).then(
-    () => undefined,
-    (e: Error) => e.message,
-  );
-  grabbing = false;
-  if (!thief.listening) {
-    // The proxy got its port back first this time: nothing to test.
+// A thief on 0.0.0.0 shares the port with the proxy on macOS unless the proxy checks for it.
+it.each(['127.0.0.1', '0.0.0.0'])(
+  'moves to another port, and says so, when %s on its own is taken during a certificate reset',
+  async (host) => {
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-port-taken-'));
+    const port = await systemPickedPort();
+    backend = await startBackend({
+      dataDir,
+      token: TOKEN,
+      allowedOrigins: [UI_ORIGIN],
+      proxyPort: port,
+      docker: false,
+    });
+    const api = await apiClient(backend.apiPort);
+    // Something else grabs the port the moment it's free.
+    thief = net.createServer();
+    thief.on('error', () => undefined);
+    let grabbing = true;
+    const grab = (): void => {
+      if (!grabbing || thief!.listening) return;
+      thief!.listen(port, host);
+      setImmediate(grab);
+    };
+    thief.once('listening', () => (grabbing = false));
+    grab();
+    const result = await api.send({ command: 'resetCertificate' }).then(
+      () => undefined,
+      (e: Error) => e.message,
+    );
+    grabbing = false;
+    if (!thief.listening) {
+      // The proxy got its port back first this time: nothing to test.
+      api.close();
+      return;
+    }
+    expect(result).toMatch(
+      new RegExp(`Port ${port} was taken while the proxy restarted, so it's on port \\d+ now`),
+    );
+    const moved = backend.proxyPort;
+    expect(moved).not.toBe(port);
+    await expect.poll(() => last(api.messages)?.proxyPort).toBe(moved);
+    expect((await httpViaProxy(moved, 'http://wirescry.internal/')).status).toBe(200);
     api.close();
-    return;
-  }
-  expect(result).toMatch(
-    new RegExp(`Port ${port} was taken while the proxy restarted, so it's on port \\d+ now`),
-  );
-  const moved = backend.proxyPort;
-  expect(moved).not.toBe(port);
-  await expect.poll(() => last(api.messages)?.proxyPort).toBe(moved);
-  expect((await httpViaProxy(moved, 'http://wirescry.internal/')).status).toBe(200);
-  api.close();
-});
+  },
+);

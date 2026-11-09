@@ -61,6 +61,10 @@ describe('A fixed proxy port another program listens on', () => {
       const port = await holder(host);
       if (port === undefined) return; // No IPv6 here.
       const started = await startOn(port).catch((error: NodeJS.ErrnoException) => error);
+      // On macOS, all addresses includes 0.0.0.0, which the check refuses.
+      if (process.platform === 'darwin' && (host === undefined || host === '::')) {
+        expect(started).toMatchObject({ code: 'EADDRINUSE', port });
+      }
       if (started instanceof Error) {
         expect(started).toMatchObject({ code: 'EADDRINUSE' });
         return;
@@ -69,6 +73,18 @@ describe('A fixed proxy port another program listens on', () => {
       expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
     },
   );
+
+  it('isn’t refused for a program on a network address, which doesn’t take 127.0.0.1', async () => {
+    const lan = Object.values(os.networkInterfaces())
+      .flat()
+      .find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
+    if (!lan) return; // No network address here.
+    const port = await holder(lan);
+    if (port === undefined) return;
+    const backend = await startOn(port);
+    expect(backend.proxyPort).toBe(port);
+    expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
+  });
 
   it('starts on a free one, and serves 127.0.0.1', async () => {
     const port = await systemPickedPort();
