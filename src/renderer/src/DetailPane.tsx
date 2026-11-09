@@ -13,6 +13,7 @@ import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
 import { bodyFileName } from './body-file-name';
 import { curlCommand } from './curl-command';
+import { protocolText } from './protocol-text';
 import { redirectTarget } from './redirect';
 import { WebSocketMessagesView } from './WebSocketMessagesView';
 import { DETAIL_PANE_ID } from './Splitter';
@@ -369,7 +370,7 @@ export function DetailPane({
             )}
             <dt>Protocol</dt>
             <dd>
-              {summary.protocol.toUpperCase()}, HTTP/{summary.httpVersion}
+              {protocolText(summary.protocol, summary.httpVersion)}
               {byWirescry && ', between the client and Wirescry'}
             </dd>
             <dt>Request body</dt>
