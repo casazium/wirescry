@@ -168,9 +168,10 @@ function CertificateSteps({
     <div className="device-https">
       {trusted ? (
         <p role="status">
-          Chrome on this device trusts Wirescry’s certificate, so HTTPS from Chrome shows in Traffic. Apps
-          trust it only if they say so: see <strong>Your own app</strong>. {check('Check in Chrome again')} To
-          remove the certificate, open the device’s {showInstalled}.
+          Wirescry’s check passed in a browser on this device (Chrome, if it has Chrome), so HTTPS from that
+          browser shows in Traffic. Apps trust the certificate only if they say so: see{' '}
+          <strong>Your own app</strong>. {check('Check again in the browser')} To remove the certificate, open
+          the device’s {showInstalled}.
         </p>
       ) : (
         <>
@@ -463,8 +464,8 @@ function DeviceActions({
 }
 
 /**
- * Android devices over the user's ADB server: listed, captured and put back. Shown only while
- * the experimental setting is on.
+ * Android devices over the user's ADB server: listed, captured and put back. Absent when Android
+ * setup is turned off (androidSetup: false in settings.json).
  */
 export function AndroidSection({
   status,
@@ -486,10 +487,14 @@ export function AndroidSection({
   };
   return (
     <section>
-      <h2>
-        Android <span className="badge">Experimental</span>
-      </h2>
+      <h2>Android</h2>
       {android.state === 'starting' && <p className="muted">Looking for the ADB server…</p>}
+      {android.state === 'no-server' && (
+        <p className="muted">
+          No ADB server is running. Wirescry finds the one Android Studio starts, or can start one with your
+          adb.
+        </p>
+      )}
       {(android.state === 'no-adb' || android.state === 'failed') && (
         <p className="note" role="status">
           {android.error}
@@ -538,34 +543,60 @@ export function AndroidSection({
           </button>{' '}
           <span className="muted">
             Adds to the Traffic search: the connectivity check, Play services and Chrome’s background
-            requests.
+            requests. It goes by host and address, so it hides them from this computer’s traffic too.
           </span>
         </p>
       )}
-      {android.notConnected?.map((d, i) =>
-        d.emulator ? (
-          <p key={i} className="note" role="status">
-            <span className="device-name">{d.label}</span>{' '}
-            {d.capturing
-              ? 'closed while capturing. Start it again while Wirescry is running and capture carries on.'
-              : 'was left set up last time and isn’t running. Start it while Wirescry is running, then Resume or Restore.'}{' '}
-            Until then it has no internet.
-          </p>
-        ) : (
-          <p key={i} className="note" role="status">
-            <span className="device-name">{d.label}</span>{' '}
-            {d.capturing
-              ? 'was disconnected while capturing. Connect it again and capture carries on.'
-              : 'was left set up last time and isn’t connected. Connect it here, then Resume or Restore.'}{' '}
-            Until then it has no internet, unless you run{' '}
-            <code>adb shell settings put global http_proxy :0</code> with only that device connected.
-          </p>
-        ),
-      )}
+      {android.notConnected?.map((d) => (
+        <div key={d.id}>
+          {d.emulator ? (
+            <p className="note" role="status">
+              <span className="device-name">{d.label}</span>{' '}
+              {d.capturing
+                ? 'closed while capturing. Start it again while Wirescry is running and capture carries on.'
+                : 'was left set up last time and isn’t running. Start it while Wirescry is running, then Resume or Restore.'}{' '}
+              Until then it has no internet.
+            </p>
+          ) : (
+            <p className="note" role="status">
+              <span className="device-name">{d.label}</span>{' '}
+              {d.capturing
+                ? 'was disconnected while capturing. Connect it again and capture carries on.'
+                : 'was left set up last time and isn’t connected. Connect it here, then Resume or Restore.'}{' '}
+              Until then it has no internet, unless you run{' '}
+              <code>adb shell settings put global http_proxy :0</code> with only that device connected.
+            </p>
+          )}
+          {!d.capturing && send && (
+            <p>
+              <button
+                type="button"
+                disabled={!connected}
+                aria-label={`Forget ${d.label}`}
+                onClick={() =>
+                  send({ command: 'androidForget', deviceId: d.id }).catch((e: Error) => setError(e.message))
+                }
+              >
+                Forget
+              </button>{' '}
+              <span className="muted">
+                If it’s gone for good. If it turns up again still pointing at Wirescry, Setup offers Clear
+                proxy for it.
+              </span>
+            </p>
+          )}
+        </div>
+      ))}
       {send && android.state !== 'starting' && (
         <p>
           <button type="button" onClick={checkAgain} disabled={!connected || checking}>
-            {checking ? 'Checking…' : 'Check again'}
+            {checking
+              ? android.state === 'no-server'
+                ? 'Starting…'
+                : 'Checking…'
+              : android.state === 'no-server'
+                ? 'Start the ADB server'
+                : 'Check again'}
           </button>
         </p>
       )}
@@ -577,8 +608,8 @@ export function AndroidSection({
       <p className="muted">
         Capture sends the device’s HTTP and HTTPS traffic through Wirescry, and Stop puts the device back as
         it was. HTTPS stays unreadable until the device trusts Wirescry’s certificate: the steps show while
-        capturing. Wirescry uses the ADB server Android Studio uses, and starts it with your adb if it isn’t
-        running. If a device is left without internet, run{' '}
+        capturing. Wirescry uses the ADB server Android Studio uses; it starts one with your adb only when you
+        ask, or to put back a device it left set up. If a device is left without internet, run{' '}
         <code>adb shell settings put global http_proxy :0</code>.
       </p>
     </section>

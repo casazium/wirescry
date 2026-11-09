@@ -45,7 +45,7 @@ describe('Android section', () => {
         })}
       />,
     );
-    expect(screen.getByRole('heading', { name: /Android/ }).textContent).toContain('Experimental');
+    expect(screen.getByRole('heading', { name: /Android/ }).textContent).toBe('Android');
     const items = screen.getAllByRole('listitem').map((li) => li.textContent);
     expect(items[0]).toContain('Medium Phone API 37.0');
     expect(items[0]).toContain('Emulator · API 37 · emulator-5554');
@@ -65,6 +65,58 @@ describe('Android section', () => {
     );
     expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeTruthy();
     expect(document.querySelector('img')).toBeNull();
+  });
+
+  it('says when no ADB server is running, and offers to start one', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    render(<AndroidSection status={withAndroid({ state: 'no-server', devices: [] })} send={send} />);
+    expect(
+      screen.getByText(/No ADB server is running\. Wirescry finds the one Android Studio starts/),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Start the ADB server' }));
+    expect(send).toHaveBeenCalledWith({ command: 'androidRefresh' });
+    expect(screen.queryByText(/No devices/)).toBeNull();
+  });
+
+  it('labels the button for each state: Start when no server runs, Check again otherwise', async () => {
+    let finish: () => void = () => {};
+    const send = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    const { rerender } = render(
+      <AndroidSection status={withAndroid({ state: 'no-server', devices: [] })} send={send} />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Start the ADB server' }));
+    expect(screen.getByRole('button', { name: 'Starting…' })).toBeTruthy();
+    finish();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Start the ADB server' })).toBeTruthy());
+    for (const state of ['no-adb', 'failed'] as const) {
+      rerender(<AndroidSection status={withAndroid({ state, error: 'x', devices: [] })} send={send} />);
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Start the ADB server' })).toBeNull();
+    }
+  });
+
+  it('offers Forget for a device left set up that isn’t connected, and not for one capturing', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    render(
+      <AndroidSection
+        status={withAndroid({
+          state: 'ready',
+          devices: [],
+          notConnected: [
+            { id: 'a'.repeat(32), label: 'Galaxy Tab', capturing: false },
+            { id: 'b'.repeat(32), label: 'Pixel 8', capturing: true },
+          ],
+        })}
+        send={send}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Forget Pixel 8' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Forget Galaxy Tab' }));
+    expect(send).toHaveBeenCalledWith({ command: 'androidForget', deviceId: 'a'.repeat(32) });
+    expect(
+      screen.getByText(/If it turns up again still pointing at Wirescry, Setup offers Clear proxy/),
+    ).toBeTruthy();
   });
 
   it('says how to get going with no devices, and with no adb', () => {
@@ -272,8 +324,8 @@ it('says what to do about set-up devices that are not connected', () => {
         state: 'ready',
         devices: [],
         notConnected: [
-          { label: 'Pixel 8', capturing: true },
-          { label: 'Galaxy Tab', capturing: false },
+          { id: 'd286', label: 'Pixel 8', capturing: true },
+          { id: 'd287', label: 'Galaxy Tab', capturing: false },
         ],
       })}
     />,
@@ -293,8 +345,8 @@ it('words it for emulators, which come back from a saved state', () => {
         state: 'ready',
         devices: [],
         notConnected: [
-          { label: 'Pixel 8 API 35', capturing: true, emulator: true },
-          { label: 'Small Phone', capturing: false, emulator: true },
+          { id: 'd307', label: 'Pixel 8 API 35', capturing: true, emulator: true },
+          { id: 'd308', label: 'Small Phone', capturing: false, emulator: true },
         ],
       })}
     />,
@@ -464,10 +516,12 @@ describe('Android section: certificate', () => {
       <AndroidSection status={capturing({ certificate: { trusted: true, sent: true } })} send={send} />,
     );
     expect(
-      screen.getByText(/Chrome on this device trusts Wirescry’s certificate, so HTTPS from Chrome shows/),
+      screen.getByText(
+        /Wirescry’s check passed in a browser on this device \(Chrome, if it has Chrome\), so HTTPS from that browser shows/,
+      ),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Send certificate' })).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: 'Check in Chrome again' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Check again in the browser' }));
     expect(send).toHaveBeenLastCalledWith({ command: 'androidCheckCertificate', deviceId: id });
     expect(screen.getByRole('button', { name: 'installed certificates' })).toBeTruthy();
   });
@@ -667,7 +721,11 @@ describe('Android section: connections that refused the certificate', () => {
     expect(screen.getAllByRole('button', { name: HIDE })).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: HIDE }));
     expect(onShowTraffic).toHaveBeenCalledWith(HIDE_ANDROID_SYSTEM_QUERY);
-    expect(screen.getByText(/Adds to the Traffic search/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        /Adds to the Traffic search: .* It goes by host and address, so it hides them from this computer’s traffic too\./,
+      ),
+    ).toBeTruthy();
 
     // Nobody capturing, or nowhere to show it: no button.
     rerender(

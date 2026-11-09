@@ -11,9 +11,12 @@ import { adbServerVersion, DEFAULT_ADB_PORT, type AdbEndpoint } from './adb-clie
  * Wi-Fi debugging.
  */
 
-/** Shown when no adb is found. */
-export const NO_ADB =
-  'Install Android platform tools: they come with Android Studio, or with Homebrew (android-platform-tools).';
+/** Shown when no adb is found. Homebrew's android-platform-tools is a macOS cask. */
+export function noAdb(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'darwin'
+    ? 'Install Android platform tools: they come with Android Studio, or with Homebrew (android-platform-tools).'
+    : 'Install Android platform tools: they come with Android Studio, or as SDK Platform Tools from developer.android.com.';
+}
 
 export interface FindAdbOptions {
   /** The user's own choice, from Wirescry's settings. */
@@ -114,6 +117,8 @@ export async function startAdbServer(
 export type AdbServerState =
   | { state: 'running'; version: number; started: boolean; adbPath?: string }
   | { state: 'no-adb' }
+  /** None running, and not asked to start one. */
+  | { state: 'not-running' }
   | { state: 'failed'; error: string; adbPath?: string };
 
 export interface EnsureOptions {
@@ -138,7 +143,7 @@ export async function ensureAdbServer(options: EnsureOptions): Promise<AdbServer
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== 'ECONNREFUSED') return { state: 'failed', error: (error as Error).message };
   }
-  if (!options.start) return { state: 'failed', error: 'The ADB server isn’t running.' };
+  if (!options.start) return { state: 'not-running' };
   const adbPath = options.findAdb();
   if (!adbPath) return { state: 'no-adb' };
   try {

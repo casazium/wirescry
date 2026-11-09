@@ -162,7 +162,7 @@ describe('Capturing a device through the backend', () => {
     await api.send({ command: 'androidRefresh' });
     await expect
       .poll(() => last(api.messages)?.android?.notConnected, { timeout: 10_000 })
-      .toEqual([{ label: 'Pixel 8', capturing: true }]);
+      .toMatchObject([{ label: 'Pixel 8', capturing: true }]);
   });
 
   it('resumes a device an earlier run left set up, recording its traffic again', async () => {

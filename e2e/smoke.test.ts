@@ -5,7 +5,7 @@
  * fuses turn off the --inspect that Playwright attaches with. On Linux, run under xvfb-run.
  */
 import http from 'node:http';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,6 +38,8 @@ beforeAll(async () => {
   upstreamPort = (upstream.address() as AddressInfo).port;
 
   userData = await mkdtemp(path.join(os.tmpdir(), 'wirescry-smoke-'));
+  // Not the user's devices: no Android setup in a smoke test.
+  await writeFile(path.join(userData, 'settings.json'), JSON.stringify({ androidSetup: false }));
   app = await electron.launch({
     // Electron runs this folder, which loads the build in out/.
     args: [

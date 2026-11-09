@@ -11,7 +11,7 @@ import {
   type AdbEndpoint,
   type DeviceTracker,
 } from './adb-client';
-import { ensureAdbServer, findAdb, NO_ADB, type RunFile } from './adb-server';
+import { ensureAdbServer, findAdb, noAdb, type RunFile } from './adb-server';
 import { CaptureRecords, DeviceCapture, MANUAL_FIX, type CaptureTarget } from './capture';
 import { DeviceCertificates } from './certificates';
 import { Refusals } from './refusals';
@@ -30,6 +30,11 @@ export interface AndroidSetupOptions {
   onStatusChange?: () => void;
   /** Waits between tries to reach the server after losing it; the last repeats. */
   retryDelaysMs?: number[];
+  /**
+   * Whether start() starts an ADB server when none is running (default true). The app passes
+   * false: it then starts one only for devices an earlier run left set up, or when asked.
+   */
+  startServerAtLaunch?: boolean;
   /** How long to wait for each answer from the server. */
   timeoutMs?: number;
   log?: (message: string) => void;
@@ -113,6 +118,11 @@ export class AndroidSetup {
    */
   private readonly refusals = new Refusals();
   private refusalsTimer: NodeJS.Timeout | undefined;
+  /**
+   * Why the last attempt to start a server failed (no adb, or adb failed), kept while none runs:
+   * the retries that follow only look, and would otherwise replace it with "no server".
+   */
+  private startFailure: AndroidStatus | undefined;
 
   constructor(private readonly options: AndroidSetupOptions = {}) {
     if (options.capture) {
@@ -166,7 +176,9 @@ export class AndroidSetup {
       ?.load()
       .catch((error: unknown) => this.options.log?.(`couldn't read capture records: ${String(error)}`));
     if (this.capture && !this.stopped) this.startPolling();
-    return this.queued(true);
+    // Devices left set up have no internet until put back, which needs the server.
+    const leftovers = (this.capture?.setUp().length ?? 0) > 0;
+    return this.queued(this.options.startServerAtLaunch !== false || leftovers);
   }
 
   /** "Check again": looks for the server afresh, starting one if none runs. */
@@ -191,6 +203,13 @@ export class AndroidSetup {
     this.refusalsTimer = undefined;
     for (const away of this.away.values()) clearTimeout(away.timer);
     this.away.clear();
+  }
+
+  /** Without a server there's nothing new to send on each retry: only a change is sent. */
+  private setIfChanged(status: AndroidStatus): void {
+    const { notConnected: _ignored, ...shown } = this.current;
+    void _ignored;
+    if (JSON.stringify(shown) !== JSON.stringify(status)) this.set(status);
   }
 
   private set(status: AndroidStatus): void {
@@ -224,7 +243,12 @@ export class AndroidSetup {
           ? this.away.get(d.id)?.notified
           : status.state === 'ready' && this.listed && !reading && !here.has(d.id),
       )
-      .map(({ label, capturing, emulator }) => ({ label, capturing, ...(emulator ? { emulator } : {}) }));
+      .map(({ id, label, capturing, emulator }) => ({
+        id,
+        label,
+        capturing,
+        ...(emulator ? { emulator } : {}),
+      }));
     return notConnected.length ? { ...rest, notConnected } : rest;
   }
 
@@ -329,7 +353,8 @@ export class AndroidSetup {
     this.listed = false;
     // Read every device afresh after a reconnect or "Check again".
     this.info.clear();
-    if (this.current.state !== 'ready') this.set({ ...this.current, state: 'starting' });
+    // Only when it may start a server: a retry that just looks would flicker the reason away.
+    if (startServer && this.current.state !== 'ready') this.set({ ...this.current, state: 'starting' });
     const server = await ensureAdbServer({
       endpoint,
       start: startServer,
@@ -340,15 +365,23 @@ export class AndroidSetup {
     if (generation !== this.generation) return;
     if (server.state !== 'running') {
       this.lines = [];
-      this.set({
-        state: server.state === 'no-adb' ? 'no-adb' : 'failed',
-        error: server.state === 'no-adb' ? NO_ADB : server.error,
-        devices: [],
-      });
+      if (server.state === 'not-running') {
+        this.setIfChanged(this.startFailure ?? { state: 'no-server', devices: [] });
+      } else {
+        const failure: AndroidStatus = {
+          state: server.state === 'no-adb' ? 'no-adb' : 'failed',
+          error: server.state === 'no-adb' ? noAdb() : server.error,
+          devices: [],
+        };
+        // Only after a start was tried (no adb, or adb failed), not a server that didn't answer.
+        if (startServer && (server.state === 'no-adb' || server.adbPath)) this.startFailure = failure;
+        this.setIfChanged(failure);
+      }
       // Keep looking (without starting anything): Android Studio may start a server.
       this.retryLater();
       return;
     }
+    this.startFailure = undefined;
     if (server.started) this.options.log?.(`started the ADB server with ${server.adbPath}`);
     this.retries = 0;
     this.set({
@@ -534,6 +567,15 @@ export class AndroidSetup {
       this.publishDevices();
     }, REFUSALS_PUBLISH_MS);
     this.refusalsTimer.unref?.();
+  }
+
+  /** Forgets a device an earlier run left set up that isn't connected (see DeviceCapture.forget). */
+  async forgetDevice(id: string): Promise<void> {
+    if (!this.capture) throw new Error('Android capture is off.');
+    if (this.readyIds().has(id)) throw new Error('It’s connected: use Restore to put it back.');
+    await this.capture.forget(id);
+    this.publishDevices();
+    this.set(this.current);
   }
 
   /** Copies Wirescry's certificate to a device and opens Security settings there. */

@@ -1,8 +1,12 @@
 /** Android setup's status as the ADB server and its devices come and go. */
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AdbEndpoint } from '../src/backend/android/adb-client';
 import type { DeviceInfo } from '../src/backend/android/devices';
+import { CaptureRecords } from '../src/backend/android/capture';
 import { AndroidSetup, type AndroidSetupOptions } from '../src/backend/android/setup';
 import { loadRecording, startFakeAdb, type FakeAdb } from './fake-adb';
 
@@ -23,6 +27,26 @@ function setupWith(options: AndroidSetupOptions): { setup: AndroidSetup; changes
   cleanup.push(() => setup.stop());
   return { setup, changes: () => changes };
 }
+
+/** Device listeners that do nothing: enough for setup that never captures. */
+const noListeners = () => ({
+  open: async () => ({ port: 0 }),
+  close: async () => undefined,
+  list: () => [],
+  setLocalAccess() {},
+  onPortChange: () => () => undefined,
+});
+
+/** A record an earlier run left behind. */
+const leftoverRecord = () => ({
+  version: 1 as const,
+  id: 'a'.repeat(32),
+  label: 'Pixel 8',
+  previousProxy: null,
+  devicePort: 40000,
+  hostPort: 40001,
+  startedAt: new Date(0).toISOString(),
+});
 
 /** A fake server whose device list a test sets; it sends each new list to every tracker. */
 async function listServer(): Promise<{ fake: FakeAdb; setList: (text: string) => void }> {
@@ -208,6 +232,188 @@ describe('Android setup', () => {
     expect(runs).toEqual(['/sdk/adb']);
     await setup.refresh();
     expect(runs).toEqual(['/sdk/adb', '/sdk/adb']);
+  });
+
+  it('in the app, uses a running server but starts none at launch, until asked', async () => {
+    const port = await unusedPort();
+    const runs: string[] = [];
+    const { setup } = setupWith({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      findAdb: () => '/sdk/adb',
+      run: async (file) => void runs.push(file),
+      startServerAtLaunch: false,
+    });
+    await setup.start();
+    expect(setup.status()).toEqual({ state: 'no-server', devices: [] });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(runs).toEqual([]);
+    // "Start the ADB server" (refresh) does start one.
+    await setup.refresh();
+    expect(runs).toEqual(['/sdk/adb']);
+  });
+
+  it('keeps saying why starting a server failed while it keeps looking', async () => {
+    const port = await unusedPort();
+    const adb: { path?: string } = {};
+    const { setup } = setupWith({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      findAdb: () => adb.path,
+      run: async () => {
+        throw new Error('adb exited with 1');
+      },
+      startServerAtLaunch: false,
+    });
+    await setup.start();
+    expect(setup.status().state).toBe('no-server');
+    // No adb: the reason stays through the retries, which only look.
+    await setup.refresh();
+    expect(setup.status()).toMatchObject({ state: 'no-adb', error: expect.stringMatching(/platform tools/) });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(setup.status()).toMatchObject({ state: 'no-adb' });
+    // adb that fails: the same.
+    adb.path = '/sdk/adb';
+    await setup.refresh();
+    expect(setup.status()).toMatchObject({
+      state: 'failed',
+      error: expect.stringMatching(/adb exited with 1/),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(setup.status()).toMatchObject({
+      state: 'failed',
+      error: expect.stringMatching(/adb exited with 1/),
+    });
+    // Once a server runs (Android Studio's), the old reason is gone, and so it stays.
+    const { fake } = await listServer();
+    const forward = net.createServer((s) => s.pipe(net.connect(fake.endpoint.port, '127.0.0.1')).pipe(s));
+    await new Promise<void>((resolve) => forward.listen(port, '127.0.0.1', resolve));
+    cleanup.push(() => void forward.close());
+    await expect.poll(() => setup.status().state).toBe('ready');
+    expect(setup.status().error).toBeUndefined();
+    // When that server goes away later, the old reason doesn't come back.
+    forward.close();
+    fake.dropAll();
+    await expect.poll(() => setup.status().state, { timeout: 5000 }).toBe('no-server');
+  });
+
+  it('in the app, notices a server Android Studio starts later, starting nothing itself', async () => {
+    const port = await unusedPort();
+    const runs: string[] = [];
+    const { setup } = setupWith({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      findAdb: () => '/sdk/adb',
+      run: async (file) => void runs.push(file),
+      startServerAtLaunch: false,
+    });
+    await setup.start();
+    expect(setup.status().state).toBe('no-server');
+    const { fake } = await listServer();
+    const forward = net.createServer((s) => s.pipe(net.connect(fake.endpoint.port, '127.0.0.1')).pipe(s));
+    await new Promise<void>((resolve) => forward.listen(port, '127.0.0.1', resolve));
+    cleanup.push(() => void forward.close());
+    await expect.poll(() => setup.status().state).toBe('ready');
+    expect(runs).toEqual([]);
+  });
+
+  it('in the app, starts one at launch when an earlier run left a device set up', async () => {
+    const port = await unusedPort();
+    const runs: string[] = [];
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-leftover-'));
+    cleanup.push(() => rm(dir, { recursive: true, force: true }));
+    await new CaptureRecords(dir).write(leftoverRecord());
+    const { setup } = setupWith({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      findAdb: () => '/sdk/adb',
+      run: async (file) => void runs.push(file),
+      startServerAtLaunch: false,
+      capture: {
+        listeners: noListeners(),
+        recordsDir: dir,
+        pollMs: 60_000,
+      },
+    });
+    await setup.start();
+    expect(runs).toEqual(['/sdk/adb']);
+  });
+
+  it('doesn’t keep a server that didn’t answer as a start failure', async () => {
+    // A server that accepts and never answers: a timeout, not a failed start.
+    const held = new Set<net.Socket>();
+    const hung = net.createServer((socket) => void held.add(socket));
+    await new Promise<void>((resolve) => hung.listen(0, '127.0.0.1', resolve));
+    const port = (hung.address() as net.AddressInfo).port;
+    const runs: string[] = [];
+    const { setup } = setupWith({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      findAdb: () => '/sdk/adb',
+      run: async (file) => void runs.push(file),
+      startServerAtLaunch: false,
+      timeoutMs: 200,
+    });
+    await setup.refresh();
+    expect(setup.status().state).toBe('failed');
+    expect(runs).toEqual([]);
+    await new Promise<void>((resolve) => {
+      hung.close(() => resolve());
+      for (const socket of held) socket.destroy();
+    });
+    await expect.poll(() => setup.status().state, { timeout: 5000 }).toBe('no-server');
+  });
+
+  it('sends nothing new, and never shows “starting”, while it only looks', async () => {
+    const port = await unusedPort();
+    const states: string[] = [];
+    const setup = new AndroidSetup({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      findAdb: () => undefined,
+      retryDelaysMs: [20],
+      timeoutMs: 1000,
+      startServerAtLaunch: false,
+      onStatusChange: () => states.push(setup.status().state),
+    });
+    cleanup.push(() => setup.stop());
+    await setup.start();
+    await setup.refresh();
+    const after = states.length;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Several retries ran, and none changed what's shown.
+    expect(states.length).toBe(after);
+    expect(states.at(-1)).toBe('no-adb');
+  });
+
+  it('in the app, with capture set up but nothing left, starts no server at launch', async () => {
+    const port = await unusedPort();
+    const runs: string[] = [];
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-empty-'));
+    cleanup.push(() => rm(dir, { recursive: true, force: true }));
+    // Not records: ignored.
+    await writeFile(path.join(dir, 'notes.txt'), 'x');
+    await writeFile(path.join(dir, `${'a'.repeat(32)}.json`), '{ broken');
+    const { setup } = setupWith({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      findAdb: () => '/sdk/adb',
+      run: async (file) => void runs.push(file),
+      startServerAtLaunch: false,
+      capture: { listeners: noListeners(), recordsDir: dir, pollMs: 60_000 },
+    });
+    await setup.start();
+    expect(runs).toEqual([]);
+    expect(setup.status().state).toBe('no-server');
+  });
+
+  it('in the app, with a device left set up and no adb, says so and keeps saying it', async () => {
+    const port = await unusedPort();
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-leftover-'));
+    cleanup.push(() => rm(dir, { recursive: true, force: true }));
+    await new CaptureRecords(dir).write(leftoverRecord());
+    const { setup } = setupWith({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      startServerAtLaunch: false,
+      capture: { listeners: noListeners(), recordsDir: dir, pollMs: 60_000 },
+    });
+    await setup.start();
+    expect(setup.status().state).toBe('no-adb');
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(setup.status().state).toBe('no-adb');
   });
 
   it('says when it loses the server, and comes back with its devices', async () => {

@@ -31,6 +31,7 @@ import { detectTerminals, launchTerminal } from './terminals';
 import type { DockerEndpoint } from './docker/endpoint';
 import { DockerSetup } from './docker/setup';
 import { AndroidSetup, type AndroidSetupOptions } from './android/setup';
+import { CaptureRecords } from './android/capture';
 import { findAdb } from './android/adb-server';
 import { certificateSha256 } from './android/certificates';
 import { ANDROID_RECORDS_DIR } from '../shared/ipc';
@@ -75,11 +76,13 @@ export interface BackendOptions {
   /** false: don't set up Docker. Tests turn it off, or give a daemon of their own. */
   docker?: boolean;
   /**
-   * Android setup: false turns it off, options turn it on (tests). Left out, it follows the
-   * experimentalAndroid setting.
+   * Android setup: options turn it on (tests), 'setting' follows the androidSetup setting (on
+   * unless it's false; the app passes this). Left out or false, it's off, so tests never reach
+   * a real ADB server by accident.
    */
   android?:
     | false
+    | 'setting'
     | (Omit<AndroidSetupOptions, 'capture'> & {
         capture?: Partial<NonNullable<AndroidSetupOptions['capture']>>;
       });
@@ -430,14 +433,20 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
   // Android devices over the user's ADB server. Started in the background: finding or starting
   // the server can take a few seconds, and nothing else waits for it.
+  // A device an earlier run left set up has no internet until it's put back: Android setup stays
+  // on for it even if the setting turns it off, so Setup can offer Restore.
   const androidOn =
-    options.android === false
-      ? false
-      : options.android !== undefined || settings.experimentalAndroid === true;
-  const androidOptions = options.android || {};
+    options.android === 'setting'
+      ? settings.androidSetup !== false ||
+        (await new CaptureRecords(path.join(dataDir, ANDROID_RECORDS_DIR)).list()).length > 0
+      : options.android !== undefined && options.android !== false;
+  const androidOptions = typeof options.android === 'object' ? options.android : {};
   android = androidOn
     ? new AndroidSetup({
         findAdb: () => findAdb({ setting: settings.adbPath }),
+        // In the app, only devices left set up need a server started at launch; otherwise
+        // Wirescry uses one that's running and starts one only when asked.
+        startServerAtLaunch: options.android !== 'setting',
         log: (message) => console.log(`[wirescry] android: ${message}`),
         notify: options.notify,
         ...androidOptions,
@@ -781,6 +790,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'androidShowCertificates':
         if (!android) throw new Error('Android setup is off.');
         await android.showInstalledCertificates(String(command.deviceId));
+        return undefined;
+      case 'androidForget':
+        if (!android) throw new Error('Android setup is off.');
+        await android.forgetDevice(String(command.deviceId));
         return undefined;
       case 'androidSetLocalAccess':
         if (!android) throw new Error('Android setup is off.');

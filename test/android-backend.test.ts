@@ -1,8 +1,9 @@
-/** Android setup inside the backend: off unless turned on, and its devices in the status. */
+/** Android setup inside the backend: on in the app unless turned off, and its devices in the status. */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CaptureRecords } from '../src/backend/android/capture';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { ProxyStatus, ServerMessage } from '../src/shared/api';
 import { loadRecording, startFakeAdb, type FakeAdb } from './fake-adb';
@@ -59,19 +60,82 @@ describe('Android setup in the backend', () => {
     api.close();
   });
 
-  it('turns on with the experimentalAndroid setting, finding the server the way adb does', async () => {
-    fake = await startFakeAdb({ recordings: [loadRecording('android-setup')] });
+  /** Points adb's environment at `port`, as a user's ADB_SERVER_SOCKET would. */
+  async function withServerSocket(port: number, run: () => Promise<void>): Promise<void> {
     const saved = process.env.ADB_SERVER_SOCKET;
-    process.env.ADB_SERVER_SOCKET = `tcp:127.0.0.1:${fake.endpoint.port}`;
+    process.env.ADB_SERVER_SOCKET = `tcp:127.0.0.1:${port}`;
     try {
-      const b = await start(undefined, { experimentalAndroid: true });
-      const api = await apiClient(b.apiPort);
-      await expect.poll(() => lastStatus(api.messages)?.android?.devices[0]?.apiLevel).toBe(37);
-      api.close();
+      await run();
     } finally {
       if (saved === undefined) delete process.env.ADB_SERVER_SOCKET;
       else process.env.ADB_SERVER_SOCKET = saved;
     }
+  }
+
+  it('in the app, is on by default, finding the server the way adb does', async () => {
+    fake = await startFakeAdb({ recordings: [loadRecording('android-setup')] });
+    await withServerSocket(fake.endpoint.port, async () => {
+      const b = await start('setting');
+      const api = await apiClient(b.apiPort);
+      await expect.poll(() => lastStatus(api.messages)?.android?.devices[0]?.apiLevel).toBe(37);
+      api.close();
+    });
+  });
+
+  it('in the app, says when no server is running, without starting one', async () => {
+    const closed = await startFakeAdb({ recordings: [] });
+    const port = closed.endpoint.port;
+    await closed.close();
+    await withServerSocket(port, async () => {
+      const b = await start('setting');
+      const api = await apiClient(b.apiPort);
+      await expect.poll(() => lastStatus(api.messages)?.android?.state).toBe('no-server');
+      api.close();
+    });
+  });
+
+  it('in the app, is off with androidSetup: false, and ignores the old experimental setting', async () => {
+    const b = await start('setting', { androidSetup: false, experimentalAndroid: true });
+    const api = await apiClient(b.apiPort);
+    expect(lastStatus(api.messages)?.android).toBeUndefined();
+    await expect(api.send({ command: 'androidRefresh' })).rejects.toThrow('Android setup is off.');
+    api.close();
+  });
+
+  it('in the app, stays on for a device left set up even with androidSetup: false', async () => {
+    const closed = await startFakeAdb({ recordings: [] });
+    const port = closed.endpoint.port;
+    await closed.close();
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-android-'));
+    await writeFile(path.join(dataDir, 'settings.json'), JSON.stringify({ androidSetup: false }));
+    await new CaptureRecords(path.join(dataDir, 'android-capture')).write({
+      version: 1,
+      id: 'a'.repeat(32),
+      label: 'Pixel 8',
+      previousProxy: null,
+      devicePort: 40000,
+      hostPort: 40001,
+      startedAt: new Date(0).toISOString(),
+    });
+    await withServerSocket(port, async () => {
+      backend = await startBackend({
+        dataDir,
+        token: TOKEN,
+        allowedOrigins: [UI_ORIGIN],
+        docker: false,
+        android: 'setting',
+      });
+      const api = await apiClient(backend.apiPort);
+      expect(lastStatus(api.messages)?.android).toBeDefined();
+      api.close();
+    });
+  });
+
+  it('stays off when left out, whatever the setting says (tests never reach a real server)', async () => {
+    const b = await start(undefined, { androidSetup: true });
+    const api = await apiClient(b.apiPort);
+    expect(lastStatus(api.messages)?.android).toBeUndefined();
+    api.close();
   });
 
   it('looks again on "Check again"', async () => {
