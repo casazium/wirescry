@@ -143,8 +143,16 @@ describe('Device listeners', () => {
     expect((await httpViaProxy(backend.proxyPort, `${upstreamUrl}/from-mac`)).body).toBe(
       'upstream /from-mac',
     );
+    // Each exchange is sent again as it changes, and more often under load: count requests, not updates.
     await expect
-      .poll(() => exchangesIn(api.messages).filter((e) => e.path.startsWith('/from-')).length)
+      .poll(
+        () =>
+          new Set(
+            exchangesIn(api.messages)
+              .filter((e) => e.path.startsWith('/from-'))
+              .map((e) => e.id),
+          ).size,
+      )
       .toBe(2);
     const byPath = new Map(exchangesIn(api.messages).map((e) => [e.path, e]));
     expect(byPath.get('/from-phone')?.source).toEqual(PIXEL);
