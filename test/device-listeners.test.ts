@@ -14,6 +14,9 @@ import {
   apiClient,
   exchangesIn,
   httpViaProxy,
+  moveProxyToPickedPort,
+  onPickedPort,
+  PORT_TAKEN,
   requestViaProxy,
   startBackendOnPickedPort,
   TOKEN,
@@ -241,14 +244,13 @@ describe('Device listeners', () => {
     await backend.listeners.close(PIXEL.id);
 
     // A free port given back (e.g. after a restart, so a device's tunnel still fits) is reused.
-    const free = await new Promise<number>((resolve) => {
-      const probe = net.createServer().listen(0, '127.0.0.1', () => {
-        const { port } = probe.address() as net.AddressInfo;
-        probe.close(() => resolve(port));
-      });
+    await onPickedPort(async (free) => {
+      const opened = await backend.listeners.open(PIXEL, free);
+      await backend.listeners.close(PIXEL.id);
+      // Taken by another test file since it was picked: then it's rightly not reused.
+      if (opened.port !== free) return PORT_TAKEN;
+      expect(opened).toEqual({ port: free });
     });
-    expect(await backend.listeners.open(PIXEL, free)).toEqual({ port: free });
-    await backend.listeners.close(PIXEL.id);
 
     // A taken one isn't: it gets another.
     const blocker = net.createServer();
@@ -479,13 +481,7 @@ describe('Device listeners, beside the rest of Wirescry', () => {
     const { port } = await backend.listeners.open(PIXEL);
     const before = backend.proxyPort;
     await api.send({ command: 'setProxyPort', port: null });
-    const free = await new Promise<number>((resolve) => {
-      const probe = net.createServer().listen(0, '127.0.0.1', () => {
-        const chosen = (probe.address() as net.AddressInfo).port;
-        probe.close(() => resolve(chosen));
-      });
-    });
-    await api.send({ command: 'setProxyPort', port: free });
+    const free = await moveProxyToPickedPort(api);
     expect(backend.proxyPort).toBe(free);
     expect(backend.proxyPort).not.toBe(before);
     expect(backend.listeners.list()).toEqual([{ source: PIXEL, port, localAccess: true }]);
