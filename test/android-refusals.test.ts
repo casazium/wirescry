@@ -526,7 +526,8 @@ describe('TLS alerts worded by BoringSSL, as in the app', () => {
   // Electron's Node is built on BoringSSL, measured November 9, 2026 with Chrome on an API 37
   // emulator refusing the certificate: code ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN, message
   // "...:SSL routines:OPENSSL_internal:SSLV3_ALERT_CERTIFICATE_UNKNOWN:...". Node's OpenSSL
-  // says ERR_SSL_TLS_ALERT_CERTIFICATE_UNKNOWN, "tls alert certificate unknown".
+  // says ERR_SSL_TLS_ALERT_CERTIFICATE_UNKNOWN or ERR_SSL_SSL/TLS_ALERT_CERTIFICATE_UNKNOWN
+  // (by version), with the words in lower case.
   const boringSsl = (code: string): Error & { code: string } =>
     Object.assign(
       new Error(`error:10000416:SSL routines:OPENSSL_internal:${code.slice(8)}:tls_record.cc:491`),
@@ -584,8 +585,9 @@ describe('TLS alerts worded by BoringSSL, as in the app', () => {
           typeof error?.code === 'string' &&
           error.code.startsWith('ERR_SSL_')
         ) {
-          // BoringSSL's codes for alerts 40 to 46 say SSLV3 where OpenSSL's say TLS.
-          const code = error.code.replace('ERR_SSL_TLS_ALERT_', 'ERR_SSL_SSLV3_ALERT_');
+          // BoringSSL's codes for alerts 40 to 46 say SSLV3 where OpenSSL's say TLS or SSL/TLS,
+          // by version.
+          const code = error.code.replace(/^ERR_SSL_(?:SSL\/)?TLS_ALERT_/, 'ERR_SSL_SSLV3_ALERT_');
           error.code = code;
           error.message = boringSsl(code).message;
         }
