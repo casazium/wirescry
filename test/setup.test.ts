@@ -128,8 +128,8 @@ describe('setup', () => {
     expect(lastStatus(api.messages)).toMatchObject({ proxyPort: port, proxyPortSetting: port });
     expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
 
-    // Taken on all addresses, and taken on 127.0.0.1 only.
-    for (const host of [undefined, '127.0.0.1']) {
+    // Taken on all addresses, on all of IPv4 (which macOS let Wirescry share), and on 127.0.0.1 only.
+    for (const host of [undefined, '0.0.0.0', '127.0.0.1']) {
       const blocker = net.createServer();
       await new Promise<void>((resolve) => blocker.listen(0, host, resolve));
       const taken = (blocker.address() as net.AddressInfo).port;

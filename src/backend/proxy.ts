@@ -195,17 +195,20 @@ function restrictToLoopback(
 }
 
 /**
- * Mockttp listens on all addresses (::), which some systems allow even when another
- * program already has 127.0.0.1 on that port. Local traffic would then go to that
- * program, so check 127.0.0.1 is free first.
+ * Mockttp listens on all addresses (::), which some systems allow even when another program
+ * already has 127.0.0.1, or all of IPv4 (0.0.0.0), on that port: measured on macOS, that program
+ * then answers 127.0.0.1, where Wirescry's users send their traffic. So check both are free first.
+ * (Another program on ::1 alone doesn't take 127.0.0.1, so it doesn't count.)
  */
 async function assertLoopbackPortFree(port: number): Promise<void> {
-  const probe = net.createServer();
-  await new Promise<void>((resolve, reject) => {
-    probe.once('error', reject);
-    probe.listen({ port, host: '127.0.0.1', exclusive: true }, () => resolve());
-  });
-  await new Promise<void>((resolve) => probe.close(() => resolve()));
+  for (const host of ['127.0.0.1', '0.0.0.0']) {
+    const probe = net.createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once('error', reject);
+      probe.listen({ port, host, exclusive: true }, () => resolve());
+    });
+    await new Promise<void>((resolve) => probe.close(() => resolve()));
+  }
 }
 
 interface ResponseHead {
