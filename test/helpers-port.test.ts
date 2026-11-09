@@ -72,6 +72,26 @@ describe('Starting a backend on a system-picked port', () => {
     expect(picks).toBe(3);
   });
 
+  it('doesn’t try again for a port in use that isn’t the proxy’s', async () => {
+    let picks = 0;
+    const other = Object.assign(new Error('listen EADDRINUSE: address already in use 127.0.0.1:1234'), {
+      code: 'EADDRINUSE',
+      port: 1234,
+    });
+    await expect(
+      startBackendOnPickedPort(options(await newDataDir()), {
+        pickPort: async () => {
+          picks += 1;
+          return 40000 + picks;
+        },
+        start: async () => {
+          throw other;
+        },
+      }),
+    ).rejects.toBe(other);
+    expect(picks).toBe(1);
+  });
+
   it('doesn’t try again for any other failure', async () => {
     // A data folder that's a file: the backend can't start, and a new port won't help.
     const dir = await newDataDir();
