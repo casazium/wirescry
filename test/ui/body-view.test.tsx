@@ -141,9 +141,26 @@ describe('BodyView', () => {
       );
       const cell = document.querySelector('.form-fields td')!;
       expect(cell.textContent).toBe('one\ntwo  three');
-      // jsdom doesn't load the stylesheet, so the rule is read from it.
-      const css = readFileSync(path.join(import.meta.dirname, '../../src/renderer/src/styles.css'), 'utf8');
-      expect(css).toMatch(/\.form-fields td \{[^}]*white-space: pre-wrap;/);
+      // With the app's stylesheet, as it applies in the window: the headers table it reuses sets
+      // white-space too, and a less specific rule lost to it.
+      const style = document.createElement('style');
+      style.textContent = readFileSync(
+        path.join(import.meta.dirname, '../../src/renderer/src/styles.css'),
+        'utf8',
+      );
+      document.head.append(style);
+      try {
+        expect(getComputedStyle(cell).whiteSpace).toBe('pre-wrap');
+        // A header value elsewhere still wraps as before.
+        const headers = document.createElement('table');
+        headers.className = 'headers';
+        headers.innerHTML = '<tbody><tr><th>a</th><td>b</td></tr></tbody>';
+        document.body.append(headers);
+        expect(getComputedStyle(headers.querySelector('td')!).whiteSpace).toBe('normal');
+        headers.remove();
+      } finally {
+        style.remove();
+      }
     });
 
     it('shows up to 1,000 rows, and says how many more there are, but copies them all', async () => {

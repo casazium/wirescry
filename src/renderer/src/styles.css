@@ -578,7 +578,8 @@ pre.code.hex {
   max-height: 60vh;
 }
 
-.form-fields td {
+/* As specific as table.headers td, which it must override. */
+.form-fields table.headers td {
   /* A textarea's line breaks and spacing are part of the value. */
   white-space: pre-wrap;
 }
