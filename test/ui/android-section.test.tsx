@@ -740,3 +740,115 @@ describe('Android section: connections that refused the certificate', () => {
     expect(screen.queryByRole('button', { name: HIDE })).toBeNull();
   });
 });
+
+describe('Android section: layout', () => {
+  const id = 'b'.repeat(32);
+  const device = (extra: Partial<AndroidDevice> = {}): AndroidDevice => ({
+    serial: 'R58',
+    state: 'ready',
+    label: 'Pixel 8',
+    emulator: false,
+    apiLevel: 35,
+    id,
+    ...extra,
+  });
+  const withDevice = (extra: Partial<AndroidDevice> = {}): ProxyStatus => ({
+    ...withAndroid({ state: 'ready', devices: [device(extra)] }),
+    certificate: {
+      commonName: 'Wirescry CA (1234abcd)',
+      spkiFingerprint: 'x',
+      sha256: 'AB:CD:EF',
+      validTo: '2030-01-01',
+      path: '/data/ca.pem',
+    },
+  });
+  const capture = { devicePort: 40000, hostPort: 8001, localAccess: false };
+  const button = (name: string): HTMLElement => screen.getByRole('button', { name });
+  const secondary = (name: string): boolean => button(name).classList.contains('secondary');
+
+  it('puts Capture and Stop beside what they do, as the main actions', () => {
+    const send = vi.fn().mockResolvedValue({});
+    const { rerender } = render(<AndroidSection status={withDevice()} send={send} />);
+    expect(secondary('Capture')).toBe(false);
+    expect(button('Capture').closest('.step-row')?.textContent).toContain('Other apps on the device');
+
+    rerender(<AndroidSection status={withDevice({ capture })} send={send} />);
+    expect(secondary('Stop')).toBe(false);
+    const row = button('Stop').closest('.step-row');
+    expect(row?.textContent).toContain('Capturing.');
+    // The switch has a line of its own, away from Stop.
+    expect(row?.contains(screen.getByRole('checkbox'))).toBe(false);
+  });
+
+  it('makes the certificate steps and checks secondary, each step’s text beside its button', () => {
+    const send = vi.fn().mockResolvedValue({});
+    const { rerender } = render(
+      <AndroidSection
+        status={withDevice({ capture, certificate: { trusted: false, sent: false } })}
+        send={send}
+      />,
+    );
+    expect(secondary('Send certificate')).toBe(true);
+    expect(secondary('Check in Chrome')).toBe(true);
+    expect(secondary('Check again')).toBe(true);
+    for (const name of ['Send certificate', 'Check in Chrome']) {
+      const row = button(name).closest('.step-row');
+      expect(row?.closest('li')).toBeTruthy();
+      expect(row?.querySelector('.muted')).toBeTruthy();
+    }
+
+    rerender(
+      <AndroidSection
+        status={withDevice({ capture, certificate: { trusted: true, sent: true } })}
+        send={send}
+      />,
+    );
+    expect(secondary('Check again in the browser')).toBe(true);
+    // Not in the middle of the sentence that says the check passed.
+    const passed = screen.getByText(/Wirescry’s check passed/);
+    expect(passed.contains(button('Check again in the browser'))).toBe(false);
+  });
+
+  it('keeps Start the ADB server as the main action, and Forget and Cancel secondary', async () => {
+    const send = vi.fn().mockResolvedValueOnce({ needsConfirmation: 'proxy.corp:3128' });
+    const { rerender } = render(
+      <AndroidSection status={withAndroid({ state: 'no-server', devices: [] })} send={send} />,
+    );
+    expect(secondary('Start the ADB server')).toBe(false);
+
+    rerender(
+      <AndroidSection
+        status={withAndroid({
+          state: 'ready',
+          devices: [],
+          notConnected: [{ id: 'c', label: 'Old phone', emulator: false, capturing: false }],
+        })}
+        send={send}
+      />,
+    );
+    expect(secondary('Forget Old phone')).toBe(true);
+
+    rerender(<AndroidSection status={withDevice()} send={send} />);
+    fireEvent.click(button('Capture'));
+    await waitFor(() => button('Cancel'));
+    expect(secondary('Cancel')).toBe(true);
+    expect(secondary('Replace and capture')).toBe(false);
+  });
+
+  it('makes Cancel secondary when asking about Wi-Fi, and Capture over Wi-Fi the main action', async () => {
+    const send = vi.fn().mockResolvedValueOnce({ needsWirelessConfirmation: true });
+    render(<AndroidSection status={withDevice({ wireless: true })} send={send} />);
+    fireEvent.click(button('Capture'));
+    await waitFor(() => button('Capture over Wi-Fi'));
+    expect(secondary('Cancel')).toBe(true);
+    expect(secondary('Capture over Wi-Fi')).toBe(false);
+  });
+
+  it('keeps how it works out of the way, folded', () => {
+    render(<AndroidSection status={withDevice()} send={vi.fn()} />);
+    const text = screen.getByText(/Capture sends the device’s HTTP and HTTPS traffic/);
+    const details = text.closest('details');
+    expect(details?.querySelector('summary')?.textContent).toBe('How it works');
+    expect(details?.open).toBe(false);
+  });
+});
