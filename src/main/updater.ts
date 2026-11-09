@@ -29,6 +29,10 @@ export class Updater {
   private prompting = false;
   /** Set just before quitting to install an update, which must not be delayed. */
   installing = false;
+  /** Clears `installing` if the install doesn't go ahead. */
+  private installingTimer: NodeJS.Timeout | undefined;
+  /** The startup clean-up of the update cache (see pruneInstalledDownload); for tests. */
+  pruned: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly logger: FileLogger,
@@ -82,7 +86,7 @@ export class Updater {
       this.manualCheck = false;
     });
     autoUpdater.on('error', (error) => {
-      this.installing = false;
+      this.setInstalling(false);
       // Background checks fail quietly (offline, GitHub unavailable); errors go to the log.
       // A manual check shows a plain explanation; electron-updater has already logged the error.
       const failure = error as Error & { code?: string };
@@ -101,7 +105,7 @@ export class Updater {
       this.logger.write('updater', 'info', `Update checks off: ${this.reason}`);
       return;
     }
-    void this.pruneInstalledDownload();
+    this.pruned = this.pruneInstalledDownload();
     setTimeout(() => this.check(), FIRST_CHECK_DELAY_MS).unref();
     setInterval(() => this.check(), UPDATE_INTERVAL_MS).unref();
   }
@@ -154,15 +158,22 @@ export class Updater {
         ['Restart Now', 'Later'],
       );
       if (result === 0) {
-        this.installing = true;
-        // If the install doesn't go ahead (it can fail without quitting), later quits clean up again.
-        setTimeout(() => (this.installing = false), 15_000).unref();
+        this.setInstalling(true);
         await this.beforeInstall().catch(() => undefined);
         autoUpdater.quitAndInstall();
       }
     } finally {
       this.prompting = false;
     }
+  }
+
+  private setInstalling(installing: boolean): void {
+    this.installing = installing;
+    // An earlier install's timer must not cut this one short.
+    clearTimeout(this.installingTimer);
+    this.installingTimer = undefined;
+    // If the install doesn't go ahead (it can fail without quitting), later quits clean up again.
+    if (installing) this.installingTimer = setTimeout(() => this.setInstalling(false), 15_000).unref();
   }
 
   private async message(
