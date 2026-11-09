@@ -607,7 +607,17 @@ export function App(): React.JSX.Element {
       </div>
 
       {view === 'setup' && status && (
-        <SetupPage status={status} connected={connected} send={send} onLaunched={() => setView('traffic')} />
+        <SetupPage
+          status={status}
+          connected={connected}
+          send={send}
+          onLaunched={() => setView('traffic')}
+          onShowTraffic={(query) => {
+            // Added to what's there, so a search in progress isn't lost.
+            setSearch((current) => (current.includes(query) ? current : `${current.trim()} ${query}`.trim()));
+            setView('traffic');
+          }}
+        />
       )}
 
       {view === 'traffic' && (

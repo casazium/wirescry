@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import type { AndroidDevice, ProxyStatus } from '../../shared/api';
+import { HIDE_ANDROID_SYSTEM_QUERY, isAndroidSystemHost } from '../../shared/android-system';
+import type { AndroidDevice, ProxyStatus, RefusedConnections } from '../../shared/api';
 import type { Command } from './api-client';
 
 type CopyButtonType = (props: { text: string }) => React.JSX.Element;
@@ -9,6 +10,56 @@ interface Props {
   connected?: boolean;
   send?: (command: Command) => Promise<unknown>;
   CopyButton?: CopyButtonType;
+  /** Opens Traffic with this search. */
+  onShowTraffic?: (query: string) => void;
+}
+
+/** App hosts named in the summary; the rest are counted. */
+const NAMED_HOSTS = 5;
+
+const connections = (n: number): string => (n === 1 ? '1 connection' : `${n} connections`);
+
+/** What refused Wirescry's certificate while capturing: apps' hosts first, then Android's own services. */
+function RefusedSummary({
+  refused,
+  trusted,
+}: {
+  refused: RefusedConnections | undefined;
+  /** Whether a browser on the device was seen to trust the certificate; undefined when unknown. */
+  trusted: boolean | undefined;
+}): React.JSX.Element | null {
+  const hosts = refused?.hosts ?? [];
+  const apps = hosts.filter((h) => !isAndroidSystemHost(h.host));
+  const system = hosts.filter((h) => isAndroidSystemHost(h.host)).reduce((sum, h) => sum + h.count, 0);
+  // Refusals past the kept hosts can't be placed: count them with the apps.
+  const appCount = (refused?.count ?? 0) - system;
+  const named = apps
+    .slice(0, NAMED_HOSTS)
+    .map(
+      (h) => h.host || (h.count === 1 ? 'a connection without a hostname' : 'connections without a hostname'),
+    );
+  const more = apps.length - named.length;
+  if (appCount <= 0 && system === 0) return null;
+  return (
+    <div className="device-refused">
+      {appCount > 0 && (
+        <p>
+          {connections(appCount)} refused Wirescry’s certificate
+          {named.length > 0 ? `: ${named.join(', ')}${more > 0 ? `, and ${more} more` : ''}` : ''}.{' '}
+          {trusted === false
+            ? 'Install the certificate first (the steps above). Apps that still refuse it after that don’t trust certificates you install.'
+            : 'The apps making them don’t trust certificates you install.'}{' '}
+          For your own app, see “Your own app” above.
+        </p>
+      )}
+      {system > 0 && (
+        <p className="muted">
+          {connections(system)} from Android’s own services refused it too. They never trust certificates you
+          install, so those services may not work while capturing.
+        </p>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -323,6 +374,7 @@ function DeviceActions({
             run={run}
             CopyButton={CopyButton}
           />
+          <RefusedSummary refused={device.refused} trusted={device.certificate?.trusted} />
         </>
       ) : device.unsupported ? null : confirmWireless ? (
         <div className="callout warn" role="alert">
@@ -378,6 +430,7 @@ export function AndroidSection({
   connected = true,
   send,
   CopyButton,
+  onShowTraffic,
 }: Props): React.JSX.Element | null {
   const { android } = status;
   const [error, setError] = useState<string>();
@@ -436,6 +489,17 @@ export function AndroidSection({
             );
           })}
         </ul>
+      )}
+      {onShowTraffic && android.state === 'ready' && android.devices.some((d) => d.capture) && (
+        <p className="device-refused">
+          <button type="button" className="link" onClick={() => onShowTraffic(HIDE_ANDROID_SYSTEM_QUERY)}>
+            Hide Android’s background traffic in Traffic
+          </button>{' '}
+          <span className="muted">
+            Adds to the Traffic search: the connectivity check, Play services and Chrome’s background
+            requests.
+          </span>
+        </p>
       )}
       {android.notConnected?.map((d, i) =>
         d.emulator ? (

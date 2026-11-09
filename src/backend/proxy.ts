@@ -60,6 +60,11 @@ export interface ProxyOptions {
   /** Called when a client refuses the certificate on its way to the setup page's check. */
   onCAUntrusted?: () => void;
   /**
+   * Called when a client refuses the certificate on its way anywhere else, with the hostname it
+   * asked for, if any (untrusted: whatever the client sent).
+   */
+  onCertificateRefused?: (host: string | undefined) => void;
+  /**
    * Whether to accept a connection from this non-loopback address: a Docker container on
    * Linux, whose connections come from Docker's bridge networks. The connection waits for the
    * answer, which may take a lookup. Anything else (or a throw) drops it.
@@ -588,10 +593,16 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
   await server.on('websocket-message-sent', onWebSocketMessage);
 
   // A browser refusing the certificate on its way to the check: it doesn't trust the CA (any more).
-  if (options.onCAUntrusted) {
+  if (options.onCAUntrusted || options.onCertificateRefused) {
     await server.on('tls-client-error', (failure) => {
-      if (failure.tlsMetadata?.sniHostname !== SETUP_HOST) return;
-      if (['cert-rejected', 'closed', 'reset'].includes(failure.failureCause)) options.onCAUntrusted?.();
+      const host = failure.tlsMetadata?.sniHostname;
+      if (host === SETUP_HOST) {
+        if (['cert-rejected', 'closed', 'reset'].includes(failure.failureCause)) options.onCAUntrusted?.();
+        return;
+      }
+      // Measured on Android: a client that doesn't trust the CA says so ('cert-rejected'). A
+      // 'closed' or 'reset' is as likely a connection the client simply dropped.
+      if (failure.failureCause === 'cert-rejected') options.onCertificateRefused?.(host);
     });
   }
 
