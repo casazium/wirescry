@@ -401,6 +401,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       // Its HTTPS check arrived on this device's own listener: a browser there trusts the CA.
       onCATrusted: () => record(android?.markTrusted(source.id, spki)),
       onCAUntrusted: () => record(android?.markUntrusted(source.id, spki)),
+      onCertificateRefused: (host) => android?.certificateRefused(source.id, host),
       dockerHostToLocalhost: false,
       egress: { allowLocal, ...options.deviceEgress },
     });

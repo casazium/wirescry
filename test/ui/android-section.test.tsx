@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { AndroidDevice, AndroidStatus, ProxyStatus } from '../../src/shared/api';
 import { AndroidSection } from '../../src/renderer/src/AndroidSection';
+import { HIDE_ANDROID_SYSTEM_QUERY } from '../../src/shared/android-system';
 import { status } from './fixtures';
 
 const withAndroid = (android?: AndroidStatus): ProxyStatus => ({
@@ -450,5 +451,131 @@ describe('Android section: certificate', () => {
     expect((screen.getByRole('button', { name: 'Check in Chrome' }) as HTMLButtonElement).disabled).toBe(
       true,
     );
+  });
+});
+
+describe('Android section: connections that refused the certificate', () => {
+  const id = 'b'.repeat(32);
+  const capturing = (extra: Partial<AndroidDevice> = {}): ProxyStatus =>
+    withAndroid({
+      state: 'ready',
+      devices: [
+        {
+          serial: 'R58',
+          state: 'ready',
+          label: 'Pixel 8',
+          emulator: false,
+          apiLevel: 35,
+          id,
+          capture: { devicePort: 40000, hostPort: 8001, localAccess: false },
+          ...extra,
+        },
+      ],
+    });
+  const summaryText = (): string => document.querySelector('.device-refused')?.textContent ?? '';
+
+  it('names the apps’ hosts, most frequent first, and counts the rest', () => {
+    render(
+      <AndroidSection
+        status={capturing({
+          refused: {
+            count: 12,
+            hosts: [
+              { host: 'api.bank.test', count: 4 },
+              { host: 'youtubei.googleapis.com', count: 3 },
+              { host: '', count: 1 },
+              { host: 'b.test', count: 1 },
+              { host: 'c.test', count: 1 },
+              { host: 'd.test', count: 1 },
+              { host: 'e.test', count: 1 },
+            ],
+          },
+        })}
+        send={vi.fn()}
+      />,
+    );
+    expect(summaryText()).toContain(
+      '12 connections refused Wirescry’s certificate: api.bank.test, youtubei.googleapis.com, a connection without a hostname, b.test, c.test, and 2 more.',
+    );
+    expect(summaryText()).toMatch(
+      /don’t trust certificates you install\. For your own app, see “Your own app”/,
+    );
+    expect(summaryText()).not.toContain('d.test');
+    expect(summaryText()).not.toMatch(/Android’s own services/);
+  });
+
+  it('counts Android’s own services apart, without naming them', () => {
+    const { rerender } = render(
+      <AndroidSection
+        status={capturing({
+          refused: {
+            count: 6,
+            hosts: [
+              { host: 'www.google.com', count: 3 },
+              { host: 'geomobileservices-pa.googleapis.com', count: 2 },
+              { host: 'api.example.test', count: 1 },
+            ],
+          },
+        })}
+        send={vi.fn()}
+      />,
+    );
+    expect(summaryText()).toContain('1 connection refused Wirescry’s certificate: api.example.test.');
+    expect(summaryText()).toContain('5 connections from Android’s own services refused it too.');
+    expect(summaryText()).not.toMatch(/www\.google\.com|geomobileservices/);
+
+    // Only Android's own: no sentence about apps.
+    rerender(
+      <AndroidSection
+        status={capturing({ refused: { count: 1, hosts: [{ host: 'www.google.com', count: 1 }] } })}
+        send={vi.fn()}
+      />,
+    );
+    expect(summaryText()).not.toMatch(/refused Wirescry’s certificate:/);
+    expect(summaryText()).toContain('1 connection from Android’s own services refused it too.');
+  });
+
+  it('counts refusals past the hosts kept as the apps’', () => {
+    render(
+      <AndroidSection
+        status={capturing({ refused: { count: 60, hosts: [{ host: 'www.google.com', count: 10 }] } })}
+        send={vi.fn()}
+      />,
+    );
+    expect(summaryText()).toMatch(/^50 connections refused Wirescry’s certificate: \./);
+  });
+
+  it('shows hostnames as text, never as markup', () => {
+    render(
+      <AndroidSection
+        status={capturing({ refused: { count: 1, hosts: [{ host: '<b>bold</b>', count: 1 }] } })}
+        send={vi.fn()}
+      />,
+    );
+    expect(summaryText()).toContain('<b>bold</b>');
+    expect(document.querySelector('.device-refused b')).toBeNull();
+  });
+
+  it('opens Traffic with Android’s own traffic hidden', () => {
+    const onShowTraffic = vi.fn();
+    render(<AndroidSection status={capturing()} send={vi.fn()} onShowTraffic={onShowTraffic} />);
+    // Nothing refused yet: only the button.
+    expect(summaryText()).toBe('Hide Android’s own traffic in Traffic');
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Android’s own traffic in Traffic' }));
+    expect(onShowTraffic).toHaveBeenCalledWith(HIDE_ANDROID_SYSTEM_QUERY);
+  });
+
+  it('shows nothing of this unless capturing, nor without refusals or a way to show Traffic', () => {
+    const refused = { count: 1, hosts: [{ host: 'api.example.test', count: 1 }] };
+    const { rerender } = render(
+      <AndroidSection
+        status={capturing({ capture: undefined, refused })}
+        send={vi.fn()}
+        onShowTraffic={vi.fn()}
+      />,
+    );
+    expect(document.querySelector('.device-refused')).toBeNull();
+    rerender(<AndroidSection status={capturing()} send={vi.fn()} />);
+    expect(document.querySelector('.device-refused')).toBeNull();
   });
 });

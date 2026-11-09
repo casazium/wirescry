@@ -607,7 +607,16 @@ export function App(): React.JSX.Element {
       </div>
 
       {view === 'setup' && status && (
-        <SetupPage status={status} connected={connected} send={send} onLaunched={() => setView('traffic')} />
+        <SetupPage
+          status={status}
+          connected={connected}
+          send={send}
+          onLaunched={() => setView('traffic')}
+          onShowTraffic={(query) => {
+            setSearch(query);
+            setView('traffic');
+          }}
+        />
       )}
 
       {view === 'traffic' && (

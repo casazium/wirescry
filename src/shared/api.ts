@@ -282,10 +282,20 @@ export interface AndroidDevice {
   strayProxy?: string;
   /** Wirescry's certificate on this device: whether a browser there trusts it, and whether it was copied over. */
   certificate?: { trusted: boolean; sent: boolean };
+  /** While capturing: HTTPS connections from the device that refused Wirescry's certificate. */
+  refused?: RefusedConnections;
   /** What Wirescry is doing to it right now. */
   busy?: 'capturing' | 'stopping' | 'sending';
   /** What went wrong with the last thing Wirescry did to it, or what the user should know. */
   note?: string;
+}
+
+/** Connections that refused Wirescry's certificate, by the hostname they were for. */
+export interface RefusedConnections {
+  /** All of them, including any not in `hosts`. */
+  count: number;
+  /** The most frequent hosts first. An empty host is a connection that named none. */
+  hosts: Array<{ host: string; count: number }>;
 }
 
 /** Docker setup, as the Setup page shows it. */

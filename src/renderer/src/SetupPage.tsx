@@ -11,6 +11,8 @@ interface Props {
   connected: boolean;
   send(command: Command): Promise<unknown>;
   onLaunched(): void;
+  /** Opens Traffic with this search. */
+  onShowTraffic?(query: string): void;
 }
 
 /** POSIX shell quoting for paths shown in example commands. */
@@ -58,7 +60,7 @@ function useAction(): [string | undefined, string | undefined, (task: () => Prom
 }
 
 /** Ways to send traffic through Wirescry, plus the proxy port and certificate settings. */
-export function SetupPage({ status, connected, send, onLaunched }: Props): React.JSX.Element {
+export function SetupPage({ status, connected, send, onLaunched, onShowTraffic }: Props): React.JSX.Element {
   const address = `127.0.0.1:${status.proxyPort}`;
   const proxyUrl = `http://${address}`;
   const certPath = status.certificate.path;
@@ -178,7 +180,13 @@ export function SetupPage({ status, connected, send, onLaunched }: Props): React
 
       <DockerSection status={status} connected={connected} send={send} CopyButton={CopyButton} />
 
-      <AndroidSection status={status} connected={connected} send={send} CopyButton={CopyButton} />
+      <AndroidSection
+        status={status}
+        connected={connected}
+        send={send}
+        CopyButton={CopyButton}
+        onShowTraffic={onShowTraffic}
+      />
 
       <section>
         <h2>Manual setup</h2>

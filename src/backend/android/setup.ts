@@ -14,6 +14,7 @@ import {
 import { ensureAdbServer, findAdb, NO_ADB, type RunFile } from './adb-server';
 import { CaptureRecords, DeviceCapture, MANUAL_FIX, type CaptureTarget } from './capture';
 import { DeviceCertificates } from './certificates';
+import { Refusals } from './refusals';
 import { devicesFrom, infoKey, readDeviceInfo, type DeviceInfo } from './devices';
 
 export interface AndroidSetupOptions {
@@ -60,6 +61,8 @@ const RETRY_DELAYS_MS = [1000, 2000, 5000, 10_000];
 const REMOVE_ON_QUIT_MS = 500;
 const POLL_MS = 5000;
 const GRACE_MS = 5000;
+/** Refusals can come many a second: the device list is sent again at most this often for them. */
+const REFUSALS_PUBLISH_MS = 250;
 /** Starts a note about a check that failed, so a later good check can clear it. */
 const CHECK_FAILED = 'Wirescry couldn’t check this device’s tunnel:';
 
@@ -104,6 +107,9 @@ export class AndroidSetup {
   private readonly away = new Map<string, { timer?: NodeJS.Timeout; notified: boolean }>();
   /** The last thing to tell the user about each device, by device id. */
   private readonly notes = new Map<string, string>();
+  /** Connections that refused the certificate, by device, during its current capture. */
+  private readonly refusals = new Refusals();
+  private refusalsTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly options: AndroidSetupOptions = {}) {
     if (options.capture) {
@@ -178,6 +184,8 @@ export class AndroidSetup {
     this.tracker = undefined;
     clearTimeout(this.retryTimer);
     clearInterval(this.pollTimer);
+    clearTimeout(this.refusalsTimer);
+    this.refusalsTimer = undefined;
     for (const away of this.away.values()) clearTimeout(away.timer);
     this.away.clear();
   }
@@ -415,6 +423,7 @@ export class AndroidSetup {
             },
           }
         : {}),
+      ...(record && this.refusals.of(id) ? { refused: this.refusals.of(id) } : {}),
       ...(this.busy.has(id) ? { busy: this.busy.get(id)!.at(-1) } : {}),
       ...(this.notes.has(id) ? { note: this.notes.get(id) } : {}),
     };
@@ -500,12 +509,27 @@ export class AndroidSetup {
   /** Puts a device back, whether this run or an earlier one set it up. */
   async stopDevice(id: string): Promise<void> {
     const target = this.target(id, 'stop');
-    const { note } = await this.act(id, 'stopping', () => this.capture!.stop(target));
+    // Counts belong to one capture: the next starts afresh, even if this Stop fails part way.
+    const { note } = await this.act(id, 'stopping', () =>
+      this.capture!.stop(target).finally(() => this.refusals.clear(id)),
+    );
     if (note) {
       this.notes.set(id, note);
       this.publishDevices();
     }
     await this.removeCertificateFile(id, target.serial);
+  }
+
+  /** A connection from this device refused Wirescry's certificate (its listener saw it). */
+  certificateRefused(id: string, host: string | undefined): void {
+    // A late one after Stop belongs to no capture.
+    if (this.stopped || !this.capture?.capturing(id)) return;
+    this.refusals.add(id, host);
+    this.refusalsTimer ??= setTimeout(() => {
+      this.refusalsTimer = undefined;
+      this.publishDevices();
+    }, REFUSALS_PUBLISH_MS);
+    this.refusalsTimer.unref?.();
   }
 
   /** Copies Wirescry's certificate to a device and opens Security settings there. */

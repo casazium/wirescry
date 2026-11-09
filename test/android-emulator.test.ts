@@ -256,6 +256,34 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
     },
   );
 
+  it(
+    'shows the hosts of connections that refuse the certificate, until Stop',
+    { timeout: 60_000 },
+    async (context) => {
+      // Chrome trusts only certificates the user installs, and none is, so it refuses
+      // Wirescry's with an alert (measured: cert-rejected). google_apis images have no Chrome.
+      if (!(await adb('shell', 'pm path com.android.chrome || true')).startsWith('package:')) {
+        context.skip('Chrome isn’t installed on this device.');
+      }
+      const id = device()!.id!;
+      await api.send({ command: 'androidCapture', deviceId: id });
+      await expect.poll(() => device()?.capture).toBeTruthy();
+      expect(device()?.refused).toBeUndefined();
+      // A name under .test: the proxy refuses at TLS, before any lookup.
+      await adb(
+        'shell',
+        'am start -a android.intent.action.VIEW -d https://refused.wirescry.test/ -p com.android.chrome',
+      );
+      await expect
+        .poll(() => device()?.refused?.hosts.map((h) => h.host), { timeout: 20_000 })
+        .toContain('refused.wirescry.test');
+      await api.send({ command: 'androidStop', deviceId: id });
+      await expect.poll(() => device()?.capture).toBeUndefined();
+      expect(device()?.refused).toBeUndefined();
+      await adb('shell', 'input', 'keyevent', 'HOME');
+    },
+  );
+
   it('puts a capturing device back when Wirescry quits', { timeout: 60_000 }, async () => {
     const before = await adb('shell', 'settings', 'get', 'global', 'http_proxy');
     const id = device()!.id!;

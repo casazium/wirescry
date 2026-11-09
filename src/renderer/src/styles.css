@@ -1219,3 +1219,8 @@ button.help-button {
 .device-https details {
   margin-top: 8px;
 }
+
+.device-refused {
+  margin-top: 10px;
+  overflow-wrap: anywhere;
+}
