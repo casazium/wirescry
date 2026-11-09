@@ -267,7 +267,13 @@ function runSelfTest(file: string): void {
     else if (problems.length > 0) void finish({ error: `Self-check: ${problems.join('; ')}` }, 1);
     else
       void finish(
-        { plugins: backend.plugins, backendStartMs: Date.now() - startedAt, startup: backend.startupSteps },
+        {
+          plugins: backend.plugins,
+          backendStartMs: Date.now() - startedAt,
+          startup: backend.startupSteps,
+          // Pro is bundled into this same build, so this is its setting too.
+          developmentBuild: import.meta.env.DEV,
+        },
         0,
       );
   });
