@@ -43,6 +43,8 @@ export interface ProxyOptions {
    * free one (for ports nobody types in, like device listeners').
    */
   port?: number;
+  /** Where Mockttp looks for the lowest free port when `port` is omitted: 8000 and up by default. */
+  portRange?: { startPort: number; endPort: number };
   /** Extra CAs to trust for upstream servers (PEM). */
   upstreamCAs?: string[];
   /** Extra rules (from plugins) that run before normal pass-through, in order. */
@@ -302,11 +304,17 @@ function rawHeader(headers: mockttp.RawHeaders, name: string): string | undefine
   return headers.find(([key]) => key.toLowerCase() === name)?.[1];
 }
 
+/** Ports a proxy without a fixed one tries when another program has 127.0.0.1 on its choice. */
+const LOOPBACK_TAKEN_ATTEMPTS = 5;
+
 export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   const guard = options.egress ? await startEgressGuard(options.egress) : undefined;
   let running: RunningProxy;
   try {
-    running = await startListener(options, guard);
+    running = await onFreeLoopback(
+      (port) => startListener(options, guard, port),
+      options.port ?? options.portRange ?? { startPort: 8000, endPort: 65535 },
+    );
   } catch (error) {
     await guard?.stop();
     throw error;
@@ -322,7 +330,83 @@ export async function startProxy(options: ProxyOptions): Promise<RunningProxy> {
   };
 }
 
-async function startListener(options: ProxyOptions, guard: EgressGuard | undefined): Promise<RunningProxy> {
+/** A fixed port, 0 for the system's choice, or the range Mockttp picks the lowest free one from. */
+export type PortChoice = number | { startPort: number; endPort: number };
+
+/**
+ * Starts with `start` on `first`. Another program can take 127.0.0.1 on the port chosen before
+ * Wirescry holds it too (see holdLoopback): then, without a fixed port, it tries again, from the
+ * next port in a range or with the system's choice. A fixed port's failure is final.
+ */
+export async function onFreeLoopback<T>(
+  start: (port: PortChoice) => Promise<T>,
+  first: PortChoice,
+): Promise<T> {
+  const fixed = typeof first === 'number' && first !== 0;
+  let port = first;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await start(port);
+    } catch (error) {
+      const taken = (error as { loopbackTaken?: number }).loopbackTaken;
+      if (taken === undefined || fixed || attempt >= LOOPBACK_TAKEN_ATTEMPTS) throw error;
+      // The rest of the range, or the system's choice once it's used up (or the port was outside it).
+      port =
+        typeof port === 'number' || taken + 1 > port.endPort || taken < port.startPort
+          ? 0
+          : { startPort: taken + 1, endPort: port.endPort };
+    }
+  }
+}
+
+/**
+ * Listens on 127.0.0.1 on the proxy's port too, and hands those connections to Mockttp. Mockttp
+ * listens on all addresses (::), and on macOS another program can still listen on 127.0.0.1, or
+ * 0.0.0.0, on that port after Wirescry started: it then answers 127.0.0.1 in Wirescry's place,
+ * where users and devices send their traffic (assertLoopbackPortFree covers a program that was
+ * there first; this, one that comes later). With 127.0.0.1 held, its listen fails instead.
+ * Linux refuses a listen on 127.0.0.1 beside one on all addresses, for that program and
+ * Wirescry alike, so there's nothing to hold there. Windows is thought to refuse it too, without
+ * SO_REUSEADDR (not measured yet). So only on macOS does a refusal mean another program has
+ * 127.0.0.1 there: elsewhere, and on a system without IPv4 loopback, this returns undefined and
+ * the proxy runs as before.
+ *
+ * Throws, with `loopbackTaken` set to the port, when another program already has 127.0.0.1 there.
+ */
+export async function holdLoopback(
+  server: Pick<mockttp.Mockttp, 'port'>,
+  platform: NodeJS.Platform = process.platform,
+  /** For tests: an address to hold in place of 127.0.0.1. */
+  host = '127.0.0.1',
+): Promise<net.Server | undefined> {
+  const listener = (server as unknown as { server?: net.Server }).server;
+  if (!listener) throw new Error("Can't hold the proxy's port on 127.0.0.1");
+  // Through the listener's own 'connection' event: the loopback check, Mockttp's tracking of
+  // open connections, and protocol detection all see these as their own.
+  const hold = net.createServer((socket) => listener.emit('connection', socket));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      hold.once('error', reject);
+      hold.listen({ port: server.port, host }, () => resolve());
+    });
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { port?: number; loopbackTaken?: number };
+    if (failure.code === 'EADDRNOTAVAIL' || failure.code === 'EAFNOSUPPORT') return undefined;
+    if (failure.code !== 'EADDRINUSE') throw error;
+    if (platform !== 'darwin') return undefined;
+    failure.port = server.port;
+    failure.loopbackTaken = server.port;
+    throw failure;
+  }
+  hold.on('error', (error) => console.error('[wirescry] the proxy’s 127.0.0.1 listener failed:', error));
+  return hold;
+}
+
+async function startListener(
+  options: ProxyOptions,
+  guard: EgressGuard | undefined,
+  port: PortChoice,
+): Promise<RunningProxy> {
   const { ca, store, bodies, onExchange } = options;
   const server = mockttp.getLocal({
     https: { key: ca.key, cert: ca.cert },
@@ -798,14 +882,17 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
   await server.forAnyWebSocket().always().thenPassThrough(passThrough);
 
   // 0 asks the system for any free port, as with listen(0); there's nothing to check first.
-  if (options.port !== undefined && options.port !== 0) await assertLoopbackPortFree(options.port);
-  await server.start(options.port);
-  let restriction: { stop(): void };
+  if (typeof port === 'number' && port !== 0) await assertLoopbackPortFree(port);
+  await server.start(port);
+  let restriction: { stop(): void } | undefined;
+  let loopback: net.Server | undefined;
   try {
     recognizeTlsAlerts(server);
     answerHalfClosedHttpsRequests(server);
     restriction = restrictToLoopback(server, options.acceptConnection);
+    loopback = await holdLoopback(server);
   } catch (error) {
+    restriction?.stop();
     await server.stop();
     throw error;
   }
@@ -813,9 +900,12 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
   return {
     port: server.port,
     refreshRules: applyRules,
-    stop: () => {
+    stop: async () => {
       restriction.stop();
-      return server.stop();
+      // Stops listening now; finishes once its connections are closed, which Mockttp's stop does.
+      const closed = new Promise<void>((resolve) => (loopback ? loopback.close(() => resolve()) : resolve()));
+      await server.stop();
+      await closed;
     },
   };
 }
