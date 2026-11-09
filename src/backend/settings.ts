@@ -6,8 +6,8 @@ export interface Settings {
   proxyPort?: number;
   /** false: don't set up Docker containers. Unset means on. */
   dockerSetup?: boolean;
-  /** true: show Android setup, which is still being built. Set by hand in settings.json for now. */
-  experimentalAndroid?: boolean;
+  /** false: no Android setup (Setup's Android section and ADB). Unset means on. Set by hand. */
+  androidSetup?: boolean;
   /** The adb to start the ADB server with, if not found the usual way. An absolute path. */
   adbPath?: string;
 }
@@ -25,7 +25,7 @@ export async function loadSettings(dir: string): Promise<Settings> {
     return {
       ...(isValidPort(raw.proxyPort) ? { proxyPort: raw.proxyPort } : {}),
       ...(raw.dockerSetup === false ? { dockerSetup: false } : {}),
-      ...(raw.experimentalAndroid === true ? { experimentalAndroid: true } : {}),
+      ...(raw.androidSetup === false ? { androidSetup: false } : {}),
       ...(typeof raw.adbPath === 'string' && path.isAbsolute(raw.adbPath) && raw.adbPath.length < 1000
         ? { adbPath: raw.adbPath }
         : {}),

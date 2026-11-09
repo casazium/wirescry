@@ -220,17 +220,18 @@ export interface ProxyStatus {
   plugins: PluginStatus[];
   /** Whether containers started from Wirescry terminals are set up. */
   docker: DockerStatus;
-  /** Android devices over ADB. Missing while Android setup is off (it's experimental for now). */
+  /** Android devices over ADB. Missing while Android setup is off (androidSetup: false). */
   android?: AndroidStatus;
 }
 
 /** Android setup, as the Setup page shows it. */
 export interface AndroidStatus {
   /**
-   * ready: talking to the ADB server. starting: looking for it. no-adb: no server running and
-   * no adb found to start one. failed: something else went wrong (`error` says what).
+   * ready: talking to the ADB server. starting: looking for it. no-server: none running, and
+   * Wirescry starts one only when asked. no-adb: none running and no adb found to start one.
+   * failed: something else went wrong (`error` says what).
    */
-  state: 'ready' | 'starting' | 'no-adb' | 'failed';
+  state: 'ready' | 'starting' | 'no-server' | 'no-adb' | 'failed';
   error?: string;
   /** The ADB server's protocol version, e.g. 41. */
   serverVersion?: number;

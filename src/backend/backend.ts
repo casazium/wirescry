@@ -75,11 +75,13 @@ export interface BackendOptions {
   /** false: don't set up Docker. Tests turn it off, or give a daemon of their own. */
   docker?: boolean;
   /**
-   * Android setup: false turns it off, options turn it on (tests). Left out, it follows the
-   * experimentalAndroid setting.
+   * Android setup: options turn it on (tests), 'setting' follows the androidSetup setting (on
+   * unless it's false; the app passes this). Left out or false, it's off, so tests never reach
+   * a real ADB server by accident.
    */
   android?:
     | false
+    | 'setting'
     | (Omit<AndroidSetupOptions, 'capture'> & {
         capture?: Partial<NonNullable<AndroidSetupOptions['capture']>>;
       });
@@ -425,13 +427,16 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   // Android devices over the user's ADB server. Started in the background: finding or starting
   // the server can take a few seconds, and nothing else waits for it.
   const androidOn =
-    options.android === false
-      ? false
-      : options.android !== undefined || settings.experimentalAndroid === true;
-  const androidOptions = options.android || {};
+    options.android === 'setting'
+      ? settings.androidSetup !== false
+      : options.android !== undefined && options.android !== false;
+  const androidOptions = typeof options.android === 'object' ? options.android : {};
   android = androidOn
     ? new AndroidSetup({
         findAdb: () => findAdb({ setting: settings.adbPath }),
+        // In the app, only devices left set up need a server started at launch; otherwise
+        // Wirescry uses one that's running and starts one only when asked.
+        startServerAtLaunch: options.android !== 'setting',
         log: (message) => console.log(`[wirescry] android: ${message}`),
         notify: options.notify,
         ...androidOptions,

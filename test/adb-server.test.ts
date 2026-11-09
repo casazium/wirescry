@@ -169,7 +169,7 @@ describe('Starting the ADB server', () => {
       findAdb: () => '/sdk/adb',
       run: async () => void (ran = true),
     });
-    expect(state.state).toBe('failed');
+    expect(state).toEqual({ state: 'not-running' });
     expect(ran).toBe(false);
   });
 

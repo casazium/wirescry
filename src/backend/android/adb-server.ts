@@ -114,6 +114,8 @@ export async function startAdbServer(
 export type AdbServerState =
   | { state: 'running'; version: number; started: boolean; adbPath?: string }
   | { state: 'no-adb' }
+  /** None running, and not asked to start one. */
+  | { state: 'not-running' }
   | { state: 'failed'; error: string; adbPath?: string };
 
 export interface EnsureOptions {
@@ -138,7 +140,7 @@ export async function ensureAdbServer(options: EnsureOptions): Promise<AdbServer
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== 'ECONNREFUSED') return { state: 'failed', error: (error as Error).message };
   }
-  if (!options.start) return { state: 'failed', error: 'The ADB server isn’t running.' };
+  if (!options.start) return { state: 'not-running' };
   const adbPath = options.findAdb();
   if (!adbPath) return { state: 'no-adb' };
   try {

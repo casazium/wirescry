@@ -30,6 +30,11 @@ export interface AndroidSetupOptions {
   onStatusChange?: () => void;
   /** Waits between tries to reach the server after losing it; the last repeats. */
   retryDelaysMs?: number[];
+  /**
+   * Whether start() starts an ADB server when none is running (default true). The app passes
+   * false: it then starts one only for devices an earlier run left set up, or when asked.
+   */
+  startServerAtLaunch?: boolean;
   /** How long to wait for each answer from the server. */
   timeoutMs?: number;
   log?: (message: string) => void;
@@ -166,7 +171,9 @@ export class AndroidSetup {
       ?.load()
       .catch((error: unknown) => this.options.log?.(`couldn't read capture records: ${String(error)}`));
     if (this.capture && !this.stopped) this.startPolling();
-    return this.queued(true);
+    // Devices left set up have no internet until put back, which needs the server.
+    const leftovers = (this.capture?.setUp().length ?? 0) > 0;
+    return this.queued(this.options.startServerAtLaunch !== false || leftovers);
   }
 
   /** "Check again": looks for the server afresh, starting one if none runs. */
@@ -340,11 +347,15 @@ export class AndroidSetup {
     if (generation !== this.generation) return;
     if (server.state !== 'running') {
       this.lines = [];
-      this.set({
-        state: server.state === 'no-adb' ? 'no-adb' : 'failed',
-        error: server.state === 'no-adb' ? NO_ADB : server.error,
-        devices: [],
-      });
+      this.set(
+        server.state === 'not-running'
+          ? { state: 'no-server', devices: [] }
+          : {
+              state: server.state === 'no-adb' ? 'no-adb' : 'failed',
+              error: server.state === 'no-adb' ? NO_ADB : server.error,
+              devices: [],
+            },
+      );
       // Keep looking (without starting anything): Android Studio may start a server.
       this.retryLater();
       return;

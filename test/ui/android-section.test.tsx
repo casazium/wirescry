@@ -45,7 +45,7 @@ describe('Android section', () => {
         })}
       />,
     );
-    expect(screen.getByRole('heading', { name: /Android/ }).textContent).toContain('Experimental');
+    expect(screen.getByRole('heading', { name: /Android/ }).textContent).toBe('Android');
     const items = screen.getAllByRole('listitem').map((li) => li.textContent);
     expect(items[0]).toContain('Medium Phone API 37.0');
     expect(items[0]).toContain('Emulator · API 37 · emulator-5554');
@@ -65,6 +65,18 @@ describe('Android section', () => {
     );
     expect(screen.getByText('<img src=x onerror=alert(1)>')).toBeTruthy();
     expect(document.querySelector('img')).toBeNull();
+  });
+
+  it('says when no ADB server is running, and offers to start one', async () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    render(<AndroidSection status={withAndroid({ state: 'no-server', devices: [] })} send={send} />);
+    expect(
+      screen.getByText(/No ADB server is running\. Wirescry finds the one Android Studio starts/),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Check again' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Start the ADB server' }));
+    expect(send).toHaveBeenCalledWith({ command: 'androidRefresh' });
+    expect(screen.queryByText(/No devices/)).toBeNull();
   });
 
   it('says how to get going with no devices, and with no adb', () => {

@@ -96,6 +96,7 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
         backendPlugins.length > 0 && (await encryptor.available().catch(() => false)) ? encryptor : undefined,
       app: data.app,
       notify: (title, body) => post({ type: 'notify', title, body }),
+      android: 'setting',
       onStartupStep: (name) => mark(`${name} done`),
     });
     const checked = data.selfCheck ? await selfCheck() : undefined;
