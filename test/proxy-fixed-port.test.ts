@@ -74,15 +74,22 @@ describe('A fixed proxy port another program listens on', () => {
     },
   );
 
-  it('isn’t refused for a program on a network address, which doesn’t take 127.0.0.1', async () => {
+  it('on macOS, isn’t refused for a program on a network address, which doesn’t take 127.0.0.1', async () => {
     const lan = Object.values(os.networkInterfaces())
       .flat()
       .find((a) => a && a.family === 'IPv4' && !a.internal)?.address;
     if (!lan) return; // No network address here.
     const port = await holder(lan);
     if (port === undefined) return;
-    const backend = await startOn(port);
-    expect(backend.proxyPort).toBe(port);
+    const started = await startOn(port).catch((error: NodeJS.ErrnoException) => error);
+    // Linux won't listen on all addresses beside a specific one, so Wirescry can't have the port
+    // there (as before this check). macOS allows it, and must not refuse.
+    if (started instanceof Error) {
+      expect(process.platform).not.toBe('darwin');
+      expect(started).toMatchObject({ code: 'EADDRINUSE' });
+      return;
+    }
+    expect(started.proxyPort).toBe(port);
     expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
   });
 
