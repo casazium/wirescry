@@ -8,7 +8,7 @@ import {
   ufwAllowCommands,
   ufwEnabled,
 } from '../src/backend/docker/firewall';
-import { DockerSetup, NO_PIPE_HELPER } from '../src/backend/docker/setup';
+import { DockerSetup, NO_PIPE_HELPER, WINDOWS_NOT_YET } from '../src/backend/docker/setup';
 
 type Interfaces = ReturnType<typeof os.networkInterfaces>;
 const v4 = (address: string, prefix: number) =>
@@ -204,6 +204,66 @@ describe('The Setup page’s firewall note', () => {
 });
 
 describe('Docker setup on Windows', () => {
+  const desktop = async () =>
+    ({
+      kind: 'local',
+      socketPath: '\\\\.\\pipe\\dockerDesktopLinuxEngine',
+      host: 'npipe:////./pipe/dockerDesktopLinuxEngine',
+    }) as const;
+
+  it('is off by default, until tested with Docker Desktop: no relay, nothing for terminals', async () => {
+    const setup = new DockerSetup({
+      dataDir: os.tmpdir(),
+      enabled: true,
+      proxyPort: () => 8000,
+      containerDir: () => os.tmpdir(),
+      platform: 'win32',
+      findEndpoint: desktop,
+    });
+    await setup.refresh();
+    expect(setup.status()).toEqual({
+      state: 'unsupported',
+      daemon: 'npipe:////./pipe/dockerDesktopLinuxEngine',
+      error: WINDOWS_NOT_YET,
+      windowsNotYet: true,
+    });
+    expect(setup.terminalEnv()).toEqual({});
+    expect((setup as unknown as { relay?: unknown }).relay).toBeUndefined();
+    expect(setup.acceptsConnection('172.17.0.2')).toBe(false);
+    await setup.stop();
+  });
+
+  it('while off, still says when there is no Docker, or it is remote', async () => {
+    const make = (findEndpoint: ConstructorParameters<typeof DockerSetup>[0]['findEndpoint']) =>
+      new DockerSetup({
+        dataDir: os.tmpdir(),
+        enabled: true,
+        proxyPort: () => 8000,
+        containerDir: () => os.tmpdir(),
+        platform: 'win32',
+        findEndpoint,
+      });
+    const none = make(async () => ({ kind: 'none' }));
+    await none.refresh();
+    expect(none.status()).toEqual({ state: 'none', windowsNotYet: true });
+    const remote = make(async () => ({ kind: 'remote', host: 'tcp://build.example:2376' }) as never);
+    await remote.refresh();
+    expect(remote.status()).toEqual({ state: 'remote', daemon: 'tcp://build.example:2376' });
+  });
+
+  it('leaves other systems alone', async () => {
+    const setup = new DockerSetup({
+      dataDir: os.tmpdir(),
+      enabled: true,
+      proxyPort: () => 8000,
+      containerDir: () => os.tmpdir(),
+      platform: 'linux',
+      findEndpoint: async () => ({ kind: 'none' }),
+    });
+    await setup.refresh();
+    expect(setup.status()).toEqual({ state: 'none' });
+  });
+
   // On Windows itself the helper is there to be found.
   it.skipIf(process.platform === 'win32')(
     'without its pipe helper, starts no relay, says why, and gives terminals nothing',
@@ -215,6 +275,7 @@ describe('Docker setup on Windows', () => {
         proxyPort: () => 8000,
         containerDir: () => os.tmpdir(),
         platform: 'win32',
+        windows: true,
         findEndpoint: async () => ({
           kind: 'local',
           socketPath: '\\\\.\\pipe\\dockerDesktopLinuxEngine',
@@ -233,13 +294,14 @@ describe('Docker setup on Windows', () => {
       await setup.stop();
     },
   );
-  it('still says when there is no Docker, or it is remote', async () => {
+  it('turned on for testing, still says when there is no Docker', async () => {
     const none = new DockerSetup({
       dataDir: os.tmpdir(),
       enabled: true,
       proxyPort: () => 8000,
       containerDir: () => os.tmpdir(),
       platform: 'win32',
+      windows: true,
       findEndpoint: async () => ({ kind: 'none' }),
     });
     await none.refresh();

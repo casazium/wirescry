@@ -85,6 +85,11 @@ export interface BackendOptions {
       });
   /** Shows an OS notification (the app's main process does it). */
   notify?: (title: string, body: string) => void;
+  /**
+   * Windows: set up Docker there (tests, which build the pipe helper). Left out, it follows the
+   * experimentalWindowsDocker setting, off by default until tested hands-on with Docker Desktop.
+   */
+  windowsDocker?: boolean;
   /** Where the user's Docker daemon is. Found the way the Docker CLI finds it if omitted. */
   dockerEndpoint?: () => Promise<DockerEndpoint>;
   /** Called as each step of starting up finishes, to log how long they take. */
@@ -239,6 +244,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     dataDir,
     enabled: options.docker !== false,
     active: settings.dockerSetup !== false,
+    windows: options.windowsDocker ?? settings.experimentalWindowsDocker === true,
     // Shown on the Setup page, so what happened to the last container is visible.
     onContainer: (event) => {
       console.log(

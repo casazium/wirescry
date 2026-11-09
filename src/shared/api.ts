@@ -319,6 +319,8 @@ export interface DockerStatus {
    * reaching the proxy unless its rules allow Docker's networks, and the commands that do.
    */
   firewall?: { name: 'ufw'; commands: string[] };
+  /** Windows, where Wirescry doesn't set up Docker yet: the switch would do nothing. */
+  windowsNotYet?: true;
 }
 
 /** Messages the backend pushes to the UI. */
