@@ -92,7 +92,7 @@ describe('DetailPane', () => {
     expect(screen.getByText('Timed out connecting to api.test.')).toBeTruthy();
     expect(screen.queryByText('AggregateError')).toBeNull();
     expect(screen.getByText('Response headers (sent by Wirescry)')).toBeTruthy();
-    expect(screen.getByText(/between the client and Wirescry/)).toBeTruthy();
+    expect(protocolLine()).toBe('HTTP/2 (https://), between the client and Wirescry');
   });
 
   it('doesn’t label a partial response as Wirescry’s', async () => {
@@ -107,8 +107,29 @@ describe('DetailPane', () => {
       render(pane({ summary: partial, send }));
     });
     expect(screen.getByText('Response headers')).toBeTruthy();
+    expect(protocolLine()).toBe('HTTP/2 (https://)');
+  });
+
+  it('says the HTTP version, then the URL’s scheme, not the scheme twice', async () => {
+    const plain = summary('h', { protocol: 'http', httpVersion: '1.1', url: 'http://api.test/h' });
+    render(pane({ summary: plain, send: vi.fn(async () => detail(plain, 'm')) }));
+    await act(async () => undefined);
+    expect(protocolLine()).toBe('HTTP/1.1 (http://)');
+  });
+
+  it('doesn’t call an https:// URL sent in plain text encrypted (BusyBox wget’s)', async () => {
+    const wget = summary('w', { protocol: 'https', httpVersion: '1.1', url: 'https://api.test/w' });
+    render(pane({ summary: wget, send: vi.fn(async () => detail(wget, 'm')) }));
+    await act(async () => undefined);
+    expect(protocolLine()).toBe('HTTP/1.1 (https://)');
+    expect(protocolLine()).not.toMatch(/encrypt/i);
   });
 });
+
+/** The Overview's Protocol value. */
+const protocolLine = () =>
+  [...document.querySelectorAll('.facts dt')].find((dt) => dt.textContent === 'Protocol')?.nextElementSibling
+    ?.textContent;
 
 describe('DetailPane plugin sections', () => {
   it('shows plugins’ sections under their headings, and none when there are none', () => {
