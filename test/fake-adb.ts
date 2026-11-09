@@ -186,6 +186,11 @@ export interface FakeDeviceState {
   apps: Set<string>;
   /** Whether some browser opens http URLs (`am start -a VIEW` without a package). */
   browser: boolean;
+  /**
+   * Whether `am start` exits 0 even when nothing opens the intent, as measured on API 28 (it still
+   * prints "Error: Activity not started" to stderr). API 37 exits 1.
+   */
+  amExitsZeroOnError?: boolean;
   /** Intents `am start` opened, as their arguments. */
   started: string[];
   /** The sizes of the stdin packets the last `tee` got. */
@@ -223,7 +228,10 @@ export function fakeDeviceState(serial = 'R58', props: Record<string, string> = 
 /** Shared storage the shell user may write, as measured: each user's Download folder. */
 const WRITABLE = /^\/storage\/emulated\/\d+\/Download\/[^/]+$/;
 
-/** A device's answer to an am start command (measured on API 37: exit 1 when nothing opens it). */
+/**
+ * A device's answer to an am start command. Measured: nothing opens it → "Error: Activity not
+ * started, unable to resolve Intent" on stderr, exit 1 on API 37 but exit 0 on API 28.
+ */
 function amStart(device: FakeDeviceState, args: string): Buffer {
   const pkg = / -p (\S+)/.exec(args)?.[1];
   const action = /-a (\S+)/.exec(args)?.[1] ?? '';
@@ -232,7 +240,13 @@ function amStart(device: FakeDeviceState, args: string): Buffer {
     : action.startsWith('android.settings.') || action.startsWith('com.android.settings.')
       ? device.apps.has('com.android.settings')
       : action === 'android.intent.action.VIEW' && device.browser;
-  if (!opens) return shellPackets('Error: Activity not started, unable to resolve Intent\n', 1);
+  if (!opens) {
+    return shellPackets(
+      `Starting: Intent { act=${action} }\n`,
+      device.amExitsZeroOnError ? 0 : 1,
+      `Error: Activity not started, unable to resolve Intent { act=${action} }\n`,
+    );
+  }
   device.started.push(args);
   return shellPackets(`Starting: Intent { act=${action} }\n`);
 }

@@ -9,8 +9,13 @@
 export const ANDROID_SYSTEM_HOSTS = [
   // The connectivity check (AOSP NetworkMonitor).
   'connectivitycheck.gstatic.com',
-  // Play services' location.
+  // Play services: location, Play, device services (measured on API 28 and 37).
   'geomobileservices-pa.googleapis.com',
+  'play.googleapis.com',
+  'android.googleapis.com',
+  'android.apis.google.com',
+  'proactivebackend-pa.googleapis.com',
+  'voilatile-pa.googleapis.com',
   // Chrome's Safe Browsing and its relay, and its client services.
   'safebrowsing.googleapis.com',
   'ohttp-relay-safebrowsing-android.google.fastly-edge.com',
@@ -18,13 +23,11 @@ export const ANDROID_SYSTEM_HOSTS = [
 ] as const;
 
 /**
- * The connectivity check's other plain-HTTP probes. Those hosts serve apps too, and other apps
- * use these paths on other hosts, so only these exact URLs mark the check.
+ * The connectivity check's plain-HTTP probe on www.google.com, which serves apps too, while other
+ * apps use this path on other hosts: only this exact URL marks the check. (Its probe on
+ * play.googleapis.com goes with that host.)
  */
-export const ANDROID_PROBE_URLS = [
-  'http://www.google.com/gen_204',
-  'http://play.googleapis.com/generate_204',
-] as const;
+export const ANDROID_PROBE_URLS = ['http://www.google.com/gen_204'] as const;
 
 /**
  * Hosts whose refused connections come from Android itself. Refusals carry only a hostname,

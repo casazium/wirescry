@@ -407,11 +407,45 @@ describe('Android section: certificate', () => {
     );
   });
 
-  it('gives Android 10 and older their own steps', () => {
-    render(<AndroidSection status={capturing({ apiLevel: 29 })} send={vi.fn()} />);
-    const steps = document.querySelector('.device-https')!.textContent!;
-    expect(steps).toMatch(/Encryption & credentials › Install from storage \(or Install from SD card\)/);
-    expect(steps).not.toMatch(/Install anyway/);
+  it('gives each Android version the path measured on it', () => {
+    const steps = (apiLevel: number | undefined): string => {
+      const { unmount } = render(<AndroidSection status={capturing({ apiLevel })} send={vi.fn()} />);
+      const text = document.querySelector('.device-https')!.textContent!;
+      unmount();
+      return text;
+    };
+    // Android 9 and 10: their own installer, which names it and asks for a screen lock.
+    expect(steps(28)).toContain(
+      'Security & location (or Security) › Advanced › Encryption & credentials › Install from SD card (or Install from storage), then ☰ › Downloads › Wirescry-CA.crt, and give it any name. It asks you to set a screen lock first.',
+    );
+    expect(steps(29)).not.toMatch(/Install anyway|More security/);
+    // Android 11 and 12: straight from Security.
+    expect(steps(30)).toContain(
+      'On the device: Security › Encryption & credentials › Install a certificate › CA certificate › Install anyway, then pick Wirescry-CA.crt (if it isn’t listed: ☰ › Downloads).',
+    );
+    expect(steps(32)).not.toMatch(/More security|screen lock/);
+    // Android 13 to 16: through More security settings (or its newer name).
+    for (const level of [33, 36]) {
+      expect(steps(level)).toContain(
+        'On the device: Security (or Security & privacy) › More security settings (or More security & privacy) › Encryption & credentials',
+      );
+    }
+    // Android 17, and a device whose version isn't known yet.
+    for (const level of [37, 40, undefined]) {
+      expect(steps(level)).toContain(
+        'On the device: More security & privacy › Encryption & credentials › Install a certificate',
+      );
+    }
+  });
+
+  it('says to finish Chrome’s welcome screens, and that Android may report limited connectivity', () => {
+    render(<AndroidSection status={capturing()} send={vi.fn()} />);
+    expect(document.querySelector('.device-https')!.textContent).toContain(
+      'If Chrome shows its welcome screens first, finish them and press this again.',
+    );
+    expect(
+      screen.getByText(/Android may say its Wi‑Fi has limited connectivity while capturing/),
+    ).toBeTruthy();
   });
 
   it('says when it was sent earlier, and when Chrome on the device trusts the certificate', () => {

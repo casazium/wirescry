@@ -78,6 +78,34 @@ const NETWORK_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 `;
 const MANIFEST_ATTRIBUTE = 'android:networkSecurityConfig="@xml/network_security_config"';
 
+/**
+ * Where Security settings lead to Encryption & credentials, by Android version (measured on
+ * emulators: Security on 11, Security › More security settings on 13, More security & privacy on
+ * 17; 14 to 16 not measured, so both names are given).
+ */
+function securityPath(apiLevel: number | undefined): React.JSX.Element {
+  if (apiLevel !== undefined && apiLevel <= 32) {
+    return (
+      <>
+        <strong>Security</strong> ›{' '}
+      </>
+    );
+  }
+  if (apiLevel !== undefined && apiLevel <= 36) {
+    return (
+      <>
+        <strong>Security</strong> (or <strong>Security &amp; privacy</strong>) ›{' '}
+        <strong>More security settings</strong> (or <strong>More security &amp; privacy</strong>) ›{' '}
+      </>
+    );
+  }
+  return (
+    <>
+      <strong>More security &amp; privacy</strong> ›{' '}
+    </>
+  );
+}
+
 /** Getting the device to trust Wirescry's certificate, and the app snippet. */
 function CertificateSteps({
   device,
@@ -166,23 +194,24 @@ function CertificateSteps({
             <li>
               {older ? (
                 <>
-                  On the device: <strong>Security</strong> (on some devices, <strong>Security</strong> ›{' '}
-                  <strong>Advanced</strong>) › <strong>Encryption &amp; credentials</strong> ›{' '}
-                  <strong>Install from storage</strong> (or <strong>Install from SD card</strong>), then pick{' '}
-                  <strong>Wirescry-CA.crt</strong> in <strong>Downloads</strong> and give it any name.
+                  On the device: <strong>Security &amp; location</strong> (or <strong>Security</strong>) ›{' '}
+                  <strong>Advanced</strong> › <strong>Encryption &amp; credentials</strong> ›{' '}
+                  <strong>Install from SD card</strong> (or <strong>Install from storage</strong>), then{' '}
+                  <span aria-label="the menu">☰</span> › <strong>Downloads</strong> ›{' '}
+                  <strong>Wirescry-CA.crt</strong>, and give it any name. It asks you to set a screen lock
+                  first.
                 </>
               ) : (
                 <>
-                  On the device: <strong>More security &amp; privacy</strong> ›{' '}
+                  On the device: {securityPath(device.apiLevel)}
                   <strong>Encryption &amp; credentials</strong> › <strong>Install a certificate</strong> ›{' '}
-                  <strong>CA certificate</strong> › <strong>Install anyway</strong>, then{' '}
-                  <span aria-label="the menu">☰</span> › <strong>Downloads</strong> ›{' '}
-                  <strong>Wirescry-CA.crt</strong>.
+                  <strong>CA certificate</strong> › <strong>Install anyway</strong>, then pick{' '}
+                  <strong>Wirescry-CA.crt</strong> (if it isn’t listed: <span aria-label="the menu">☰</span>{' '}
+                  › <strong>Downloads</strong>).
                 </>
               )}{' '}
               <span className="muted">
-                Names vary between devices: search Settings for “CA certificate” or “Install certificates”. It
-                may ask you to set a screen lock first.
+                Names vary between devices: search Settings for “CA certificate” or “Install certificates”.
               </span>
             </li>
             <li>
@@ -194,7 +223,7 @@ function CertificateSteps({
               {check('Check in Chrome')}{' '}
               <span className="muted">
                 Opens Wirescry’s page on the device. This says so here once Chrome there trusts the
-                certificate.
+                certificate. If Chrome shows its welcome screens first, finish them and press this again.
               </span>
             </li>
           </ol>
@@ -348,6 +377,10 @@ function DeviceActions({
                 ? 'Stop capture before closing the emulator, or it may come back without internet.'
                 : 'Stop capture before unplugging it, or its internet stops until you plug it in again.'}
             </span>
+          </p>
+          <p className="muted">
+            Android may say its Wi‑Fi has limited connectivity while capturing: its connection check doesn’t
+            trust Wirescry. Traffic still flows, and the warning clears soon after you stop.
           </p>
           <label className="checkbox">
             <input
