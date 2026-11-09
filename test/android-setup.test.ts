@@ -9,6 +9,7 @@ import type { DeviceInfo } from '../src/backend/android/devices';
 import { CaptureRecords } from '../src/backend/android/capture';
 import { AndroidSetup, type AndroidSetupOptions } from '../src/backend/android/setup';
 import { loadRecording, startFakeAdb, type FakeAdb } from './fake-adb';
+import { NOTHING_LISTENS } from './helpers';
 
 const cleanup: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -81,14 +82,6 @@ const PIXEL: DeviceInfo = {
   apiLevel: 34,
   identityParts: ['SER', 'aid', ''],
 };
-
-async function unusedPort(): Promise<number> {
-  const server = net.createServer();
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as net.AddressInfo;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
 
 describe('Android setup', () => {
   it('finds the real emulator, end to end from a recording', async () => {
@@ -186,7 +179,7 @@ describe('Android setup', () => {
   });
 
   it('never starts two servers at once when "Check again" comes during startup', async () => {
-    const port = await unusedPort();
+    const port = NOTHING_LISTENS;
     let running = 0;
     let most = 0;
     const { setup } = setupWith({
@@ -204,20 +197,18 @@ describe('Android setup', () => {
   });
 
   it('says to install platform tools, then notices a server that starts later', async () => {
-    const port = await unusedPort();
+    // Nothing listens until Android Studio starts a server, on its own port.
+    let port = NOTHING_LISTENS;
     const { setup } = setupWith({ endpoint: () => ({ host: '127.0.0.1', port }) });
     await setup.start();
     expect(setup.status()).toMatchObject({ state: 'no-adb', error: expect.stringMatching(/platform tools/) });
-    // Android Studio starts a server on that port.
     const { fake } = await listServer();
-    const forward = net.createServer((s) => s.pipe(net.connect(fake.endpoint.port, '127.0.0.1')).pipe(s));
-    await new Promise<void>((resolve) => forward.listen(port, '127.0.0.1', resolve));
-    cleanup.push(() => void forward.close());
+    port = fake.endpoint.port;
     await expect.poll(() => setup.status().state).toBe('ready');
   });
 
   it('only starts a server itself at first and on "Check again", never while retrying', async () => {
-    const port = await unusedPort();
+    const port = NOTHING_LISTENS;
     const runs: string[] = [];
     const { setup } = setupWith({
       endpoint: () => ({ host: '127.0.0.1', port }),
@@ -235,7 +226,7 @@ describe('Android setup', () => {
   });
 
   it('in the app, uses a running server but starts none at launch, until asked', async () => {
-    const port = await unusedPort();
+    const port = NOTHING_LISTENS;
     const runs: string[] = [];
     const { setup } = setupWith({
       endpoint: () => ({ host: '127.0.0.1', port }),
@@ -253,7 +244,8 @@ describe('Android setup', () => {
   });
 
   it('keeps saying why starting a server failed while it keeps looking', async () => {
-    const port = await unusedPort();
+    // Nothing listens until Android Studio starts a server, on its own port.
+    let port = NOTHING_LISTENS;
     const adb: { path?: string } = {};
     const { setup } = setupWith({
       endpoint: () => ({ host: '127.0.0.1', port }),
@@ -284,19 +276,18 @@ describe('Android setup', () => {
     });
     // Once a server runs (Android Studio's), the old reason is gone, and so it stays.
     const { fake } = await listServer();
-    const forward = net.createServer((s) => s.pipe(net.connect(fake.endpoint.port, '127.0.0.1')).pipe(s));
-    await new Promise<void>((resolve) => forward.listen(port, '127.0.0.1', resolve));
-    cleanup.push(() => void forward.close());
+    port = fake.endpoint.port;
     await expect.poll(() => setup.status().state).toBe('ready');
     expect(setup.status().error).toBeUndefined();
     // When that server goes away later, the old reason doesn't come back.
-    forward.close();
+    port = NOTHING_LISTENS;
     fake.dropAll();
     await expect.poll(() => setup.status().state, { timeout: 5000 }).toBe('no-server');
   });
 
   it('in the app, notices a server Android Studio starts later, starting nothing itself', async () => {
-    const port = await unusedPort();
+    // Nothing listens until Android Studio starts a server, on its own port.
+    let port = NOTHING_LISTENS;
     const runs: string[] = [];
     const { setup } = setupWith({
       endpoint: () => ({ host: '127.0.0.1', port }),
@@ -307,15 +298,13 @@ describe('Android setup', () => {
     await setup.start();
     expect(setup.status().state).toBe('no-server');
     const { fake } = await listServer();
-    const forward = net.createServer((s) => s.pipe(net.connect(fake.endpoint.port, '127.0.0.1')).pipe(s));
-    await new Promise<void>((resolve) => forward.listen(port, '127.0.0.1', resolve));
-    cleanup.push(() => void forward.close());
+    port = fake.endpoint.port;
     await expect.poll(() => setup.status().state).toBe('ready');
     expect(runs).toEqual([]);
   });
 
   it('in the app, starts one at launch when an earlier run left a device set up', async () => {
-    const port = await unusedPort();
+    const port = NOTHING_LISTENS;
     const runs: string[] = [];
     const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-leftover-'));
     cleanup.push(() => rm(dir, { recursive: true, force: true }));
@@ -360,7 +349,7 @@ describe('Android setup', () => {
   });
 
   it('sends nothing new, and never shows “starting”, while it only looks', async () => {
-    const port = await unusedPort();
+    const port = NOTHING_LISTENS;
     const states: string[] = [];
     const setup = new AndroidSetup({
       endpoint: () => ({ host: '127.0.0.1', port }),
@@ -381,7 +370,7 @@ describe('Android setup', () => {
   });
 
   it('in the app, with capture set up but nothing left, starts no server at launch', async () => {
-    const port = await unusedPort();
+    const port = NOTHING_LISTENS;
     const runs: string[] = [];
     const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-empty-'));
     cleanup.push(() => rm(dir, { recursive: true, force: true }));
@@ -401,7 +390,7 @@ describe('Android setup', () => {
   });
 
   it('in the app, with a device left set up and no adb, says so and keeps saying it', async () => {
-    const port = await unusedPort();
+    const port = NOTHING_LISTENS;
     const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-leftover-'));
     cleanup.push(() => rm(dir, { recursive: true, force: true }));
     await new CaptureRecords(dir).write(leftoverRecord());

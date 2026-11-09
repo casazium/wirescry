@@ -7,7 +7,15 @@ import { startBackend, type RunningBackend } from '../src/backend/backend';
 import net from 'node:net';
 import { Composer, validateComposerRequest } from '../src/backend/composer';
 import type { BodyContent, ComposerRequest, ExchangeDetail } from '../src/shared/api';
-import { apiClient, exchangesIn, httpViaProxy, latestExchange, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  httpViaProxy,
+  latestExchange,
+  NOTHING_LISTENS,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 const request = (overrides: Partial<ComposerRequest>): ComposerRequest => ({
   method: 'GET',
@@ -289,14 +297,10 @@ describe('composer', () => {
   });
 
   it('records a server that can’t be reached as a failure, still marked as composed', async () => {
-    const closed = net.createServer();
-    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-    const port = (closed.address() as net.AddressInfo).port;
-    await new Promise((resolve) => closed.close(resolve));
     const api = await apiClient(backend.apiPort);
     const { exchangeId } = await api.send<{ exchangeId: string }>({
       command: 'composeSend',
-      request: request({ url: `http://127.0.0.1:${port}/` }),
+      request: request({ url: `http://127.0.0.1:${NOTHING_LISTENS}/` }),
     });
     await expect
       .poll(() => exchangesIn(api.messages).find((e) => e.id === exchangeId && e.failure))

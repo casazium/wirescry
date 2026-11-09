@@ -9,19 +9,13 @@ import {
   startAdbServer,
 } from '../src/backend/android/adb-server';
 import { loadRecording, startFakeAdb, type FakeAdb } from './fake-adb';
-import { onPickedPort, PORT_TAKEN } from './helpers';
+import { NOTHING_LISTENS, onPickedPort, PORT_TAKEN } from './helpers';
 
 let fake: FakeAdb | undefined;
 afterEach(async () => {
   await fake?.close();
   fake = undefined;
 });
-
-/**
- * A port nothing listens on: tcpmux's, which only root could listen on. A free port picked and
- * given back could be taken by another test file in the meantime.
- */
-const NOTHING_LISTENS = 1;
 
 describe('Finding adb', () => {
   it('looks in the setting, the SDK variables, the default SDK, Homebrew, then PATH (macOS)', () => {

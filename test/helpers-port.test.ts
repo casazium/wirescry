@@ -1,6 +1,7 @@
 /**
- * startBackendOnPickedPort and onPickedPort: a system-picked port can be taken by another test file between being
- * picked and the backend listening on it (seen on CI: EADDRINUSE starting the backend).
+ * Picked ports (startBackendOnPickedPort, onPickedPort): a system-picked port can be taken by
+ * another test file between being picked and being used (seen on CI: EADDRINUSE starting the
+ * backend).
  */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
@@ -14,6 +15,7 @@ import {
   moveProxyToPickedPort,
   onPickedPort,
   PORT_TAKEN,
+  portTaken,
   startBackendOnPickedPort,
   systemPickedPort,
   TOKEN,
@@ -27,11 +29,10 @@ afterEach(async () => {
 
 /** Takes a port, as another test file would after systemPickedPort let it go. */
 async function holdPort(): Promise<number> {
-  const port = await systemPickedPort();
   const holder = net.createServer();
-  await new Promise<void>((resolve) => holder.listen(port, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', resolve));
   cleanup.push(() => new Promise((resolve) => holder.close(resolve)));
-  return port;
+  return (holder.address() as net.AddressInfo).port;
 }
 
 async function newDataDir(): Promise<string> {
@@ -181,20 +182,10 @@ describe('Using a system-picked port', () => {
     expect(tries).toBe(1);
   });
 
-  it('really picks ports from the system, each one free when picked', async () => {
-    const seen: number[] = [];
-    await onPickedPort(async (port) => {
-      seen.push(port);
-      // Free: this test can listen on it.
-      const server = net.createServer();
-      await new Promise<void>((resolve, reject) =>
-        server.once('error', reject).listen(port, '127.0.0.1', resolve),
-      );
-      await new Promise((resolve) => server.close(resolve));
-      return seen.length < 2 ? PORT_TAKEN : port;
-    });
-    expect(seen).toHaveLength(2);
-    expect(seen[0]).not.toBe(seen[1]);
+  it('really picks ports from the system, free when picked', async () => {
+    const port = await onPickedPort(async (port) => ((await portTaken(port)) ? PORT_TAKEN : port));
+    expect(port).toBeGreaterThanOrEqual(1024);
+    expect(port).toBeLessThanOrEqual(65535);
   });
 });
 
@@ -223,7 +214,8 @@ describe('Moving the proxy to a system-picked port', () => {
         return next;
       },
     });
-    expect(picked).toEqual([taken, port]);
+    expect(picked[0]).toBe(taken);
+    expect(picked.at(-1)).toBe(port);
     expect(backend.proxyPort).toBe(port);
     expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
   });

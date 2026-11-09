@@ -14,7 +14,7 @@ import { PluginHost, validateAnnotation } from '../src/backend/plugin-host';
 import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import type { ExchangeSummary } from '../src/shared/api';
-import { apiClient, exchangesIn, httpViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import { apiClient, exchangesIn, httpViaProxy, NOTHING_LISTENS, TOKEN, UI_ORIGIN } from './helpers';
 
 /** Room for slow CI runners (GitHub's Windows ones especially): the default is 1 s. */
 const SLOW_CI = { timeout: 10_000 };
@@ -264,11 +264,7 @@ describe('plugins and finished exchanges', () => {
     const plugin = watcher();
     const b = await start([plugin]);
     await httpViaProxy(b.proxyPort, `http://localhost:${upstream.port}/empty`);
-    const closed = net.createServer();
-    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-    const port = (closed.address() as net.AddressInfo).port;
-    await new Promise((resolve) => closed.close(resolve));
-    await httpViaProxy(b.proxyPort, `http://127.0.0.1:${port}/gone`).catch(() => undefined);
+    await httpViaProxy(b.proxyPort, `http://127.0.0.1:${NOTHING_LISTENS}/gone`).catch(() => undefined);
     await expect
       .poll(() => plugin.completed.map((e) => e.path).sort(), { timeout: 5000 })
       .toEqual(['/empty', '/gone']);

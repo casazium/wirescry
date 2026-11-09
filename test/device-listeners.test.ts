@@ -17,6 +17,7 @@ import {
   moveProxyToPickedPort,
   onPickedPort,
   PORT_TAKEN,
+  portTaken,
   requestViaProxy,
   startBackendOnPickedPort,
   TOKEN,
@@ -247,9 +248,10 @@ describe('Device listeners', () => {
     await onPickedPort(async (free) => {
       const opened = await backend.listeners.open(PIXEL, free);
       await backend.listeners.close(PIXEL.id);
-      // Taken by another test file since it was picked: then it's rightly not reused.
-      if (opened.port !== free) return PORT_TAKEN;
-      expect(opened).toEqual({ port: free });
+      if (opened.port === free) return;
+      // Rightly not reused if another test file took it since it was picked; a bug if not.
+      if (await portTaken(free)) return PORT_TAKEN;
+      throw new Error(`Port ${free} was free, but the listener opened on ${opened.port}`);
     });
 
     // A taken one isn't: it gets another.
