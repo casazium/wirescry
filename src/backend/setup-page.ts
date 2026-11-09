@@ -1,3 +1,5 @@
+import { APP_ICON_SVG } from './app-icon';
+
 /** Hostname the proxy answers itself, for in-browser setup. Never resolved in DNS: only reachable through the proxy. */
 export const SETUP_HOST = 'wirescry.internal';
 
@@ -19,6 +21,7 @@ export function setupPageHtml(userAgent = ''): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Wirescry setup</title>
+<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(APP_ICON_SVG)}">
 <style>
   :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
   body { max-width: 560px; margin: 48px auto; padding: 0 16px; line-height: 1.5; }
