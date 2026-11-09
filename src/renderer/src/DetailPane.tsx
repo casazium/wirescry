@@ -32,6 +32,8 @@ interface Props {
   stale: boolean;
   /** Sections from plugins, shown after the timing. */
   sections?: DetailSection[];
+  /** The response straight after the overview, as Compose shows a request it just sent. */
+  responseFirst?: boolean;
 }
 
 /** A plugin's section in the detail pane. */
@@ -102,6 +104,7 @@ export function DetailPane({
   actions,
   stale,
   sections = [],
+  responseFirst = false,
 }: Props): React.JSX.Element {
   const [loaded, setDetail] = useState<ExchangeDetail>();
   // Only this exchange's details, never the last one's while the next loads.
@@ -205,6 +208,44 @@ export function DetailPane({
       ? Promise.resolve({ ok: false, reason: 'the proxy that had this body restarted.' })
       : (send({ command: 'formatBody', exchangeId: summary.id, side }) as Promise<FormattedBody>);
 
+  // The response as it arrived: headers, then body. Compose puts it first, body first.
+  const responseHeadersBlock = (
+    <>
+      {detail?.responseHeaders && (
+        <details open>
+          <summary>Response headers{byWirescry && ' (sent by Wirescry)'}</summary>
+          <HeaderTable headers={detail.responseHeaders} />
+        </details>
+      )}
+    </>
+  );
+  const responseBodyBlock = (
+    <>
+      {!!responseSize && (
+        <details open>
+          <summary>Response body{byWirescry && ' (sent by Wirescry)'}</summary>
+          <Body
+            state={responseBody}
+            info={detail?.responseBody}
+            format={() => formatBody('response')}
+            onSave={saveBody('response')}
+          />
+        </details>
+      )}
+    </>
+  );
+  const response = responseFirst ? (
+    <>
+      {responseBodyBlock}
+      {responseHeadersBlock}
+    </>
+  ) : (
+    <>
+      {responseHeadersBlock}
+      {responseBodyBlock}
+    </>
+  );
+
   return (
     <aside className="detail" id={DETAIL_PANE_ID} aria-label="Exchange details">
       <div className="detail-header">
@@ -303,13 +344,16 @@ export function DetailPane({
           </dl>
         </section>
 
+        {responseFirst && response}
+
         {timing && (
           <section>
             <h2>Timing</h2>
             <dl className="facts">
               <dt>Request received</dt>
               <dd>{ms(timing.startTimestamp, timing.bodyReceivedTimestamp)}</dd>
-              <dt>Waiting for server</dt>
+              {/* A rule's reply may come from no server at all (a mock, a delay, a pause). */}
+              <dt>{summary.handledBy ? 'Waiting for response' : 'Waiting for server'}</dt>
               <dd>{ms(timing.bodyReceivedTimestamp, timing.headersSentTimestamp)}</dd>
               <dt>Response sent</dt>
               <dd>{ms(timing.headersSentTimestamp, timing.responseSentTimestamp)}</dd>
@@ -361,23 +405,7 @@ export function DetailPane({
             />
           </details>
         )}
-        {detail?.responseHeaders && (
-          <details open>
-            <summary>Response headers{byWirescry && ' (sent by Wirescry)'}</summary>
-            <HeaderTable headers={detail.responseHeaders} />
-          </details>
-        )}
-        {!!responseSize && (
-          <details open>
-            <summary>Response body{byWirescry && ' (sent by Wirescry)'}</summary>
-            <Body
-              state={responseBody}
-              info={detail?.responseBody}
-              format={() => formatBody('response')}
-              onSave={saveBody('response')}
-            />
-          </details>
-        )}
+        {!responseFirst && response}
       </div>
     </aside>
   );

@@ -126,3 +126,51 @@ describe('DetailPane plugin sections', () => {
     expect(screen.queryByText('API spec')).toBeNull();
   });
 });
+
+describe('DetailPane order and timing', () => {
+  /** The pane's headings, in the order shown. */
+  const headings = (): string[] =>
+    [...document.querySelectorAll('aside h2, aside summary')].map((e) => e.textContent ?? '');
+  const shown = async (props: Partial<Parameters<typeof DetailPane>[0]>, s = summary('o')) => {
+    // With a response body, so its section shows.
+    const withBody = { ...detail(s, 'm'), responseBody: { size: 10, stored: 10 } };
+    const send = vi.fn((command: { command: string }) =>
+      command.command === 'getExchange' ? Promise.resolve(withBody) : Promise.resolve(null),
+    );
+    await act(async () => {
+      render(pane({ summary: s, send, ...props }));
+    });
+  };
+
+  it('puts the response first, body then headers, when asked (as Compose does)', async () => {
+    await shown({ responseFirst: true });
+    const order = headings();
+    const at = (name: string) => order.indexOf(name);
+    expect(at('Overview')).toBe(0);
+    expect(at('Response body')).toBe(1);
+    expect(at('Response headers')).toBe(2);
+    expect(at('Timing')).toBeGreaterThan(at('Response headers'));
+    expect(at('Request headers')).toBeGreaterThan(at('Timing'));
+  });
+
+  it('keeps the request before the response otherwise (as Traffic does)', async () => {
+    await shown({});
+    const order = headings();
+    const at = (name: string) => order.indexOf(name);
+    expect(at('Timing')).toBeLessThan(at('Request headers'));
+    expect(at('Request headers')).toBeLessThan(at('Response headers'));
+    expect(at('Response headers')).toBeLessThan(at('Response body'));
+  });
+
+  it('says it waited for the server, unless a rule answered (a mock, a delay or a pause)', async () => {
+    await shown({});
+    expect(screen.getByText('Waiting for server')).toBeTruthy();
+    expect(screen.queryByText('Waiting for response')).toBeNull();
+  });
+
+  it('says it waited for the response when a rule handled the request', async () => {
+    await shown({}, summary('r', { handledBy: { plugin: 'pro', ruleId: 'x', label: 'Mock users' } }));
+    expect(screen.getByText('Waiting for response')).toBeTruthy();
+    expect(screen.queryByText('Waiting for server')).toBeNull();
+  });
+});
