@@ -173,9 +173,13 @@ describe('terminal interception', () => {
     expect(bundle.match(/BEGIN CERTIFICATE/g)!.length).toBeGreaterThan(100);
   });
 
+  // A user's Node.js. Under Electron's Node (npm run test:electron), process.execPath is Electron,
+  // which needs ELECTRON_RUN_AS_NODE to act as Node: these terminals don't pass it on.
+  const userNode = process.versions.electron ? 'node' : process.execPath;
+
   it('Node.js fetch', async () => {
     await expectIntercepted(
-      process.execPath,
+      userNode,
       [
         '-e',
         'fetch(process.argv[1]).then(r => console.log(r.status), e => console.log("ERR", e.cause?.code))',
@@ -187,7 +191,7 @@ describe('terminal interception', () => {
 
   it('Node.js https', async () => {
     await expectIntercepted(
-      process.execPath,
+      userNode,
       [
         '-e',
         'require("https").get(process.argv[1], r => { console.log(r.statusCode); r.resume() }).on("error", e => console.log("ERR", e.code))',
