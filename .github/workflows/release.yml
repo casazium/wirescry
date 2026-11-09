@@ -31,6 +31,7 @@ on:
       - 'scripts/pro-bytecode/**'
       - 'scripts/third-party-notices.mjs'
       - 'scripts/self-test-packaged.mjs'
+      - 'scripts/self-test-result.*'
       - 'e2e/**'
       - 'scripts/notarize-dmg.cjs'
       - 'src/main/**'
