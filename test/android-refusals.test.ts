@@ -102,6 +102,16 @@ describe('Android’s own traffic', () => {
   it('counts the connectivity check’s HTTPS probe host as Android’s, in any case, and nothing else', () => {
     expect(isAndroidSystemHost('www.google.com')).toBe(true);
     expect(isAndroidSystemHost('ConnectivityCheck.GSTATIC.com')).toBe(true);
+    // Play services' own, as measured (including the misspelled one).
+    for (const host of [
+      'play.googleapis.com',
+      'android.googleapis.com',
+      'android.apis.google.com',
+      'proactivebackend-pa.googleapis.com',
+      'voilatile-pa.googleapis.com',
+    ]) {
+      expect(isAndroidSystemHost(host), host).toBe(true);
+    }
     for (const host of ANDROID_SYSTEM_HOSTS) expect(isAndroidSystemHost(host)).toBe(true);
     for (const host of [
       '',
@@ -109,6 +119,11 @@ describe('Android’s own traffic', () => {
       'youtubei.googleapis.com',
       'api.example.com',
       'www.google.com.evil.test',
+      // Hosts apps use too.
+      'www.gstatic.com',
+      'www.googleapis.com',
+      'storage.googleapis.com',
+      'volatile-pa.googleapis.com',
     ]) {
       expect(isAndroidSystemHost(host), host).toBe(false);
     }

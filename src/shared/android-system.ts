@@ -15,6 +15,7 @@ export const ANDROID_SYSTEM_HOSTS = [
   'android.googleapis.com',
   'android.apis.google.com',
   'proactivebackend-pa.googleapis.com',
+  // Spelled as measured (not "volatile").
   'voilatile-pa.googleapis.com',
   // Chrome's Safe Browsing and its relay, and its client services.
   'safebrowsing.googleapis.com',

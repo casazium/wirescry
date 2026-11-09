@@ -79,19 +79,27 @@ const NETWORK_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
 const MANIFEST_ATTRIBUTE = 'android:networkSecurityConfig="@xml/network_security_config"';
 
 /**
- * Where Security settings lead to Encryption & credentials, by Android version (measured on
- * emulators: Security on 11, Security › More security settings on 13, More security & privacy on
- * 17; 14 to 16 not measured, so both names are given).
+ * Where Security settings lead to Encryption & credentials, by Android version. Measured on
+ * emulators: Security on 11 (API 30), Security › More security settings on 13 (API 33), More
+ * security & privacy on 17 (API 37). Not measured: 12 (API 31–32) and 14 to 16 (API 34–36), and a
+ * device whose version isn't known yet, so those get the alternatives too.
  */
 function securityPath(apiLevel: number | undefined): React.JSX.Element {
-  if (apiLevel !== undefined && apiLevel <= 32) {
+  if (apiLevel === 30) {
     return (
       <>
         <strong>Security</strong> ›{' '}
       </>
     );
   }
-  if (apiLevel !== undefined && apiLevel <= 36) {
+  if (apiLevel === 31 || apiLevel === 32) {
+    return (
+      <>
+        <strong>Security</strong> (then <strong>Advanced settings</strong>, if shown) ›{' '}
+      </>
+    );
+  }
+  if (apiLevel === undefined || apiLevel <= 36) {
     return (
       <>
         <strong>Security</strong> (or <strong>Security &amp; privacy</strong>) ›{' '}
@@ -198,8 +206,8 @@ function CertificateSteps({
                   <strong>Advanced</strong> › <strong>Encryption &amp; credentials</strong> ›{' '}
                   <strong>Install from SD card</strong> (or <strong>Install from storage</strong>), then{' '}
                   <span aria-label="the menu">☰</span> › <strong>Downloads</strong> ›{' '}
-                  <strong>Wirescry-CA.crt</strong>, and give it any name. It asks you to set a screen lock
-                  first.
+                  <strong>Wirescry-CA.crt</strong>, and give it any name. If the device has no screen lock, it
+                  asks you to set one first.
                 </>
               ) : (
                 <>
@@ -379,7 +387,7 @@ function DeviceActions({
             </span>
           </p>
           <p className="muted">
-            Android may say its Wi‑Fi has limited connectivity while capturing: its connection check doesn’t
+            Android may say its Wi-Fi has limited connectivity while capturing: its connection check doesn’t
             trust Wirescry. Traffic still flows, and the warning clears soon after you stop.
           </p>
           <label className="checkbox">

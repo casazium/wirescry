@@ -169,6 +169,29 @@ describe('Opening the check and the installed list', () => {
     );
   });
 
+  it('counts am start as opened when Android only warns, or mentions an error mid-line', async () => {
+    const answers: Array<{ stdout: string; stderr: string; exitCode: number }> = [];
+    const io: CertificateIo = {
+      shell: async () => answers.shift() ?? { stdout: '', stderr: '', exitCode: 0 },
+    };
+    // Measured: an activity already running is brought to the front, with a warning, exit 0.
+    answers.push({
+      stdout: 'Starting: Intent { act=android.intent.action.VIEW }\n',
+      stderr: 'Warning: Activity not started, its current task has been brought to the front\n',
+      exitCode: 0,
+    });
+    expect(await certificates(io).openCheck('R58')).toEqual({ browser: 'chrome' });
+    // "Error:" that doesn't start a line (inside an intent's data) isn't an error.
+    answers.push({ stdout: 'Starting: Intent { dat=http://x.test/Error:1 }\n', stderr: '', exitCode: 0 });
+    expect(await certificates(io).openCheck('R58')).toEqual({ browser: 'chrome' });
+    // An error line on stdout (no separate stderr, as over older adb) is one.
+    answers.push(
+      { stdout: 'Error: Activity not started, unable to resolve Intent\n', stderr: '', exitCode: 0 },
+      { stdout: 'Starting: Intent { act=android.intent.action.VIEW }\n', stderr: '', exitCode: 0 },
+    );
+    expect(await certificates(io).openCheck('R58')).toEqual({ browser: 'default' });
+  });
+
   it('isn’t fooled by Android 9’s am start, which exits 0 when nothing opened', async () => {
     phone.amExitsZeroOnError = true;
     phone.apps.delete('com.android.chrome');
