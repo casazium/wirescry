@@ -3,7 +3,7 @@
  * reconnects, the disconnect notification, Resume and the Wi-Fi confirmation, against a fake
  * ADB server playing whole devices.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -154,7 +154,7 @@ describe('Devices coming and going', () => {
     expect(notes[0]![0]).toBe('Android device disconnected while capturing');
     expect(notes[0]![1]).toMatch(/Pixel 8 has no internet until you connect it again/);
     expect(notes[0]![1]).toMatch(/http_proxy :0/);
-    expect(setup.status().notConnected).toEqual([{ label: 'Pixel 8', capturing: true }]);
+    expect(setup.status().notConnected).toMatchObject([{ label: 'Pixel 8', capturing: true }]);
     await sleep(GRACE_MS * 2);
     expect(notes).toHaveLength(1);
   });
@@ -213,7 +213,7 @@ describe('Devices coming and going', () => {
     await expect.poll(() => notes.length).toBe(1);
     expect(notes[0]![0]).toBe('Emulator closed while capturing');
     expect(notes[0]![1]).toMatch(/Pixel 8 API 35 still points at Wirescry/);
-    expect(setup.status().notConnected).toEqual([
+    expect(setup.status().notConnected).toMatchObject([
       { label: 'Pixel 8 API 35', capturing: true, emulator: true },
     ]);
   });
@@ -280,9 +280,44 @@ describe('Resume', () => {
     unplug();
     const { setup, notes } = start();
     await setup.start();
-    await expect.poll(() => setup.status().notConnected).toEqual([{ label: 'Pixel 8', capturing: false }]);
+    await expect
+      .poll(() => setup.status().notConnected)
+      .toMatchObject([{ label: 'Pixel 8', capturing: false }]);
     await sleep(GRACE_MS * 1.5);
     expect(notes).toEqual([]);
+  });
+});
+
+describe('Forget', () => {
+  it('forgets a device left set up that isn’t connected: no note, no record, nothing done to it', async () => {
+    const first = await capturing();
+    first.setup.stop();
+    unplug();
+    const { setup } = start();
+    await setup.start();
+    await expect
+      .poll(() => setup.status().notConnected)
+      .toMatchObject([{ label: 'Pixel 8', capturing: false }]);
+    const before = phone.settings.get('http_proxy');
+    await setup.forgetDevice(first.id);
+    expect(setup.status().notConnected).toBeUndefined();
+    expect((await readdir(dir)).filter((f) => f.endsWith('.json'))).toEqual([]);
+    expect(phone.settings.get('http_proxy')).toBe(before);
+    // Plugged in again, still pointing at 127.0.0.1: offered Clear proxy, like any stray proxy.
+    devices.push(phone);
+    fake.update();
+    await expect.poll(() => setup.status().devices[0]?.strayProxy).toBe(before);
+  });
+
+  it('refuses to forget a device that’s connected, or one it didn’t leave set up', async () => {
+    const first = await capturing();
+    first.setup.stop();
+    const { setup, device } = start();
+    await setup.start();
+    await expect.poll(() => device()?.leftover).toBe(true);
+    await expect(setup.forgetDevice(first.id)).rejects.toThrow('It’s connected: use Restore to put it back.');
+    expect(device()?.leftover).toBe(true);
+    await expect(setup.forgetDevice('f'.repeat(32))).rejects.toThrow(/nothing to forget/);
   });
 });
 

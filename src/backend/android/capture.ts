@@ -291,6 +291,16 @@ export class DeviceCapture {
     ];
   }
 
+  /**
+   * Forgets a device an earlier run left set up, without touching it (it isn't connected). If it
+   * comes back still pointing at 127.0.0.1, Setup offers Clear proxy for it, as for any stray proxy.
+   */
+  async forget(id: string): Promise<void> {
+    if (!this.left.has(id)) throw new Error('Wirescry has nothing to forget for that device.');
+    await this.options.records.remove(id);
+    this.left.delete(id);
+  }
+
   /** Every device currently capturing. */
   capturingIds(): string[] {
     return [...this.active.keys()];

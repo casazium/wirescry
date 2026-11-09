@@ -205,6 +205,13 @@ export class AndroidSetup {
     this.away.clear();
   }
 
+  /** Without a server there's nothing new to send on each retry: only a change is sent. */
+  private setIfChanged(status: AndroidStatus): void {
+    const { notConnected: _ignored, ...shown } = this.current;
+    void _ignored;
+    if (JSON.stringify(shown) !== JSON.stringify(status)) this.set(status);
+  }
+
   private set(status: AndroidStatus): void {
     this.current = this.withNotConnected(status);
     this.watchPresence();
@@ -236,7 +243,12 @@ export class AndroidSetup {
           ? this.away.get(d.id)?.notified
           : status.state === 'ready' && this.listed && !reading && !here.has(d.id),
       )
-      .map(({ label, capturing, emulator }) => ({ label, capturing, ...(emulator ? { emulator } : {}) }));
+      .map(({ id, label, capturing, emulator }) => ({
+        id,
+        label,
+        capturing,
+        ...(emulator ? { emulator } : {}),
+      }));
     return notConnected.length ? { ...rest, notConnected } : rest;
   }
 
@@ -354,15 +366,16 @@ export class AndroidSetup {
     if (server.state !== 'running') {
       this.lines = [];
       if (server.state === 'not-running') {
-        this.set(this.startFailure ?? { state: 'no-server', devices: [] });
+        this.setIfChanged(this.startFailure ?? { state: 'no-server', devices: [] });
       } else {
         const failure: AndroidStatus = {
           state: server.state === 'no-adb' ? 'no-adb' : 'failed',
           error: server.state === 'no-adb' ? noAdb() : server.error,
           devices: [],
         };
-        if (startServer) this.startFailure = failure;
-        this.set(failure);
+        // Only after a start was tried (no adb, or adb failed), not a server that didn't answer.
+        if (startServer && (server.state === 'no-adb' || server.adbPath)) this.startFailure = failure;
+        this.setIfChanged(failure);
       }
       // Keep looking (without starting anything): Android Studio may start a server.
       this.retryLater();
@@ -554,6 +567,15 @@ export class AndroidSetup {
       this.publishDevices();
     }, REFUSALS_PUBLISH_MS);
     this.refusalsTimer.unref?.();
+  }
+
+  /** Forgets a device an earlier run left set up that isn't connected (see DeviceCapture.forget). */
+  async forgetDevice(id: string): Promise<void> {
+    if (!this.capture) throw new Error('Android capture is off.');
+    if (this.readyIds().has(id)) throw new Error('It’s connected: use Restore to put it back.');
+    await this.capture.forget(id);
+    this.publishDevices();
+    this.set(this.current);
   }
 
   /** Copies Wirescry's certificate to a device and opens Security settings there. */

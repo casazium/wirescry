@@ -170,8 +170,8 @@ function CertificateSteps({
         <p role="status">
           Wirescry’s check passed in a browser on this device (Chrome, if it has Chrome), so HTTPS from that
           browser shows in Traffic. Apps trust the certificate only if they say so: see{' '}
-          <strong>Your own app</strong>. {check('Check in Chrome again')} To remove the certificate, open the
-          device’s {showInstalled}.
+          <strong>Your own app</strong>. {check('Check again in the browser')} To remove the certificate, open
+          the device’s {showInstalled}.
         </p>
       ) : (
         <>
@@ -543,30 +543,50 @@ export function AndroidSection({
           </button>{' '}
           <span className="muted">
             Adds to the Traffic search: the connectivity check, Play services and Chrome’s background
-            requests, by host, so from this computer too.
+            requests. It goes by host and address, so it hides them from this computer’s traffic too.
           </span>
         </p>
       )}
-      {android.notConnected?.map((d, i) =>
-        d.emulator ? (
-          <p key={i} className="note" role="status">
-            <span className="device-name">{d.label}</span>{' '}
-            {d.capturing
-              ? 'closed while capturing. Start it again while Wirescry is running and capture carries on.'
-              : 'was left set up last time and isn’t running. Start it while Wirescry is running, then Resume or Restore.'}{' '}
-            Until then it has no internet.
-          </p>
-        ) : (
-          <p key={i} className="note" role="status">
-            <span className="device-name">{d.label}</span>{' '}
-            {d.capturing
-              ? 'was disconnected while capturing. Connect it again and capture carries on.'
-              : 'was left set up last time and isn’t connected. Connect it here, then Resume or Restore.'}{' '}
-            Until then it has no internet, unless you run{' '}
-            <code>adb shell settings put global http_proxy :0</code> with only that device connected.
-          </p>
-        ),
-      )}
+      {android.notConnected?.map((d) => (
+        <div key={d.id}>
+          {d.emulator ? (
+            <p className="note" role="status">
+              <span className="device-name">{d.label}</span>{' '}
+              {d.capturing
+                ? 'closed while capturing. Start it again while Wirescry is running and capture carries on.'
+                : 'was left set up last time and isn’t running. Start it while Wirescry is running, then Resume or Restore.'}{' '}
+              Until then it has no internet.
+            </p>
+          ) : (
+            <p className="note" role="status">
+              <span className="device-name">{d.label}</span>{' '}
+              {d.capturing
+                ? 'was disconnected while capturing. Connect it again and capture carries on.'
+                : 'was left set up last time and isn’t connected. Connect it here, then Resume or Restore.'}{' '}
+              Until then it has no internet, unless you run{' '}
+              <code>adb shell settings put global http_proxy :0</code> with only that device connected.
+            </p>
+          )}
+          {!d.capturing && send && (
+            <p>
+              <button
+                type="button"
+                disabled={!connected}
+                aria-label={`Forget ${d.label}`}
+                onClick={() =>
+                  send({ command: 'androidForget', deviceId: d.id }).catch((e: Error) => setError(e.message))
+                }
+              >
+                Forget
+              </button>{' '}
+              <span className="muted">
+                If it’s gone for good. If it turns up again still pointing at Wirescry, Setup offers Clear
+                proxy for it.
+              </span>
+            </p>
+          )}
+        </div>
+      ))}
       {send && android.state !== 'starting' && (
         <p>
           <button type="button" onClick={checkAgain} disabled={!connected || checking}>

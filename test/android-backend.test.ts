@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CaptureRecords } from '../src/backend/android/capture';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { ProxyStatus, ServerMessage } from '../src/shared/api';
 import { loadRecording, startFakeAdb, type FakeAdb } from './fake-adb';
@@ -99,6 +100,35 @@ describe('Android setup in the backend', () => {
     expect(lastStatus(api.messages)?.android).toBeUndefined();
     await expect(api.send({ command: 'androidRefresh' })).rejects.toThrow('Android setup is off.');
     api.close();
+  });
+
+  it('in the app, stays on for a device left set up even with androidSetup: false', async () => {
+    const closed = await startFakeAdb({ recordings: [] });
+    const port = closed.endpoint.port;
+    await closed.close();
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-android-'));
+    await writeFile(path.join(dataDir, 'settings.json'), JSON.stringify({ androidSetup: false }));
+    await new CaptureRecords(path.join(dataDir, 'android-capture')).write({
+      version: 1,
+      id: 'a'.repeat(32),
+      label: 'Pixel 8',
+      previousProxy: null,
+      devicePort: 40000,
+      hostPort: 40001,
+      startedAt: new Date(0).toISOString(),
+    });
+    await withServerSocket(port, async () => {
+      backend = await startBackend({
+        dataDir,
+        token: TOKEN,
+        allowedOrigins: [UI_ORIGIN],
+        docker: false,
+        android: 'setting',
+      });
+      const api = await apiClient(backend.apiPort);
+      expect(lastStatus(api.messages)?.android).toBeDefined();
+      api.close();
+    });
   });
 
   it('stays off when left out, whatever the setting says (tests never reach a real server)', async () => {

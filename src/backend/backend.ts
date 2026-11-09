@@ -31,6 +31,7 @@ import { detectTerminals, launchTerminal } from './terminals';
 import type { DockerEndpoint } from './docker/endpoint';
 import { DockerSetup } from './docker/setup';
 import { AndroidSetup, type AndroidSetupOptions } from './android/setup';
+import { CaptureRecords } from './android/capture';
 import { findAdb } from './android/adb-server';
 import { certificateSha256 } from './android/certificates';
 import { ANDROID_RECORDS_DIR } from '../shared/ipc';
@@ -426,9 +427,12 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
   // Android devices over the user's ADB server. Started in the background: finding or starting
   // the server can take a few seconds, and nothing else waits for it.
+  // A device an earlier run left set up has no internet until it's put back: Android setup stays
+  // on for it even if the setting turns it off, so Setup can offer Restore.
   const androidOn =
     options.android === 'setting'
-      ? settings.androidSetup !== false
+      ? settings.androidSetup !== false ||
+        (await new CaptureRecords(path.join(dataDir, ANDROID_RECORDS_DIR)).list()).length > 0
       : options.android !== undefined && options.android !== false;
   const androidOptions = typeof options.android === 'object' ? options.android : {};
   android = androidOn
@@ -780,6 +784,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'androidShowCertificates':
         if (!android) throw new Error('Android setup is off.');
         await android.showInstalledCertificates(String(command.deviceId));
+        return undefined;
+      case 'androidForget':
+        if (!android) throw new Error('Android setup is off.');
+        await android.forgetDevice(String(command.deviceId));
         return undefined;
       case 'androidSetLocalAccess':
         if (!android) throw new Error('Android setup is off.');

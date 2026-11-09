@@ -242,7 +242,7 @@ export interface AndroidStatus {
    * Devices Wirescry set up that aren't connected now: they have no internet until they're
    * connected here and put back (or fixed by hand).
    */
-  notConnected?: Array<{ label: string; capturing: boolean; emulator?: boolean }>;
+  notConnected?: Array<{ id: string; label: string; capturing: boolean; emulator?: boolean }>;
 }
 
 /** A device the ADB server lists. Its strings come from the device: show them as text only. */
@@ -375,6 +375,8 @@ export type ClientCommand =
   | { id: number; command: 'androidClearProxy'; deviceId: string }
   /** Whether a device may reach this computer and its local networks while capturing. */
   | { id: number; command: 'androidSetLocalAccess'; deviceId: string; allowed: boolean }
+  /** Forgets a device an earlier run left set up that isn't connected. */
+  | { id: number; command: 'androidForget'; deviceId: string }
   /** Copies Wirescry's certificate to a device's Downloads and opens Security settings there. */
   | { id: number; command: 'androidSendCertificate'; deviceId: string }
   /** Opens Wirescry's setup page in a browser on a capturing device, which checks the certificate is trusted. */
