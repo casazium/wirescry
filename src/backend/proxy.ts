@@ -163,6 +163,30 @@ function recognizeTlsAlerts(server: mockttp.Mockttp): void {
   for (const other of mockttpListeners) listener.on('tlsClientError', other);
 }
 
+/**
+ * Keeps answering a client that closes its side after a whole request, when the request is for an
+ * https:// URL sent in plain text. BusyBox wget, Alpine's, does that for every HTTPS URL through a
+ * proxy: it sends `GET https://…` to http_proxy, then closes its side and waits. Browsers never
+ * send such a request (they tunnel HTTPS with CONNECT), and they cancel a request by closing the
+ * connection, which looks the same; so for any other request a close still means the client gave
+ * up. Node's HTTP server closes our side when the client's closes, so the request is aborted,
+ * unless its undocumented httpAllowHalfOpen is set and the socket is allowHalfOpen. That stays so
+ * for the rest of the connection: only clients that aren't browsers send such a request.
+ */
+function answerHalfClosedHttpsRequests(server: mockttp.Mockttp): void {
+  const listener = (server as unknown as { server?: { _httpServer?: unknown } }).server;
+  const httpServer = listener?._httpServer as (net.Server & { httpAllowHalfOpen?: unknown }) | undefined;
+  if (!httpServer || typeof httpServer.httpAllowHalfOpen !== 'boolean') {
+    throw new Error("Can't set the proxy to answer clients that have finished sending");
+  }
+  // Node keeps the request when the client's side closes; any other request's socket still
+  // closes then (it isn't allowHalfOpen), so the request is still seen as given up.
+  httpServer.httpAllowHalfOpen = true;
+  httpServer.prependListener('request', (req: { url?: string; socket: net.Socket }) => {
+    if (/^https:\/\//i.test(req.url ?? '')) req.socket.allowHalfOpen = true;
+  });
+}
+
 /** Icons browsers ask a site for by name, without being told (iOS Safari for the last two). */
 const ICON_PATHS = new Set(['/favicon.ico', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png']);
 
@@ -779,6 +803,7 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
   let restriction: { stop(): void };
   try {
     recognizeTlsAlerts(server);
+    answerHalfClosedHttpsRequests(server);
     restriction = restrictToLoopback(server, options.acceptConnection);
   } catch (error) {
     await server.stop();
