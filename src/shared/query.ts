@@ -34,12 +34,24 @@ const FIELDS: Record<string, FieldSpec> = {
   type: { kind: 'text', get: (e) => (e.status !== undefined && !e.failure ? exchangeType(e) : undefined) },
   size: { kind: 'size', get: (e) => e.responseSize },
   time: { kind: 'time', get: (e) => e.durationMs },
-  protocol: { kind: 'text', get: (e) => e.protocol },
+  protocol: { kind: 'text', get: (e) => protocolsOf(e) },
   // The label of the plugin rule (e.g. a Pro mock rule) that handled the request.
   rule: { kind: 'text', get: (e) => e.handledBy?.label },
   // Matches the failure's kind (dns, tls, timeout…) or its code (ENOTFOUND…).
   failure: { kind: 'text', get: (e) => (e.failure ? [e.failure.kind, e.failure.code] : undefined) },
 };
+
+/**
+ * The schemes an exchange answers to. A WebSocket is both its own (ws, wss) and HTTP's (http,
+ * https), since it starts as an HTTP request: so `protocol=https` finds secure WebSockets too,
+ * whether captured (stored as wss) or imported (stored as https, marked websocket).
+ */
+function protocolsOf(e: ExchangeSummary): string[] {
+  const scheme = e.protocol.toLowerCase();
+  if (!e.websocket && scheme !== 'ws' && scheme !== 'wss') return [scheme];
+  const secure = scheme === 'https' || scheme === 'wss';
+  return secure ? ['wss', 'https'] : ['ws', 'http'];
+}
 
 const ALIASES: Record<string, string> = {
   code: 'status',
