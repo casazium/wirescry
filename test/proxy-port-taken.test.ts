@@ -4,9 +4,9 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { startBackend, type RunningBackend } from '../src/backend/backend';
+import type { RunningBackend } from '../src/backend/backend';
 import type { ProxyStatus, ServerMessage } from '../src/shared/api';
-import { apiClient, httpViaProxy, systemPickedPort, TOKEN, UI_ORIGIN } from './helpers';
+import { apiClient, httpViaProxy, startBackendOnPickedPort, TOKEN, UI_ORIGIN } from './helpers';
 
 let dataDir: string | undefined;
 let backend: RunningBackend | undefined;
@@ -25,14 +25,14 @@ it.each(['127.0.0.1', '0.0.0.0'])(
   'moves to another port, and says so, when %s on its own is taken during a certificate reset',
   async (host) => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-port-taken-'));
-    const port = await systemPickedPort();
-    backend = await startBackend({
+    // Picked by the system, so no other test file wants it, and retried if one takes it first.
+    backend = await startBackendOnPickedPort({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
-      proxyPort: port,
       docker: false,
     });
+    const port = backend.proxyPort;
     const api = await apiClient(backend.apiPort);
     // Something else grabs the port the moment it's free.
     thief = net.createServer();

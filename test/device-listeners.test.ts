@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as mockttp from 'mockttp';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { startBackend, type RunningBackend } from '../src/backend/backend';
+import type { RunningBackend } from '../src/backend/backend';
 import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import { WebSocketServer } from 'ws';
@@ -15,7 +15,7 @@ import {
   exchangesIn,
   httpViaProxy,
   requestViaProxy,
-  systemPickedPort,
+  startBackendOnPickedPort,
   TOKEN,
   UI_ORIGIN,
 } from './helpers';
@@ -115,9 +115,8 @@ describe('Device listeners', () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-device-listeners-'));
     plugin = rulePlugin();
     stopped = false;
-    backend = await startBackend({
-      // Kept across certificate resets: see systemPickedPort.
-      proxyPort: await systemPickedPort(),
+    // Kept across certificate resets: see startBackendOnPickedPort.
+    backend = await startBackendOnPickedPort({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
@@ -406,9 +405,8 @@ describe('Device listeners, beside the rest of Wirescry', () => {
   beforeEach(async () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-device-beside-'));
     plugin = rulePlugin();
-    backend = await startBackend({
-      // Kept across certificate resets: see systemPickedPort.
-      proxyPort: await systemPickedPort(),
+    // Kept across certificate resets: see startBackendOnPickedPort.
+    backend = await startBackendOnPickedPort({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
