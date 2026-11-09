@@ -132,6 +132,9 @@ export function BodyView({
     const type = (content.contentType ?? 'image/png').split(';')[0]!.trim();
     return `data:${type};base64,${content.base64}`;
   }, [kind, content]);
+  // The image's size in pixels, once it has loaded, for the image it was read from.
+  const [pixels, setPixels] = useState<{ url: string; width: number; height: number }>();
+  const imageSize = pixels && pixels.url === imageUrl ? pixels : undefined;
   // The parent passes a new function on each render; keep the first so formatting runs once.
   const [formatOnce] = useState(() => format);
 
@@ -185,6 +188,11 @@ export function BodyView({
           {formatBytes(content.size)}
           {decoded}
         </span>
+        {imageSize && (
+          <span>
+            {imageSize.width} × {imageSize.height} px
+          </span>
+        )}
         <span className="spacer" />
         {status && (
           <span className="muted" role="status">
@@ -222,7 +230,20 @@ export function BodyView({
       </div>
       {content.decodeError && <div className="note error">{content.decodeError}</div>}
       {content.truncated && <div className="note">Showing the first {formatBytes(bytes.length)}.</div>}
-      {mode === 'formatted' && imageUrl && <img className="body-image" src={imageUrl} alt="Response body" />}
+      {mode === 'formatted' && imageUrl && (
+        <img
+          className="body-image"
+          src={imageUrl}
+          alt="Response body"
+          onLoad={(e) => {
+            const { naturalWidth: width, naturalHeight: height } = e.currentTarget;
+            // An SVG without a size of its own has none to show.
+            // The image as loaded, not as last rendered: a late event can't size the next one.
+            const url = e.currentTarget.getAttribute('src') ?? '';
+            if (width > 0 && height > 0) setPixels({ url, width, height });
+          }}
+        />
+      )}
       {mode === 'formatted' && pretty !== undefined && <pre className="code">{pretty}</pre>}
       {mode === 'formatted' && fields && <FormFields fields={fields} />}
       {mode === 'formatted' && kind === 'code' && text !== undefined && (
