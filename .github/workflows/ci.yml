@@ -72,6 +72,23 @@ jobs:
           # Tests that need the helper fail instead of skipping without it.
           WIRESCRY_REQUIRE_PIPE_HELPER: '1'
 
+  electron:
+    # The backend's tests under Electron's own Node, as the app runs them. It uses BoringSSL, not
+    # OpenSSL, and words TLS errors differently: plain Node missed a bug that came from that.
+    name: Electron runtime (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          # Electron 45 runs Node 24.
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The Docker relay's tests skip here without the pipe helper; the check job runs them.
+      - run: npm run test:electron
+
   smoke:
     # The free app, built and driven end to end (e2e/smoke.test.ts). Release builds run the
     # same test against each packaged app, with Pro.

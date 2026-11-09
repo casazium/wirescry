@@ -67,6 +67,12 @@ The file is readable only by you, starts over past 5 MB (keeping one previous fi
 npm test
 ```
 
+The backend's tests again, under Electron's own Node, which the app runs on. It uses BoringSSL rather than OpenSSL, so TLS errors differ:
+
+```bash
+npm run test:electron
+```
+
 ```bash
 npm run lint
 ```
