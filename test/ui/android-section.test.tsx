@@ -476,7 +476,9 @@ describe('Android section: certificate', () => {
       <AndroidSection status={capturing({ certificate: { trusted: true, sent: true } })} send={send} />,
     );
     expect(
-      screen.getByText(/Chrome on this device trusts Wirescry’s certificate, so HTTPS from Chrome shows/),
+      screen.getByText(
+        /Wirescry’s check passed in a browser on this device \(Chrome, if it has Chrome\), so HTTPS from that browser shows/,
+      ),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Send certificate' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Check in Chrome again' }));
@@ -679,7 +681,9 @@ describe('Android section: connections that refused the certificate', () => {
     expect(screen.getAllByRole('button', { name: HIDE })).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: HIDE }));
     expect(onShowTraffic).toHaveBeenCalledWith(HIDE_ANDROID_SYSTEM_QUERY);
-    expect(screen.getByText(/Adds to the Traffic search/)).toBeTruthy();
+    expect(
+      screen.getByText(/Adds to the Traffic search: .* by host, so from this computer too\./),
+    ).toBeTruthy();
 
     // Nobody capturing, or nowhere to show it: no button.
     rerender(

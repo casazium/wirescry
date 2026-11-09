@@ -5,7 +5,7 @@ import {
   adbCandidates,
   ensureAdbServer,
   findAdb,
-  NO_ADB,
+  noAdb,
   startAdbServer,
 } from '../src/backend/android/adb-server';
 import { loadRecording, startFakeAdb, type FakeAdb } from './fake-adb';
@@ -158,7 +158,14 @@ describe('Starting the ADB server', () => {
       findAdb: () => undefined,
     });
     expect(state).toEqual({ state: 'no-adb' });
-    expect(NO_ADB).toMatch(/Android Studio/);
+    expect(noAdb('darwin')).toMatch(/Android Studio, or with Homebrew \(android-platform-tools\)/);
+    // Homebrew's package is a macOS cask: not suggested elsewhere.
+    for (const platform of ['win32', 'linux'] as const) {
+      expect(noAdb(platform)).toMatch(
+        /Android Studio, or as SDK Platform Tools from developer\.android\.com/,
+      );
+      expect(noAdb(platform)).not.toMatch(/Homebrew/);
+    }
   });
 
   it("doesn't start anything when asked only to look", async () => {

@@ -237,7 +237,8 @@ export function SetupPage({ status, connected, send, onLaunched, onShowTraffic }
           <CopyButton text={curlOnce} />
         </div>
         <p className="muted">
-          Only programs on this computer can use the proxy. Connections from other devices are refused.
+          Only programs on this computer can use the proxy. Connections from other devices are refused, except
+          from Android devices you capture under Android, which reach Wirescry through ADB.
         </p>
       </section>
 

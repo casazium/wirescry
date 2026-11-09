@@ -168,9 +168,10 @@ function CertificateSteps({
     <div className="device-https">
       {trusted ? (
         <p role="status">
-          Chrome on this device trusts Wirescry’s certificate, so HTTPS from Chrome shows in Traffic. Apps
-          trust it only if they say so: see <strong>Your own app</strong>. {check('Check in Chrome again')} To
-          remove the certificate, open the device’s {showInstalled}.
+          Wirescry’s check passed in a browser on this device (Chrome, if it has Chrome), so HTTPS from that
+          browser shows in Traffic. Apps trust the certificate only if they say so: see{' '}
+          <strong>Your own app</strong>. {check('Check in Chrome again')} To remove the certificate, open the
+          device’s {showInstalled}.
         </p>
       ) : (
         <>
@@ -542,7 +543,7 @@ export function AndroidSection({
           </button>{' '}
           <span className="muted">
             Adds to the Traffic search: the connectivity check, Play services and Chrome’s background
-            requests.
+            requests, by host, so from this computer too.
           </span>
         </p>
       )}

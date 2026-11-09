@@ -11,7 +11,7 @@ import {
   type AdbEndpoint,
   type DeviceTracker,
 } from './adb-client';
-import { ensureAdbServer, findAdb, NO_ADB, type RunFile } from './adb-server';
+import { ensureAdbServer, findAdb, noAdb, type RunFile } from './adb-server';
 import { CaptureRecords, DeviceCapture, MANUAL_FIX, type CaptureTarget } from './capture';
 import { DeviceCertificates } from './certificates';
 import { Refusals } from './refusals';
@@ -118,6 +118,11 @@ export class AndroidSetup {
    */
   private readonly refusals = new Refusals();
   private refusalsTimer: NodeJS.Timeout | undefined;
+  /**
+   * Why the last attempt to start a server failed (no adb, or adb failed), kept while none runs:
+   * the retries that follow only look, and would otherwise replace it with "no server".
+   */
+  private startFailure: AndroidStatus | undefined;
 
   constructor(private readonly options: AndroidSetupOptions = {}) {
     if (options.capture) {
@@ -336,7 +341,8 @@ export class AndroidSetup {
     this.listed = false;
     // Read every device afresh after a reconnect or "Check again".
     this.info.clear();
-    if (this.current.state !== 'ready') this.set({ ...this.current, state: 'starting' });
+    // Only when it may start a server: a retry that just looks would flicker the reason away.
+    if (startServer && this.current.state !== 'ready') this.set({ ...this.current, state: 'starting' });
     const server = await ensureAdbServer({
       endpoint,
       start: startServer,
@@ -347,19 +353,22 @@ export class AndroidSetup {
     if (generation !== this.generation) return;
     if (server.state !== 'running') {
       this.lines = [];
-      this.set(
-        server.state === 'not-running'
-          ? { state: 'no-server', devices: [] }
-          : {
-              state: server.state === 'no-adb' ? 'no-adb' : 'failed',
-              error: server.state === 'no-adb' ? NO_ADB : server.error,
-              devices: [],
-            },
-      );
+      if (server.state === 'not-running') {
+        this.set(this.startFailure ?? { state: 'no-server', devices: [] });
+      } else {
+        const failure: AndroidStatus = {
+          state: server.state === 'no-adb' ? 'no-adb' : 'failed',
+          error: server.state === 'no-adb' ? noAdb() : server.error,
+          devices: [],
+        };
+        if (startServer) this.startFailure = failure;
+        this.set(failure);
+      }
       // Keep looking (without starting anything): Android Studio may start a server.
       this.retryLater();
       return;
     }
+    this.startFailure = undefined;
     if (server.started) this.options.log?.(`started the ADB server with ${server.adbPath}`);
     this.retries = 0;
     this.set({

@@ -232,6 +232,49 @@ describe('Android setup', () => {
     expect(runs).toEqual(['/sdk/adb']);
   });
 
+  it('keeps saying why starting a server failed while it keeps looking', async () => {
+    const port = await unusedPort();
+    const adb: { path?: string } = {};
+    const { setup } = setupWith({
+      endpoint: () => ({ host: '127.0.0.1', port }),
+      findAdb: () => adb.path,
+      run: async () => {
+        throw new Error('adb exited with 1');
+      },
+      startServerAtLaunch: false,
+    });
+    await setup.start();
+    expect(setup.status().state).toBe('no-server');
+    // No adb: the reason stays through the retries, which only look.
+    await setup.refresh();
+    expect(setup.status()).toMatchObject({ state: 'no-adb', error: expect.stringMatching(/platform tools/) });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(setup.status()).toMatchObject({ state: 'no-adb' });
+    // adb that fails: the same.
+    adb.path = '/sdk/adb';
+    await setup.refresh();
+    expect(setup.status()).toMatchObject({
+      state: 'failed',
+      error: expect.stringMatching(/adb exited with 1/),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(setup.status()).toMatchObject({
+      state: 'failed',
+      error: expect.stringMatching(/adb exited with 1/),
+    });
+    // Once a server runs (Android Studio's), the old reason is gone, and so it stays.
+    const { fake } = await listServer();
+    const forward = net.createServer((s) => s.pipe(net.connect(fake.endpoint.port, '127.0.0.1')).pipe(s));
+    await new Promise<void>((resolve) => forward.listen(port, '127.0.0.1', resolve));
+    cleanup.push(() => void forward.close());
+    await expect.poll(() => setup.status().state).toBe('ready');
+    expect(setup.status().error).toBeUndefined();
+    // When that server goes away later, the old reason doesn't come back.
+    forward.close();
+    fake.dropAll();
+    await expect.poll(() => setup.status().state, { timeout: 5000 }).toBe('no-server');
+  });
+
   it('in the app, notices a server Android Studio starts later, starting nothing itself', async () => {
     const port = await unusedPort();
     const runs: string[] = [];

@@ -11,9 +11,12 @@ import { adbServerVersion, DEFAULT_ADB_PORT, type AdbEndpoint } from './adb-clie
  * Wi-Fi debugging.
  */
 
-/** Shown when no adb is found. */
-export const NO_ADB =
-  'Install Android platform tools: they come with Android Studio, or with Homebrew (android-platform-tools).';
+/** Shown when no adb is found. Homebrew's android-platform-tools is a macOS cask. */
+export function noAdb(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'darwin'
+    ? 'Install Android platform tools: they come with Android Studio, or with Homebrew (android-platform-tools).'
+    : 'Install Android platform tools: they come with Android Studio, or as SDK Platform Tools from developer.android.com.';
+}
 
 export interface FindAdbOptions {
   /** The user's own choice, from Wirescry's settings. */

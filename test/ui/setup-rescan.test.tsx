@@ -22,6 +22,17 @@ const setupStatus = (browsers: BrowserInfo[]): ProxyStatus => ({
 const renderSetup = (browsers: BrowserInfo[], send: (command: unknown) => Promise<unknown>) =>
   render(<SetupPage status={setupStatus(browsers)} connected send={send as never} onLaunched={() => {}} />);
 
+describe('Setup → Manual setup', () => {
+  it('says only this computer can use the proxy, besides captured Android devices', () => {
+    renderSetup([chrome], vi.fn());
+    expect(
+      screen.getByText(
+        /Only programs on this computer can use the proxy\. Connections from other devices are refused, except from Android devices you capture under Android, which reach Wirescry through ADB\./,
+      ),
+    ).toBeTruthy();
+  });
+});
+
 describe('Setup → Rescan', () => {
   it('says to rescan, not restart, when Firefox is missing', () => {
     renderSetup([chrome], vi.fn());
