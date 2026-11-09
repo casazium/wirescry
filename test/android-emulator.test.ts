@@ -14,6 +14,8 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { Duplex } from 'node:stream';
+import tls from 'node:tls';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { adbEndpoint, adbReverse } from '../src/backend/android/adb-client';
 import { findAdb } from '../src/backend/android/adb-server';
@@ -21,6 +23,26 @@ import type { CaptureRecord } from '../src/backend/android/capture';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { AndroidDevice, ProxyStatus, ServerMessage } from '../src/shared/api';
 import { apiClient, exchangesIn, latestExchange, TOKEN, UI_ORIGIN } from './helpers';
+
+/** TLS alert record: fatal, unknown_ca (RFC 5246 §7.2), in the clear as TLS 1.2 handshakes send it. */
+const UNKNOWN_CA_ALERT = Buffer.from([0x15, 0x03, 0x03, 0x00, 0x02, 0x02, 0x30]);
+
+/** The ClientHello Node sends for a TLS 1.2 connection to `servername`. */
+function clientHello(servername: string): Promise<Buffer> {
+  return new Promise((resolve) => {
+    const capture = new Duplex({
+      read() {},
+      write(chunk: Buffer, _encoding, done) {
+        resolve(Buffer.from(chunk));
+        // Written during tls.connect itself, before `client` is set.
+        setImmediate(() => client.destroy());
+        done();
+      },
+    });
+    const client = tls.connect({ socket: capture, servername, maxVersion: 'TLSv1.2' });
+    client.on('error', () => undefined);
+  });
+}
 
 const SERIAL = process.env.WIRESCRY_ANDROID_DEVICE;
 /** Checks the tunnel often, so a lost one comes back within the test. */
@@ -259,28 +281,33 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
   it(
     'shows the hosts of connections that refuse the certificate, until Stop',
     { timeout: 60_000 },
-    async (context) => {
-      // Chrome trusts only certificates the user installs, and none is, so it refuses
-      // Wirescry's with an alert (measured: cert-rejected). google_apis images have no Chrome.
-      if (!(await adb('shell', 'pm path com.android.chrome || true')).startsWith('package:')) {
-        context.skip('Chrome isn’t installed on this device.');
-      }
+    async () => {
       const id = device()!.id!;
+      // What a TLS client refusing the certificate sends, as Android's do (measured:
+      // cert-rejected): a TLS 1.2 ClientHello naming the host, then the unknown_ca alert once the
+      // proxy has answered. Sent from the device's shell, through its proxy port and tunnel.
+      const host = 'refused.wirescry.test';
+      const hello = await clientHello(host);
+      const octal = (bytes: Buffer): string =>
+        [...bytes].map((b) => `\\${b.toString(8).padStart(3, '0')}`).join('');
       await api.send({ command: 'androidCapture', deviceId: id });
-      await expect.poll(() => device()?.capture).toBeTruthy();
-      expect(device()?.refused).toBeUndefined();
-      // A name under .test: the proxy refuses at TLS, before any lookup.
-      await adb(
-        'shell',
-        'am start -a android.intent.action.VIEW -d https://refused.wirescry.test/ -p com.android.chrome',
-      );
-      await expect
-        .poll(() => device()?.refused?.hosts.map((h) => h.host), { timeout: 20_000 })
-        .toContain('refused.wirescry.test');
-      await api.send({ command: 'androidStop', deviceId: id });
+      try {
+        await expect.poll(() => device()?.capture).toBeTruthy();
+        const { devicePort } = device()!.capture!;
+        await adb(
+          'shell',
+          `(printf 'CONNECT ${host}:443 HTTP/1.1\\r\\nHost: ${host}:443\\r\\n\\r\\n'; sleep 1; ` +
+            `printf '${octal(hello)}'; sleep 2; printf '${octal(UNKNOWN_CA_ALERT)}'; sleep 1) | ` +
+            `nc 127.0.0.1 ${devicePort} > /dev/null`,
+        );
+        await expect
+          .poll(() => device()?.refused?.hosts.map((h) => h.host), { timeout: 20_000 })
+          .toContain(host);
+      } finally {
+        await api.send({ command: 'androidStop', deviceId: id });
+      }
       await expect.poll(() => device()?.capture).toBeUndefined();
       expect(device()?.refused).toBeUndefined();
-      await adb('shell', 'input', 'keyevent', 'HOME');
     },
   );
 
