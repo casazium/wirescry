@@ -222,6 +222,12 @@ export interface ProxyStatus {
   docker: DockerStatus;
   /** Android devices over ADB. Missing while Android setup is off (androidSetup: false). */
   android?: AndroidStatus;
+  /**
+   * HTTPS connections through the proxy (from this computer's programs or its containers) that
+   * refused Wirescry's certificate, since the traffic list was last cleared or the certificate
+   * reset. Missing while there are none. Devices' refusals are on the device (AndroidDevice).
+   */
+  refused?: RefusedConnections;
 }
 
 /** Android setup, as the Setup page shows it. */
@@ -297,6 +303,14 @@ export interface RefusedConnections {
   count: number;
   /** The most frequent hosts first. An empty host is a connection that named none. */
   hosts: Array<{ host: string; count: number }>;
+  /** Set when some hosts weren't kept (past the number kept): `hosts` doesn't name them all. */
+  moreHosts?: true;
+  /**
+   * This computer's only (ProxyStatus.refused): goes up each time they start over (cleared, the
+   * certificate reset, Firefox now trusting it), so the window can tell new refusals from ones
+   * it already showed.
+   */
+  epoch?: number;
 }
 
 /** Docker setup, as the Setup page shows it. */
@@ -343,6 +357,12 @@ export type ClientCommand =
   | { id: number; command: 'launchBrowser'; browserId: string }
   /** Deletes the exchanges with these ids, or every exchange when `ids` is left out. */
   | { id: number; command: 'clear'; ids?: string[] }
+  /**
+   * Forgets the connections that refused the certificate (ProxyStatus.refused): the list was
+   * cleared. `seen`, what the window showed when it was, is taken off, keeping any that came
+   * since; left out, all of them. Ignored if they've started over since `seen`.
+   */
+  | { id: number; command: 'clearRefused'; seen?: RefusedConnections }
   /** Looks for installed browsers again. Replies with the BrowserInfo list, and sends a status. */
   | { id: number; command: 'rescanBrowsers' }
   /** Sends a request from the composer through the proxy. Replies with `{ exchangeId }` once it's recorded. */
