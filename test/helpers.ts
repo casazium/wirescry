@@ -77,6 +77,17 @@ export function exchangesIn(messages: ServerMessage[]): ExchangeSummary[] {
   return messages.flatMap((m) => (m.type === 'exchanges' ? m.exchanges : []));
 }
 
+/**
+ * The newest copy of a matching exchange. The backend sends an exchange again each time it
+ * changes, in batches, so the first copy can predate its status, failure or duration.
+ */
+export function latestExchange(
+  messages: ServerMessage[],
+  match: (exchange: ExchangeSummary) => boolean,
+): ExchangeSummary | undefined {
+  return exchangesIn(messages).findLast(match);
+}
+
 export type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K> : never;
 
 /** Opens an authorized API connection that can send commands and collects pushed messages. */

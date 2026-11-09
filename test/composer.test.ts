@@ -7,7 +7,7 @@ import { startBackend, type RunningBackend } from '../src/backend/backend';
 import net from 'node:net';
 import { Composer, validateComposerRequest } from '../src/backend/composer';
 import type { BodyContent, ComposerRequest, ExchangeDetail } from '../src/shared/api';
-import { apiClient, exchangesIn, httpViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import { apiClient, exchangesIn, httpViaProxy, latestExchange, TOKEN, UI_ORIGIN } from './helpers';
 
 const request = (overrides: Partial<ComposerRequest>): ComposerRequest => ({
   method: 'GET',
@@ -199,7 +199,7 @@ describe('composer', () => {
         command: 'composeSend',
         request: request({ method: 'POST', url: `http://localhost:${plain.port}/echo?paused=1` }),
       });
-      await expect.poll(() => exchangesIn(api.messages).find((e) => e.id === exchangeId)?.status).toBe(201);
+      await expect.poll(() => latestExchange(api.messages, (e) => e.id === exchangeId)?.status).toBe(201);
       const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId });
       expect(detail.summary.composed).toBe(true);
     } finally {
@@ -215,9 +215,7 @@ describe('composer', () => {
       request: request({ url: `https://localhost:${secure.port}/slow` }),
     });
     expect(await api.send({ command: 'composeCancel', exchangeId })).toBe(true);
-    await expect
-      .poll(() => exchangesIn(api.messages).find((e) => e.id === exchangeId)?.failure)
-      .toBeDefined();
+    await expect.poll(() => latestExchange(api.messages, (e) => e.id === exchangeId)?.failure).toBeDefined();
     expect(await api.send({ command: 'composeCancel', exchangeId })).toBe(false);
     api.close();
   });
@@ -231,7 +229,7 @@ describe('composer', () => {
       command: 'composeSend',
       request: request({ method: 'POST', url: `${origin()}/echo` }),
     });
-    await expect.poll(() => exchangesIn(api.messages).find((e) => e.id === exchangeId)?.status).toBe(201);
+    await expect.poll(() => latestExchange(api.messages, (e) => e.id === exchangeId)?.status).toBe(201);
     api.close();
   });
 
@@ -286,7 +284,7 @@ describe('composer', () => {
       command: 'composeSend',
       request: request({ method: 'HEAD', url: `http://localhost:${plain.port}/raw?head=1` }),
     });
-    await expect.poll(() => exchangesIn(api.messages).find((e) => e.id === exchangeId)?.status).toBe(200);
+    await expect.poll(() => latestExchange(api.messages, (e) => e.id === exchangeId)?.status).toBe(200);
     api.close();
   });
 
@@ -359,7 +357,7 @@ describe('composer', () => {
       });
       await expect.poll(() => streamed).toBe(true);
       // The proxy records the status once the response is complete, so until then it's pending.
-      expect(exchangesIn(api.messages).find((e) => e.id === exchangeId)?.durationMs).toBeUndefined();
+      expect(latestExchange(api.messages, (e) => e.id === exchangeId)?.durationMs).toBeUndefined();
       expect(await api.send({ command: 'composeCancel', exchangeId })).toBe(true);
       // The connection is gone: there's nothing left to cancel.
       expect(await api.send({ command: 'composeCancel', exchangeId })).toBe(false);
@@ -390,7 +388,7 @@ describe('composer', () => {
       request: request({ method: 'POST', url: `http://localhost:${plain.port}/echo?done=1` }),
     });
     await expect
-      .poll(() => exchangesIn(api.messages).find((e) => e.id === exchangeId)?.durationMs)
+      .poll(() => latestExchange(api.messages, (e) => e.id === exchangeId)?.durationMs)
       .toBeDefined();
     await expect.poll(() => api.send({ command: 'composeCancel', exchangeId })).toBe(false);
     api.close();

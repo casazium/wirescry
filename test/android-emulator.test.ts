@@ -20,7 +20,7 @@ import { findAdb } from '../src/backend/android/adb-server';
 import type { CaptureRecord } from '../src/backend/android/capture';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { AndroidDevice, ProxyStatus, ServerMessage } from '../src/shared/api';
-import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
+import { apiClient, exchangesIn, latestExchange, TOKEN, UI_ORIGIN } from './helpers';
 
 const SERIAL = process.env.WIRESCRY_ANDROID_DEVICE;
 /** Checks the tunnel often, so a lost one comes back within the test. */
@@ -100,8 +100,7 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
       );
       await expect
         .poll(
-          () =>
-            exchangesIn(api.messages).find((e) => e.host === `127.0.0.1:${backend.apiPort}`)?.failure?.kind,
+          () => latestExchange(api.messages, (e) => e.host === `127.0.0.1:${backend.apiPort}`)?.failure?.kind,
         )
         .toBe('blocked');
       expect(exchangesIn(api.messages).find((e) => e.host === 'wirescry.internal')?.source).toEqual({
