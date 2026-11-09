@@ -21,6 +21,11 @@ const SET_UP_LOOKUP_TIMEOUT_MS = 1000;
 const SET_UP_ADDRESS_TTL_MS = 10_000;
 /** The least time between two lookups of set-up containers' addresses. */
 const LOOKUP_SPACING_MS = 100;
+/**
+ * Why Docker isn't set up on Windows. The pipe helper (#90) passed CI but not yet a hands-on test
+ * with Docker Desktop, so releases leave it off unless settings.json turns it on for testing.
+ */
+export const WINDOWS_NOT_YET = 'Wirescry doesn’t set up Docker on Windows yet.';
 /** Why Docker isn't set up on Windows when the helper that does its pipes (see PipeHelper) isn't there. */
 export const NO_PIPE_HELPER =
   'Wirescry’s Docker helper (wirescry-docker-pipe.exe) is missing. Reinstall Wirescry to set up Docker.';
@@ -50,6 +55,11 @@ export interface DockerSetupOptions {
    * Found next to the app if omitted. Tests also give it elsewhere, where it uses Unix sockets.
    */
   pipeHelper?: string;
+  /**
+   * Windows: set Docker up (through the pipe helper found next to the app). Off unless the
+   * experimentalWindowsDocker setting turns it on; a `pipeHelper` given here (tests) turns it on.
+   */
+  windows?: boolean;
 }
 
 /** The file in the data folder holding the random part of the relay's pipe name on Windows. */
@@ -183,7 +193,7 @@ export class DockerSetup {
     } catch {
       this.endpoint = { kind: 'none' };
     }
-    if (this.endpoint.kind === 'local' && !this.relay) {
+    if (this.endpoint.kind === 'local' && !this.relay && !this.windowsOff()) {
       const address = relayAddress(this.options.dataDir, this.platform);
       // Windows: Node can't serve or use Docker's kind of named pipe fully, so the helper does
       // the pipes (see PipeHelper). Tests give a helper elsewhere too.
@@ -227,8 +237,18 @@ export class DockerSetup {
     return JSON.stringify(this.status()) !== before;
   }
 
+  /** Windows, while Docker setup is left off there (see WINDOWS_NOT_YET): no relay, no DOCKER_HOST. */
+  private windowsOff(): boolean {
+    return this.platform === 'win32' && !this.options.windows && !this.options.pipeHelper;
+  }
+
   status(): DockerStatus {
     const { endpoint } = this;
+    if (this.windowsOff() && endpoint.kind !== 'remote') {
+      return endpoint.kind === 'local'
+        ? { state: 'unsupported', daemon: endpoint.host, error: WINDOWS_NOT_YET, windowsNotYet: true }
+        : { state: 'none', windowsNotYet: true };
+    }
     if (endpoint.kind === 'none') return { state: 'none' };
     if (endpoint.kind === 'remote') return { state: 'remote', daemon: endpoint.host };
     if (!this.relay) return { state: 'failed', daemon: endpoint.host, error: this.error ?? 'Not started.' };
