@@ -646,6 +646,18 @@ button.danger {
   padding: 8px 24px 48px;
 }
 
+/* Setup is mostly prose: room between lines, and buttons a size below the text (copy buttons and
+   tabs keep their own). */
+.setup {
+  line-height: 1.45;
+}
+
+.setup button:not(.link, .small, .tab) {
+  font-size: 12px;
+  line-height: 1.3;
+  padding: 3px 10px;
+}
+
 .setup section {
   max-width: 760px;
   padding: 16px 0;
@@ -1214,6 +1226,31 @@ button.help-button {
 
 .device-https li {
   margin: 6px 0;
+}
+
+/* A button and what it does, side by side: wrapped text lines up with the text, not under the button. */
+.step-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+li > .step-row {
+  margin: 0;
+}
+
+.step-row > button {
+  flex: none;
+}
+
+.step-row > p {
+  margin: 0;
+}
+
+.device-actions label.checkbox {
+  display: block;
+  margin: 8px 0;
 }
 
 .device-https details {

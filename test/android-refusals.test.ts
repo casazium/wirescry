@@ -7,6 +7,7 @@ import http from 'node:http';
 import type net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
 import { Duplex } from 'node:stream';
 import tls from 'node:tls';
 import { generateCACertificate } from 'mockttp';
@@ -14,6 +15,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { cleanHost, MAX_REFUSED_HOSTS, Refusals } from '../src/backend/android/refusals';
 import { AndroidSetup } from '../src/backend/android/setup';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
+import { addOpenSslAlertReason } from '../src/backend/proxy';
 import type { DeviceListeners } from '../src/backend/device-listeners';
 import {
   ANDROID_PROBE_URLS,
@@ -411,9 +413,17 @@ async function handshake(
   });
 }
 
+/** A fatal TLS 1.2 alert record, in the clear. */
+const alertRecord = (description: number): Buffer =>
+  Buffer.from([0x15, 0x03, 0x03, 0x00, 0x02, 0x02, description]);
+
 /** Refuses the certificate with a TLS alert, as Android apps that ignore user certificates do (measured). */
-const refuse = (port: number, host: string, servername = host): Promise<void> =>
-  handshake(port, host, servername, (raw) => raw.end(UNKNOWN_CA_ALERT));
+const refuse = (
+  port: number,
+  host: string,
+  servername = host,
+  alert: Buffer = UNKNOWN_CA_ALERT,
+): Promise<void> => handshake(port, host, servername, (raw) => raw.end(alert));
 
 /** Goes away mid-handshake without a word, as a client dropping a spare connection. */
 const drop = (port: number, host: string): Promise<void> =>
@@ -509,5 +519,151 @@ describe('Refused connections through the backend', () => {
     } finally {
       api.close();
     }
+  });
+});
+
+describe('TLS alerts worded by BoringSSL, as in the app', () => {
+  // Electron's Node is built on BoringSSL, measured November 9, 2026 with Chrome on an API 37
+  // emulator refusing the certificate: code ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN, message
+  // "...:SSL routines:OPENSSL_internal:SSLV3_ALERT_CERTIFICATE_UNKNOWN:...". Node's OpenSSL
+  // says ERR_SSL_TLS_ALERT_CERTIFICATE_UNKNOWN or ERR_SSL_SSL/TLS_ALERT_CERTIFICATE_UNKNOWN
+  // (by version), with the words in lower case.
+  const boringSsl = (code: string): Error & { code: string } =>
+    Object.assign(
+      new Error(`error:10000416:SSL routines:OPENSSL_internal:${code.slice(8)}:tls_record.cc:491`),
+      {
+        code,
+      },
+    );
+
+  it('adds OpenSSL’s words for an alert the client sent', () => {
+    const certificateUnknown = boringSsl('ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN');
+    addOpenSslAlertReason(certificateUnknown);
+    expect(certificateUnknown.message).toMatch(/\(sslv3 alert certificate unknown\)$/);
+    const unknownCa = boringSsl('ERR_SSL_TLSV1_ALERT_UNKNOWN_CA');
+    addOpenSslAlertReason(unknownCa);
+    expect(unknownCa.message).toMatch(/\(tlsv1 alert unknown ca\)$/);
+  });
+
+  it('leaves OpenSSL’s own errors, other failures and anything without a code as they were', () => {
+    const openSsl = Object.assign(new Error('error:0A000416:SSL routines::sslv3 alert certificate unknown'), {
+      code: 'ERR_SSL_SSLV3_ALERT_CERTIFICATE_UNKNOWN',
+    });
+    const others = [
+      openSsl,
+      boringSsl('ERR_SSL_WRONG_VERSION_NUMBER'),
+      boringSsl('ERR_SSL_NO_SHARED_CIPHER'),
+      // Alerts OpenSSL words without "alert": not refusals under Node either.
+      boringSsl('ERR_SSL_TLSV1_ALERT_BAD_CERTIFICATE_STATUS_RESPONSE'),
+      boringSsl('ERR_SSL_TLSV1_ALERT_CERTIFICATE_UNOBTAINABLE'),
+      boringSsl('ERR_SSL_TLSV1_ALERT_BAD_CERTIFICATE_HASH_VALUE'),
+      Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      Object.assign(new Error('SSLV3_ALERT_CERTIFICATE_UNKNOWN'), { code: 42 }),
+      new Error('SSLV3_ALERT_CERTIFICATE_UNKNOWN'),
+    ];
+    const before = others.map((error) => error.message);
+    for (const error of others) addOpenSslAlertReason(error);
+    expect(others.map((error) => error.message)).toEqual(before);
+    expect(() => addOpenSslAlertReason(undefined)).not.toThrow();
+    expect(() => addOpenSslAlertReason({ code: 'ERR_SSL_TLSV1_ALERT_UNKNOWN_CA' })).not.toThrow();
+  });
+
+  describe('through the backend', () => {
+    let backend: RunningBackend | undefined;
+    const emit = EventEmitter.prototype.emit;
+    beforeEach(async () => {
+      // Words every failed handshake's error as Electron's Node does, before anyone reads it.
+      // Patched before the backend starts: the proxy keeps the emit it finds.
+      EventEmitter.prototype.emit = function (
+        this: EventEmitter,
+        event: string | symbol,
+        ...args: unknown[]
+      ) {
+        const error = args[0] as { code?: unknown; message?: string } | undefined;
+        if (
+          event === 'tlsClientError' &&
+          typeof error?.code === 'string' &&
+          error.code.startsWith('ERR_SSL_')
+        ) {
+          // BoringSSL's codes for alerts 40 to 46 say SSLV3 where OpenSSL's say TLS or SSL/TLS,
+          // by version.
+          const code = error.code.replace(/^ERR_SSL_(?:SSL\/)?TLS_ALERT_/, 'ERR_SSL_SSLV3_ALERT_');
+          error.code = code;
+          error.message = boringSsl(code).message;
+        }
+        return emit.call(this, event, ...args);
+      };
+      const endpoint = fake.endpoint;
+      try {
+        backend = await startBackend({
+          dataDir: dir,
+          token: TOKEN,
+          allowedOrigins: [UI_ORIGIN],
+          docker: false,
+          android: { endpoint: () => endpoint, findAdb: () => undefined },
+        });
+      } catch (error) {
+        EventEmitter.prototype.emit = emit;
+        throw error;
+      }
+    });
+    afterEach(async () => {
+      await backend?.stop();
+      backend = undefined;
+      EventEmitter.prototype.emit = emit;
+    });
+
+    const last = (messages: ServerMessage[]): ProxyStatus | undefined =>
+      messages.flatMap((m) => (m.type === 'status' || m.type === 'hello' ? [m.status] : [])).at(-1);
+
+    it('counts refusals, Chrome’s certificate_unknown included, but not other alerts', async () => {
+      const api = await apiClient(backend!.apiPort);
+      try {
+        const device = () => last(api.messages)?.android?.devices[0];
+        await expect.poll(() => device()?.id).toBeTruthy();
+        const id = device()!.id!;
+        await api.send({ command: 'androidCapture', deviceId: id });
+        await expect.poll(() => device()?.capture).toBeTruthy();
+        const { hostPort } = device()!.capture!;
+
+        // handshake_failure (40) says nothing about the certificate.
+        await refuse(hostPort, 'other.example.test', undefined, alertRecord(40));
+        // certificate_unknown (46), as Chrome sends, and unknown_ca (48).
+        await refuse(hostPort, 'example.com', undefined, alertRecord(46));
+        await refuse(hostPort, 'api.example.test', undefined, alertRecord(48));
+        await expect
+          .poll(() => device()?.refused)
+          .toEqual({
+            count: 2,
+            hosts: [
+              { host: 'api.example.test', count: 1 },
+              { host: 'example.com', count: 1 },
+            ],
+          });
+      } finally {
+        api.close();
+      }
+    });
+
+    it('sees the check refused, so the device no longer shows trusted', async () => {
+      const api = await apiClient(backend!.apiPort);
+      try {
+        const device = () => last(api.messages)?.android?.devices[0];
+        await expect.poll(() => device()?.id).toBeTruthy();
+        await api.send({ command: 'androidCapture', deviceId: device()!.id! });
+        await expect.poll(() => device()?.capture).toBeTruthy();
+        const { hostPort } = device()!.capture!;
+        const pem = await readFile(backend!.caCertPath, 'utf8');
+        expect((await requestViaProxy(hostPort, 'https://wirescry.internal:443/check', pem)).status).toBe(
+          200,
+        );
+        await expect.poll(() => device()?.certificate?.trusted).toBe(true);
+        // A refusal the TLS layer reports, not one the connection's closing shows.
+        await refuse(hostPort, 'wirescry.internal', undefined, alertRecord(46));
+        await expect.poll(() => device()?.certificate?.trusted).toBe(false);
+      } finally {
+        api.close();
+      }
+    });
   });
 });

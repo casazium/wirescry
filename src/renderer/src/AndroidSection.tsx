@@ -146,6 +146,7 @@ function CertificateSteps({
   const check = (label: string): React.JSX.Element => (
     <button
       type="button"
+      className="secondary"
       disabled={disabled}
       onClick={() => {
         setCheckNote(undefined);
@@ -170,35 +171,37 @@ function CertificateSteps({
         <p role="status">
           Wirescry’s check passed in a browser on this device (Chrome, if it has Chrome), so HTTPS from that
           browser shows in Traffic. Apps trust the certificate only if they say so: see{' '}
-          <strong>Your own app</strong>. {check('Check again in the browser')} To remove the certificate, open
-          the device’s {showInstalled}.
+          <strong>Your own app</strong>. To remove the certificate, open the device’s {showInstalled}.
         </p>
       ) : (
         <>
           <p>To read this device’s HTTPS traffic, install Wirescry’s certificate on it:</p>
           <ol>
             <li>
-              <button
-                type="button"
-                disabled={disabled}
-                onClick={() =>
-                  run({ command: 'androidSendCertificate', deviceId: id }, (value) => {
-                    const reply = value as { settingsOpened?: boolean } | undefined;
-                    setSentNote(
-                      reply?.settingsOpened
-                        ? 'Sent. Security settings are open on the device.'
-                        : 'Sent. Open Settings on the device.',
-                    );
-                  })
-                }
-              >
-                {device.busy === 'sending' ? 'Sending…' : 'Send certificate'}
-              </button>{' '}
-              <span className="muted" role="status">
-                {sent
-                  ? (sentNote ?? 'Sent to the device’s Downloads.')
-                  : 'Copies it to the device’s Downloads and opens Security settings there.'}
-              </span>
+              <div className="step-row">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={disabled}
+                  onClick={() =>
+                    run({ command: 'androidSendCertificate', deviceId: id }, (value) => {
+                      const reply = value as { settingsOpened?: boolean } | undefined;
+                      setSentNote(
+                        reply?.settingsOpened
+                          ? 'Sent. Security settings are open on the device.'
+                          : 'Sent. Open Settings on the device.',
+                      );
+                    })
+                  }
+                >
+                  {device.busy === 'sending' ? 'Sending…' : 'Send certificate'}
+                </button>
+                <span className="muted" role="status">
+                  {sent
+                    ? (sentNote ?? 'Sent to the device’s Downloads.')
+                    : 'Copies it to the device’s Downloads and opens Security settings there.'}
+                </span>
+              </div>
             </li>
             <li>
               {older ? (
@@ -229,15 +232,18 @@ function CertificateSteps({
               <code className="wrap">{certificate.sha256}</code>.
             </li>
             <li>
-              {check('Check in Chrome')}{' '}
-              <span className="muted">
-                Opens Wirescry’s page on the device. This says so here once Chrome there trusts the
-                certificate. If Chrome shows its welcome screens first, finish them and press this again.
-              </span>
+              <div className="step-row">
+                {check('Check in Chrome')}
+                <span className="muted">
+                  Opens Wirescry’s page on the device. This says so here once Chrome there trusts the
+                  certificate. If Chrome shows its welcome screens first, finish them and press this again.
+                </span>
+              </div>
             </li>
           </ol>
         </>
       )}
+      {trusted && <p>{check('Check again in the browser')}</p>}
       {checkNote && (
         <p className="muted" role="status">
           {checkNote}
@@ -379,14 +385,23 @@ function DeviceActions({
         </>
       ) : device.capture ? (
         <>
-          <p role="status">
-            Capturing.{' '}
-            <span className="muted">
-              {device.emulator
-                ? 'Stop capture before closing the emulator, or it may come back without internet.'
-                : 'Stop capture before unplugging it, or its internet stops until you plug it in again.'}
-            </span>
-          </p>
+          <div className="step-row">
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => run({ command: 'androidStop', deviceId: id })}
+            >
+              {device.busy === 'stopping' ? 'Stopping…' : 'Stop'}
+            </button>
+            <p role="status">
+              Capturing.{' '}
+              <span className="muted">
+                {device.emulator
+                  ? 'Stop capture before closing the emulator, or it may come back without internet.'
+                  : 'Stop capture before unplugging it, or its internet stops until you plug it in again.'}
+              </span>
+            </p>
+          </div>
           <p className="muted">
             Android may say its Wi-Fi has limited connectivity while capturing: its connection check doesn’t
             trust Wirescry. Traffic still flows, and the warning clears soon after you stop.
@@ -402,13 +417,6 @@ function DeviceActions({
             />{' '}
             {LOCAL_ACCESS}
           </label>
-          <button
-            type="button"
-            disabled={disabled}
-            onClick={() => run({ command: 'androidStop', deviceId: id })}
-          >
-            {device.busy === 'stopping' ? 'Stopping…' : 'Stop'}
-          </button>
           <CertificateSteps
             device={device}
             certificate={certificate}
@@ -429,7 +437,7 @@ function DeviceActions({
           <button type="button" disabled={disabled} onClick={() => capture({ wireless: true })}>
             Capture over Wi-Fi
           </button>{' '}
-          <button type="button" onClick={() => setConfirmWireless(false)}>
+          <button type="button" className="secondary" onClick={() => setConfirmWireless(false)}>
             Cancel
           </button>
         </div>
@@ -442,17 +450,17 @@ function DeviceActions({
           <button type="button" disabled={disabled} onClick={() => capture({ replaceProxy: confirm })}>
             Replace and capture
           </button>{' '}
-          <button type="button" onClick={() => setConfirm(undefined)}>
+          <button type="button" className="secondary" onClick={() => setConfirm(undefined)}>
             Cancel
           </button>
         </div>
       ) : (
-        <>
+        <div className="step-row">
           <button type="button" disabled={disabled} onClick={() => capture({ wireless: false })}>
             {device.busy === 'capturing' ? 'Capturing…' : 'Capture'}
-          </button>{' '}
+          </button>
           <span className="muted">Other apps on the device may stop working until you stop capturing.</span>
-        </>
+        </div>
       )}
       {(error ?? device.note) && (
         <p className={error ? 'note error' : 'muted'} role={error ? 'alert' : undefined}>
@@ -571,6 +579,7 @@ export function AndroidSection({
             <p>
               <button
                 type="button"
+                className="secondary"
                 disabled={!connected}
                 aria-label={`Forget ${d.label}`}
                 onClick={() =>
@@ -589,7 +598,12 @@ export function AndroidSection({
       ))}
       {send && android.state !== 'starting' && (
         <p>
-          <button type="button" onClick={checkAgain} disabled={!connected || checking}>
+          <button
+            type="button"
+            className={android.state === 'no-server' ? undefined : 'secondary'}
+            onClick={checkAgain}
+            disabled={!connected || checking}
+          >
             {checking
               ? android.state === 'no-server'
                 ? 'Starting…'
@@ -605,13 +619,16 @@ export function AndroidSection({
           {error}
         </p>
       )}
-      <p className="muted">
-        Capture sends the device’s HTTP and HTTPS traffic through Wirescry, and Stop puts the device back as
-        it was. HTTPS stays unreadable until the device trusts Wirescry’s certificate: the steps show while
-        capturing. Wirescry uses the ADB server Android Studio uses; it starts one with your adb only when you
-        ask, or to put back a device it left set up. If a device is left without internet, run{' '}
-        <code>adb shell settings put global http_proxy :0</code>.
-      </p>
+      <details className="coverage">
+        <summary>How it works</summary>
+        <p>
+          Capture sends the device’s HTTP and HTTPS traffic through Wirescry, and Stop puts the device back as
+          it was. HTTPS stays unreadable until the device trusts Wirescry’s certificate: the steps show while
+          capturing. Wirescry uses the ADB server Android Studio uses; it starts one with your adb only when
+          you ask, or to put back a device it left set up. If a device is left without internet, run{' '}
+          <code>adb shell settings put global http_proxy :0</code>.
+        </p>
+      </details>
     </section>
   );
 }
