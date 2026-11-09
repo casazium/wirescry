@@ -506,6 +506,13 @@ button.icon {
   font-variant-numeric: tabular-nums;
 }
 
+/* A redirect's URL can be long, and has no spaces to wrap at. */
+.facts dd.redirect,
+.facts dd.redirect button.link {
+  word-break: break-all;
+  text-align: left;
+}
+
 table.headers {
   width: 100%;
   border-collapse: collapse;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   BodyContent,
   BodyInfo,
@@ -13,6 +13,7 @@ import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
 import { bodyFileName } from './body-file-name';
 import { curlCommand } from './curl-command';
+import { redirectTarget } from './redirect';
 import { WebSocketMessagesView } from './WebSocketMessagesView';
 import { DETAIL_PANE_ID } from './Splitter';
 
@@ -34,6 +35,10 @@ interface Props {
   sections?: DetailSection[];
   /** The response straight after the overview, as Compose shows a request it just sent. */
   responseFirst?: boolean;
+  /** The captured request that followed a redirect to `target`, if there is one. */
+  followingRequest?(target: string): ExchangeSummary | undefined;
+  /** Shows another request's details, e.g. the one a redirect led to. */
+  onSelectExchange?(id: string): void;
 }
 
 /** A plugin's section in the detail pane. */
@@ -105,12 +110,16 @@ export function DetailPane({
   stale,
   sections = [],
   responseFirst = false,
+  followingRequest,
+  onSelectExchange,
 }: Props): React.JSX.Element {
   const [loaded, setDetail] = useState<ExchangeDetail>();
   // Only this exchange's details, never the last one's while the next loads.
   const detail = loaded?.summary.id === summary.id ? loaded : undefined;
   const [bodies, setBodies] = useState<Record<string, BodyState>>({});
   const [copied, setCopied] = useState<string>();
+  // Where keyboard focus goes after following a redirect: the link itself goes away.
+  const overviewHeading = useRef<HTMLHeadingElement>(null);
 
   // Refetch when the summary changes, e.g. when the response arrives.
   useEffect(() => {
@@ -126,6 +135,8 @@ export function DetailPane({
     };
   }, [send, summary, stale]);
 
+  const redirect = detail?.responseHeaders ? redirectTarget(summary, detail.responseHeaders) : undefined;
+  const followed = redirect && onSelectExchange ? followingRequest?.(redirect) : undefined;
   const requestSize = detail?.requestBody?.size;
   const responseSize = detail?.responseBody?.size;
   // The server never answered, so the response shown is the error reply Wirescry sent.
@@ -301,7 +312,9 @@ export function DetailPane({
           </p>
         )}
         <section>
-          <h2>Overview</h2>
+          <h2 ref={overviewHeading} tabIndex={-1}>
+            Overview
+          </h2>
           <dl className="facts">
             <dt>Status</dt>
             <dd>
@@ -311,6 +324,28 @@ export function DetailPane({
                   ? `${summary.status} ${summary.statusMessage ?? ''}`
                   : 'Waiting for response'}
             </dd>
+            {redirect && (
+              <>
+                <dt>Redirects to</dt>
+                <dd className="redirect">
+                  {followed ? (
+                    <button
+                      type="button"
+                      className="link"
+                      title="Show the request that followed it"
+                      onClick={() => {
+                        onSelectExchange!(followed.id);
+                        overviewHeading.current?.focus();
+                      }}
+                    >
+                      {redirect}
+                    </button>
+                  ) : (
+                    redirect
+                  )}
+                </dd>
+              </>
+            )}
             {summary.closeCode !== undefined && (
               <>
                 <dt>Closed</dt>

@@ -245,4 +245,39 @@ describe('BodyView', () => {
     // Not text, so only its hex dump.
     expect(document.querySelector('pre.code.hex')?.textContent).toMatch(/^00000000 /);
   });
+
+  describe('an image', () => {
+    const PNG = content('not really a png', 'image/png');
+    /** Loads the shown image as if it were `width` by `height` pixels. */
+    const load = (width: number, height: number) => {
+      const img = document.querySelector('img.body-image')!;
+      Object.defineProperty(img, 'naturalWidth', { value: width, configurable: true });
+      Object.defineProperty(img, 'naturalHeight', { value: height, configurable: true });
+      fireEvent.load(img);
+    };
+
+    it('shows its size in pixels once it has loaded, and keeps it in Hex', () => {
+      render(<BodyView content={PNG} format={noFormat} />);
+      expect(screen.queryByText(/ px$/)).toBeNull();
+      load(1200, 630);
+      expect(screen.getByText('1200 × 630 px')).toBeTruthy();
+      fireEvent.click(screen.getByText('Hex'));
+      expect(screen.getByText('1200 × 630 px')).toBeTruthy();
+    });
+
+    it('shows no size for an image without one (an SVG with no width or height)', () => {
+      render(<BodyView content={content('<svg/>', 'image/svg+xml')} format={noFormat} />);
+      load(0, 0);
+      expect(screen.queryByText(/ px$/)).toBeNull();
+    });
+
+    it('doesn’t show one image’s size for the next', () => {
+      const view = render(<BodyView content={PNG} format={noFormat} />);
+      load(1200, 630);
+      view.rerender(<BodyView content={content('another', 'image/jpeg')} format={noFormat} />);
+      expect(screen.queryByText('1200 × 630 px')).toBeNull();
+      load(64, 64);
+      expect(screen.getByText('64 × 64 px')).toBeTruthy();
+    });
+  });
 });

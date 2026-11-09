@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ExchangeDetail } from '../../src/shared/api';
 import { DetailPane } from '../../src/renderer/src/DetailPane';
@@ -172,5 +172,79 @@ describe('DetailPane order and timing', () => {
     await shown({}, summary('r', { handledBy: { plugin: 'pro', ruleId: 'x', label: 'Mock users' } }));
     expect(screen.getByText('Waiting for response')).toBeTruthy();
     expect(screen.queryByText('Waiting for server')).toBeNull();
+  });
+});
+
+describe('DetailPane redirects', () => {
+  const redirect = summary('old', { status: 302, statusMessage: 'Found', url: 'https://api.test/old' });
+  const withLocation = (location: string): ExchangeDetail => ({
+    ...detail(redirect, 'x'),
+    responseHeaders: [['Location', location]],
+  });
+  const next = summary('new', { url: 'https://api.test/new', startedAt: 5 });
+
+  it('links to the request that followed, and shows it when clicked', async () => {
+    const onSelectExchange = vi.fn();
+    const followingRequest = vi.fn((target: string) =>
+      target === 'https://api.test/new' ? next : undefined,
+    );
+    render(
+      pane({
+        summary: redirect,
+        send: vi.fn(async () => withLocation('/new')),
+        followingRequest,
+        onSelectExchange,
+      }),
+    );
+    await act(async () => undefined);
+    // Location is resolved against the request's URL before it's looked up.
+    expect(followingRequest).toHaveBeenCalledWith('https://api.test/new');
+    const link = screen.getByRole('button', { name: 'https://api.test/new' });
+    expect(link.closest('dd')?.previousElementSibling?.textContent).toBe('Redirects to');
+    fireEvent.click(link);
+    expect(onSelectExchange).toHaveBeenCalledWith('new');
+  });
+
+  it('shows where it points, without a link, when no request followed it', async () => {
+    render(
+      pane({
+        summary: redirect,
+        send: vi.fn(async () => withLocation('https://elsewhere.test/x')),
+        followingRequest: () => undefined,
+        onSelectExchange: vi.fn(),
+      }),
+    );
+    await act(async () => undefined);
+    expect(document.querySelector('dd.redirect')?.textContent).toBe('https://elsewhere.test/x');
+    expect(document.querySelector('dd.redirect')?.previousElementSibling?.textContent).toBe('Redirects to');
+    expect(screen.queryByRole('button', { name: 'https://elsewhere.test/x' })).toBeNull();
+  });
+
+  it('shows where it points, without a link, where it can’t show another request (Compose)', async () => {
+    render(
+      pane({
+        summary: redirect,
+        send: vi.fn(async () => withLocation('/new')),
+        followingRequest: () => next,
+      }),
+    );
+    await act(async () => undefined);
+    expect(document.querySelector('dd.redirect')?.textContent).toBe('https://api.test/new');
+    expect(document.querySelector('dd.redirect')?.previousElementSibling?.textContent).toBe('Redirects to');
+    expect(screen.queryByRole('button', { name: 'https://api.test/new' })).toBeNull();
+  });
+
+  it('says nothing for a response that isn’t a redirect, even with a Location', async () => {
+    const created = summary('made', { status: 201 });
+    render(
+      pane({
+        summary: created,
+        send: vi.fn(async () => ({ ...detail(created, 'x'), responseHeaders: [['Location', '/items/7']] })),
+        followingRequest: () => next,
+        onSelectExchange: vi.fn(),
+      }),
+    );
+    await act(async () => undefined);
+    expect(screen.queryByText('Redirects to')).toBeNull();
   });
 });

@@ -20,6 +20,7 @@ import {
 } from './composer-request';
 import { uiPlugins } from '@wirescry/pro/ui';
 import { PLUGIN_API_VERSION } from '../../plugin-api/version';
+import { followingRequest } from './redirect';
 import { SetupPage } from './SetupPage';
 import { loadDetailSize, saveDetailSize, useStacked } from './detail-size';
 import { Splitter } from './Splitter';
@@ -862,6 +863,9 @@ export function App(): React.JSX.Element {
                 actions={actionsFor(selected)}
                 stale={staleIds.has(selected.id)}
                 sections={sectionsFor(selected)}
+                // Only what the list shows: a request the search hides would open with no row to go with it.
+                followingRequest={(target) => followingRequest(rows, selected, target)}
+                onSelectExchange={setSelectedId}
               />
             </>
           )}
