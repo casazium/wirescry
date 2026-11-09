@@ -178,6 +178,20 @@ export interface FakeDeviceState {
   transportId?: number;
   /** Its shell commands fail (exit code 1), as on a device too busy to answer. */
   failShell?: boolean;
+  /** Files in shared storage, by path; `tee` writes, `cat` reads, `rm -f` removes. */
+  files: Map<string, string>;
+  /** What `am get-current-user` prints; undefined: the command fails, as on old Android. */
+  currentUser?: string;
+  /** Apps installed, by package: `am start -p` fails for others (exit 1, as measured). */
+  apps: Set<string>;
+  /** Whether some browser opens http URLs (`am start -a VIEW` without a package). */
+  browser: boolean;
+  /** Intents `am start` opened, as their arguments. */
+  started: string[];
+  /** The sizes of the stdin packets the last `tee` got. */
+  stdinPackets?: number[];
+  /** Called with each shell command as it arrives, before it's answered. */
+  onCommand?: (command: string) => void;
 }
 
 export function fakeDeviceState(serial = 'R58', props: Record<string, string> = {}): FakeDeviceState {
@@ -198,16 +212,70 @@ export function fakeDeviceState(serial = 'R58', props: Record<string, string> = 
     rules: [],
     loopbackRules: new Map(),
     commands: [],
+    files: new Map(),
+    currentUser: '0',
+    apps: new Set(['com.android.chrome', 'com.android.settings']),
+    browser: true,
+    started: [],
   };
+}
+
+/** Shared storage the shell user may write, as measured: each user's Download folder. */
+const WRITABLE = /^\/storage\/emulated\/\d+\/Download\/[^/]+$/;
+
+/** A device's answer to an am start command (measured on API 37: exit 1 when nothing opens it). */
+function amStart(device: FakeDeviceState, args: string): Buffer {
+  const pkg = / -p (\S+)/.exec(args)?.[1];
+  const action = /-a (\S+)/.exec(args)?.[1] ?? '';
+  const opens = pkg
+    ? device.apps.has(pkg)
+    : action.startsWith('android.settings.') || action.startsWith('com.android.settings.')
+      ? device.apps.has('com.android.settings')
+      : action === 'android.intent.action.VIEW' && device.browser;
+  if (!opens) return shellPackets('Error: Activity not started, unable to resolve Intent\n', 1);
+  device.started.push(args);
+  return shellPackets(`Starting: Intent { act=${action} }\n`);
+}
+
+/** Takes stdin packets until "close stdin", then calls `done` with what came. */
+function readStdin(socket: net.Socket, done: (input: Buffer, packets: number[]) => void): void {
+  let pending = Buffer.alloc(0);
+  const input: Buffer[] = [];
+  const sizes: number[] = [];
+  socket.on('data', (chunk: Buffer) => {
+    pending = Buffer.concat([pending, chunk]);
+    while (pending.length >= 5) {
+      const id = pending[0]!;
+      const length = pending.readUInt32LE(1);
+      if (pending.length < 5 + length) return;
+      const data = pending.subarray(5, 5 + length);
+      pending = pending.subarray(5 + length);
+      if (id === 0) {
+        input.push(data);
+        sizes.push(length);
+      } else if (id === 4) {
+        done(Buffer.concat(input), sizes);
+        return;
+      }
+    }
+  });
 }
 
 const frame = (text: string): string => `${Buffer.byteLength(text).toString(16).padStart(4, '0')}${text}`;
 
-function shellPackets(stdout: string, exitCode = 0): Buffer {
-  const out = Buffer.from(stdout);
-  const head = Buffer.from([1, 0, 0, 0, 0]);
-  head.writeUInt32LE(out.length, 1);
-  return Buffer.concat([Buffer.from('OKAY'), head, out, Buffer.from([3, 1, 0, 0, 0, exitCode])]);
+function shellPackets(stdout: string, exitCode = 0, stderr = ''): Buffer {
+  const packet = (id: number, text: string): Buffer => {
+    const data = Buffer.from(text);
+    const head = Buffer.from([id, 0, 0, 0, 0]);
+    head.writeUInt32LE(data.length, 1);
+    return Buffer.concat([head, data]);
+  };
+  return Buffer.concat([
+    Buffer.from('OKAY'),
+    packet(1, stdout),
+    ...(stderr ? [packet(2, stderr)] : []),
+    Buffer.from([3, 1, 0, 0, 0, exitCode]),
+  ]);
 }
 
 /**
@@ -257,9 +325,43 @@ export async function startDeviceServer(
       if (shell) {
         const command = shell[1]!;
         device.commands.push(command);
+        device.onCommand?.(command);
         if (device.failShell) return (void socket.end(shellPackets('', 1)), true);
         const get = /^settings get global (\S+)$/.exec(command);
-        if (command === 'getprop') {
+        const tee = /^tee (\S+)$/.exec(command);
+        const cat = /^cat (\S+)$/.exec(command);
+        const rm = /^rm -f (\S+)$/.exec(command);
+        const am = /^am start (.+)$/.exec(command);
+        if (tee) {
+          socket.write('OKAY');
+          readStdin(socket, (input, packets) => {
+            device.stdinPackets = packets;
+            if (!WRITABLE.test(tee[1]!)) {
+              socket.end(shellPackets('', 1, `tee: ${tee[1]}: Permission denied\n`).subarray(4));
+              return;
+            }
+            device.files.set(tee[1]!, input.toString('utf8'));
+            socket.end(shellPackets(input.toString('utf8')).subarray(4));
+          });
+        } else if (cat) {
+          const file = device.files.get(cat[1]!);
+          socket.end(
+            file === undefined
+              ? shellPackets('', 1, `cat: ${cat[1]}: No such file or directory\n`)
+              : shellPackets(file),
+          );
+        } else if (rm) {
+          device.files.delete(rm[1]!);
+          socket.end(shellPackets(''));
+        } else if (command === 'am get-current-user') {
+          socket.end(
+            device.currentUser === undefined
+              ? shellPackets('', 255, 'Unknown command: get-current-user\n')
+              : shellPackets(`${device.currentUser}\n`),
+          );
+        } else if (am) {
+          socket.end(amStart(device, am[1]!));
+        } else if (command === 'getprop') {
           socket.end(
             shellPackets(
               Object.entries(device.props)

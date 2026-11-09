@@ -1202,3 +1202,20 @@ button.help-button {
 .device-actions p {
   margin: 4px 0;
 }
+
+.device-https {
+  margin-top: 10px;
+}
+
+.device-https ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.device-https li {
+  margin: 6px 0;
+}
+
+.device-https details {
+  margin-top: 8px;
+}

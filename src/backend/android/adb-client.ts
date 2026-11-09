@@ -351,11 +351,16 @@ export interface ShellResult {
 }
 
 /** Shell protocol packet ids (AOSP shell_protocol.h; measured: stdout 1, stderr 2, exit 3, close stdin 4). */
+const SHELL_STDIN = 0;
 const SHELL_STDOUT = 1;
 const SHELL_STDERR = 2;
 const SHELL_EXIT = 3;
 const SHELL_CLOSE_STDIN = 4;
 const MAX_SHELL_OUTPUT = 1024 * 1024;
+/** Input is sent in packets of at most this size, well under any buffer adbd reads them into. */
+const SHELL_INPUT_CHUNK = 4096;
+/** Input Wirescry sends is a certificate: a few kilobytes. */
+const MAX_SHELL_INPUT = 64 * 1024;
 const MAX_SHELL_PACKETS = 10_000;
 /** A shell command may take this many answer timeouts in all. */
 const SHELL_TOTAL_TIMEOUT_FACTOR = 2;
@@ -367,17 +372,19 @@ const SHELL_TOTAL_TIMEOUT_FACTOR = 2;
 const SAFE_COMMAND = /^[A-Za-z0-9_.:/=,@+ -]+$/;
 
 /**
- * Runs a command on a device with the shell protocol (shell,v2: Android 7+), with stdin closed.
- * `serial` is the transport serial from the device list.
+ * Runs a command on a device with the shell protocol (shell,v2: Android 7+). `input`, if given,
+ * is its stdin; then stdin is closed. `serial` is the transport serial from the device list.
  */
 export async function adbShell(
   endpoint: AdbEndpoint,
   serial: string,
   command: string,
-  options?: AdbOptions,
+  options?: AdbOptions & { input?: Buffer },
 ): Promise<ShellResult> {
   if (!SAFE_COMMAND.test(command))
     throw new AdbError(`Refusing to run "${printable(command)}" on the device.`);
+  const input = options?.input ?? Buffer.alloc(0);
+  if (input.length > MAX_SHELL_INPUT) throw new AdbError('Too much input for a device command.');
   if (!/^[\x21-\x7e]+$/.test(serial)) throw new AdbError('Bad device serial.');
   const connection = await request(endpoint, `host:tport:serial:${serial}`, options);
   try {
@@ -387,6 +394,13 @@ export async function adbShell(
     await connection.read(8);
     connection.send(`shell,v2,raw:${command}`);
     await connection.expectOkay();
+    for (let at = 0; at < input.length; at += SHELL_INPUT_CHUNK) {
+      const chunk = input.subarray(at, at + SHELL_INPUT_CHUNK);
+      const head = Buffer.alloc(5);
+      head[0] = SHELL_STDIN;
+      head.writeUInt32LE(chunk.length, 1);
+      connection.write(Buffer.concat([head, chunk]));
+    }
     connection.write(Buffer.from([SHELL_CLOSE_STDIN, 0, 0, 0, 0]));
     const out: Buffer[] = [];
     const err: Buffer[] = [];

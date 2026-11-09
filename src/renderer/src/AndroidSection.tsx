@@ -2,10 +2,183 @@ import { useState } from 'react';
 import type { AndroidDevice, ProxyStatus } from '../../shared/api';
 import type { Command } from './api-client';
 
+type CopyButtonType = (props: { text: string }) => React.JSX.Element;
+
 interface Props {
   status: ProxyStatus;
   connected?: boolean;
   send?: (command: Command) => Promise<unknown>;
+  CopyButton?: CopyButtonType;
+}
+
+/**
+ * Lets a debug build trust user-installed certificates (Android 7+ apps don't by default):
+ * debug-overrides apply only while android:debuggable is true, and add to the app's other trust
+ * anchors (developer.android.com/privacy-and-security/security-config).
+ */
+const NETWORK_CONFIG = `<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>
+`;
+const MANIFEST_ATTRIBUTE = 'android:networkSecurityConfig="@xml/network_security_config"';
+
+/** Getting the device to trust Wirescry's certificate, and the app snippet. */
+function CertificateSteps({
+  device,
+  certificate,
+  disabled,
+  run,
+  CopyButton,
+}: {
+  device: AndroidDevice;
+  certificate: ProxyStatus['certificate'];
+  disabled: boolean;
+  run: (command: Command, then?: (value: unknown) => void) => void;
+  CopyButton?: CopyButtonType;
+}): React.JSX.Element | null {
+  const [sentNote, setSentNote] = useState<string>();
+  const [checkNote, setCheckNote] = useState<string>();
+  const id = device.id;
+  if (!id || !device.certificate) return null;
+  const { trusted, sent } = device.certificate;
+  const showInstalled = (
+    <button
+      type="button"
+      className="link"
+      disabled={disabled}
+      onClick={() => run({ command: 'androidShowCertificates', deviceId: id })}
+    >
+      installed certificates
+    </button>
+  );
+  const check = (label: string): React.JSX.Element => (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => {
+        setCheckNote(undefined);
+        run({ command: 'androidCheckCertificate', deviceId: id }, (value) => {
+          const reply = value as { browser?: string } | undefined;
+          setCheckNote(
+            reply?.browser === 'default'
+              ? 'Opened in the device’s default browser, as it has no Chrome. A browser other than Chrome may not use certificates installed in Settings.'
+              : undefined,
+          );
+        });
+      }}
+    >
+      {label}
+    </button>
+  );
+  // Android 11 moved installing CA certificates into its own screen (API 30).
+  const older = device.apiLevel !== undefined && device.apiLevel < 30;
+  return (
+    <div className="device-https">
+      {trusted ? (
+        <p role="status">
+          Chrome on this device trusts Wirescry’s certificate, so HTTPS from Chrome shows in Traffic. Apps
+          trust it only if they say so: see <strong>Your own app</strong>. {check('Check in Chrome again')} To
+          remove the certificate, open the device’s {showInstalled}.
+        </p>
+      ) : (
+        <>
+          <p>To read this device’s HTTPS traffic, install Wirescry’s certificate on it:</p>
+          <ol>
+            <li>
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() =>
+                  run({ command: 'androidSendCertificate', deviceId: id }, (value) => {
+                    const reply = value as { settingsOpened?: boolean } | undefined;
+                    setSentNote(
+                      reply?.settingsOpened
+                        ? 'Sent. Security settings are open on the device.'
+                        : 'Sent. Open Settings on the device.',
+                    );
+                  })
+                }
+              >
+                {device.busy === 'sending' ? 'Sending…' : 'Send certificate'}
+              </button>{' '}
+              <span className="muted" role="status">
+                {sent
+                  ? (sentNote ?? 'Sent to the device’s Downloads.')
+                  : 'Copies it to the device’s Downloads and opens Security settings there.'}
+              </span>
+            </li>
+            <li>
+              {older ? (
+                <>
+                  On the device: <strong>Security</strong> (on some devices, <strong>Security</strong> ›{' '}
+                  <strong>Advanced</strong>) › <strong>Encryption &amp; credentials</strong> ›{' '}
+                  <strong>Install from storage</strong> (or <strong>Install from SD card</strong>), then pick{' '}
+                  <strong>Wirescry-CA.crt</strong> in <strong>Downloads</strong> and give it any name.
+                </>
+              ) : (
+                <>
+                  On the device: <strong>More security &amp; privacy</strong> ›{' '}
+                  <strong>Encryption &amp; credentials</strong> › <strong>Install a certificate</strong> ›{' '}
+                  <strong>CA certificate</strong> › <strong>Install anyway</strong>, then{' '}
+                  <span aria-label="the menu">☰</span> › <strong>Downloads</strong> ›{' '}
+                  <strong>Wirescry-CA.crt</strong>.
+                </>
+              )}{' '}
+              <span className="muted">
+                Names vary between devices: search Settings for “CA certificate” or “Install certificates”. It
+                may ask you to set a screen lock first.
+              </span>
+            </li>
+            <li>
+              To be sure it’s Wirescry’s, find it in the device’s {showInstalled}: it’s named{' '}
+              <strong>{certificate.commonName}</strong>, with SHA-256{' '}
+              <code className="wrap">{certificate.sha256}</code>.
+            </li>
+            <li>
+              {check('Check in Chrome')}{' '}
+              <span className="muted">
+                Opens Wirescry’s page on the device. This says so here once Chrome there trusts the
+                certificate.
+              </span>
+            </li>
+          </ol>
+        </>
+      )}
+      {checkNote && (
+        <p className="muted" role="status">
+          {checkNote}
+        </p>
+      )}
+      <details>
+        <summary>Your own app</summary>
+        <p>
+          Apps don’t trust certificates you install unless they say so. For your own app’s debug builds, add{' '}
+          <code>res/xml/network_security_config.xml</code>:
+        </p>
+        <div className="snippet">
+          <pre className="code">{NETWORK_CONFIG}</pre>
+          {CopyButton && <CopyButton text={NETWORK_CONFIG} />}
+        </div>
+        <p>
+          and point to it from the <code>&lt;application&gt;</code> element in{' '}
+          <code>AndroidManifest.xml</code>:
+        </p>
+        <div className="snippet">
+          <pre className="code">{MANIFEST_ATTRIBUTE}</pre>
+          {CopyButton && <CopyButton text={MANIFEST_ATTRIBUTE} />}
+        </div>
+        <p className="muted">
+          It applies only to debuggable builds. Other apps on the device, such as Google’s, keep refusing
+          Wirescry’s certificate while capturing.
+        </p>
+      </details>
+    </div>
+  );
 }
 
 /** What to do about a device that isn't ready, in plain words. */
@@ -32,12 +205,16 @@ const LOCAL_ACCESS = 'Let this device reach this computer and its local networks
 /** One device's actions: Capture, Stop, Restore, Clear, and the destination switch. */
 function DeviceActions({
   device,
+  certificate,
   connected,
   send,
+  CopyButton,
 }: {
   device: AndroidDevice;
+  certificate: ProxyStatus['certificate'];
   connected: boolean;
   send: (command: Command) => Promise<unknown>;
+  CopyButton?: CopyButtonType;
 }): React.JSX.Element | null {
   const [error, setError] = useState<string>();
   const [confirm, setConfirm] = useState<string>();
@@ -139,6 +316,13 @@ function DeviceActions({
           >
             {device.busy === 'stopping' ? 'Stopping…' : 'Stop'}
           </button>
+          <CertificateSteps
+            device={device}
+            certificate={certificate}
+            disabled={disabled}
+            run={run}
+            CopyButton={CopyButton}
+          />
         </>
       ) : device.unsupported ? null : confirmWireless ? (
         <div className="callout warn" role="alert">
@@ -189,7 +373,12 @@ function DeviceActions({
  * Android devices over the user's ADB server: listed, captured and put back. Shown only while
  * the experimental setting is on.
  */
-export function AndroidSection({ status, connected = true, send }: Props): React.JSX.Element | null {
+export function AndroidSection({
+  status,
+  connected = true,
+  send,
+  CopyButton,
+}: Props): React.JSX.Element | null {
   const { android } = status;
   const [error, setError] = useState<string>();
   const [checking, setChecking] = useState(false);
@@ -234,7 +423,15 @@ export function AndroidSection({ status, connected = true, send }: Props): React
                     .join(' · ')}
                 </span>
                 {note && <div className="muted">{note}</div>}
-                {send && <DeviceActions device={device} connected={connected} send={send} />}
+                {send && (
+                  <DeviceActions
+                    device={device}
+                    certificate={status.certificate}
+                    connected={connected}
+                    send={send}
+                    CopyButton={CopyButton}
+                  />
+                )}
               </li>
             );
           })}
@@ -274,9 +471,9 @@ export function AndroidSection({ status, connected = true, send }: Props): React
       )}
       <p className="muted">
         Capture sends the device’s HTTP and HTTPS traffic through Wirescry, and Stop puts the device back as
-        it was. HTTPS from apps stays unreadable until the device trusts Wirescry’s certificate, which isn’t
-        set up here yet. Wirescry uses the ADB server Android Studio uses, and starts it with your adb if it
-        isn’t running. If a device is left without internet, run{' '}
+        it was. HTTPS stays unreadable until the device trusts Wirescry’s certificate: the steps show while
+        capturing. Wirescry uses the ADB server Android Studio uses, and starts it with your adb if it isn’t
+        running. If a device is left without internet, run{' '}
         <code>adb shell settings put global http_proxy :0</code>.
       </p>
     </section>

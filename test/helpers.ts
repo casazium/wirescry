@@ -153,9 +153,10 @@ export function rejectedStatus(ws: WebSocket): Promise<number> {
 export function httpViaProxy(
   proxyPort: number,
   url: string,
+  headers?: Record<string, string>,
 ): Promise<{ status: number; type?: string; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port: proxyPort, path: url }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port: proxyPort, path: url, headers }, (res) => {
       let body = '';
       res.setEncoding('utf8');
       res.on('data', (chunk: string) => (body += chunk));

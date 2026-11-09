@@ -31,9 +31,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 24: the oldest Wirescry supports (shell v2 with stdin, copying the certificate).
         # 28: tunnels made as tcp:<port> (adbd binds loopback anyway before Android 11).
         # 35: tunnels made as tcp:localhost:<port>, checked with ss.
-        api: [28, 35]
+        api: [24, 28, 35]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7

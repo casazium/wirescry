@@ -179,6 +179,8 @@ export interface CertificateInfo {
   commonName: string;
   /** Base64 SHA-256 of the public key. */
   spkiFingerprint: string;
+  /** SHA-256 of the whole certificate, colon-separated hex: what Android's Settings shows. */
+  sha256: string;
   /** ISO date. */
   validTo: string;
   /** Where the PEM certificate is stored, for use in commands. */
@@ -278,8 +280,10 @@ export interface AndroidDevice {
   leftover?: boolean;
   /** Its proxy points at 127.0.0.1 with nothing behind it that Wirescry knows of: offer Clear. */
   strayProxy?: string;
+  /** Wirescry's certificate on this device: whether a browser there trusts it, and whether it was copied over. */
+  certificate?: { trusted: boolean; sent: boolean };
   /** What Wirescry is doing to it right now. */
-  busy?: 'capturing' | 'stopping';
+  busy?: 'capturing' | 'stopping' | 'sending';
   /** What went wrong with the last thing Wirescry did to it, or what the user should know. */
   note?: string;
 }
@@ -360,6 +364,12 @@ export type ClientCommand =
   | { id: number; command: 'androidClearProxy'; deviceId: string }
   /** Whether a device may reach this computer and its local networks while capturing. */
   | { id: number; command: 'androidSetLocalAccess'; deviceId: string; allowed: boolean }
+  /** Copies Wirescry's certificate to a device's Downloads and opens Security settings there. */
+  | { id: number; command: 'androidSendCertificate'; deviceId: string }
+  /** Opens Wirescry's setup page in a browser on a capturing device, which checks the certificate is trusted. */
+  | { id: number; command: 'androidCheckCertificate'; deviceId: string }
+  /** Opens the device's list of certificates the user installed. */
+  | { id: number; command: 'androidShowCertificates'; deviceId: string }
   | { id: number; command: 'resetCertificate' }
   | { id: number; command: 'launchTerminal'; terminalId: string }
   /** WebSocket messages with index greater than `after` (default: from the start). */

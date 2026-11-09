@@ -10,7 +10,7 @@
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -231,6 +231,28 @@ describe.skipIf(!SERIAL)('Capture on a real device', () => {
         await rm(recordsDir, { recursive: true, force: true });
         await rm(otherDir, { recursive: true, force: true });
       }
+    },
+  );
+
+  it(
+    'copies the certificate to Downloads intact, opens Security settings, and removes it on Stop',
+    { timeout: 60_000 },
+    async () => {
+      const id = device()!.id!;
+      const user = (await adb('shell', 'am', 'get-current-user')).trim() || '0';
+      const file = `/storage/emulated/${user}/Download/Wirescry-CA.crt`;
+      const pem = await readFile(backend.caCertPath, 'utf8');
+      await api.send({ command: 'androidCapture', deviceId: id });
+      await expect.poll(() => device()?.capture).toBeTruthy();
+      expect(await api.send({ command: 'androidSendCertificate', deviceId: id })).toEqual({
+        settingsOpened: true,
+      });
+      expect(await adb('shell', 'cat', file)).toBe(pem.trim());
+      await expect.poll(() => device()?.certificate?.sent).toBe(true);
+      await api.send({ command: 'androidStop', deviceId: id });
+      await expect.poll(() => device()?.capture).toBeUndefined();
+      expect(await adb('shell', `ls ${file} 2>/dev/null || echo gone`)).toBe('gone');
+      await adb('shell', 'input', 'keyevent', 'HOME');
     },
   );
 
