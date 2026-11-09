@@ -37,6 +37,13 @@ const DEVICE_ID = /^[0-9a-f]{32}$/;
 /** Base64 SHA-256 (ca.ts, generateSPKIFingerprint). */
 const SPKI = /^[A-Za-z0-9+/]{43}=$/;
 
+/**
+ * Whether `am start` opened something. Measured: when nothing can open the intent it prints
+ * "Error: Activity not started …" to stderr, and exits 1 on API 37 but 0 on API 28.
+ */
+const opened = (result: ShellResult): boolean =>
+  result.exitCode === 0 && !/^Error:/m.test(result.stderr) && !/^Error:/m.test(result.stdout);
+
 const sameText = (a: string, b: string): boolean =>
   a.replace(/\r/g, '').trim() === b.replace(/\r/g, '').trim();
 
@@ -74,8 +81,8 @@ export class DeviceCertificates {
     if (back.exitCode !== 0 || !sameText(back.stdout, pem)) {
       throw new CertificateError('The certificate didn’t arrive on the device intact. Try again.');
     }
-    const opened = await io.shell(serial, 'am start -a android.settings.SECURITY_SETTINGS');
-    return { settingsOpened: opened.exitCode === 0 };
+    const settings = await io.shell(serial, 'am start -a android.settings.SECURITY_SETTINGS');
+    return { settingsOpened: opened(settings) };
   }
 
   /** Removes the copied certificate, if it's still one of these (certificates Wirescry copied). */
@@ -91,9 +98,8 @@ export class DeviceCertificates {
   async openCheck(serial: string): Promise<{ browser: 'chrome' | 'default' }> {
     const { io } = this.options;
     const view = `am start -a android.intent.action.VIEW -d ${SETUP_PAGE}`;
-    // Measured: am start exits 1 when no app can open the intent (e.g. Chrome isn't installed).
-    if ((await io.shell(serial, `${view} -p ${CHROME}`)).exitCode === 0) return { browser: 'chrome' };
-    if ((await io.shell(serial, view)).exitCode === 0) return { browser: 'default' };
+    if (opened(await io.shell(serial, `${view} -p ${CHROME}`))) return { browser: 'chrome' };
+    if (opened(await io.shell(serial, view))) return { browser: 'default' };
     throw new CertificateError(`No browser on the device opened ${SETUP_PAGE}. Open it in a browser there.`);
   }
 
@@ -103,7 +109,7 @@ export class DeviceCertificates {
       serial,
       'am start -a com.android.settings.TRUSTED_CREDENTIALS_USER',
     );
-    if (result.exitCode !== 0) {
+    if (!opened(result)) {
       throw new CertificateError(
         'Couldn’t open the list on the device. In Settings, search for “Trusted credentials” or “User credentials”.',
       );

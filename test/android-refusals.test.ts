@@ -68,6 +68,7 @@ describe('Android’s own traffic', () => {
       'http://connectivitycheck.gstatic.com/generate_204',
       'http://www.google.com/gen_204',
       'http://play.googleapis.com/generate_204',
+      'https://play.googleapis.com/v1/details',
       ...ANDROID_PROBE_URLS,
     ]) {
       expect(hide.matches(fromUrl(url)), url).toBe(false);
@@ -78,7 +79,6 @@ describe('Android’s own traffic', () => {
     for (const kept of [
       exchange('api.example.com', '/v1/items'),
       exchange('www.google.com', '/search'),
-      exchange('play.googleapis.com', '/v1/details'),
       exchange('connectivitycheck.gstatic.com.example.test'),
       exchange('my-connectivitycheck.gstatic.com'),
       exchange('safebrowsing.googleapis.com.evil.test'),
@@ -89,7 +89,10 @@ describe('Android’s own traffic', () => {
       fromUrl('https://rr1---sn-abc.googlevideo.com/generate_204'),
       fromUrl('https://www.google.com/gen_204'),
       fromUrl('http://www.google.com/gen_204?atyp=i'),
-      fromUrl('https://play.googleapis.com/generate_204'),
+      // Hosts many apps use (Firebase and others): not Android's own.
+      fromUrl('https://www.gstatic.com/generate_204'),
+      fromUrl('https://firebasestorage.googleapis.com/v0/b/x'),
+      fromUrl('https://storage.googleapis.com/bucket/file'),
       fromUrl('http://api.example.com/generate_204'),
     ]) {
       expect(hide.matches(kept), kept.url).toBe(true);
@@ -99,6 +102,16 @@ describe('Android’s own traffic', () => {
   it('counts the connectivity check’s HTTPS probe host as Android’s, in any case, and nothing else', () => {
     expect(isAndroidSystemHost('www.google.com')).toBe(true);
     expect(isAndroidSystemHost('ConnectivityCheck.GSTATIC.com')).toBe(true);
+    // Play services' own, as measured (including the misspelled one).
+    for (const host of [
+      'play.googleapis.com',
+      'android.googleapis.com',
+      'android.apis.google.com',
+      'proactivebackend-pa.googleapis.com',
+      'voilatile-pa.googleapis.com',
+    ]) {
+      expect(isAndroidSystemHost(host), host).toBe(true);
+    }
     for (const host of ANDROID_SYSTEM_HOSTS) expect(isAndroidSystemHost(host)).toBe(true);
     for (const host of [
       '',
@@ -106,6 +119,11 @@ describe('Android’s own traffic', () => {
       'youtubei.googleapis.com',
       'api.example.com',
       'www.google.com.evil.test',
+      // Hosts apps use too.
+      'www.gstatic.com',
+      'www.googleapis.com',
+      'storage.googleapis.com',
+      'volatile-pa.googleapis.com',
     ]) {
       expect(isAndroidSystemHost(host), host).toBe(false);
     }

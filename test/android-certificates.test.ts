@@ -169,6 +169,43 @@ describe('Opening the check and the installed list', () => {
     );
   });
 
+  it('counts am start as opened when Android only warns, or mentions an error mid-line', async () => {
+    const answers: Array<{ stdout: string; stderr: string; exitCode: number }> = [];
+    const io: CertificateIo = {
+      shell: async () => answers.shift() ?? { stdout: '', stderr: '', exitCode: 0 },
+    };
+    // Measured: an activity already running is brought to the front, with a warning, exit 0.
+    answers.push({
+      stdout: 'Starting: Intent { act=android.intent.action.VIEW }\n',
+      stderr: 'Warning: Activity not started, its current task has been brought to the front\n',
+      exitCode: 0,
+    });
+    expect(await certificates(io).openCheck('R58')).toEqual({ browser: 'chrome' });
+    // "Error:" that doesn't start a line (inside an intent's data) isn't an error.
+    answers.push({ stdout: 'Starting: Intent { dat=http://x.test/Error:1 }\n', stderr: '', exitCode: 0 });
+    expect(await certificates(io).openCheck('R58')).toEqual({ browser: 'chrome' });
+    // An error line on stdout (no separate stderr, as over older adb) is one.
+    answers.push(
+      { stdout: 'Error: Activity not started, unable to resolve Intent\n', stderr: '', exitCode: 0 },
+      { stdout: 'Starting: Intent { act=android.intent.action.VIEW }\n', stderr: '', exitCode: 0 },
+    );
+    expect(await certificates(io).openCheck('R58')).toEqual({ browser: 'default' });
+  });
+
+  it('isn’t fooled by Android 9’s am start, which exits 0 when nothing opened', async () => {
+    phone.amExitsZeroOnError = true;
+    phone.apps.delete('com.android.chrome');
+    expect(await certificates().openCheck('R58')).toEqual({ browser: 'default' });
+    phone.browser = false;
+    await expect(certificates().openCheck('R58')).rejects.toThrow(/No browser on the device/);
+    phone.apps.delete('com.android.settings');
+    await expect(certificates().openInstalled('R58')).rejects.toThrow(/search for “Trusted credentials”/);
+    expect(await certificates().send('R58', ca.cert)).toEqual({ settingsOpened: false });
+    // Opened: no error, so it counts, as before.
+    phone.apps.add('com.android.chrome');
+    expect(await certificates().openCheck('R58')).toEqual({ browser: 'chrome' });
+  });
+
   it('opens the user’s installed certificates, or says where to find them', async () => {
     await certificates().openInstalled('R58');
     expect(phone.started).toEqual(['-a com.android.settings.TRUSTED_CREDENTIALS_USER']);
