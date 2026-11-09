@@ -14,6 +14,7 @@ import type {
   WebSocketMessages,
 } from '../shared/api';
 import type { ExchangeFailure, FailureKind } from '../shared/failure';
+import { formFields } from '../shared/form-fields';
 
 /** The largest HAR file Wirescry imports. */
 export const MAX_HAR_IMPORT_BYTES = 256 * 1024 * 1024;
@@ -97,7 +98,7 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
       // A form's fields, decoded, as browsers' HAR files list them. Tools that read params
       // rather than text otherwise see an empty form, e.g. an OAuth token request.
       ...(isFormEncoded(requestType) && !body.encoding
-        ? { params: [...new URLSearchParams(body.text)].map(([name, value]) => ({ name, value })) }
+        ? { params: formFields(body.text).map(({ name, value }) => ({ name, value })) }
         : {}),
     };
     if (requestBody.truncated || detail.requestBody.stored < detail.requestBody.size)

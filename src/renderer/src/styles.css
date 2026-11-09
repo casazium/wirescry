@@ -569,6 +569,21 @@ pre.code.hex {
   word-break: normal;
 }
 
+.form-fields {
+  padding: 8px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: auto;
+  max-height: 60vh;
+}
+
+/* As specific as table.headers td, which it must override. */
+.form-fields table.headers td {
+  /* A textarea's line breaks and spacing are part of the value. */
+  white-space: pre-wrap;
+}
+
 .body-image {
   max-width: 100%;
   max-height: 60vh;

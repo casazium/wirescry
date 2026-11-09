@@ -553,6 +553,22 @@ describe('harEntry', () => {
     expect((binary.request as { postData: Record<string, unknown> }).postData.params).toBeUndefined();
   });
 
+  it("lists a form's fields the way the Fields view shows them: a leading ? kept, other encodings as written", () => {
+    const form = '?q=1&caf%E9=%E9t%E9';
+    const entry = harEntry({
+      detail: detail({
+        requestHeaders: [['content-type', 'application/x-www-form-urlencoded']],
+        requestBody: { size: form.length, stored: form.length },
+      }),
+      requestBody: body(form),
+      responseBody: null,
+    });
+    expect((entry.request as { postData: { params: unknown } }).postData.params).toEqual([
+      { name: '?q', value: '1' },
+      { name: 'caf%E9', value: '%E9t%E9' },
+    ]);
+  });
+
   it('says when a body is cut short or still encoded', () => {
     const cut = harEntry({
       detail: detail({ responseHeaders: [], responseBody: { size: 200, stored: 3 } }),

@@ -176,8 +176,11 @@ describe('setup', () => {
 
   it('resets the certificate: new CA, old one no longer works, Firefox profile removed', async () => {
     const api = await apiClient(backend.apiPort);
+    // The reset restarts the proxy on its port. The test before cleared the port setting, which
+    // leaves it near 8000, where other test files pick ports too: one took it during a restart.
+    await moveProxyToPickedPort(api);
     const oldCA = await readFile(backend.caCertPath, 'utf8');
-    const oldStatus = (api.messages[0] as { status: ProxyStatus }).status;
+    const oldStatus = lastStatus(api.messages)!;
     const url = `https://localhost:${upstream.port}/hello`;
     expect((await requestViaProxy(backend.proxyPort, url, oldCA)).status).toBe(200);
 
