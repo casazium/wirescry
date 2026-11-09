@@ -230,6 +230,14 @@ describe('Docker setup on Windows', () => {
     expect(setup.terminalEnv()).toEqual({});
     expect((setup as unknown as { relay?: unknown }).relay).toBeUndefined();
     expect(setup.acceptsConnection('172.17.0.2')).toBe(false);
+    // The user's switch (hidden here, but the command still exists) can't turn it on.
+    const before = setup.status();
+    setup.setActive(false);
+    setup.setActive(true);
+    await setup.refresh();
+    expect(setup.status()).toEqual(before);
+    expect(setup.terminalEnv()).toEqual({});
+    expect((setup as unknown as { relay?: unknown }).relay).toBeUndefined();
     await setup.stop();
   });
 

@@ -85,6 +85,9 @@ describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker
     local = http.createServer((req, res) => res.end(`local-ok ${req.url}`));
     await new Promise<void>((resolve) => local.listen(0, '127.0.0.1', resolve));
     localPort = (local.address() as net.AddressInfo).port;
+    // On Windows, Docker setup is on only through this setting (as for the hands-on test):
+    // turning it on that way also checks the setting reaches Docker setup.
+    await writeFile(path.join(dataDir, 'settings.json'), JSON.stringify({ experimentalWindowsDocker: true }));
     backend = await startBackend({
       dataDir,
       token: TOKEN,
