@@ -581,6 +581,7 @@ export function App(): React.JSX.Element {
                 actions={actionsFor(composed)}
                 stale={staleIds.has(composed.id)}
                 sections={sectionsFor(composed)}
+                responseFirst
               />
             )
           }

@@ -199,6 +199,35 @@ describe('Send and Cancel', () => {
     expect(screen.getByText('Response: 201 Created')).toBeTruthy();
   });
 
+  it('shows the response before the request it sent, unlike Traffic', async () => {
+    fake.reply = (c) =>
+      c.command === 'composeSend'
+        ? { exchangeId: 'c3' }
+        : c.command === 'getExchange'
+          ? { ...detail(summary('c3', { composed: true }), 'x'), responseBody: { size: 10, stored: 10 } }
+          : undefined;
+    await started([]);
+    compose();
+    fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://api.test/first' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+    await act(async () =>
+      client().onMessage({
+        type: 'exchanges',
+        exchanges: [summary('c3', { composed: true, status: 200 })],
+        removed: [],
+      } as ServerMessage),
+    );
+    await frame();
+    await frame();
+    const headings = [...document.querySelectorAll('.composer-response h2, .composer-response summary')].map(
+      (e) => e.textContent,
+    );
+    expect(headings.indexOf('Response body')).toBeGreaterThan(-1);
+    expect(headings.indexOf('Response body')).toBeLessThan(headings.indexOf('Request headers'));
+  });
+
   it('shows the backend’s reason when a send is refused, and sends nothing more', async () => {
     fake.reply = (c) => {
       if (c.command === 'composeSend')
