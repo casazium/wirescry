@@ -163,6 +163,9 @@ function recognizeTlsAlerts(server: mockttp.Mockttp): void {
   for (const other of mockttpListeners) listener.on('tlsClientError', other);
 }
 
+/** Icons browsers ask a site for by name, without being told (iOS Safari for the last two). */
+const ICON_PATHS = new Set(['/favicon.ico', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png']);
+
 /** How long a connection from another address may wait to be accepted. */
 const ACCEPT_TIMEOUT_MS = 5000;
 
@@ -678,6 +681,9 @@ async function startListener(options: ProxyOptions, guard: EgressGuard | undefin
             body: ca.cert,
           };
         }
+        // The page gives its icon inline, so most browsers don't ask. Those that ask anyway get
+        // nothing, not the page: 204, so it isn't counted among Traffic's errors.
+        if (route !== undefined && ICON_PATHS.has(route)) return { statusCode: 204 };
         if (route === '/check') {
           // Only reachable over HTTPS if the browser accepted a certificate signed by our CA.
           if (req.protocol !== 'https') return { statusCode: 400 };

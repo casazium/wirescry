@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { generateCACertificate, getLocal, type Mockttp } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { APP_ICON_SVG } from '../src/backend/app-icon';
 import type { RunningBackend } from '../src/backend/backend';
 import { FIREFOX_PROFILE_DIR, firefoxPrefs } from '../src/backend/firefox';
 import { isLoopback } from '../src/backend/proxy';
@@ -90,6 +91,34 @@ describe('setup', () => {
       const cert = await httpViaProxy(backend.proxyPort, 'http://wirescry.internal/certificate');
       expect(cert.type).toBe('application/x-x509-ca-cert');
       expect(cert.body).toBe(await readFile(backend.caCertPath, 'utf8'));
+    }
+  });
+
+  it('gives the setup page Wirescry’s icon inline, and nothing for /favicon.ico', async () => {
+    expect(APP_ICON_SVG).toBe(
+      await readFile(path.join(import.meta.dirname, '..', 'build', 'icon.svg'), 'utf8'),
+    );
+    const page = await httpViaProxy(backend.proxyPort, 'http://wirescry.internal/');
+    const href = /<link rel="icon" href="([^"]+)">/.exec(page.body)?.[1];
+    expect(href?.startsWith('data:image/svg+xml,')).toBe(true);
+    expect(decodeURIComponent(href!.slice('data:image/svg+xml,'.length))).toBe(APP_ICON_SVG);
+
+    for (const path of [
+      '/favicon.ico',
+      '/favicon.ico?v=2',
+      '/apple-touch-icon.png',
+      '/apple-touch-icon-precomposed.png',
+    ]) {
+      const icon = await httpViaProxy(backend.proxyPort, `http://wirescry.internal${path}`);
+      // No content, which Traffic doesn't count as an error.
+      expect(icon.status, path).toBe(204);
+      expect(icon.body, path).toBe('');
+    }
+    // Other paths still get the page.
+    for (const url of ['http://wirescry.internal/anything', 'http://wirescry.internal/favicon.png']) {
+      const other = await httpViaProxy(backend.proxyPort, url);
+      expect(other.status, url).toBe(200);
+      expect(other.body, url).toContain('Wirescry setup');
     }
   });
 
