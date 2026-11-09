@@ -187,6 +187,64 @@ export async function systemPickedPort(): Promise<number> {
 }
 
 /**
+ * A port nothing listens on: 1 (tcpmux), which nothing runs and no test listens on. A free port
+ * picked and given back could be taken by another test file before it's used.
+ */
+export const NOTHING_LISTENS = 1;
+
+/** Whether something listens on `port` on 127.0.0.1 right now. */
+export async function portTaken(port: number): Promise<boolean> {
+  const server = net.createServer();
+  try {
+    await new Promise<void>((resolve, reject) =>
+      server.once('error', reject).listen(port, '127.0.0.1', resolve),
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') return true;
+    throw error;
+  }
+  await new Promise((resolve) => server.close(resolve));
+  return false;
+}
+
+/** What an onPickedPort attempt returns when its port was taken before it could use it. */
+export const PORT_TAKEN = Symbol('port taken');
+
+/**
+ * Runs `attempt` on a system-picked port (see systemPickedPort). The port is closed again before
+ * `attempt` uses it, and another test file running at the same time can take it in between: then
+ * `attempt` returns PORT_TAKEN, after undoing what it did, and runs again on another port.
+ * Anything else it returns, or throws, is final. Taken every time means something's wrong, so
+ * that fails too.
+ */
+export async function onPickedPort<T>(
+  attempt: (port: number) => Promise<T | typeof PORT_TAKEN>,
+  { attempts = 5, pickPort = systemPickedPort }: { attempts?: number; pickPort?: () => Promise<number> } = {},
+): Promise<T> {
+  for (let tries = 0; tries < attempts; tries += 1) {
+    const result = await attempt(await pickPort());
+    if (result !== PORT_TAKEN) return result;
+  }
+  throw new Error(`The picked port was taken ${attempts} times in a row`);
+}
+
+/** Moves the proxy to a system-picked port, as Setup's “Always use port” does, and returns it. */
+export function moveProxyToPickedPort(
+  api: Pick<Awaited<ReturnType<typeof apiClient>>, 'send'>,
+  options?: { pickPort?: () => Promise<number> },
+): Promise<number> {
+  return onPickedPort(async (port) => {
+    try {
+      await api.send({ command: 'setProxyPort', port });
+      return port;
+    } catch (error) {
+      if ((error as Error).message === `Port ${port} is already in use.`) return PORT_TAKEN;
+      throw error;
+    }
+  }, options);
+}
+
+/**
  * Starts a backend whose proxy keeps a system-picked port across certificate resets (see
  * systemPickedPort). The port is free when picked, but it's closed again before the backend
  * listens on it, and another test file running at the same time can take it in between: then the

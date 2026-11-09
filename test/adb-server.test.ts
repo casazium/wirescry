@@ -9,21 +9,13 @@ import {
   startAdbServer,
 } from '../src/backend/android/adb-server';
 import { loadRecording, startFakeAdb, type FakeAdb } from './fake-adb';
+import { NOTHING_LISTENS, onPickedPort, PORT_TAKEN } from './helpers';
 
 let fake: FakeAdb | undefined;
 afterEach(async () => {
   await fake?.close();
   fake = undefined;
 });
-
-/** A port nothing listens on. */
-async function freePort(): Promise<number> {
-  const server = net.createServer();
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as net.AddressInfo;
-  await new Promise((resolve) => server.close(resolve));
-  return port;
-}
 
 describe('Finding adb', () => {
   it('looks in the setting, the SDK variables, the default SDK, Homebrew, then PATH (macOS)', () => {
@@ -121,26 +113,37 @@ describe('Starting the ADB server', () => {
   });
 
   it('starts one with the adb it finds when nothing listens, then talks to it', async () => {
-    const port = await freePort();
     let started: string | undefined;
-    const state = await ensureAdbServer({
-      endpoint: { host: '127.0.0.1', port },
-      start: true,
-      findAdb: () => '/sdk/platform-tools/adb',
-      run: async (file) => {
-        started = file;
-        fake = await startFakeAdb({ recordings: [loadRecording('wirescry-client')] });
-        // The fake took another port: point a forwarder at it from the expected one.
-        const forward = net.createServer((s) =>
-          s.pipe(net.connect(fake!.endpoint.port, '127.0.0.1')).pipe(s),
-        );
-        await new Promise<void>((resolve) => forward.listen(port, '127.0.0.1', resolve));
-        const close = fake.close.bind(fake);
-        fake.close = async () => {
-          await close();
-          forward.close();
-        };
-      },
+    const state = await onPickedPort(async (port) => {
+      const state = await ensureAdbServer({
+        endpoint: { host: '127.0.0.1', port },
+        start: true,
+        findAdb: () => '/sdk/platform-tools/adb',
+        run: async (file) => {
+          started = file;
+          fake = await startFakeAdb({ recordings: [loadRecording('wirescry-client')] });
+          // The fake took another port: point a forwarder at it from the expected one.
+          const forward = net.createServer((s) =>
+            s.pipe(net.connect(fake!.endpoint.port, '127.0.0.1')).pipe(s),
+          );
+          const close = fake.close.bind(fake);
+          fake.close = async () => {
+            await close();
+            forward.close();
+          };
+          await new Promise<void>((resolve, reject) =>
+            forward.once('error', reject).listen(port, '127.0.0.1', resolve),
+          );
+        },
+      });
+      // Another test file took the port: something not adb answered the first look (a failure
+      // before any adb ran), or it was there before the forwarder. Try another.
+      if (state.state === 'failed' && (state.adbPath === undefined || state.error.includes('EADDRINUSE'))) {
+        await fake?.close();
+        fake = undefined;
+        return PORT_TAKEN;
+      }
+      return state;
     });
     expect(started).toBe('/sdk/platform-tools/adb');
     expect(state).toEqual({
@@ -153,7 +156,7 @@ describe('Starting the ADB server', () => {
 
   it('says to install platform tools when there is no server and no adb', async () => {
     const state = await ensureAdbServer({
-      endpoint: { host: '127.0.0.1', port: await freePort() },
+      endpoint: { host: '127.0.0.1', port: NOTHING_LISTENS },
       start: true,
       findAdb: () => undefined,
     });
@@ -171,7 +174,7 @@ describe('Starting the ADB server', () => {
   it("doesn't start anything when asked only to look", async () => {
     let ran = false;
     const state = await ensureAdbServer({
-      endpoint: { host: '127.0.0.1', port: await freePort() },
+      endpoint: { host: '127.0.0.1', port: NOTHING_LISTENS },
       start: false,
       findAdb: () => '/sdk/adb',
       run: async () => void (ran = true),
@@ -182,7 +185,7 @@ describe('Starting the ADB server', () => {
 
   it('reports adb failing to start the server', async () => {
     const state = await ensureAdbServer({
-      endpoint: { host: '127.0.0.1', port: await freePort() },
+      endpoint: { host: '127.0.0.1', port: NOTHING_LISTENS },
       start: true,
       findAdb: () => '/sdk/adb',
       run: async () => {

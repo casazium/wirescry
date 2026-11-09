@@ -12,7 +12,15 @@ import WebSocket from 'ws';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { BodyContent, ExchangeDetail, ExchangeSummary } from '../src/shared/api';
 import { describeFailure, upstreamErrorCode } from '../src/shared/failure';
-import { apiClient, exchangesIn, httpViaProxy, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  httpViaProxy,
+  NOTHING_LISTENS,
+  requestViaProxy,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 /** Opens a CONNECT tunnel through the proxy. */
 function tunnel(proxyPort: number, target: string): Promise<net.Socket> {
@@ -94,11 +102,7 @@ describe('upstream failures and WebSockets', () => {
 
   it('explains a refused connection', async () => {
     const api = await apiClient(backend.apiPort);
-    // Find a port with nothing listening.
-    const closed = net.createServer();
-    await new Promise<void>((resolve) => closed.listen(0, '127.0.0.1', resolve));
-    const port = (closed.address() as net.AddressInfo).port;
-    await new Promise<void>((resolve) => closed.close(() => resolve()));
+    const port = NOTHING_LISTENS;
 
     await httpViaProxy(backend.proxyPort, `http://127.0.0.1:${port}/refused`);
     const exchange = await failureFor(api, (e) => e.path === '/refused');

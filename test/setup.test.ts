@@ -12,19 +12,12 @@ import type { ProxyStatus } from '../src/shared/api';
 import {
   apiClient,
   httpViaProxy,
+  moveProxyToPickedPort,
   requestViaProxy,
   startBackendOnPickedPort,
   TOKEN,
   UI_ORIGIN,
 } from './helpers';
-
-async function freePort(): Promise<number> {
-  const server = net.createServer();
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as net.AddressInfo;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
-}
 
 /** This machine's address on the local network, if it has one. */
 function lanAddress(): string | undefined {
@@ -121,8 +114,7 @@ describe('setup', () => {
 
   it('moves the proxy to a chosen port, saves it, and keeps the old port if the new one is taken', async () => {
     const api = await apiClient(backend.apiPort);
-    const port = await freePort();
-    await api.send({ command: 'setProxyPort', port });
+    const port = await moveProxyToPickedPort(api);
     expect(backend.proxyPort).toBe(port);
     expect(await loadSettings(dataDir)).toEqual({ proxyPort: port });
     expect(lastStatus(api.messages)).toMatchObject({ proxyPort: port, proxyPortSetting: port });

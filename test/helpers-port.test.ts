@@ -1,6 +1,7 @@
 /**
- * startBackendOnPickedPort: a system-picked port can be taken by another test file between being
- * picked and the backend listening on it (seen on CI: EADDRINUSE starting the backend).
+ * Picked ports (startBackendOnPickedPort, onPickedPort): a system-picked port can be taken by
+ * another test file between being picked and being used (seen on CI: EADDRINUSE starting the
+ * backend).
  */
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
@@ -8,7 +9,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
-import { httpViaProxy, startBackendOnPickedPort, systemPickedPort, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  httpViaProxy,
+  moveProxyToPickedPort,
+  onPickedPort,
+  PORT_TAKEN,
+  portTaken,
+  startBackendOnPickedPort,
+  systemPickedPort,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -17,11 +29,10 @@ afterEach(async () => {
 
 /** Takes a port, as another test file would after systemPickedPort let it go. */
 async function holdPort(): Promise<number> {
-  const port = await systemPickedPort();
   const holder = net.createServer();
-  await new Promise<void>((resolve) => holder.listen(port, '127.0.0.1', resolve));
+  await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', resolve));
   cleanup.push(() => new Promise((resolve) => holder.close(resolve)));
-  return port;
+  return (holder.address() as net.AddressInfo).port;
 }
 
 async function newDataDir(): Promise<string> {
@@ -107,5 +118,123 @@ describe('Starting a backend on a system-picked port', () => {
     expect(failure).toBeInstanceOf(Error);
     expect((failure as NodeJS.ErrnoException).code).not.toBe('EADDRINUSE');
     expect(picks).toBe(1);
+  });
+});
+
+describe('Using a system-picked port', () => {
+  /** Hands out the given ports in turn. */
+  const ports = (...list: number[]) => {
+    const picked: number[] = [];
+    return {
+      picked,
+      pickPort: async () => {
+        const port = list[picked.length];
+        if (port === undefined) throw new Error('Out of ports');
+        picked.push(port);
+        return port;
+      },
+    };
+  };
+
+  it('gives what the attempt gives, on the first port when it was free', async () => {
+    const { picked, pickPort } = ports(41000, 41001);
+    expect(await onPickedPort(async (port) => `used ${port}`, { pickPort })).toBe('used 41000');
+    expect(picked).toEqual([41000]);
+  });
+
+  it('tries another port each time the attempt finds it taken', async () => {
+    const { picked, pickPort } = ports(41000, 41001, 41002);
+    const seen: number[] = [];
+    const result = await onPickedPort(
+      async (port) => {
+        seen.push(port);
+        return port === 41002 ? port : PORT_TAKEN;
+      },
+      { pickPort },
+    );
+    expect(result).toBe(41002);
+    expect(seen).toEqual([41000, 41001, 41002]);
+    expect(picked).toEqual(seen);
+  });
+
+  it('gives up when the port is taken every time', async () => {
+    let tries = 0;
+    await expect(
+      onPickedPort(
+        async () => {
+          tries += 1;
+          return PORT_TAKEN;
+        },
+        { attempts: 3 },
+      ),
+    ).rejects.toThrow('The picked port was taken 3 times in a row');
+    expect(tries).toBe(3);
+  });
+
+  it('doesn’t try again when the attempt fails for another reason', async () => {
+    let tries = 0;
+    await expect(
+      onPickedPort(async () => {
+        tries += 1;
+        throw new Error('something else');
+      }),
+    ).rejects.toThrow('something else');
+    expect(tries).toBe(1);
+  });
+
+  it('really picks ports from the system, free when picked', async () => {
+    const port = await onPickedPort(async (port) => ((await portTaken(port)) ? PORT_TAKEN : port));
+    expect(port).toBeGreaterThanOrEqual(1024);
+    expect(port).toBeLessThanOrEqual(65535);
+  });
+});
+
+describe('Moving the proxy to a system-picked port', () => {
+  async function backendForTest(): Promise<RunningBackend> {
+    const backend = await startBackendOnPickedPort({
+      dataDir: await newDataDir(),
+      token: TOKEN,
+      allowedOrigins: [UI_ORIGIN],
+      docker: false,
+    });
+    cleanup.push(() => backend.stop());
+    return backend;
+  }
+
+  it('moves on from a port another test file took, and the proxy works on the next', async () => {
+    const backend = await backendForTest();
+    const api = await apiClient(backend.apiPort);
+    cleanup.push(async () => api.close());
+    const taken = await holdPort();
+    const picked: number[] = [];
+    const port = await moveProxyToPickedPort(api, {
+      pickPort: async () => {
+        const next = picked.length === 0 ? taken : await systemPickedPort();
+        picked.push(next);
+        return next;
+      },
+    });
+    expect(picked[0]).toBe(taken);
+    expect(picked.at(-1)).toBe(port);
+    expect(backend.proxyPort).toBe(port);
+    expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
+  });
+
+  it('doesn’t try again when the move fails for another reason', async () => {
+    const backend = await backendForTest();
+    const api = await apiClient(backend.apiPort);
+    cleanup.push(async () => api.close());
+    const before = backend.proxyPort;
+    let picks = 0;
+    await expect(
+      moveProxyToPickedPort(api, {
+        pickPort: async () => {
+          picks += 1;
+          return 80; // Below 1024: refused whether or not it's free.
+        },
+      }),
+    ).rejects.toThrow('1024 to 65535');
+    expect(picks).toBe(1);
+    expect(backend.proxyPort).toBe(before);
   });
 });

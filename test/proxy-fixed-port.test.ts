@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
-import { httpViaProxy, systemPickedPort, TOKEN, UI_ORIGIN } from './helpers';
+import { httpViaProxy, onPickedPort, PORT_TAKEN, TOKEN, UI_ORIGIN } from './helpers';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -18,19 +18,20 @@ afterEach(async () => {
 
 /** Another program listening on `host`, on a port of its own; undefined if this system can't. */
 async function holder(host: string | undefined): Promise<number | undefined> {
-  const port = await systemPickedPort();
   const server = net.createServer((socket) =>
     socket.end('HTTP/1.1 418 Not Wirescry\r\nContent-Length: 0\r\n\r\n'),
   );
-  try {
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen({ port, host }, () => resolve());
-    });
-  } catch {
-    return undefined;
-  }
-  cleanup.push(() => new Promise((resolve) => server.close(resolve)));
+  // A port free on 127.0.0.1, so the proxy's own check is all that stops it there.
+  const port = await onPickedPort(
+    (port) =>
+      new Promise<number | typeof PORT_TAKEN | undefined>((resolve) => {
+        server.once('error', (error: NodeJS.ErrnoException) =>
+          resolve(error.code === 'EADDRINUSE' ? PORT_TAKEN : undefined),
+        );
+        server.listen({ port, host }, () => resolve(port));
+      }),
+  );
+  if (port !== undefined) cleanup.push(() => new Promise((resolve) => server.close(resolve)));
   return port;
 }
 
@@ -94,8 +95,16 @@ describe('A fixed proxy port another program listens on', () => {
   });
 
   it('starts on a free one, and serves 127.0.0.1', async () => {
-    const port = await systemPickedPort();
-    const backend = await startOn(port);
+    const backend = await onPickedPort(async (port) => {
+      try {
+        return await startOn(port);
+      } catch (error) {
+        const failure = error as NodeJS.ErrnoException & { port?: number };
+        if (failure.code === 'EADDRINUSE' && failure.port === port) return PORT_TAKEN;
+        throw error;
+      }
+    });
+    const port = backend.proxyPort;
     expect(backend.proxyPort).toBe(port);
     expect((await httpViaProxy(port, 'http://wirescry.internal/')).status).toBe(200);
   });
