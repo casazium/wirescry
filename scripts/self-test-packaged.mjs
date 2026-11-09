@@ -20,6 +20,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selfTestProblem } from './self-test-result.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
@@ -90,17 +91,7 @@ function run({ name, exe, maxStartMs = MAX_BACKEND_START_MS }) {
       } catch {
         result = undefined;
       }
-      let problem;
-      if (!result) problem = `exited (code ${code}) without a result`;
-      else if (result.error) problem = result.error;
-      else if (result.backendStartMs > maxStartMs) {
-        problem = `the backend took ${Math.round(result.backendStartMs / 1000)} s to start (the limit is ${maxStartMs / 1000} s)`;
-      } else if (expectPro) {
-        // Unlicensed is fine: Pro still starts, and locks its features itself.
-        const pro = result.plugins?.find((p) => p.name === 'pro');
-        if (!pro) problem = 'Pro did not load; see the log';
-        else if (!pro.active) problem = `Pro did not start: ${pro.reason}`;
-      }
+      const problem = selfTestProblem(result, { code, maxStartMs, expectPro });
       console.log(
         `${name}: ${problem ? `FAILED: ${problem}` : 'ok'} ${result ? JSON.stringify(result) : ''}`,
       );
