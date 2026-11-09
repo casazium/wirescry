@@ -107,7 +107,10 @@ export class AndroidSetup {
   private readonly away = new Map<string, { timer?: NodeJS.Timeout; notified: boolean }>();
   /** The last thing to tell the user about each device, by device id. */
   private readonly notes = new Map<string, string>();
-  /** Connections that refused the certificate, by device, during its current capture. */
+  /**
+   * Connections that refused the certificate, by device, during its current capture. Each capture
+   * starts afresh (however the last one ended), and so does trust in a certificate.
+   */
   private readonly refusals = new Refusals();
   private refusalsTimer: NodeJS.Timeout | undefined;
 
@@ -497,22 +500,23 @@ export class AndroidSetup {
     // settings don't show the global proxy: the device could be left without internet.
     const wireless = this.current.devices.find((d) => d.id === id)?.wireless;
     if (wireless && !confirmWireless) return { needsWirelessConfirmation: true };
-    return this.act(id, 'capturing', () => this.capture!.capture(target, replaceProxy));
+    return this.act(id, 'capturing', () => {
+      this.refusals.clear(id);
+      return this.capture!.capture(target, replaceProxy);
+    });
   }
 
   /** Captures again a device an earlier run left set up. */
   async resumeDevice(id: string): Promise<void> {
     const target = this.target(id, 'stop');
+    // Counts live only in this run, and Resume is for a capture an earlier run left: none to clear.
     await this.act(id, 'capturing', () => this.capture!.resume(target));
   }
 
   /** Puts a device back, whether this run or an earlier one set it up. */
   async stopDevice(id: string): Promise<void> {
     const target = this.target(id, 'stop');
-    // Counts belong to one capture: the next starts afresh, even if this Stop fails part way.
-    const { note } = await this.act(id, 'stopping', () =>
-      this.capture!.stop(target).finally(() => this.refusals.clear(id)),
-    );
+    const { note } = await this.act(id, 'stopping', () => this.capture!.stop(target));
     if (note) {
       this.notes.set(id, note);
       this.publishDevices();
@@ -522,8 +526,8 @@ export class AndroidSetup {
 
   /** A connection from this device refused Wirescry's certificate (its listener saw it). */
   certificateRefused(id: string, host: string | undefined): void {
-    // A late one after Stop belongs to no capture.
-    if (this.stopped || !this.capture?.capturing(id)) return;
+    // Shown only while capturing, and each capture starts a new count: a late one after Stop is harmless.
+    if (this.stopped) return;
     this.refusals.add(id, host);
     this.refusalsTimer ??= setTimeout(() => {
       this.refusalsTimer = undefined;
@@ -575,7 +579,8 @@ export class AndroidSetup {
   async markTrusted(id: string, spki: string): Promise<void> {
     if (!this.certificates || this.options.capture?.certificate?.().spki !== spki) return;
     try {
-      await this.certificates.markTrusted(id, spki);
+      // Refusals from before it was installed (Chrome's too) aren't news any more.
+      if (await this.certificates.markTrusted(id, spki)) this.refusals.clear(id);
     } finally {
       this.publishDevices();
     }
@@ -594,6 +599,7 @@ export class AndroidSetup {
   /** Wirescry has a new certificate: copies of the old one are out of date (trust follows by itself). */
   certificateChanged(): void {
     this.sent.clear();
+    this.refusals.clearAll();
     this.publishDevices();
   }
 

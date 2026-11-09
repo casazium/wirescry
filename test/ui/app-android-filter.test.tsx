@@ -83,8 +83,20 @@ describe('Hiding Android’s own traffic from the Setup page', () => {
           },
         },
         exchanges: [
-          summary('probe', { host: 'connectivitycheck.gstatic.com', path: '/generate_204', status: 204 }),
-          summary('gen', { host: 'www.google.com', path: '/gen_204', status: 204 }),
+          summary('probe', {
+            host: 'connectivitycheck.gstatic.com',
+            path: '/generate_204',
+            url: 'http://connectivitycheck.gstatic.com/generate_204',
+            protocol: 'http',
+            status: 204,
+          }),
+          summary('gen', {
+            host: 'www.google.com',
+            path: '/gen_204',
+            url: 'http://www.google.com/gen_204',
+            protocol: 'http',
+            status: 204,
+          }),
           summary('app', { host: 'api.example.test', path: '/v1/items' }),
           summary('search', { host: 'www.google.com', path: '/search' }),
         ],
@@ -92,8 +104,11 @@ describe('Hiding Android’s own traffic from the Setup page', () => {
       } as ServerMessage),
     );
     expect(rows()).toHaveLength(4);
-    fireEvent.click(screen.getByRole('button', { name: 'Setup' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Hide Android’s own traffic in Traffic' }));
+    const hide = (): void => {
+      fireEvent.click(screen.getByRole('button', { name: 'Setup' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Hide Android’s background traffic in Traffic' }));
+    };
+    hide();
 
     const search = screen.getByRole('searchbox', { name: 'Search traffic' }) as HTMLInputElement;
     expect(search.value).toBe(HIDE_ANDROID_SYSTEM_QUERY);
@@ -101,5 +116,13 @@ describe('Hiding Android’s own traffic from the Setup page', () => {
     expect(shown).toHaveLength(2);
     expect(shown.some((r) => r.includes('/v1/items'))).toBe(true);
     expect(shown.some((r) => r.includes('/search'))).toBe(true);
+
+    // A search the user typed is kept, and a second click adds nothing.
+    fireEvent.change(search, { target: { value: 'method=GET' } });
+    hide();
+    hide();
+    expect((screen.getByRole('searchbox', { name: 'Search traffic' }) as HTMLInputElement).value).toBe(
+      `method=GET ${HIDE_ANDROID_SYSTEM_QUERY}`,
+    );
   });
 });

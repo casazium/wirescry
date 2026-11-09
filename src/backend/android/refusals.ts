@@ -37,6 +37,10 @@ export class Refusals {
     this.devices.delete(id);
   }
 
+  clearAll(): void {
+    this.devices.clear();
+  }
+
   /** This device's refusals, the most frequent hosts first; undefined while there are none. */
   of(id: string): RefusedConnections | undefined {
     const device = this.devices.get(id);

@@ -16,7 +16,7 @@ import { AndroidSetup } from '../src/backend/android/setup';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { DeviceListeners } from '../src/backend/device-listeners';
 import {
-  ANDROID_PROBE_PATHS,
+  ANDROID_PROBE_URLS,
   ANDROID_SYSTEM_HOSTS,
   HIDE_ANDROID_SYSTEM_QUERY,
   isAndroidSystemHost,
@@ -37,17 +37,21 @@ beforeAll(async () => {
   other = (await generateCACertificate({ subject: { commonName: 'Not Wirescry' } })).cert;
 });
 
-const exchange = (host: string, path = '/'): ExchangeSummary =>
+const exchange = (host: string, path = '/', scheme = 'https'): ExchangeSummary =>
   ({
-    id: `${host}${path}`,
+    id: `${scheme}${host}${path}`,
     method: 'GET',
-    protocol: 'https',
+    protocol: scheme,
     httpVersion: '1.1',
     host,
     path,
-    url: `https://${host}${path}`,
+    url: `${scheme}://${host}${path}`,
     startedAt: 0,
   }) as ExchangeSummary;
+const fromUrl = (url: string): ExchangeSummary => {
+  const parsed = new URL(url);
+  return exchange(parsed.host, parsed.pathname + parsed.search, parsed.protocol.slice(0, -1));
+};
 
 describe('Android’s own traffic', () => {
   const hide = compileQuery(HIDE_ANDROID_SYSTEM_QUERY);
@@ -59,8 +63,14 @@ describe('Android’s own traffic', () => {
 
   it('hides every measured system host and the connectivity check’s probes', () => {
     for (const host of ANDROID_SYSTEM_HOSTS) expect(hide.matches(exchange(host, '/anything'))).toBe(false);
-    for (const host of ['www.google.com', 'play.googleapis.com', 'connectivitycheck.gstatic.com']) {
-      for (const probe of ANDROID_PROBE_PATHS) expect(hide.matches(exchange(host, probe))).toBe(false);
+    // As measured: the connectivity check's plain-HTTP probes.
+    for (const url of [
+      'http://connectivitycheck.gstatic.com/generate_204',
+      'http://www.google.com/gen_204',
+      'http://play.googleapis.com/generate_204',
+      ...ANDROID_PROBE_URLS,
+    ]) {
+      expect(hide.matches(fromUrl(url)), url).toBe(false);
     }
   });
 
@@ -74,8 +84,15 @@ describe('Android’s own traffic', () => {
       exchange('safebrowsing.googleapis.com.evil.test'),
       exchange('api.example.com', '/generate_2040'),
       exchange('api.example.com', '/v1/generate_204'),
+      // The same paths elsewhere: YouTube's, Chrome's own logging, a query, an app's endpoint.
+      fromUrl('https://www.youtube.com/generate_204'),
+      fromUrl('https://rr1---sn-abc.googlevideo.com/generate_204'),
+      fromUrl('https://www.google.com/gen_204'),
+      fromUrl('http://www.google.com/gen_204?atyp=i'),
+      fromUrl('https://play.googleapis.com/generate_204'),
+      fromUrl('http://api.example.com/generate_204'),
     ]) {
-      expect(hide.matches(kept), `${kept.host}${kept.path}`).toBe(true);
+      expect(hide.matches(kept), kept.url).toBe(true);
     }
   });
 
@@ -201,8 +218,10 @@ describe('Refused connections through Android setup', () => {
     for (const setup of started.splice(0)) setup.stop();
   });
 
-  async function setup() {
+  let current: { cert: string; spki: string };
+  async function setup(pollMs = 60_000) {
     let changes = 0;
+    current = { cert: 'unused', spki: 'A'.repeat(43) + '=' };
     const android = new AndroidSetup({
       endpoint: () => fake.endpoint,
       findAdb: () => undefined,
@@ -213,7 +232,9 @@ describe('Refused connections through Android setup', () => {
         listeners: fakeListeners(),
         recordsDir: path.join(dir, 'records'),
         readBackMs: 200,
-        pollMs: 60_000,
+        pollMs,
+        certificate: () => current,
+        trustFile: path.join(dir, 'trust.json'),
       },
     });
     started.push(android);
@@ -222,44 +243,50 @@ describe('Refused connections through Android setup', () => {
     await expect.poll(() => device()?.id).toBeTruthy();
     return { android, device, id: device()!.id!, changes: () => changes };
   }
+  const only = (host: string) => ({ count: 1, hosts: [{ host, count: 1 }] });
 
-  it('counts only while the device is capturing', async () => {
+  it('shows refusals only while capturing, each capture starting afresh', async () => {
     const { android, device, id } = await setup();
     android.certificateRefused(id, 'before.test');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(device()?.refused).toBeUndefined();
     await android.captureDevice(id);
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(device()?.refused).toBeUndefined();
 
     android.certificateRefused(id, 'during.test');
-    await expect
-      .poll(() => device()?.refused)
-      .toEqual({ count: 1, hosts: [{ host: 'during.test', count: 1 }] });
+    await expect.poll(() => device()?.refused).toEqual(only('during.test'));
 
     await android.stopDevice(id);
     expect(device()?.refused).toBeUndefined();
-    // A late one, after Stop.
+    // A late one, after Stop, isn't shown, nor carried into the next capture.
     android.certificateRefused(id, 'after.test');
-    await android.captureDevice(id);
     await new Promise((resolve) => setTimeout(resolve, 400));
     expect(device()?.refused).toBeUndefined();
+    await android.captureDevice(id);
+    android.certificateRefused(id, 'next.test');
+    await expect.poll(() => device()?.refused).toEqual(only('next.test'));
     await android.stopDevice(id);
   });
 
-  it('starts a new count with each capture', async () => {
-    const { android, device, id } = await setup();
+  it('starts afresh after a capture that ended without Stop (its proxy changed on the device)', async () => {
+    const { android, device, id } = await setup(100);
     await android.captureDevice(id);
     android.certificateRefused(id, 'first.test');
     await expect.poll(() => device()?.refused?.count).toBe(1);
-    await android.stopDevice(id);
-    await android.captureDevice(id);
+    phone.settings.set('http_proxy', '10.0.0.9:3128');
+    phone.settings.set('global_http_proxy_host', '10.0.0.9');
+    await expect.poll(() => device()?.capture, { timeout: 5000 }).toBeUndefined();
+    await android.captureDevice(id, '10.0.0.9:3128');
+    await expect.poll(() => device()?.capture).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(device()?.refused).toBeUndefined();
     android.certificateRefused(id, 'second.test');
-    await expect
-      .poll(() => device()?.refused)
-      .toEqual({ count: 1, hosts: [{ host: 'second.test', count: 1 }] });
+    await expect.poll(() => device()?.refused).toEqual(only('second.test'));
     await android.stopDevice(id);
   });
 
-  it('clears the count even when Stop fails part way', async () => {
+  it('keeps counting while a Stop fails and the device stays captured', async () => {
     const { android, device, id } = await setup();
     await android.captureDevice(id);
     android.certificateRefused(id, 'first.test');
@@ -267,13 +294,32 @@ describe('Refused connections through Android setup', () => {
     phone.failShell = true;
     await expect(android.stopDevice(id)).rejects.toThrow();
     phone.failShell = false;
-    // Still capturing (the device couldn't be put back), with the count started afresh.
     expect(device()?.capture).toBeTruthy();
+    android.certificateRefused(id, 'first.test');
+    await expect.poll(() => device()?.refused?.count).toBe(2);
+    await android.stopDevice(id);
+  });
+
+  it('forgets refusals once the device trusts the certificate, and when it changes', async () => {
+    const { android, device, id } = await setup();
+    await android.captureDevice(id);
+    android.certificateRefused(id, 'chrome.test');
+    await expect.poll(() => device()?.refused?.count).toBe(1);
+    // Trust in another (old) certificate: not news for this one.
+    await android.markTrusted(id, 'B'.repeat(43) + '=');
+    expect(device()?.refused?.count).toBe(1);
+    await android.markTrusted(id, current.spki);
+    expect(device()?.certificate?.trusted).toBe(true);
     expect(device()?.refused).toBeUndefined();
-    android.certificateRefused(id, 'second.test');
-    await expect
-      .poll(() => device()?.refused)
-      .toEqual({ count: 1, hosts: [{ host: 'second.test', count: 1 }] });
+
+    android.certificateRefused(id, 'bank.test');
+    await expect.poll(() => device()?.refused).toEqual(only('bank.test'));
+    // Trusted already: a check passing again doesn't hide what still refuses.
+    await android.markTrusted(id, current.spki);
+    expect(device()?.refused).toEqual(only('bank.test'));
+
+    android.certificateChanged();
+    expect(device()?.refused).toBeUndefined();
     await android.stopDevice(id);
   });
 
@@ -285,6 +331,8 @@ describe('Refused connections through Android setup', () => {
     await expect.poll(() => device()?.refused?.count).toBe(200);
     expect(changes() - before).toBeLessThanOrEqual(2);
 
+    // Stopped with an update still due: it never comes.
+    android.certificateRefused(id, 'burst.test');
     android.stop();
     const after = changes();
     android.certificateRefused(id, 'burst.test');

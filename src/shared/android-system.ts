@@ -18,10 +18,13 @@ export const ANDROID_SYSTEM_HOSTS = [
 ] as const;
 
 /**
- * The connectivity check also probes these paths on www.google.com and play.googleapis.com;
- * those hosts serve apps too, so only the paths mark the check.
+ * The connectivity check's other plain-HTTP probes. Those hosts serve apps too, and other apps
+ * use these paths on other hosts, so only these exact URLs mark the check.
  */
-export const ANDROID_PROBE_PATHS = ['/generate_204', '/gen_204'] as const;
+export const ANDROID_PROBE_URLS = [
+  'http://www.google.com/gen_204',
+  'http://play.googleapis.com/generate_204',
+] as const;
 
 /**
  * Hosts whose refused connections come from Android itself. Refusals carry only a hostname,
@@ -33,8 +36,8 @@ export function isAndroidSystemHost(host: string): boolean {
   return REFUSING_SYSTEM_HOSTS.has(host.toLowerCase());
 }
 
-/** A Traffic search that hides Android's own traffic. */
+/** A Traffic search that hides Android's background traffic (from any source: it goes by host). */
 export const HIDE_ANDROID_SYSTEM_QUERY = [
   ...ANDROID_SYSTEM_HOSTS.map((host) => `-host=${host}`),
-  ...ANDROID_PROBE_PATHS.map((path) => `-path=${path}`),
+  ...ANDROID_PROBE_URLS.map((url) => `-url=${url}`),
 ].join(' ');

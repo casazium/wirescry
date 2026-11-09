@@ -613,7 +613,8 @@ export function App(): React.JSX.Element {
           send={send}
           onLaunched={() => setView('traffic')}
           onShowTraffic={(query) => {
-            setSearch(query);
+            // Added to what's there, so a search in progress isn't lost.
+            setSearch((current) => (current.includes(query) ? current : `${current.trim()} ${query}`.trim()));
             setView('traffic');
           }}
         />
