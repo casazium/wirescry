@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
@@ -104,6 +104,7 @@ describe('Docker setup in the backend', () => {
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
       upstreamCAs: [upstreamCA.cert],
+      windowsDocker: true,
       dockerEndpoint: async () => ({ kind: 'local', socketPath, host: `unix://${socketPath}` }),
     });
     api = await apiClient(backend.apiPort);
@@ -268,6 +269,7 @@ describe('Docker setup in the backend', () => {
       dataDir: await mkdtemp(path.join(os.tmpdir(), 'wirescry-docker-stop-')),
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
+      windowsDocker: true,
       dockerEndpoint: async () => ({
         kind: 'local',
         socketPath: '/nowhere.sock',
@@ -290,7 +292,12 @@ describe('Docker setup when it does not apply', () => {
     for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
   });
 
-  async function statusWith(options: { docker?: boolean; endpoint?: DockerEndpoint }): Promise<ProxyStatus> {
+  async function statusWith(options: {
+    docker?: boolean;
+    endpoint?: DockerEndpoint;
+    /** Left at true (Windows CI tests the helper); undefined is what the app does. */
+    windowsDocker?: boolean;
+  }): Promise<ProxyStatus> {
     const dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-docker-none-'));
     dirs.push(dataDir);
     const backend = await startBackend({
@@ -298,6 +305,7 @@ describe('Docker setup when it does not apply', () => {
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
       docker: options.docker,
+      windowsDocker: 'windowsDocker' in options ? options.windowsDocker : true,
       dockerEndpoint: options.endpoint ? async () => options.endpoint! : undefined,
     });
     const client = await apiClient(backend.apiPort);
@@ -306,6 +314,59 @@ describe('Docker setup when it does not apply', () => {
     await backend.stop();
     return result;
   }
+
+  it.runIf(process.platform === 'win32')(
+    'on Windows, by default, says it doesn’t set Docker up yet and leaves DOCKER_HOST alone',
+    async () => {
+      const daemonDir = await mkdtemp(path.join(os.tmpdir(), 'wd-'));
+      dirs.push(daemonDir);
+      const socketPath = `\\\\.\\pipe\\wirescry-test-desktop-${process.pid}`;
+      const daemon = await fakeDaemon(socketPath);
+      try {
+        const status = await statusWith({
+          endpoint: { kind: 'local', socketPath, host: `npipe:${socketPath}` },
+          windowsDocker: undefined,
+        });
+        expect(status.docker).toMatchObject({ state: 'unsupported', windowsNotYet: true });
+        expect(status.terminalEnv.DOCKER_HOST).toBeUndefined();
+      } finally {
+        await daemon.close();
+      }
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'on Windows, turns Docker setup on with experimentalWindowsDocker in settings.json',
+    async () => {
+      const daemonDir = await mkdtemp(path.join(os.tmpdir(), 'wd-'));
+      dirs.push(daemonDir);
+      const socketPath = `\\\\.\\pipe\\wirescry-test-setting-${process.pid}`;
+      const daemon = await fakeDaemon(socketPath);
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-docker-setting-'));
+      dirs.push(dataDir);
+      await writeFile(
+        path.join(dataDir, 'settings.json'),
+        JSON.stringify({ experimentalWindowsDocker: true }),
+      );
+      const backend = await startBackend({
+        dataDir,
+        token: TOKEN,
+        allowedOrigins: [UI_ORIGIN],
+        dockerEndpoint: async () => ({ kind: 'local', socketPath, host: `npipe:${socketPath}` }),
+      });
+      try {
+        const client = await apiClient(backend.apiPort);
+        const status = (client.messages[0] as { status: ProxyStatus }).status;
+        client.close();
+        expect(status.docker.state).toBe('ready');
+        expect(status.docker.windowsNotYet).toBeUndefined();
+        expect(status.terminalEnv.DOCKER_HOST).toMatch(/wirescry-docker-/);
+      } finally {
+        await backend.stop();
+        await daemon.close();
+      }
+    },
+  );
 
   it('leaves DOCKER_HOST alone with no Docker', async () => {
     const status = await statusWith({ endpoint: { kind: 'none' } });
@@ -355,6 +416,7 @@ describe('Docker setup when it does not apply', () => {
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
+      windowsDocker: true,
       dockerEndpoint: async () => ({ kind: 'local', socketPath: own, host: `unix://${own}` }),
     });
     const client = await apiClient(backend.apiPort);

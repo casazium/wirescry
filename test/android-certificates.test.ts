@@ -20,7 +20,14 @@ import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { DeviceListeners } from '../src/backend/device-listeners';
 import type { AndroidDevice, ExchangeSource, ProxyStatus, ServerMessage } from '../src/shared/api';
 import { fakeDeviceState, startDeviceServer, type FakeDeviceState } from './fake-adb';
-import { apiClient, httpViaProxy, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  httpViaProxy,
+  requestViaProxy,
+  startBackendOnPickedPort,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 const FILE = `/storage/emulated/0/Download/${CERTIFICATE_FILE}`;
 
@@ -501,7 +508,8 @@ describe('The trust check through the backend', () => {
 
   it('marks the device trusted when its own listener gets the HTTPS check, and not for the main proxy', async () => {
     const endpoint = fake.endpoint;
-    backend = await startBackend({
+    // It resets the certificate: a picked port, kept across the reset (see startBackendOnPickedPort).
+    backend = await startBackendOnPickedPort({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],

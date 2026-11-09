@@ -3,6 +3,7 @@ import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
 import { expect } from 'vitest';
+import { startBackend, type BackendOptions, type RunningBackend } from '../src/backend/backend';
 import WebSocket from 'ws';
 import {
   API_PROTOCOL,
@@ -183,4 +184,37 @@ export async function systemPickedPort(): Promise<number> {
   const { port } = server.address() as net.AddressInfo;
   await new Promise((resolve) => server.close(resolve));
   return port;
+}
+
+/**
+ * Starts a backend whose proxy keeps a system-picked port across certificate resets (see
+ * systemPickedPort). The port is free when picked, but it's closed again before the backend
+ * listens on it, and another test file running at the same time can take it in between: then the
+ * backend can't start (EADDRINUSE on that port), so another port is picked. The proxy is the
+ * first thing that listens, so a failure there leaves nothing running; any other failure, an
+ * EADDRINUSE on another port included, is a real one.
+ */
+export async function startBackendOnPickedPort(
+  options: Omit<BackendOptions, 'proxyPort'>,
+  {
+    attempts = 5,
+    pickPort = systemPickedPort,
+    start = startBackend,
+  }: {
+    attempts?: number;
+    pickPort?: () => Promise<number>;
+    /** Tests of this helper. */
+    start?: typeof startBackend;
+  } = {},
+): Promise<RunningBackend> {
+  for (let attempt = 1; ; attempt += 1) {
+    const proxyPort = await pickPort();
+    try {
+      return await start({ ...options, proxyPort });
+    } catch (error) {
+      const failure = error as NodeJS.ErrnoException & { port?: number };
+      const taken = failure.code === 'EADDRINUSE' && failure.port === proxyPort;
+      if (!taken || attempt >= attempts) throw error;
+    }
+  }
 }
