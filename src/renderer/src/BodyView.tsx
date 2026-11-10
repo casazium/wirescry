@@ -183,13 +183,13 @@ export function BodyView({
   return (
     <div className="body-view">
       <div className="body-meta">
-        <span>{content.contentType ?? 'No content type'}</span>
-        <span>
+        <span className="body-type">{content.contentType ?? 'No content type'}</span>
+        <span className="body-size">
           {formatBytes(content.size)}
           {decoded}
         </span>
         {imageSize && (
-          <span>
+          <span className="body-size">
             {imageSize.width} × {imageSize.height} px
           </span>
         )}

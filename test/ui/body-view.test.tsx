@@ -280,4 +280,58 @@ describe('BodyView', () => {
       expect(screen.getByText('64 × 64 px')).toBeTruthy();
     });
   });
+
+  describe('the line above the body, with the app’s stylesheet', () => {
+    let style: HTMLStyleElement;
+    beforeEach(() => {
+      style = document.createElement('style');
+      style.textContent = readFileSync(
+        path.join(import.meta.dirname, '../../src/renderer/src/styles.css'),
+        'utf8',
+      );
+      document.head.append(style);
+      return () => style.remove();
+    });
+    const meta = () => document.querySelector('.body-meta')!;
+    const css = (el: Element) => getComputedStyle(el);
+
+    it('never breaks the size: “41 B” stays on one line beside a long content type', () => {
+      render(
+        <BodyView
+          content={content('name=Ada+Lovelace&email=ada%40example.com', 'application/x-www-form-urlencoded')}
+          format={noFormat}
+        />,
+      );
+      const size = screen.getByText('41 B');
+      expect(size.className).toBe('body-size');
+      expect(css(size).whiteSpace).toBe('nowrap');
+      // The content type is what gives way instead, and the row can wrap as a whole.
+      const type = screen.getByText('application/x-www-form-urlencoded');
+      expect(css(type).whiteSpace).not.toBe('nowrap');
+      expect(css(type).overflowWrap).toBe('anywhere');
+      expect(css(meta()).flexWrap).toBe('wrap');
+    });
+
+    it('keeps a decoded size and an image’s size whole too', () => {
+      render(
+        <BodyView
+          content={content('png', 'image/png', { encoding: 'gzip', decodedSize: 2048 })}
+          format={noFormat}
+        />,
+      );
+      const img = document.querySelector('img.body-image')!;
+      Object.defineProperty(img, 'naturalWidth', { value: 544, configurable: true });
+      Object.defineProperty(img, 'naturalHeight', { value: 184, configurable: true });
+      fireEvent.load(img);
+      expect(css(screen.getByText('3 B gzip, 2.0 KB decoded')).whiteSpace).toBe('nowrap');
+      expect(css(screen.getByText('544 × 184 px')).whiteSpace).toBe('nowrap');
+    });
+
+    it('doesn’t stop other text from wrapping: a status message still can', async () => {
+      render(<BodyView content={content('{"a":1}', 'application/json')} format={noFormat} />);
+      await act(async () => fireEvent.click(screen.getByText('Copy')));
+      const status = screen.getByRole('status');
+      expect(css(status).whiteSpace).not.toBe('nowrap');
+    });
+  });
 });
