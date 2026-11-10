@@ -54,7 +54,10 @@ beforeEach(() => {
     },
   } as unknown as WirescryBridge;
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 async function started() {
   const hook = renderHook(() => useBackend(() => undefined));
@@ -215,7 +218,6 @@ describe('what plugins get from the window', () => {
     await act(async () => latest().onMessage(event('pro', 'rules', 2)));
     expect(fine).toHaveBeenCalledTimes(1);
     expect(broken).toHaveBeenCalledTimes(2);
-    errors.mockRestore();
   });
 
   it('gives each plugin one API object for the session', async () => {
@@ -284,11 +286,48 @@ describe('what plugins get from the window', () => {
     expect(result.current.badges).not.toBe(before);
   });
 
-  it('clears the badges for a new backend, so plugin views set them again', async () => {
+  it('keeps the badges, the API object and its listeners when it reconnects to the same backend', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
     const { result } = await started();
-    await act(async () => result.current.pluginApi('pro').setBadge('breakpoints', '2'));
+    const api = result.current.pluginApi('pro');
+    const listener = vi.fn();
+    api.on('rules', listener);
+    await act(async () => api.setBadge('breakpoints', '2'));
+    await act(async () => latest().onClose());
+    await act(async () => vi.advanceTimersByTime(1000));
+    await act(async () => latest().onMessage(hello(['a', 'b'])));
+    expect(result.current.badges['pro:breakpoints']).toEqual({ text: '2', tag: false });
+    expect(result.current.pluginApi('pro')).toBe(api);
+    await act(async () => latest().onMessage(event('pro', 'rules', 'again')));
+    expect(listener).toHaveBeenCalledWith('again');
+  });
+
+  it('keeps a plugin’s listeners through a restart, so the new backend’s events reach them', async () => {
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    const listener = vi.fn();
+    api.on('rules', listener);
     await act(async () => changeState(ready(2, { at: 1, byUser: true })));
     await act(async () => latest().onMessage(hello([])));
-    expect(result.current.badges).toEqual({});
+    await act(async () => latest().onMessage(event('pro', 'rules', 'from the new one')));
+    expect(listener).toHaveBeenCalledWith('from the new one');
+    expect(result.current.pluginApi('pro')).toBe(api);
+  });
+
+  it('opens the file dialogs for a plugin', async () => {
+    const saveTextFile = vi.fn(async () => ({ name: 'a.json' }));
+    const openTextFile = vi.fn(async () => ({ name: 'b.json', text: '{}' }));
+    const chooseFilePath = vi.fn(async () => ({ path: '/x' }));
+    Object.assign(window.wirescry, { saveTextFile, openTextFile, chooseFilePath });
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    const save = { defaultName: 'rules.json', text: '[]' };
+    expect(await api.saveFile(save as never)).toEqual({ name: 'a.json' });
+    expect(saveTextFile).toHaveBeenCalledWith(save);
+    expect(await api.openFile({ extensions: ['json'] })).toEqual({ name: 'b.json', text: '{}' });
+    expect(openTextFile).toHaveBeenCalledWith({ extensions: ['json'] });
+    expect(await api.chooseFile()).toEqual({ path: '/x' });
+    // Without options, the dialog gets an empty set.
+    expect(chooseFilePath).toHaveBeenCalledWith({});
   });
 });

@@ -38,6 +38,15 @@ vi.mock('@wirescry/pro/ui', async () => {
         name: 'pro',
         apiVersion: PLUGIN_API_VERSION,
         views: [],
+        exchangeSections: [
+          {
+            id: 'spec',
+            label: 'API spec',
+            component: ({ exchange }: { exchange: ExchangeSummary }) => (
+              <p>Spec result for {exchange.path}</p>
+            ),
+          },
+        ],
         exchangeActions: [
           {
             id: 'mock',
@@ -191,6 +200,30 @@ describe('requests from before the proxy restarted', () => {
     await rightClick('/post');
     expect(offered()).toContain('Copy as curl');
     expect(offered()).toContain('Mock…');
+  });
+
+  it('still copy their URL', async () => {
+    const clipboard = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText: clipboard }, configurable: true });
+    await started([get]);
+    await restarted([]);
+    showMenu.mockResolvedValueOnce('copy-url');
+    await rightClick('/get');
+    expect(clipboard).toHaveBeenCalledWith(get.url);
+  });
+
+  it('show no plugin sections in their details', async () => {
+    await started([get]);
+    await act(async () => void fireEvent.click(row('/get')));
+    expect(screen.getByText('Spec result for /get')).toBeTruthy();
+    await restarted([post]);
+    // A new request still has them.
+    await act(async () => void fireEvent.click(row('/post')));
+    expect(screen.getByText('Spec result for /post')).toBeTruthy();
+    // The old one, selected again (a second click on a selected row would close it), doesn't.
+    await act(async () => void fireEvent.click(row('/get')));
+    expect(screen.getByText('https://api.test/g')).toBeTruthy();
+    expect(screen.queryByText('Spec result for /get')).toBeNull();
   });
 
   it('aren’t exported, and the notice says how many were left out', async () => {
