@@ -102,11 +102,68 @@ describe('WebSocketMessagesView', () => {
     await settle();
     expect(send).toHaveBeenCalledWith({ command: 'getWebSocketMessages', exchangeId: 'ws1', after: 1 });
     expect(rows()).toHaveLength(3);
+    expect(send).toHaveBeenCalledTimes(1);
     // The same count again: nothing more to fetch.
     send.mockClear();
     rerender(<WebSocketMessagesView exchangeId="ws1" messageCount={3} send={send} />);
     await settle();
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it('fetches messages that arrive while it’s still fetching, once that answer is in', async () => {
+    const answers: Array<(value: WebSocketMessages) => void> = [];
+    const send = vi.fn(() => new Promise<WebSocketMessages>((resolve) => answers.push(resolve)));
+    const { rerender } = render(<WebSocketMessagesView exchangeId="ws1" messageCount={1} send={send} />);
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    // Two more arrive before the first answer.
+    rerender(<WebSocketMessagesView exchangeId="ws1" messageCount={3} send={send} />);
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    await act(async () => answers[0]!({ messages: chat.slice(0, 1), dropped: 0, total: 1 }));
+    expect(rows()).toHaveLength(1);
+    expect(send).toHaveBeenLastCalledWith({ command: 'getWebSocketMessages', exchangeId: 'ws1', after: 0 });
+    await act(async () => answers[1]!({ messages: chat.slice(1), dropped: 0, total: 3 }));
+    expect(rows()).toHaveLength(3);
+    expect(screen.queryByText(/earlier/)).toBeNull();
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps fetching new ones once it shows as many as it keeps', async () => {
+    const many = Array.from({ length: 2000 }, (_, i) => message(i, i % 2 === 0, `m${i}`));
+    const answers: Array<(value: WebSocketMessages) => void> = [];
+    const send = vi.fn(() => new Promise<WebSocketMessages>((resolve) => answers.push(resolve)));
+    const { rerender } = render(<WebSocketMessagesView exchangeId="ws1" messageCount={2000} send={send} />);
+    await settle();
+    await act(async () => answers[0]!({ messages: many, dropped: 0, total: 2000 }));
+    expect(rows()).toHaveLength(2000);
+    rerender(<WebSocketMessagesView exchangeId="ws1" messageCount={2001} send={send} />);
+    await settle();
+    // One more arrives while that's out; the list is full, so its length doesn't change.
+    rerender(<WebSocketMessagesView exchangeId="ws1" messageCount={2002} send={send} />);
+    await settle();
+    await act(async () =>
+      answers[1]!({ messages: [message(2000, true, 'new one')], dropped: 0, total: 2001 }),
+    );
+    expect(send).toHaveBeenLastCalledWith({
+      command: 'getWebSocketMessages',
+      exchangeId: 'ws1',
+      after: 2000,
+    });
+    await act(async () =>
+      answers[2]!({ messages: [message(2001, true, 'newest')], dropped: 0, total: 2002 }),
+    );
+    expect(rows()).toHaveLength(2000);
+    expect(rows().at(-1)).toContain('newest');
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  it('doesn’t keep asking when an answer has nothing new', async () => {
+    const send = vi.fn(async () => ({ messages: [], dropped: 0, total: 2 }));
+    render(<WebSocketMessagesView exchangeId="ws1" messageCount={2} send={send} />);
+    await settle();
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it('says how many earlier messages aren’t shown', async () => {

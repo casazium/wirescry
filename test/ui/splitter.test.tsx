@@ -124,6 +124,15 @@ describe('Splitter', () => {
     expect(value()).toBe(66);
   });
 
+  it('keeps the keys it uses from scrolling the page', () => {
+    render(<Harness width={1000} height={600} />);
+    for (const k of ['ArrowLeft', 'ArrowRight', 'Home', 'End']) {
+      let notPrevented = true;
+      act(() => void (notPrevented = fireEvent.keyDown(divider(), { key: k })));
+      expect(notPrevented, k).toBe(false);
+    }
+  });
+
   it('leaves other keys to the page', () => {
     render(<Harness width={1000} height={600} />);
     const event = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
@@ -143,8 +152,14 @@ describe('Splitter', () => {
   it('follows a drag with the main button, within the limits, and saves when it ends', () => {
     const onCommit = vi.fn();
     const sizes: number[] = [];
+    const capture = vi.spyOn(HTMLElement.prototype, 'setPointerCapture');
     render(<Harness width={1000} height={600} onCommit={onCommit} sizes={sizes} />);
-    act(() => void fireEvent.pointerDown(divider(), { button: 0, pointerId: 1 }));
+    let down = true;
+    act(() => void (down = fireEvent.pointerDown(divider(), { button: 0, pointerId: 7 })));
+    // The pointer is captured, so the drag ends (and saves) wherever it's let go; no text is selected.
+    expect(capture).toHaveBeenCalledWith(7);
+    expect(down).toBe(false);
+    capture.mockRestore();
     // The details are to the right of the pointer: at x = 600, they take 40%.
     act(() => void fireEvent.pointerMove(divider(), { clientX: 600, clientY: 10 }));
     expect(value()).toBe(40);
@@ -159,6 +174,7 @@ describe('Splitter', () => {
     expect(value()).toBe(66);
     act(() => void fireEvent.lostPointerCapture(divider()));
     expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(sizes).toEqual([0.4, 0.664]);
   });
 
   it('follows the pointer up and down when stacked', () => {
@@ -172,7 +188,9 @@ describe('Splitter', () => {
   it('ignores a drag with another button', () => {
     const sizes: number[] = [];
     render(<Harness width={1000} height={600} sizes={sizes} />);
-    act(() => void fireEvent.pointerDown(divider(), { button: 2, pointerId: 1 }));
+    let notPrevented = false;
+    act(() => void (notPrevented = fireEvent.pointerDown(divider(), { button: 2, pointerId: 1 })));
+    expect(notPrevented).toBe(true);
     act(() => void fireEvent.pointerMove(divider(), { clientX: 600, clientY: 10 }));
     expect(sizes).toEqual([]);
     expect(value()).toBe(50);

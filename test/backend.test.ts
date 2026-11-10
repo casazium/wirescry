@@ -234,6 +234,14 @@ describe('backend', () => {
     expect(await backend.saveBody(file, id, 'response')).toMatchObject({ size: 19 });
     expect(await readFile(file, 'utf8')).toBe('hello from upstream');
     await rm(file);
+    // A gzip body is saved decoded.
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/gzip?save=1`, ca);
+    const zipped = await api.completed('/gzip?save=1');
+    const result = await backend.saveBody(file, zipped, 'response');
+    expect(result.decoded).toBe(true);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ encoding: 'gzip' });
+    expect(result.size).toBe((await readFile(file)).length);
+    await rm(file);
     api.close();
   });
 
