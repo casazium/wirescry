@@ -75,7 +75,8 @@ export function App(): React.JSX.Element {
   const [notice, setNotice] = useState<string>();
   // The refusals dismissed: the bar comes back for a host not among them, or once they start over.
   const [refusedDismissed, setRefusedDismissed] = useState<RefusedConnections>();
-  const [pillCopied, setPillCopied] = useState(false);
+  // What the proxy address says for a moment after a click: it was copied, or it wasn't.
+  const [pillCopied, setPillCopied] = useState<'Copied' | 'Couldn’t copy'>();
   const [harBusy, setHarBusy] = useState(false);
   const [selectedBrowser, setSelectedBrowser] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string>();
@@ -450,13 +451,17 @@ export function App(): React.JSX.Element {
             data-testid="proxy-status"
             title="Copy the proxy address"
             onClick={() => {
-              void navigator.clipboard.writeText(`127.0.0.1:${status.proxyPort}`).then(() => {
-                setPillCopied(true);
-                setTimeout(() => setPillCopied(false), 1500);
-              });
+              const show = (result: 'Copied' | 'Couldn’t copy'): void => {
+                setPillCopied(result);
+                setTimeout(() => setPillCopied(undefined), 1500);
+              };
+              navigator.clipboard.writeText(`127.0.0.1:${status.proxyPort}`).then(
+                () => show('Copied'),
+                () => show('Couldn’t copy'),
+              );
             }}
           >
-            {pillCopied ? 'Copied' : stateLabel}
+            {pillCopied ?? stateLabel}
           </button>
         ) : (
           <span className="pill" data-testid="proxy-status">

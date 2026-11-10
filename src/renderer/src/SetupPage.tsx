@@ -21,19 +21,24 @@ function quote(value: string): string {
 }
 
 function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }): React.JSX.Element {
-  const [done, setDone] = useState(false);
+  // What the button says for a moment after a click: it worked, or it didn't.
+  const [result, setResult] = useState<'Copied' | 'Couldn’t copy'>();
+  const show = (shown: 'Copied' | 'Couldn’t copy'): void => {
+    setResult(shown);
+    setTimeout(() => setResult(undefined), 1500);
+  };
   return (
     <button
       type="button"
       className="secondary small"
       onClick={() => {
-        void navigator.clipboard.writeText(text).then(() => {
-          setDone(true);
-          setTimeout(() => setDone(false), 1500);
-        });
+        navigator.clipboard.writeText(text).then(
+          () => show('Copied'),
+          () => show('Couldn’t copy'),
+        );
       }}
     >
-      {done ? 'Copied' : label}
+      {result ?? label}
     </button>
   );
 }
