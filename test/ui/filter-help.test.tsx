@@ -47,12 +47,15 @@ describe('FilterHelp', () => {
     const { onClose } = open();
     const outer = vi.fn();
     document.body.addEventListener('keydown', outer);
-    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
-    document.activeElement!.dispatchEvent(event);
-    expect(onClose).toHaveBeenCalledWith(true);
-    expect(event.defaultPrevented).toBe(true);
-    expect(outer).not.toHaveBeenCalled();
-    document.body.removeEventListener('keydown', outer);
+    try {
+      const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      document.activeElement!.dispatchEvent(event);
+      expect(onClose).toHaveBeenCalledWith(true);
+      expect(event.defaultPrevented).toBe(true);
+      expect(outer).not.toHaveBeenCalled();
+    } finally {
+      document.body.removeEventListener('keydown', outer);
+    }
   });
 
   it('closes with Escape from elsewhere without taking focus back, and lets Escape do its job there', () => {

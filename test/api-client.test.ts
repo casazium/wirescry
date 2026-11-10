@@ -108,6 +108,7 @@ describe('ApiClient', () => {
     await expect(a).rejects.toThrow('Disconnected');
     await expect(b).rejects.toThrow('Disconnected');
     await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect((client as unknown as { pending: Map<number, unknown> }).pending.size).toBe(0);
   });
 
   it('closes its connection when asked', async () => {
