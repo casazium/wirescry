@@ -539,10 +539,21 @@ table.headers th {
 
 .body-meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 4px 12px;
   color: var(--muted);
   margin-bottom: 6px;
+}
+
+/* A long content type wraps, not the size beside it ("41 B" on two lines). */
+.body-meta .body-type {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.body-meta .body-size {
+  white-space: nowrap;
 }
 
 button.tab {
