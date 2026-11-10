@@ -70,7 +70,7 @@ jobs:
       - name: Get a read-only token for Pro
         id: pro-token
         if: env.HAS_PRO_ACCESS == 'true'
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.CI_APP_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
@@ -140,7 +140,10 @@ jobs:
         # x64 Windows can't run arm64. The macOS runners are Apple silicon, with Rosetta.
         # Linux can't run another CPU's Electron, so it builds on one runner per CPU: x64,
         # and arm64 (free, like x64 Linux, for a public repo). Each packages its own CPU.
-        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-latest", "ubuntu-24.04-arm"]') || fromJSON('["macos-latest", "windows-11-arm", "ubuntu-latest", "ubuntu-24.04-arm"]') }}
+        # Both Linux builds are pinned to one Ubuntu release, so a release isn't built on a
+        # different Ubuntu without notice when GitHub moves ubuntu-latest (to 26.04 from
+        # October 2026). Move both together, on purpose, and check the packages on the new one.
+        os: ${{ github.event_name == 'pull_request' && fromJSON('["ubuntu-24.04", "ubuntu-24.04-arm"]') || fromJSON('["macos-latest", "windows-11-arm", "ubuntu-24.04", "ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.os }}
     # Windows on Arm runners have 2 cores, and build x64 emulated.
     timeout-minutes: 90
@@ -192,7 +195,7 @@ jobs:
       - name: Get a read-only token for Pro
         id: pro-token
         if: env.PRO_SHA != ''
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ vars.CI_APP_ID }}
           private-key: ${{ secrets.CI_APP_PRIVATE_KEY }}
