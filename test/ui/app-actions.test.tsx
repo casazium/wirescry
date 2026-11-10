@@ -32,7 +32,10 @@ vi.mock('../../src/renderer/src/api-client', () => ({
 
 const { App } = await import('../../src/renderer/src/App');
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 const client = () => fake.clients.at(-1)!;
 
 let bridge: {
@@ -190,7 +193,7 @@ describe('the right-click menu on a request', () => {
     await started();
     bridge.showMenu.mockRejectedValueOnce(new Error('no window'));
     await rightClick(0);
-    expect(alertText()).toContain('Couldn’t show the menu: no window'.replace('’', "'"));
+    expect(alertText()).toContain("Couldn't show the menu: no window");
     bridge.showMenu.mockResolvedValueOnce('copy-url');
     clipboard.mockRejectedValueOnce(new Error('denied'));
     await rightClick(0);
@@ -256,7 +259,9 @@ describe('HAR import', () => {
     await started();
     bridge.importHar.mockResolvedValueOnce({ name: 'one.har', imported: 1 });
     await act(async () => void fireEvent.click(importButton()));
-    expect(noticeText()).toBe('Imported 1 request from one.har.×');
+    expect(noticeText()).toContain('Imported 1 request from one.har.');
+    expect(noticeText()).not.toContain('Skipped');
+    expect(noticeText()).not.toContain('To make room');
   });
 
   it('says so when there was nothing to import, and why', async () => {
@@ -421,6 +426,23 @@ describe('launching a browser', () => {
     await started([a]);
     expect(screen.getByRole('button', { name: 'Set up traffic' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /^Launch/ })).toBeNull();
+  });
+
+  it('copies the proxy address from the toolbar, and says when it couldn’t', async () => {
+    await started([a]);
+    vi.useFakeTimers();
+    const pill = screen.getByTestId('proxy-status');
+    expect(pill.textContent).toBe('Proxy on 127.0.0.1:8001');
+    await act(async () => void fireEvent.click(pill));
+    expect(clipboard).toHaveBeenCalledWith('127.0.0.1:8001');
+    expect(pill.textContent).toBe('Copied');
+    await act(async () => void vi.advanceTimersByTime(1500));
+    expect(pill.textContent).toBe('Proxy on 127.0.0.1:8001');
+    clipboard.mockRejectedValueOnce(new Error('denied'));
+    await act(async () => void fireEvent.click(pill));
+    expect(pill.textContent).toBe('Couldn’t copy');
+    await act(async () => void vi.advanceTimersByTime(1500));
+    expect(pill.textContent).toBe('Proxy on 127.0.0.1:8001');
   });
 
   it('says where the proxy is', async () => {
