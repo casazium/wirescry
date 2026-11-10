@@ -32,20 +32,21 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
   const [direction, setDirection] = useState<Direction>('all');
   const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<number>();
+  const [fetches, setFetches] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const lastIndex = useRef(-1);
   const loading = useRef(false);
 
-  // Fetch messages newer than the last one we have whenever the count goes up.
+  // Fetch messages newer than the last one we have whenever the count goes up. A count that
+  // rises while a fetch is out is fetched once that one's messages are in. (DetailPane gives
+  // each connection its own view, so an answer is never for another connection.)
   useEffect(() => {
     if (loading.current || messageCount <= lastIndex.current + 1) return;
     loading.current = true;
-    let active = true;
     send({ command: 'getWebSocketMessages', exchangeId, after: lastIndex.current }).then(
       (value) => {
         loading.current = false;
-        if (!active) return;
         const result = value as WebSocketMessages;
         const added: Message[] = result.messages.map((m) => {
           const text = m.isBinary ? undefined : bytesToText(base64ToBytes(m.base64));
@@ -55,16 +56,15 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
         if (last) lastIndex.current = last.index;
         setDropped(result.dropped);
         setMessages((current) => [...current, ...added].slice(-MAX_SHOWN));
+        // Look again, for any that arrived meanwhile; only after new ones, so it can't loop.
+        if (added.length > 0) setFetches((n) => n + 1);
       },
       (e: Error) => {
         loading.current = false;
-        if (active) setError(e.message);
+        setError(e.message);
       },
     );
-    return () => {
-      active = false;
-    };
-  }, [exchangeId, messageCount, send, messages.length]);
+  }, [exchangeId, messageCount, send, fetches]);
 
   const shown = useMemo(() => {
     const words = search.toLowerCase().split(/\s+/).filter(Boolean);

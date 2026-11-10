@@ -181,6 +181,70 @@ describe('backend', () => {
     api.close();
   });
 
+  it('refuses a browser or terminal it doesn’t know, and a clear without a list', async () => {
+    const api = await apiClient(backend.apiPort);
+    await expect(api.send({ command: 'launchBrowser', browserId: 'no-such-browser' })).rejects.toThrow(
+      'Browser not found: no-such-browser',
+    );
+    await expect(api.send({ command: 'launchTerminal', terminalId: 'no-such-terminal' })).rejects.toThrow(
+      'Terminal not found: no-such-terminal',
+    );
+    await expect(api.send({ command: 'clear', ids: 'all' } as never)).rejects.toThrow('ids must be a list');
+    // A list clears just those, ignoring what isn't an id.
+    await expect(
+      api.send({ command: 'clear', ids: [42, null, 'no-such-id'] } as never),
+    ).resolves.toBeUndefined();
+    api.close();
+  });
+
+  it('refuses every Android command while Android setup is off', async () => {
+    const api = await apiClient(backend.apiPort);
+    for (const command of [
+      'androidRefresh',
+      'androidCapture',
+      'androidResume',
+      'androidStop',
+      'androidClearProxy',
+      'androidSendCertificate',
+      'androidCheckCertificate',
+      'androidShowCertificates',
+      'androidForget',
+      'androidSetLocalAccess',
+    ]) {
+      await expect(api.send({ command, deviceId: 'emulator-5554' } as never), command).rejects.toThrow(
+        'Android setup is off.',
+      );
+    }
+    api.close();
+  });
+
+  it('saves a body, and says why it can’t when there’s none', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/hello?save=1`, ca);
+    const id = await api.completed('/hello?save=1');
+    await expect(backend.saveBody('', 'no-such-id', 'response')).rejects.toThrow(
+      'That request is no longer in the list.',
+    );
+    // A GET has no request body.
+    await expect(backend.saveBody('', id, 'request')).rejects.toThrow('That request has no body to save.');
+    // An empty file name only checks that it can be saved, writing nothing.
+    expect(await backend.saveBody('', id, 'response')).toEqual({ size: 0, decoded: false });
+    const file = path.join(dataDir, 'saved-body.txt');
+    expect(await backend.saveBody(file, id, 'response')).toMatchObject({ size: 19 });
+    expect(await readFile(file, 'utf8')).toBe('hello from upstream');
+    await rm(file);
+    // A gzip body is saved decoded.
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/gzip?save=1`, ca);
+    const zipped = await api.completed('/gzip?save=1');
+    const result = await backend.saveBody(file, zipped, 'response');
+    expect(result.decoded).toBe(true);
+    expect(JSON.parse(await readFile(file, 'utf8'))).toMatchObject({ encoding: 'gzip' });
+    expect(result.size).toBe((await readFile(file)).length);
+    await rm(file);
+    api.close();
+  });
+
   it('clears only the exchanges it is given, and their bodies', async () => {
     const api = await apiClient(backend.apiPort);
     const ca = await readFile(backend.caCertPath, 'utf8');
