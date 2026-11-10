@@ -54,7 +54,10 @@ beforeEach(() => {
     },
   } as unknown as WirescryBridge;
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 async function started() {
   const hook = renderHook(() => useBackend(() => undefined));
@@ -177,5 +180,154 @@ describe('useBackend removeExchanges', () => {
     expect(result.current.previous.map((e) => e.id)).toEqual(['b']);
     expect(result.current.exchanges).toEqual([]);
     expect(latest().send).toHaveBeenCalledWith({ command: 'clear', ids: ['c'] });
+  });
+});
+
+describe('what plugins get from the window', () => {
+  const event = (plugin: string, name: string, data: unknown): ServerMessage =>
+    ({ type: 'plugin', plugin, event: name, data }) as ServerMessage;
+
+  it('passes a plugin its own events, and only those', async () => {
+    const { result } = await started();
+    const rules = vi.fn();
+    const other = vi.fn();
+    result.current.pluginApi('pro').on('rules', rules);
+    result.current.pluginApi('other').on('rules', other);
+    await act(async () => latest().onMessage(event('pro', 'rules', { count: 2 })));
+    expect(rules).toHaveBeenCalledWith({ count: 2 });
+    expect(other).not.toHaveBeenCalled();
+    // Another event of the same plugin isn't this one.
+    await act(async () => latest().onMessage(event('pro', 'license', {})));
+    expect(rules).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps calling the other listeners when one throws, and stops a listener that unsubscribed', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    const broken = vi.fn(() => {
+      throw new Error('listener broke');
+    });
+    const fine = vi.fn();
+    api.on('rules', broken);
+    const stop = api.on('rules', fine);
+    await act(async () => latest().onMessage(event('pro', 'rules', 1)));
+    expect(fine).toHaveBeenCalledWith(1);
+    expect(errors).toHaveBeenCalledWith('[wirescry] pro listener for rules failed:', expect.any(Error));
+    stop();
+    await act(async () => latest().onMessage(event('pro', 'rules', 2)));
+    expect(fine).toHaveBeenCalledTimes(1);
+    expect(broken).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives each plugin one API object for the session', async () => {
+    const { result } = await started();
+    expect(result.current.pluginApi('pro')).toBe(result.current.pluginApi('pro'));
+    expect(result.current.pluginApi('pro')).not.toBe(result.current.pluginApi('other'));
+  });
+
+  it('sends a plugin’s calls, and asks for exchanges and bodies on its behalf', async () => {
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    await api.call('rules.list', { a: 1 });
+    expect(latest().send).toHaveBeenCalledWith({
+      command: 'plugin',
+      plugin: 'pro',
+      name: 'rules.list',
+      args: { a: 1 },
+    });
+    await api.getExchange('a');
+    expect(latest().send).toHaveBeenCalledWith({ command: 'getExchange', exchangeId: 'a' });
+    await api.getBody('a', 'request');
+    expect(latest().send).toHaveBeenCalledWith({ command: 'getBody', exchangeId: 'a', side: 'request' });
+    // Anything but "request" means the response.
+    await api.getBody('a', 'other' as never);
+    expect(latest().send).toHaveBeenLastCalledWith({ command: 'getBody', exchangeId: 'a', side: 'response' });
+  });
+
+  it('refuses a plugin’s calls while not connected', async () => {
+    const hook = renderHook(() => useBackend(() => undefined));
+    await act(async () => undefined);
+    await expect(hook.result.current.pluginApi('pro').call('rules.list')).rejects.toThrow('Not connected');
+  });
+
+  it('opens a plugin’s own view by its id', async () => {
+    const showView = vi.fn();
+    const hook = renderHook(() => useBackend(showView));
+    await act(async () => undefined);
+    hook.result.current.pluginApi('pro').showView('rules');
+    expect(showView).toHaveBeenCalledWith('pro:rules');
+  });
+
+  it('keeps a tab badge short, with an optional tag and label, and clears it', async () => {
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    await act(async () => api.setBadge('breakpoints', '1234567890'));
+    expect(result.current.badges['pro:breakpoints']).toEqual({ text: '123456', tag: false });
+    await act(async () => api.setBadge('apis', 'PRO', { tag: true, label: 'L'.repeat(100) }));
+    expect(result.current.badges['pro:apis']).toEqual({ text: 'PRO', tag: true, label: 'L'.repeat(80) });
+    // An empty label is left out.
+    await act(async () => api.setBadge('apis', 'PRO', { tag: true, label: '' }));
+    expect(result.current.badges['pro:apis']).toEqual({ text: 'PRO', tag: true });
+    await act(async () => api.setBadge('breakpoints', ''));
+    expect(result.current.badges).not.toHaveProperty('pro:breakpoints');
+    await act(async () => api.setBadge('apis', undefined as never));
+    expect(result.current.badges).toEqual({});
+  });
+
+  it('doesn’t change the badges when one is set to what it already is', async () => {
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    await act(async () => api.setBadge('breakpoints', '2'));
+    const before = result.current.badges;
+    await act(async () => api.setBadge('breakpoints', '2'));
+    expect(result.current.badges).toBe(before);
+    await act(async () => api.setBadge('breakpoints', '3'));
+    expect(result.current.badges).not.toBe(before);
+  });
+
+  it('keeps the badges, the API object and its listeners when it reconnects to the same backend', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'] });
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    const listener = vi.fn();
+    api.on('rules', listener);
+    await act(async () => api.setBadge('breakpoints', '2'));
+    await act(async () => latest().onClose());
+    await act(async () => vi.advanceTimersByTime(1000));
+    await act(async () => latest().onMessage(hello(['a', 'b'])));
+    expect(result.current.badges['pro:breakpoints']).toEqual({ text: '2', tag: false });
+    expect(result.current.pluginApi('pro')).toBe(api);
+    await act(async () => latest().onMessage(event('pro', 'rules', 'again')));
+    expect(listener).toHaveBeenCalledWith('again');
+  });
+
+  it('keeps a plugin’s listeners through a restart, so the new backend’s events reach them', async () => {
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    const listener = vi.fn();
+    api.on('rules', listener);
+    await act(async () => changeState(ready(2, { at: 1, byUser: true })));
+    await act(async () => latest().onMessage(hello([])));
+    await act(async () => latest().onMessage(event('pro', 'rules', 'from the new one')));
+    expect(listener).toHaveBeenCalledWith('from the new one');
+    expect(result.current.pluginApi('pro')).toBe(api);
+  });
+
+  it('opens the file dialogs for a plugin', async () => {
+    const saveTextFile = vi.fn(async () => ({ name: 'a.json' }));
+    const openTextFile = vi.fn(async () => ({ name: 'b.json', text: '{}' }));
+    const chooseFilePath = vi.fn(async () => ({ path: '/x' }));
+    Object.assign(window.wirescry, { saveTextFile, openTextFile, chooseFilePath });
+    const { result } = await started();
+    const api = result.current.pluginApi('pro');
+    const save = { defaultName: 'rules.json', text: '[]' };
+    expect(await api.saveFile(save as never)).toEqual({ name: 'a.json' });
+    expect(saveTextFile).toHaveBeenCalledWith(save);
+    expect(await api.openFile({ extensions: ['json'] })).toEqual({ name: 'b.json', text: '{}' });
+    expect(openTextFile).toHaveBeenCalledWith({ extensions: ['json'] });
+    expect(await api.chooseFile()).toEqual({ path: '/x' });
+    // Without options, the dialog gets an empty set.
+    expect(chooseFilePath).toHaveBeenCalledWith({});
   });
 });

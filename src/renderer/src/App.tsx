@@ -319,7 +319,7 @@ export function App(): React.JSX.Element {
         setNotice(
           `Exported ${result.count?.toLocaleString()} ${result.count === 1 ? 'request' : 'requests'} to ${result.name}.` +
             (left > 0
-              ? ` ${left.toLocaleString()} from before the proxy restarted ${left === 1 ? 'wasn’t' : 'weren’t'} included: their details were lost.`
+              ? ` ${left.toLocaleString()} from before the proxy restarted ${left === 1 ? 'wasn’t included: its details were' : 'weren’t included: their details were'} lost.`
               : ''),
         );
       }
