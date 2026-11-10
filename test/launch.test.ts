@@ -46,7 +46,7 @@ vi.mock('node:child_process', async (original) => {
 const { childEnv, launchTerminal, posixStartScript, detectTerminals } =
   await import('../src/backend/terminals');
 const { detectBrowsers, launchChromium, chromiumArgs } = await import('../src/backend/browsers');
-const { firefoxPrefs, isProfileTrusted, launchFirefox, markProfileTrusted } =
+const { deleteFirefoxProfile, firefoxPrefs, isProfileTrusted, launchFirefox, markProfileTrusted } =
   await import('../src/backend/firefox');
 
 let dir: string;
@@ -179,18 +179,23 @@ describe('launchTerminal', () => {
 
 describe('detectTerminals', () => {
   it('finds PowerShell 7 on Windows, and calls the built-in one Windows PowerShell beside it', async () => {
+    onPlatform('win32');
     const bin = path.join(dir, 'pwsh-bin');
     await mkdir(bin, { recursive: true });
-    // On Windows the file is pwsh.exe; elsewhere, as here, a bare name with execute permission.
-    const name = realPlatform === 'win32' ? 'pwsh.exe' : 'pwsh';
-    await writeFile(path.join(bin, name), '', { mode: 0o755 });
+    await writeFile(path.join(bin, 'pwsh.exe'), '', { mode: 0o755 });
     const found = await detectTerminals('win32', { PATH: bin });
     expect(found.map((t) => [t.id, t.name])).toEqual([
       ['pwsh', 'PowerShell'],
       ['powershell', 'Windows PowerShell'],
       ['cmd', 'Command Prompt'],
     ]);
-    expect(found[0]!.command).toBe(path.join(bin, name));
+    expect(found[0]!.command).toBe(path.join(bin, 'pwsh.exe'));
+    // Windows may spell the variable Path.
+    expect((await detectTerminals('win32', { Path: bin })).map((t) => t.id)).toContain('pwsh');
+    expect((await detectTerminals('win32', { PATH: path.join(dir, 'nowhere') })).map((t) => t.id)).toEqual([
+      'powershell',
+      'cmd',
+    ]);
   });
 
   // Only where iTerm isn't installed for everyone, so the user's own folder is what's found.
@@ -242,6 +247,17 @@ describe('detectBrowsers', () => {
       ['brave', path.join(localAppData, 'BraveSoftware/Brave-Browser/Application/brave.exe')],
     ]);
   });
+
+  // os.homedir() follows HOME only outside Windows; and only where Chromium isn't installed for everyone.
+  it.skipIf(realPlatform === 'win32' || existsSync('/Applications/Chromium.app'))(
+    'on macOS, finds a browser in the user’s own Applications folder',
+    async () => {
+      const home = await folderWith('mac-home', ['Applications/Chromium.app/Contents/MacOS/Chromium']);
+      vi.stubEnv('HOME', home);
+      const chromium = (await detectBrowsers('darwin')).find((b) => b.id === 'chromium');
+      expect(chromium?.executable).toBe(path.join(home, 'Applications/Chromium.app/Contents/MacOS/Chromium'));
+    },
+  );
 
   it('on Windows, finds nothing when those folders aren’t set', async () => {
     vi.stubEnv('PROGRAMFILES', '');
@@ -326,6 +342,9 @@ describe('launchChromium', () => {
     await expect(launchChromium(browser, { proxyPort: 8000, spkiFingerprint: 'abc=' })).rejects.toThrow(
       'spawn /x/chrome ENOENT',
     );
+    // The new profile goes too: nothing else would remove it.
+    const profileDir = spawned.at(-1)!.args[0]!.replace('--user-data-dir=', '');
+    await expect(stat(profileDir)).rejects.toThrow('ENOENT');
   });
 });
 
@@ -362,6 +381,16 @@ describe('launchFirefox', () => {
     expect(prefs).toContain('user_pref("network.proxy.http_port", 9000);');
     expect(prefs).toContain('user_pref("network.proxy.ssl_port", 9000);');
     expect(prefs).not.toContain('8000');
+  });
+
+  it('forgets which CA it trusted when its profile is deleted', async () => {
+    const profileDir = path.join(dir, 'ff-delete');
+    await markProfileTrusted(profileDir, 'fp');
+    await deleteFirefoxProfile(profileDir);
+    expect(await isProfileTrusted(profileDir, 'fp')).toBe(false);
+    await expect(stat(profileDir)).rejects.toThrow('ENOENT');
+    // Deleting one that isn't there is fine.
+    await expect(deleteFirefoxProfile(profileDir)).resolves.toBeUndefined();
   });
 
   it('says why when Firefox can’t be started', async () => {

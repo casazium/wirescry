@@ -142,10 +142,16 @@ export async function launchChromium(
   const child = spawn(browser.executable, chromiumArgs({ ...options, profileDir }), {
     stdio: 'ignore',
   });
-  await new Promise<void>((resolve, reject) => {
-    child.once('spawn', resolve);
-    child.once('error', reject);
-  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      child.once('spawn', resolve);
+      child.once('error', reject);
+    });
+  } catch (error) {
+    // It never started, so nothing will remove the profile on exit.
+    await rm(profileDir, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
+  }
   child.once('exit', () => {
     // Chromium may still be releasing files for a moment after exit.
     setTimeout(() => {
