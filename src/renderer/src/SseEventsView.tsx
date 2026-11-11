@@ -1,4 +1,4 @@
-import { memo, useEffect, useId, useRef, useState } from 'react';
+import { memo, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { SseEventsView as View } from '../../shared/api';
 import type { SseItem } from '../../shared/sse';
 import type { Command } from './api-client';
@@ -26,6 +26,9 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
   const [shown, setShown] = useState<{ view: View; items: SseItem[] } | undefined>();
   const [error, setError] = useState<string>();
   const poll = useRef<() => void>(() => undefined);
+  const listRef = useRef<HTMLOListElement>(null);
+  // Follow new items, as long as the list is scrolled to its end (it starts there).
+  const atEnd = useRef(true);
 
   useEffect(() => {
     let active = true;
@@ -102,6 +105,18 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
   const view = shown?.view;
   const items = shown?.items ?? [];
   const count = view?.total ?? 0;
+  const newest = items.at(-1)?.index;
+  const serial = view?.serial;
+  // A replaced body is new content: follow it from its end.
+  const shownSerial = useRef(serial);
+  useLayoutEffect(() => {
+    if (shownSerial.current !== serial) {
+      shownSerial.current = serial;
+      atEnd.current = true;
+    }
+    const el = listRef.current;
+    if (el && atEnd.current) el.scrollTop = el.scrollHeight;
+  }, [newest, serial]);
   const headingId = useId();
   const earlier = (items[0]?.index ?? 1) - 1;
   return (
@@ -124,7 +139,19 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
           memory use down.
         </p>
       )}
-      <ol className="sse-list">
+      <ol
+        className="sse-list"
+        ref={listRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+        }}
+        // Show all makes an item taller without scrolling: whoever opened it is reading it now,
+        // so new items mustn't jump the list past it.
+        onClickCapture={(e) => {
+          if ((e.target as HTMLElement).closest('button')) atEnd.current = false;
+        }}
+      >
         {items.map((item) => (
           <Item key={item.index} item={item} />
         ))}

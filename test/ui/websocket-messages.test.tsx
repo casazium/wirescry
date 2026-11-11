@@ -158,6 +158,29 @@ describe('WebSocketMessagesView', () => {
     expect(send).toHaveBeenCalledTimes(3);
   });
 
+  it('keeps following the newest message once the list is full', async () => {
+    const many = Array.from({ length: 2000 }, (_, i) => message(i, false, `m${i}`));
+    const answers: Array<(value: WebSocketMessages) => void> = [];
+    const send = vi.fn(() => new Promise<WebSocketMessages>((resolve) => answers.push(resolve)));
+    const { rerender, container } = render(
+      <WebSocketMessagesView exchangeId="ws1" messageCount={2000} send={send} />,
+    );
+    await settle();
+    await act(async () => answers[0]!({ messages: many, dropped: 0, total: 2000 }));
+    const list = container.querySelector('.ws-list') as HTMLElement;
+    // jsdom has no layout: a list 100 px high holding 5,000 px of messages.
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 5000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: 100 });
+    list.scrollTop = 4900;
+    rerender(<WebSocketMessagesView exchangeId="ws1" messageCount={2001} send={send} />);
+    await settle();
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 5040 });
+    await act(async () => answers[1]!({ messages: [message(2000, false, 'new')], dropped: 0, total: 2001 }));
+    // Still 2,000 shown, but the newest changed: it follows.
+    expect(rows()).toHaveLength(2000);
+    expect(list.scrollTop).toBe(5040);
+  });
+
   it('doesn’t keep asking when an answer has nothing new', async () => {
     const send = vi.fn(async () => ({ messages: [], dropped: 0, total: 2 }));
     render(<WebSocketMessagesView exchangeId="ws1" messageCount={2} send={send} />);
