@@ -651,6 +651,11 @@ pre.code.hex {
 .status.pending {
   color: var(--muted);
 }
+/* A response still arriving: its status is in, the rest isn't yet. */
+.status.receiving {
+  opacity: 0.6;
+  font-style: italic;
+}
 
 .views {
   display: flex;

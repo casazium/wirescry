@@ -325,7 +325,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     const finished =
       summary.failure !== undefined ||
       summary.durationMs !== undefined ||
-      (summary.status !== undefined && summary.responseSize !== undefined);
+      (summary.status !== undefined && summary.responseSize !== undefined && !summary.responding);
     if (!finished) return;
     const tell = (latest: ExchangeSummary): void => {
       clearTimeout(completionTimers.get(latest.id));

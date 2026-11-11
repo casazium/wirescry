@@ -60,6 +60,61 @@ describe('DetailPane', () => {
     expect(screen.queryByText('Loading…')).toBeNull();
   });
 
+  it('says a response is still arriving, with its size so far, and asks for no body yet', async () => {
+    const live = summary('live', {
+      statusMessage: 'OK',
+      responding: true,
+      responseReceived: 1536,
+      responseSize: undefined,
+      durationMs: undefined,
+    });
+    const send = vi.fn(async (command: { command: string }) =>
+      command.command === 'getExchange' ? detail(live, 'x') : null,
+    );
+    const view = render(pane({ summary: live, send }));
+    await act(async () => undefined);
+    expect(screen.getByText('200 OK (receiving)')).toBeTruthy();
+    expect(screen.getByText('Receiving… 1.5 KB so far')).toBeTruthy();
+    expect(screen.getByText('1.5 KB so far')).toBeTruthy();
+    expect(send.mock.calls.filter(([c]) => c.command === 'getBody')).toEqual([]);
+
+    // From before a restart, it will never arrive: not shown as arriving.
+    view.rerender(pane({ summary: live, send, stale: true }));
+    expect(screen.queryByText(/Receiving…/)).toBeNull();
+    expect(screen.queryByText('200 OK (receiving)')).toBeNull();
+    expect(screen.getByText('200 OK (never finished: the proxy restarted)')).toBeTruthy();
+  });
+
+  it('asks for the details again when the exchange changes, not for each update of its size so far', async () => {
+    const live = summary('live', {
+      responding: true,
+      responseReceived: 10,
+      responseSize: undefined,
+      durationMs: undefined,
+    });
+    const send = vi.fn(async (command: { command: string }) =>
+      command.command === 'getExchange' ? detail(live, 'x') : null,
+    );
+    const view = render(pane({ summary: live, send }));
+    await act(async () => undefined);
+    const fetches = () => send.mock.calls.filter(([c]) => c.command === 'getExchange').length;
+    expect(fetches()).toBe(1);
+    view.rerender(pane({ summary: { ...live, responseReceived: 900 }, send }));
+    await act(async () => undefined);
+    expect(fetches()).toBe(1);
+    view.rerender(pane({ summary: summary('live'), send }));
+    await act(async () => undefined);
+    expect(fetches()).toBe(2);
+  });
+
+  it('shows a finished response as before', async () => {
+    const done = summary('done', { statusMessage: 'OK' });
+    render(pane({ summary: done, send: vi.fn(async () => detail(done, 'x')) }));
+    await act(async () => undefined);
+    expect(screen.getByText('200 OK')).toBeTruthy();
+    expect(screen.queryByText(/receiving/i)).toBeNull();
+  });
+
   it('lists the query and offers plugin actions', async () => {
     const run = vi.fn();
     const s = summary('q', { url: 'https://api.test/search?q=wire&page=2', path: '/search?q=wire&page=2' });
