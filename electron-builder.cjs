@@ -44,6 +44,12 @@ const electronNotices = { from: 'out/licenses-electron', to: 'licenses' };
  * @param {import('electron-builder').BeforePackContext} context
  */
 function checkBuild(context) {
+  // Mockttp is patched after install (scripts/patch-mockttp.mjs); an install with
+  // --ignore-scripts would skip that silently.
+  const mockttpFile = path.join(__dirname, 'node_modules/mockttp/dist/rules/requests/request-step-impls.js');
+  if (!fs.readFileSync(mockttpFile, 'utf8').includes('Wirescry patch: headers-only HTTP/2 responses')) {
+    throw new Error('Mockttp is not patched. Run `node scripts/patch-mockttp.mjs` (npm install runs it).');
+  }
   const out = path.join(__dirname, 'out');
   const notices = path.join(out, 'licenses/THIRD_PARTY_NOTICES.txt');
   const built = path.join(out, 'main/backend.js');
