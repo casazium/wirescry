@@ -63,6 +63,24 @@ export interface PluginSecureStore {
   clear(): Promise<void>;
 }
 
+/** Where a recorded call's server is, for a request of a plugin's own (see upstreamTarget). */
+export interface UpstreamTarget {
+  /** The host to connect to: a name or an IP address (IPv6 without brackets). */
+  host: string;
+  port: number;
+  /** Whether to connect with TLS. Without it, `host` is always this computer. */
+  tls: boolean;
+  /** The TLS server name (SNI); none for an IP address. */
+  servername?: string;
+  /** The Host (HTTP/1.1) or :authority (HTTP/2) the call was sent with. */
+  authority: string;
+  /** Certificates to trust as well as Node's own, as the proxy does (PEM). Usually none. */
+  ca: string[];
+}
+
+/** Where to connect, or why a plugin mustn't send this call's server anything. */
+export type UpstreamTargetResult = { target: UpstreamTarget } | { refused: string };
+
 export interface BackendPluginHost {
   /** A folder for this plugin's own files, inside Wirescry's data folder. */
   dataDir: string;
@@ -118,6 +136,17 @@ export interface BackendPluginHost {
   annotate(exchangeId: string, annotation: ExchangeAnnotation | undefined): void;
   /** Writes to Wirescry's log. */
   log(message: string): void;
+  /**
+   * Where the server a recorded call went to is, for a request of the plugin's own, such as asking
+   * a gRPC server for its schema; or why not (`refused`, in words to show): a call imported from
+   * a file, handled by a rule, sent from Compose, from a device or a container, still sending its
+   * request, sent over plain HTTP to another computer, or sent to Wirescry itself. Connect to
+   * `host` and `port` directly, verify TLS against Node's own certificates plus `ca`, and send no
+   * credentials from the call. Ask the user first, naming `host:port`: `authority` is only the
+   * name the call used, and may name another server. Null if the call is gone, or before the
+   * plugin has started. Missing in versions before it was added: check before calling.
+   */
+  upstreamTarget?(exchangeId: string): UpstreamTargetResult | null;
 }
 
 export interface BackendPlugin {

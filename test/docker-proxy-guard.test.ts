@@ -3,6 +3,7 @@ import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import type { ExchangeDetail } from '../src/shared/api';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { HybridBodyStore } from '../src/backend/body-store';
 import { loadOrCreateCA } from '../src/backend/ca';
@@ -28,6 +29,9 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
   let localPort: number;
   let accept: (address: string) => boolean | Promise<boolean>;
   const asked: string[] = [];
+  /** What the proxy recorded, newest copy last. */
+  const recorded: ExchangeDetail[] = [];
+  const latest = (urlPath: string) => recorded.filter((e) => e.summary.path === urlPath).at(-1);
 
   beforeAll(async () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-guard-'));
@@ -40,7 +44,7 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
       store: new InMemoryRequestStore(1000),
       bodies: await HybridBodyStore.open(path.join(dir, 'bodies')),
       websockets: new WebSocketStore(),
-      onExchange: () => undefined,
+      onExchange: (e) => recorded.push(e),
       acceptConnection: (address) => {
         asked.push(address);
         return accept(address);
@@ -176,6 +180,9 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
       status: 200,
       body: 'reached /ok',
     });
+    // Not from this computer: a plugin isn't pointed at this computer's servers for it.
+    expect(latest('/ok')).toBeDefined();
+    expect(latest('/ok')!.fromThisComputer).toBeUndefined();
   });
 
   it('holds a connection while the answer is looked up, losing nothing sent meanwhile', async () => {
@@ -226,6 +233,7 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
       body: 'reached /self',
     });
     expect(asked).toEqual([]);
+    expect(latest('/self')!.fromThisComputer).toBe(true);
   });
 });
 

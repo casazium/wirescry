@@ -11,7 +11,12 @@ import type {
   HandledBy,
   PluginStatus,
 } from '../shared/api';
-import type { BackendPlugin, PassThroughTransforms, PluginRule } from '../plugin-api/backend';
+import type {
+  BackendPlugin,
+  PassThroughTransforms,
+  PluginRule,
+  UpstreamTargetResult,
+} from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
 import { MOCKTTP_BUFFER_LIMIT } from './proxy';
 import { createSecureStore, type Encryptor } from './secure-store';
@@ -76,6 +81,7 @@ export interface PluginHostOptions {
   getExchange(exchangeId: string): ExchangeDetail | undefined;
   getBody(exchangeId: string, side: BodySide): Promise<BodyContent | null>;
   readBody(exchangeId: string, side: BodySide, offset: number, maxBytes: number): Promise<BodyRange | null>;
+  upstreamTarget(exchangeId: string): UpstreamTargetResult | null;
   /** Sets or removes a plugin's badge on an exchange (already validated). */
   annotate(plugin: string, exchangeId: string, annotation: ExchangeAnnotation | undefined): void;
   /** Removes all of a plugin's badges, e.g. when it fails. */
@@ -181,6 +187,11 @@ export class PluginHost {
                 throw new Error('offset and maxBytes must be numbers');
               if (!this.hasStarted(plugin)) return null;
               return this.options.readBody(String(exchangeId), side, offset, maxBytes);
+            },
+            upstreamTarget: (exchangeId) => {
+              if (!this.hasStarted(plugin)) return null;
+              // Made afresh for each call, so a plugin can't change what the next one gets.
+              return this.options.upstreamTarget(String(exchangeId));
             },
             annotate: (exchangeId, annotation) => {
               if (!this.hasStarted(plugin)) return;

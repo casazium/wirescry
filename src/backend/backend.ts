@@ -59,6 +59,7 @@ import { PluginHost } from './plugin-host';
 import * as mockttp from 'mockttp';
 import { WebSocketStore } from './websocket-store';
 import { SseReader } from './sse-reader';
+import { upstreamTargetOf } from './upstream-target';
 
 /** How long quitting waits to put capturing Android devices back: the app kills the backend after 3 s. */
 const ANDROID_STOP_TIMEOUT_MS = 2000;
@@ -185,6 +186,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     maxBodySize: options.maxBodySize,
   });
   step('settings and body store');
+  /** Wirescry's own ports on this computer: set once they're all open, before plugins start. */
+  let ownPorts = (): number[] => [];
   // Event streams' events, read as they arrive.
   const sse = new SseReader({
     getExchange: (id) => store.get(id),
@@ -320,6 +323,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     getBody: async (id, side) => {
       const exchange = store.get(id);
       return exchange ? readBody(exchange, side) : null;
+    },
+    upstreamTarget: (id) => {
+      const exchange = store.get(id);
+      return exchange ? upstreamTargetOf(exchange, options.upstreamCAs ?? [], ownPorts()) : null;
     },
     readBody: async (id, side, offset, maxBytes) => {
       const exchange = store.get(id);
@@ -1016,6 +1023,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       command: handleCommand,
     },
   });
+  // Wirescry's own ports, never a call's server. Plugins start below, once all of them are open.
+  ownPorts = () => [proxy.port, api.port, ...listeners.list().map((l) => l.port)];
   broadcast = api.broadcast;
   step('API');
 
