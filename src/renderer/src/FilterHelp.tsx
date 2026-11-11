@@ -11,6 +11,7 @@ const EXAMPLES: Array<[string, string]> = [
   ['time>500ms', 'Slower than half a second'],
   ['type=json', 'JSON responses'],
   ['failure=dns', 'DNS failures'],
+  ['grpc=NOT_FOUND', 'gRPC calls that failed with NOT_FOUND'],
   ['-host=*.google.com', 'Everything except Google hosts'],
 ];
 

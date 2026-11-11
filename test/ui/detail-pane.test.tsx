@@ -239,6 +239,25 @@ describe('DetailPane order and timing', () => {
     expect(headings()).not.toContain('Request trailers');
   });
 
+  it("shows a gRPC call's status, code and message in the overview", async () => {
+    await shown(
+      {},
+      summary('g', {
+        grpc: true,
+        grpcStatus: 5,
+        grpcMessage: 'order 42 not found',
+        contentType: 'application/grpc',
+      }),
+    );
+    expect(screen.getByText('gRPC status')).toBeTruthy();
+    expect(screen.getByText('NOT_FOUND (5): order 42 not found')).toBeTruthy();
+  });
+
+  it('shows no gRPC status for other requests, or before the call has one', async () => {
+    await shown({});
+    expect(screen.queryByText('gRPC status')).toBeNull();
+  });
+
   it('says it waited for the server, unless a rule answered (a mock, a delay or a pause)', async () => {
     await shown({});
     expect(screen.getByText('Waiting for server')).toBeTruthy();

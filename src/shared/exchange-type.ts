@@ -1,7 +1,19 @@
 import type { ExchangeSummary } from './api';
+import { isGrpcContentType } from './grpc';
 
 export type ExchangeType =
-  'json' | 'html' | 'js' | 'css' | 'image' | 'font' | 'media' | 'xml' | 'text' | 'websocket' | 'other';
+  | 'json'
+  | 'html'
+  | 'js'
+  | 'css'
+  | 'image'
+  | 'font'
+  | 'media'
+  | 'xml'
+  | 'text'
+  | 'websocket'
+  | 'grpc'
+  | 'other';
 
 const BY_EXTENSION: Record<string, ExchangeType> = {
   json: 'json',
@@ -31,6 +43,8 @@ const BY_EXTENSION: Record<string, ExchangeType> = {
 };
 
 function fromMediaType(type: string): ExchangeType | undefined {
+  // Before JSON: application/grpc+json is gRPC's framing around JSON, not JSON.
+  if (isGrpcContentType(type)) return 'grpc';
   if (type.endsWith('json') || type.endsWith('+json')) return 'json';
   if (type === 'text/html' || type === 'application/xhtml+xml') return 'html';
   if (type.includes('javascript') || type === 'text/ecmascript') return 'js';
@@ -43,11 +57,16 @@ function fromMediaType(type: string): ExchangeType | undefined {
   return undefined;
 }
 
-/** A broad type for the list's Type column and quick filters, from the response type or the URL. */
+/**
+ * A broad type for the list's Type column and quick filters, from the response type or the URL
+ * (and for gRPC, the request's type).
+ */
 export function exchangeType(
-  exchange: Pick<ExchangeSummary, 'contentType' | 'path' | 'websocket'>,
+  exchange: Pick<ExchangeSummary, 'contentType' | 'path' | 'websocket' | 'grpc'>,
 ): ExchangeType {
   if (exchange.websocket) return 'websocket';
+  // From the request too: an error may come back with no content type, or a plain-text one.
+  if (exchange.grpc) return 'grpc';
   const fromHeader = exchange.contentType ? fromMediaType(exchange.contentType) : undefined;
   if (fromHeader) return fromHeader;
   const extension = /\.([a-z0-9]+)$/i.exec(exchange.path.split(/[?#]/)[0] ?? '')?.[1]?.toLowerCase();

@@ -37,6 +37,23 @@ describe('BodyView', () => {
     expect(screen.getByText('Hex').getAttribute('aria-pressed')).toBe('true');
   });
 
+  it("doesn't take gRPC's JSON framing for JSON", async () => {
+    // Each message has a 5-byte prefix, so this isn't a JSON document.
+    const framed = '\u0000\u0000\u0000\u0000\u0007{"a":1}';
+    render(<BodyView content={content(framed, 'application/grpc+json')} format={noFormat} />);
+    expect(screen.queryByText('Formatted')).toBeNull();
+    // Its prefix makes it binary, so it's shown as hex.
+    await act(async () => fireEvent.click(screen.getByText('Copy')));
+    expect(copied).toMatch(/^00000000 {2}00 00 00 00 07 7b/);
+  });
+
+  it('shows text labeled as gRPC as it is, not reformatted as JSON', async () => {
+    render(<BodyView content={content('{"a":1}', 'application/grpc+json')} format={noFormat} />);
+    expect(screen.queryByText('Formatted')).toBeNull();
+    await act(async () => fireEvent.click(screen.getByText('Copy')));
+    expect(copied).toBe('{"a":1}');
+  });
+
   it('copies the formatted code the backend made', async () => {
     const format = vi.fn(async () => ({
       ok: true as const,

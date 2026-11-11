@@ -2,19 +2,35 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ExchangeSummary } from '../../shared/api';
 import { exchangeType } from '../../shared/exchange-type';
 import { FAILURE_LABELS } from '../../shared/failure';
+import { GRPC_OK, grpcStatusLabel, grpcStatusName, isGrpcError } from '../../shared/grpc';
 import { formatBytes } from './bytes';
 
 const ROW_HEIGHT = 24;
 /** Extra rows drawn above and below the visible ones, so fast scrolling doesn't show gaps. */
 const OVERSCAN = 10;
 
+/** True for a gRPC call that ended with a status other than OK: shown instead of HTTP's 200. */
+function showsGrpcStatus(exchange: ExchangeSummary): boolean {
+  return !exchange.failure && exchange.grpcStatus !== undefined && exchange.grpcStatus !== GRPC_OK;
+}
+
 function statusClass(exchange: ExchangeSummary): string {
   if (exchange.failure) return 'status error';
+  if (showsGrpcStatus(exchange)) return isGrpcError(exchange.grpcStatus) ? 'status error' : 'status warn';
   if (exchange.status === undefined) return 'status pending';
   if (exchange.status >= 500) return 'status error';
   if (exchange.status >= 400) return 'status warn';
   if (exchange.status >= 300) return 'status redirect';
   return 'status ok';
+}
+
+function statusTitle(exchange: ExchangeSummary): string | undefined {
+  if (exchange.failure) return exchange.failure.message;
+  if (showsGrpcStatus(exchange)) {
+    const name = grpcStatusName(exchange.grpcStatus!);
+    return `gRPC ${name} (${exchange.grpcStatus})${exchange.grpcMessage ? `: ${exchange.grpcMessage}` : ''}`;
+  }
+  return exchange.statusMessage;
 }
 
 function formatDuration(ms: number | undefined): string {
@@ -143,8 +159,12 @@ export function TrafficList({
                 <span role="cell" className="method">
                   {e.method}
                 </span>
-                <span role="cell" className={statusClass(e)} title={e.failure?.message ?? e.statusMessage}>
-                  {e.failure ? FAILURE_LABELS[e.failure.kind] : (e.status ?? '…')}
+                <span role="cell" className={statusClass(e)} title={statusTitle(e)}>
+                  {e.failure
+                    ? FAILURE_LABELS[e.failure.kind]
+                    : showsGrpcStatus(e)
+                      ? grpcStatusLabel(e.grpcStatus!)
+                      : (e.status ?? '…')}
                 </span>
                 <span role="cell" className="muted col-type" title={e.contentType}>
                   {e.status !== undefined && !e.failure ? exchangeType(e) : ''}

@@ -25,7 +25,7 @@ npm run dev
 
 This opens the Wirescry window with hot reload. The toolbar shows the proxy port (usually `8000`), and requests appear in the list as they pass through.
 
-The list stays fast with thousands of requests and keeps the most recent 10,000. Search with Cmd/Ctrl+F, narrow it with the quick filters (JSON, HTML, Errors and so on) or field filters in the search box such as `status>=400`, `status=5xx`, `method=POST`, `host=api.*`, `path~login`, `size>1mb`, `time>500ms` or `-host=*.google.com` (the **?** button lists them), and use **Pause recording** to let traffic through without recording it. Click a request, or use the arrow keys, to see its headers and bodies.
+The list stays fast with thousands of requests and keeps the most recent 10,000. Search with Cmd/Ctrl+F, narrow it with the quick filters (JSON, HTML, gRPC, Errors and so on) or field filters in the search box such as `status>=400`, `status=5xx`, `method=POST`, `host=api.*`, `path~login`, `size>1mb`, `time>500ms`, `grpc=NOT_FOUND` or `-host=*.google.com` (the **?** button lists them), and use **Pause recording** to let traffic through without recording it. Click a request, or use the arrow keys, to see its headers and bodies.
 
 To send traffic through it:
 
