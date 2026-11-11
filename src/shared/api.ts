@@ -120,6 +120,13 @@ export interface ExchangeDetail {
   summary: ExchangeSummary;
   requestHeaders: Header[];
   responseHeaders?: Header[];
+  /**
+   * Headers sent after the request body, if any (rare: chunked HTTP/1.1 uploads). Mockttp doesn't
+   * report them for HTTP/2 requests; gRPC clients don't send any.
+   */
+  requestTrailers?: Header[];
+  /** Headers sent after the response body, if any. gRPC puts a call's status here. */
+  responseTrailers?: Header[];
   timing: ExchangeTiming;
   requestBody?: BodyInfo;
   responseBody?: BodyInfo;

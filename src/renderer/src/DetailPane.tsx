@@ -246,15 +246,28 @@ export function DetailPane({
       )}
     </>
   );
+  // Sent after the body; gRPC puts a call's status here.
+  const responseTrailersBlock = (
+    <>
+      {detail?.responseTrailers && detail.responseTrailers.length > 0 && (
+        <details open>
+          <summary>Response trailers</summary>
+          <HeaderTable headers={detail.responseTrailers} />
+        </details>
+      )}
+    </>
+  );
   const response = responseFirst ? (
     <>
       {responseBodyBlock}
       {responseHeadersBlock}
+      {responseTrailersBlock}
     </>
   ) : (
     <>
       {responseHeadersBlock}
       {responseBodyBlock}
+      {responseTrailersBlock}
     </>
   );
 
@@ -439,6 +452,12 @@ export function DetailPane({
               format={() => formatBody('request')}
               onSave={saveBody('request')}
             />
+          </details>
+        )}
+        {detail?.requestTrailers && detail.requestTrailers.length > 0 && (
+          <details open>
+            <summary>Request trailers</summary>
+            <HeaderTable headers={detail.requestTrailers} />
           </details>
         )}
         {!responseFirst && response}

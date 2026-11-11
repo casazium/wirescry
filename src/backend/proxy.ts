@@ -565,6 +565,7 @@ async function startListener(
       ...existing,
       summary: { ...existing.summary, handledBy: handledBy(req.matchedRuleId) ?? existing.summary.handledBy },
       requestHeaders: req.rawHeaders,
+      ...(req.rawTrailers?.length ? { requestTrailers: req.rawTrailers } : {}),
       timing: timingOf(req.timingEvents),
     }));
   });
@@ -623,6 +624,7 @@ async function startListener(
         contentType: mediaType(res.headers['content-type']),
       },
       responseHeaders: res.rawHeaders,
+      ...(res.rawTrailers?.length ? { responseTrailers: res.rawTrailers } : {}),
       timing: timingOf(res.timingEvents),
     }));
   });
