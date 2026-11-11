@@ -17,6 +17,8 @@ import { curlCommand } from './curl-command';
 import { protocolText } from './protocol-text';
 import { redirectTarget } from './redirect';
 import { WebSocketMessagesView } from './WebSocketMessagesView';
+import { SseEventsView } from './SseEventsView';
+import { isEventStream } from '../../shared/sse';
 import { DETAIL_PANE_ID } from './Splitter';
 
 /** A plugin's action on this exchange, such as Pro's "Mock…". */
@@ -486,6 +488,18 @@ export function DetailPane({
             {section.content}
           </details>
         ))}
+
+        {/* Server-Sent Events, as they arrive and after. Not for an exchange from before a restart. */}
+        {isEventStream(summary.contentType) && !stale && (
+          <SseEventsView
+            key={summary.id}
+            exchangeId={summary.id}
+            responding={summary.responding === true}
+            received={summary.responseReceived}
+            size={summary.responseSize}
+            send={send}
+          />
+        )}
 
         {/* An old connection's messages can't be fetched; one that was open keeps what it showed. */}
         {summary.websocket && (!stale || detail) && (
