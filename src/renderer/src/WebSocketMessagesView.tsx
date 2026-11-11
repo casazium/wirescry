@@ -77,10 +77,12 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
     });
   }, [messages, direction, search]);
 
+  // Follow the newest message, not the count: once the list is full, the count stays the same.
+  const newest = shown.at(-1)?.index;
   useLayoutEffect(() => {
     const el = listRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
-  }, [shown.length]);
+  }, [newest]);
 
   const current = messages.find((m) => m.index === selected);
   const content: BodyContent | undefined = current && {

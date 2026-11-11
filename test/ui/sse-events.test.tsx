@@ -156,6 +156,71 @@ describe('the Events section', () => {
     expect(data().length).toBe(4097);
   });
 
+  it('follows new items while scrolled to the end, and stays put when scrolled up', async () => {
+    const state = { items: [event(1, 'a')] as SseItem[] };
+    const send = backend(state);
+    const ui = (received: number) => (
+      <SseEventsView exchangeId="s" responding received={received} size={undefined} send={send} />
+    );
+    const { rerender, container } = render(ui(1));
+    await settle();
+    const list = container.querySelector('.sse-list') as HTMLElement;
+    // jsdom has no layout: a list 100 px high holding 1,000 px of items.
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: 100 });
+    state.items.push(event(2, 'b'));
+    rerender(ui(2));
+    await settle();
+    expect(list.scrollTop).toBe(1000);
+
+    // Scrolled up to read: new items don't move it.
+    list.scrollTop = 0;
+    act(() => {
+      list.dispatchEvent(new Event('scroll'));
+    });
+    state.items.push(event(3, 'c'));
+    rerender(ui(3));
+    await settle();
+    expect(list.scrollTop).toBe(0);
+
+    // Back at the end: it follows again.
+    list.scrollTop = 900;
+    act(() => {
+      list.dispatchEvent(new Event('scroll'));
+    });
+    state.items.push(event(4, 'd'));
+    rerender(ui(4));
+    await settle();
+    expect(list.scrollTop).toBe(1000);
+  });
+
+  it('stays on an item someone opens, and follows a replaced body from its end', async () => {
+    const state = { items: [event(1, 'x'.repeat(5000))] as SseItem[], serial: 1 };
+    const send = backend(state);
+    const ui = (received: number) => (
+      <SseEventsView exchangeId="s" responding received={received} size={undefined} send={send} />
+    );
+    const { rerender, container } = render(ui(1));
+    await settle();
+    const list = container.querySelector('.sse-list') as HTMLElement;
+    Object.defineProperty(list, 'scrollHeight', { configurable: true, value: 1000 });
+    Object.defineProperty(list, 'clientHeight', { configurable: true, value: 100 });
+    list.scrollTop = 900;
+    // Opening the long item makes the list taller, with no scroll: new items mustn't jump past it.
+    act(() => screen.getByRole('button', { name: /Show all/ }).click());
+    state.items.push(event(2, 'next'));
+    rerender(ui(2));
+    await settle();
+    expect(list.scrollTop).toBe(900);
+
+    // The body is replaced: new content, followed from its end.
+    state.items = [event(1, 'fresh'), event(2, 'fresher')];
+    state.serial = 2;
+    rerender(ui(3));
+    await settle();
+    expect(list.scrollTop).toBe(1000);
+  });
+
   it('shows an error from the backend', async () => {
     const send = vi.fn(async () => {
       throw new Error('Exchange not found');
