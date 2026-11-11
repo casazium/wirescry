@@ -154,6 +154,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.`,
   },
 };
 
+/** License texts kept in the repository for packages that publish none (licenses/npm/index.json). */
+const vendoredLicenses = JSON.parse(readFileSync(join(root, 'licenses/npm/index.json'), 'utf8'));
+
 const entries = [];
 const seen = new Set();
 for (const dir of dirs) {
@@ -163,6 +166,19 @@ for (const dir of dirs) {
   seen.add(id);
   const license = licenseName(pkg);
   const files = licenseFiles(dir);
+  if (files.length === 0 && vendoredLicenses[pkg.name]) {
+    // The package publishes no license file; its texts are kept in licenses/npm/, from its own
+    // repository at the same version. A new version must be checked, and the index updated.
+    const vendored = vendoredLicenses[pkg.name];
+    if (vendored.version !== pkg.version) {
+      fail(
+        `${id} has no license file; licenses/npm/index.json has the texts for ${vendored.version}. Check the new version's and update it.`,
+      );
+    }
+    for (const name of vendored.files) {
+      files.push({ name, text: readFileSync(join(root, 'licenses/npm', pkg.name, name), 'utf8').trim() });
+    }
+  }
   if (files.length === 0) {
     // A few MIT packages leave the license file out of what they publish; the notice
     // still has to ship, so use the standard text with the author from package.json.
