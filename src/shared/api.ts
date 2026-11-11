@@ -4,6 +4,7 @@
  */
 import type { ExchangeFailure } from './failure';
 import type { ShellKind } from './terminal-env';
+import type { SseItem } from './sse';
 
 /** One row in the traffic list. Bodies are deliberately not part of this. */
 export interface ExchangeSummary {
@@ -207,6 +208,22 @@ export interface BodyRange {
   incomplete: boolean;
   /** Which body this is: it changes if the body is replaced, so offsets into the old one no longer apply. */
   serial: number;
+}
+
+/** A Server-Sent Events stream's items, read as they arrive. */
+export interface SseEventsView {
+  /** Which body this is: if it changes, the body was replaced, so start over. */
+  serial: number;
+  /** Items after the index asked for, oldest first; only the newest are kept. */
+  items: SseItem[];
+  /** Items so far. */
+  total: number;
+  /** Still arriving. */
+  receiving: boolean;
+  /** This look stopped at its limits before the end of what has arrived: ask again for the rest. */
+  more?: true;
+  /** Why reading stopped, if it did. */
+  problem?: string;
 }
 
 /** A BodyRange for the UI, its bytes as base64. */
@@ -460,6 +477,8 @@ export type ClientCommand =
   | { id: number; command: 'launchTerminal'; terminalId: string }
   /** WebSocket messages with index greater than `after` (default: from the start). */
   | { id: number; command: 'getWebSocketMessages'; exchangeId: string; after?: number }
+  /** An event stream's items after `after` (an index), as SseEventsView, or null if it isn't one. */
+  | { id: number; command: 'getSseEvents'; exchangeId: string; after: number }
   /** A call from a plugin's UI to its backend half. */
   | { id: number; command: 'plugin'; plugin: string; name: string; args?: unknown }
   | { id: number; command: 'getExchange'; exchangeId: string }

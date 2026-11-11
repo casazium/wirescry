@@ -58,6 +58,7 @@ import type { BackendPlugin } from '../plugin-api/backend';
 import { PluginHost } from './plugin-host';
 import * as mockttp from 'mockttp';
 import { WebSocketStore } from './websocket-store';
+import { SseReader } from './sse-reader';
 
 /** How long quitting waits to put capturing Android devices back: the app kills the backend after 3 s. */
 const ANDROID_STOP_TIMEOUT_MS = 2000;
@@ -184,6 +185,15 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     maxBodySize: options.maxBodySize,
   });
   step('settings and body store');
+  // Event streams' events, read as they arrive.
+  const sse = new SseReader({
+    getExchange: (id) => store.get(id),
+    readRange: async (id, side, start, maxBytes) => {
+      const exchange = store.get(id);
+      const range = exchange ? await bodies.readRange(id, side, start, maxBytes) : undefined;
+      return range && { ...range, decoded: exchange!.importedFrom !== undefined };
+    },
+  });
   let browsers = await detectBrowsers();
   const terminals = await detectTerminals();
   step('browsers and terminals');
@@ -235,6 +245,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     completionTimers.delete(id);
     updates.remove(id);
     websockets.delete(id);
+    sse.delete(id);
     void bodies.delete(id).catch(() => undefined);
   };
   const store = new InMemoryRequestStore(STORE_LIMIT, forget);
@@ -800,6 +811,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         for (const timer of completionTimers.values()) clearTimeout(timer);
         completionTimers.clear();
         websockets.clear();
+        sse.clear();
         await importWrite;
         await bodies.clear();
         broadcast({ type: 'cleared' });
@@ -950,6 +962,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       }
       case 'plugin': {
         return pluginHost.call(command.plugin, command.name, command.args);
+      }
+      case 'getSseEvents': {
+        if (!store.get(command.exchangeId)) throw new Error('Exchange not found');
+        if (!Number.isSafeInteger(command.after) || command.after < 0) {
+          throw new Error('after must be a whole number, 0 or more');
+        }
+        return sse.read(command.exchangeId, command.after);
       }
       case 'getWebSocketMessages': {
         if (!store.get(command.exchangeId)) throw new Error('Exchange not found');

@@ -1304,3 +1304,36 @@ li > .step-row {
   margin-top: 10px;
   overflow-wrap: anywhere;
 }
+
+/* Server-Sent Events, listed as they arrive. */
+.sse-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.sse-list > li {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.sse-list > li:last-child {
+  border-bottom: none;
+}
+.sse-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+}
+.sse-type {
+  font-weight: 600;
+}
+.sse-data {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 12em;
+  overflow: auto;
+}
