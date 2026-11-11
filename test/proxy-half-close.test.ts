@@ -118,14 +118,15 @@ describe('A client that closes its side after its request', () => {
       const answer = await send(backend.proxyPort, request(url, `localhost:${slow.port}`));
       expect(answer.closed).toBe(true);
       expect(answer.text).not.toContain('plain answer');
+      // Recorded a moment later on a slow runner (Windows CI was over a second).
       await expect
-        .poll(() => exchangesIn(api.messages).find((e) => e.url === url)?.failure?.code)
+        .poll(() => exchangesIn(api.messages).find((e) => e.url === url)?.failure?.code, { timeout: 10_000 })
         .toBe('CLIENT_CLOSED');
     } finally {
       api.close();
       await slow.stop();
     }
-  });
+  }, 20_000);
 
   it('is answered the same when it keeps its side open', async () => {
     const url = `https://localhost:${upstream.port}/hello`;
