@@ -190,6 +190,55 @@ describe('DetailPane order and timing', () => {
     expect(at('Response headers')).toBeLessThan(at('Response body'));
   });
 
+  /** Shows an exchange with trailers on both sides (as a gRPC call has on the response). */
+  const shownWithTrailers = async (props: Partial<Parameters<typeof DetailPane>[0]>) => {
+    const s = summary('t');
+    const withTrailers: ExchangeDetail = {
+      ...detail(s, 'm'),
+      requestBody: { size: 5, stored: 5 },
+      responseBody: { size: 10, stored: 10 },
+      requestTrailers: [['x-checksum', 'abc']],
+      responseTrailers: [
+        ['grpc-status', '5'],
+        ['grpc-message', 'not found'],
+      ],
+    };
+    const send = vi.fn((command: { command: string }) =>
+      command.command === 'getExchange' ? Promise.resolve(withTrailers) : Promise.resolve(null),
+    );
+    await act(async () => {
+      render(pane({ summary: s, send, ...props }));
+    });
+  };
+
+  it('shows trailers after the body they follow, on each side', async () => {
+    await shownWithTrailers({});
+    const order = headings();
+    const at = (name: string) => order.indexOf(name);
+    expect(at('Request body')).toBeGreaterThan(at('Request headers'));
+    expect(at('Request trailers')).toBe(at('Request body') + 1);
+    expect(at('Response headers')).toBeGreaterThan(at('Request trailers'));
+    expect(at('Response trailers')).toBe(at('Response body') + 1);
+    expect(screen.getByText('grpc-status')).toBeTruthy();
+    expect(screen.getByText('not found')).toBeTruthy();
+    expect(screen.getByText('x-checksum')).toBeTruthy();
+  });
+
+  it('keeps response trailers last when the response comes first (as Compose does)', async () => {
+    await shownWithTrailers({ responseFirst: true });
+    const order = headings();
+    const at = (name: string) => order.indexOf(name);
+    expect(at('Response body')).toBe(1);
+    expect(at('Response headers')).toBe(2);
+    expect(at('Response trailers')).toBe(3);
+  });
+
+  it('shows no trailer sections when there were none', async () => {
+    await shown({});
+    expect(headings()).not.toContain('Response trailers');
+    expect(headings()).not.toContain('Request trailers');
+  });
+
   it('says it waited for the server, unless a rule answered (a mock, a delay or a pause)', async () => {
     await shown({});
     expect(screen.getByText('Waiting for server')).toBeTruthy();

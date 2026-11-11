@@ -720,6 +720,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         summary,
         requestHeaders: item.requestHeaders,
         ...(item.responseHeaders ? { responseHeaders: item.responseHeaders } : {}),
+        ...(item.requestTrailers ? { requestTrailers: item.requestTrailers } : {}),
+        ...(item.responseTrailers ? { responseTrailers: item.responseTrailers } : {}),
         timing: item.timing,
         ...(requestBody ? { requestBody: { size: requestBody.size, stored: requestBody.stored } } : {}),
         ...(responseBody ? { responseBody: { size: responseBody.size, stored: responseBody.stored } } : {}),

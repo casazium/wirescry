@@ -143,6 +143,8 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
       httpVersion: harHttpVersion(summary.httpVersion),
       cookies: [],
       headers: harHeaders(detail.requestHeaders),
+      // HAR has no place for trailers; Wirescry adds its own field, as Chrome does for WebSockets.
+      ...(detail.requestTrailers?.length ? { _trailers: harHeaders(detail.requestTrailers) } : {}),
       queryString: queryString(summary.url),
       ...(postData ? { postData } : {}),
       headersSize: -1,
@@ -154,6 +156,7 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
       httpVersion: harHttpVersion(summary.httpVersion),
       cookies: [],
       headers: harHeaders(detail.responseHeaders),
+      ...(detail.responseTrailers?.length ? { _trailers: harHeaders(detail.responseTrailers) } : {}),
       content,
       redirectURL: headerValue(detail.responseHeaders, 'location') ?? '',
       headersSize: -1,
@@ -240,6 +243,8 @@ export interface ImportedExchange {
   summary: Omit<ExchangeSummary, 'id'>;
   requestHeaders: Header[];
   responseHeaders?: Header[];
+  requestTrailers?: Header[];
+  responseTrailers?: Header[];
   timing: ExchangeDetail['timing'];
   requestBody?: Buffer;
   responseBody?: Buffer;
@@ -272,6 +277,19 @@ class NotNetwork extends Error {}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Trailers from Wirescry's own `_trailers` field. Another tool's file may use the name for
+ * something else, so trailers that don't read as headers are left out, not the whole entry.
+ */
+function trailersOf(value: unknown, where: string): Header[] | undefined {
+  try {
+    const trailers = headersOf(value, where);
+    return trailers.length > 0 ? trailers : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function headersOf(value: unknown, where: string): Header[] {
@@ -425,6 +443,8 @@ function exchangeOf(entry: unknown): ImportedExchange {
 
   const requestHeaders = headersOf(request.headers, 'the request');
   const responseHeaders = headersOf(response.headers, 'the response');
+  const requestTrailers = trailersOf(request._trailers, 'the request trailers');
+  const responseTrailers = trailersOf(response._trailers, 'the response trailers');
   const requestBody = requestBodyOf(isObject(request.postData) ? request.postData : undefined);
   const content = isObject(response.content) ? response.content : {};
   const responseBody = bodyOf(content.text, content.encoding);
@@ -483,6 +503,8 @@ function exchangeOf(entry: unknown): ImportedExchange {
     },
     requestHeaders,
     ...(status !== undefined ? { responseHeaders } : {}),
+    ...(requestTrailers ? { requestTrailers } : {}),
+    ...(status !== undefined && responseTrailers ? { responseTrailers } : {}),
     timing: {
       startTimestamp: 0,
       bodyReceivedTimestamp: send,
