@@ -40,6 +40,7 @@ describe('containerEnv', () => {
     expect(env.https_proxy).toBe('http://host.docker.internal:8001');
     expect(env.NODE_EXTRA_CA_CERTS).toBe(`${MOUNT_POINT}/ca.pem`);
     expect(env.SSL_CERT_FILE).toBe(`${MOUNT_POINT}/ca-bundle.pem`);
+    expect(env.GRPC_DEFAULT_SSL_ROOTS_FILE_PATH).toBe(`${MOUNT_POINT}/ca-bundle.pem`);
     expect(env.PHP_INI_SCAN_DIR).toBe(`:${MOUNT_POINT}/php`);
     expect(env.JAVA_TOOL_OPTIONS).toContain('-Dhttps.proxyHost=host.docker.internal');
     expect(env.JAVA_TOOL_OPTIONS).toContain(
@@ -197,9 +198,17 @@ describe('setUpContainer', () => {
 
 describe('settings the container already has', () => {
   it('keeps certificate variables set for the container, and replaces the rest', () => {
-    const { body } = setUp({ Env: ['NODE_EXTRA_CA_CERTS=/certs/internal.pem', 'SSL_CERT_FILE='] });
+    const { body } = setUp({
+      Env: [
+        'NODE_EXTRA_CA_CERTS=/certs/internal.pem',
+        'SSL_CERT_FILE=',
+        'GRPC_DEFAULT_SSL_ROOTS_FILE_PATH=/certs/grpc-roots.pem',
+      ],
+    });
     const env = envOf(body);
     expect(env.get('NODE_EXTRA_CA_CERTS')).toBe('/certs/internal.pem');
+    expect(env.get('GRPC_DEFAULT_SSL_ROOTS_FILE_PATH')).toBe('/certs/grpc-roots.pem');
+    expect(body.Env.filter((e) => e.startsWith('GRPC_DEFAULT_SSL_ROOTS_FILE_PATH='))).toHaveLength(1);
     expect(body.Env.filter((e) => e.startsWith('NODE_EXTRA_CA_CERTS='))).toHaveLength(1);
     // An empty one isn't a choice: it gets Wirescry's.
     expect(env.get('SSL_CERT_FILE')).toBe(`${MOUNT_POINT}/ca-bundle.pem`);

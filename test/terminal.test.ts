@@ -302,6 +302,11 @@ describe('terminal setup', () => {
     expect(env.NODE_EXTRA_CA_CERTS).toBe("/tmp/it's/ca.pem");
   });
 
+  it('points gRPC clients at the bundle, which has the public CAs as well as Wirescry’s', () => {
+    expect(env.GRPC_DEFAULT_SSL_ROOTS_FILE_PATH).toBe(env.SSL_CERT_FILE);
+    expect(env.GRPC_DEFAULT_SSL_ROOTS_FILE_PATH).not.toBe(env.NODE_EXTRA_CA_CERTS);
+  });
+
   it('adds the PHP settings folder after the usual one, and curl config only on Windows', () => {
     expect(env.PHP_INI_SCAN_DIR).toBe(':/tmp/php');
     expect(env.CURL_HOME).toBeUndefined();

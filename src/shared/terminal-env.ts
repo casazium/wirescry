@@ -55,8 +55,13 @@ export function terminalEnv(
     // Node.js 24+ (and 22.21+) uses the variables above only when asked.
     NODE_USE_ENV_PROXY: '1',
     NODE_EXTRA_CA_CERTS: caPath,
-    // OpenSSL users: Python, Ruby, Go on Linux and macOS.
+    // OpenSSL users: Python, Ruby, and Go on Linux. (Go on macOS and Windows uses only the
+    // system's own trust store.)
     SSL_CERT_FILE: bundlePath,
+    // gRPC's C core (Python, Ruby, PHP, C++) trusts only the CAs in this file; Node's gRPC uses it
+    // in place of Node's own. Either way it's the whole list, so it's the bundle: the usual public
+    // CAs as well as Wirescry's.
+    GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: bundlePath,
     // Python requests, curl and git each have their own variable.
     REQUESTS_CA_BUNDLE: bundlePath,
     CURL_CA_BUNDLE: bundlePath,

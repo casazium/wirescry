@@ -15,6 +15,10 @@ import {
   GRPC_STATUS_NAMES,
   isGrpcError,
   MAX_GRPC_MESSAGE,
+  binaryHeaderHex,
+  describeGrpcTimeout,
+  grpcTimeoutMs,
+  MAX_BINARY_HEADER_BYTES,
 } from '../src/shared/grpc';
 
 const call = (overrides: Partial<ExchangeSummary> = {}): ExchangeSummary => ({
@@ -198,5 +202,72 @@ describe('gRPC calls in the list', () => {
     // "ok" doesn't find every successful call.
     expect(matchesFilter(call({ grpcStatus: 0, host: 'api.test' }), 'ok', 'all')).toBe(false);
     expect(matchesFilter(notFound, 'type=grpc', 'all')).toBe(true);
+  });
+});
+
+describe('a gRPC deadline', () => {
+  it('reads every unit grpc-timeout allows', () => {
+    expect(grpcTimeoutMs('2H')).toBe(7_200_000);
+    expect(grpcTimeoutMs('3M')).toBe(180_000);
+    expect(grpcTimeoutMs('5S')).toBe(5000);
+    expect(grpcTimeoutMs('250m')).toBe(250);
+    expect(grpcTimeoutMs('1500u')).toBe(1.5);
+    expect(grpcTimeoutMs('99999999n')).toBeCloseTo(99.999999);
+  });
+
+  it("isn't there for a value grpc-timeout doesn't allow", () => {
+    expect(grpcTimeoutMs('123456789S')).toBeUndefined(); // more than 8 digits
+    expect(grpcTimeoutMs('5')).toBeUndefined();
+    expect(grpcTimeoutMs('5h')).toBeUndefined();
+    expect(grpcTimeoutMs('-5S')).toBeUndefined();
+    expect(grpcTimeoutMs('S')).toBeUndefined();
+    expect(grpcTimeoutMs(undefined)).toBeUndefined();
+  });
+
+  it('says it in plain words', () => {
+    expect(describeGrpcTimeout('250m')).toBe('250 ms');
+    expect(describeGrpcTimeout('1500m')).toBe('1.5 s');
+    expect(describeGrpcTimeout('5S')).toBe('5 s');
+    expect(describeGrpcTimeout('2M')).toBe('2 min');
+    expect(describeGrpcTimeout('90M')).toBe('1.5 h');
+    expect(describeGrpcTimeout('100u')).toBe('under 1 ms');
+    expect(describeGrpcTimeout('0S')).toBe('0 ms');
+    // Rounding up to the next unit says it in that unit.
+    expect(describeGrpcTimeout('999600u')).toBe('1 s');
+    expect(describeGrpcTimeout('59960m')).toBe('1 min');
+    expect(describeGrpcTimeout('3599999m')).toBe('1 h');
+    expect(describeGrpcTimeout('soon')).toBeUndefined();
+  });
+});
+
+describe('binary gRPC metadata', () => {
+  it('shows base64 as hex bytes, padded or not', () => {
+    expect(binaryHeaderHex('AQID')).toBe('01 02 03');
+    expect(binaryHeaderHex('AQI')).toBe('01 02');
+    expect(binaryHeaderHex('AQI=')).toBe('01 02');
+    expect(binaryHeaderHex('')).toBe('');
+  });
+
+  it('shows each of several values joined by commas', () => {
+    expect(binaryHeaderHex('AQ==, Ag')).toBe('01, 02');
+  });
+
+  it('cuts a long value, saying how long it was', () => {
+    const long = btoa(String.fromCharCode(...new Array(100).fill(255)));
+    const hex = binaryHeaderHex(long)!;
+    expect(hex.startsWith('ff ff')).toBe(true);
+    expect(hex.endsWith(`… (100 bytes)`)).toBe(true);
+    expect(hex.split(' ').filter((b) => b === 'ff')).toHaveLength(MAX_BINARY_HEADER_BYTES);
+  });
+
+  it("isn't decoded when it isn't base64", () => {
+    expect(binaryHeaderHex('not base64!')).toBeUndefined();
+    expect(binaryHeaderHex('A')).toBeUndefined();
+    expect(binaryHeaderHex('AQ=I')).toBeUndefined();
+    expect(binaryHeaderHex('AQ==,%%')).toBeUndefined();
+    // Padding in the wrong amount (atob would throw on these).
+    expect(binaryHeaderHex('QQ=')).toBeUndefined();
+    expect(binaryHeaderHex('QUJD=')).toBeUndefined();
+    expect(binaryHeaderHex('QQ===')).toBeUndefined();
   });
 });

@@ -45,6 +45,7 @@ export function containerEnv(proxyPort: number): Record<string, string> {
     REQUESTS_CA_BUNDLE: bundle,
     CURL_CA_BUNDLE: bundle,
     GIT_SSL_CAINFO: bundle,
+    GRPC_DEFAULT_SSL_ROOTS_FILE_PATH: bundle,
     PHP_INI_SCAN_DIR: `:${inMount(CONTAINER_FILES.phpDir)}`,
     JAVA_TOOL_OPTIONS: javaToolOptions(proxyPort, inMount(CONTAINER_FILES.javaTrustStore), HOST_NAME),
     WIRESCRY_PROXY: proxy,
@@ -105,6 +106,7 @@ const CA_VARIABLES = [
   'REQUESTS_CA_BUNDLE',
   'CURL_CA_BUNDLE',
   'GIT_SSL_CAINFO',
+  'GRPC_DEFAULT_SSL_ROOTS_FILE_PATH',
 ];
 
 /** An IPv4 CIDR range on an octet boundary as a Java wildcard, e.g. 10.0.0.0/8 → 10.*. */

@@ -529,6 +529,11 @@ table.headers td {
   font-size: 12px;
 }
 
+/* A binary (-bin) gRPC header's bytes, under its base64 value. */
+table.headers td .decoded {
+  display: block;
+}
+
 table.headers th {
   text-align: left;
   color: var(--muted);

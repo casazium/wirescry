@@ -253,6 +253,62 @@ describe('DetailPane order and timing', () => {
     expect(screen.getByText('NOT_FOUND (5): order 42 not found')).toBeTruthy();
   });
 
+  /** Shows an exchange with these request headers and response trailers. */
+  const shownWith = async (s: ReturnType<typeof summary>, extra: Partial<ExchangeDetail>) => {
+    const full: ExchangeDetail = { ...detail(s, 'm'), ...extra };
+    const send = vi.fn((command: { command: string }) =>
+      command.command === 'getExchange' ? Promise.resolve(full) : Promise.resolve(null),
+    );
+    await act(async () => {
+      render(pane({ summary: s, send }));
+    });
+  };
+
+  it("shows a gRPC call's deadline, and its binary metadata decoded", async () => {
+    await shownWith(summary('g', { grpc: true, grpcStatus: 5 }), {
+      requestHeaders: [
+        ['grpc-timeout', '1500m'],
+        ['trace-bin', 'AQID'],
+      ],
+      responseTrailers: [
+        ['grpc-status', '5'],
+        ['grpc-status-details-bin', 'CAU'],
+      ],
+    });
+    expect(screen.getByText('Deadline')).toBeTruthy();
+    expect(screen.getByText('1.5 s')).toBeTruthy();
+    // Labeled for screen readers, which would otherwise read the bytes straight after the base64.
+    const decoded = [...document.querySelectorAll('.decoded')].map((e) => e.textContent);
+    expect(decoded).toEqual(['Decoded: 01 02 03', 'Decoded: 08 05']);
+  });
+
+  it("decodes nothing, and shows no deadline, for a request that isn't gRPC", async () => {
+    await shownWith(summary('r'), {
+      requestHeaders: [
+        ['grpc-timeout', '5S'],
+        ['x-thing-bin', 'AQID'],
+      ],
+    });
+    expect(screen.queryByText('Deadline')).toBeNull();
+    expect(document.querySelector('.decoded')).toBeNull();
+    expect(screen.getByText('AQID')).toBeTruthy();
+  });
+
+  it('shows a value that isn’t base64 as it is, and no deadline for a bad timeout', async () => {
+    await shownWith(summary('g2', { grpc: true }), {
+      requestHeaders: [
+        ['grpc-timeout', 'soon'],
+        ['trace-bin', 'not base64!'],
+        // Padding atob refuses: must not break the pane.
+        ['bad-padding-bin', 'QQ='],
+      ],
+    });
+    expect(screen.queryByText('Deadline')).toBeNull();
+    expect(screen.getByText('not base64!')).toBeTruthy();
+    expect(screen.getByText('QQ=')).toBeTruthy();
+    expect(document.querySelector('.decoded')).toBeNull();
+  });
+
   it('shows no gRPC status for other requests, or before the call has one', async () => {
     await shown({});
     expect(screen.queryByText('gRPC status')).toBeNull();
