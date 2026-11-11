@@ -144,7 +144,7 @@ export default defineConfig(() => {
           '@wirescry/plugin-api': pluginApi,
         },
         // Pro's files sit outside this repo; make sure they use this app's Mockttp.
-        dedupe: ['mockttp', '@casazium/license-sdk', 'yaml'],
+        dedupe: ['mockttp', '@casazium/license-sdk', 'yaml', '@bufbuild/protobuf'],
       },
       build: {
         rolldownOptions: {
