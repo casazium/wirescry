@@ -67,6 +67,38 @@ describe('TrafficList', () => {
     expect(missing!.querySelector('.col-type')?.textContent).toBe('grpc');
   });
 
+  it('shows a gRPC call its client canceled as Canceled, in amber; other closed requests as before', () => {
+    const closed = {
+      kind: 'client-closed',
+      code: 'CLIENT_CLOSED',
+      message: 'The client closed it.',
+    } as never;
+    list({
+      rows: [
+        summary('stream', { grpc: true, contentType: 'application/grpc', failure: closed }),
+        summary('page', { failure: closed }),
+        summary('late', {
+          grpc: true,
+          contentType: 'application/grpc',
+          grpcDeadlineExceeded: true,
+          failure: { kind: 'client-closed', code: 'CLIENT_CLOSED', message: 'The client gave up.' } as never,
+        }),
+      ],
+    });
+    const statusOf = (row: Element) => row.querySelector('[role="cell"]:nth-child(2)')!;
+    const [stream, page, late] = screen.getAllByTestId('exchange-row');
+    // Its deadline passed: an error, said as the client says it.
+    expect(statusOf(late!).textContent).toBe('Deadline');
+    expect(statusOf(late!).className).toBe('status error');
+    expect(statusOf(late!).getAttribute('title')).toBe('The client gave up.');
+    expect(statusOf(stream!).textContent).toBe('Canceled');
+    expect(statusOf(stream!).className).toBe('status warn');
+    expect(statusOf(stream!).getAttribute('title')).toBe('The client canceled the call.');
+    expect(statusOf(page!).textContent).toBe('Closed');
+    expect(statusOf(page!).className).toBe('status error');
+    expect(statusOf(page!).getAttribute('title')).toBe('The client closed it.');
+  });
+
   it("shows the device a request came from, and nothing for this computer's", () => {
     list({
       rows: [

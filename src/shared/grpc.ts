@@ -6,7 +6,7 @@
  * the response's trailers, or in its headers when the server answered with nothing else
  * ("Trailers-Only", the usual shape of an error). See grpc/grpc doc/PROTOCOL-HTTP2.md.
  */
-import type { Header } from './api';
+import type { ExchangeSummary, Header } from './api';
 
 /** The standard status codes' names (grpc/grpc doc/statuscodes.md), by number. */
 export const GRPC_STATUS_NAMES = [
@@ -198,4 +198,45 @@ export function binaryHeaderHex(value: string): string | undefined {
     hexes.push(size > MAX_BINARY_HEADER_BYTES ? `${hex} … (${size} bytes)` : hex);
   }
   return hexes.join(', ');
+}
+
+/** gRPC's DEADLINE_EXCEEDED. */
+export const GRPC_DEADLINE_EXCEEDED = 4;
+
+/**
+ * Whether a call that ran this long had reached its deadline (grpc-timeout). The client's clock
+ * starts a little before Wirescry's, so a call is counted as reaching it a little early: a tenth
+ * of the deadline, at least 100 ms and at most a second.
+ */
+export function grpcDeadlinePassed(timeout: string | undefined, elapsedMs: number): boolean {
+  const deadline = grpcTimeoutMs(timeout);
+  if (deadline === undefined) return false;
+  const margin = Math.min(1000, Math.max(100, deadline / 10));
+  return elapsedMs >= deadline - margin;
+}
+
+type ClientSide = Pick<ExchangeSummary, 'grpc' | 'failure' | 'grpcStatus' | 'grpcDeadlineExceeded'>;
+
+/**
+ * True for a gRPC call its client canceled: the client closed the call before it ended, without the
+ * server having sent a status or the call's deadline having passed. Clients do this routinely, e.g.
+ * with a stream they've read enough of, so it's shown as canceled, not failed.
+ */
+export function isGrpcClientCancel(exchange: ClientSide): boolean {
+  return (
+    exchange.grpc === true &&
+    exchange.failure?.kind === 'client-closed' &&
+    exchange.grpcStatus === undefined &&
+    !exchange.grpcDeadlineExceeded
+  );
+}
+
+/**
+ * The status a gRPC client ends up with when the server never sent one: CANCELLED when it canceled
+ * the call, DEADLINE_EXCEEDED when it gave up at the deadline. Undefined otherwise.
+ */
+export function grpcClientSideStatus(exchange: ClientSide): number | undefined {
+  if (exchange.grpcStatus !== undefined || exchange.grpc !== true) return undefined;
+  if (exchange.grpcDeadlineExceeded) return GRPC_DEADLINE_EXCEEDED;
+  return isGrpcClientCancel(exchange) ? GRPC_CANCELLED : undefined;
 }

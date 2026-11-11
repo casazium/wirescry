@@ -19,7 +19,7 @@ import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
 import { HOST_NAME as DOCKER_HOST_NAME } from './docker/container';
 import { GUARD_HEADER, startEgressGuard, type EgressGuard, type EgressGuardOptions } from './egress-guard';
-import { grpcResultOf, isGrpcContentType } from '../shared/grpc';
+import { describeGrpcTimeout, grpcDeadlinePassed, grpcResultOf, isGrpcContentType } from '../shared/grpc';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
 import type { RequestStore } from './store';
 import type { WebSocketStore } from './websocket-store';
@@ -698,21 +698,38 @@ async function startListener(
     }, 5000).unref();
     update(req.id, (existing) => {
       const rule = handledBy(req.matchedRuleId) ?? existing.summary.handledBy;
+      const ruleEnded = !!rule && !!options.ruleEndsWithoutResponse?.(req.matchedRuleId);
+      // A gRPC client closes the call itself when its deadline passes; the wire looks the same as a
+      // cancel, so it's told apart by time.
+      const timeout = rawHeader(req.rawHeaders, 'grpc-timeout');
+      const deadlinePassed =
+        !upstream?.code &&
+        !ruleEnded &&
+        existing.summary.grpc === true &&
+        abortedTimestamp !== undefined &&
+        grpcDeadlinePassed(timeout, abortedTimestamp - startTimestamp);
       return {
         ...existing,
         summary: {
           ...existing.summary,
           handledBy: rule,
-          failure: !upstream?.code
-            ? // A close or timeout rule ends here too; say so instead of "client closed".
-              rule && options.ruleEndsWithoutResponse?.(req.matchedRuleId)
-              ? describeRuleEnded(rule.label)
+          ...(deadlinePassed ? { grpcDeadlineExceeded: true as const } : {}),
+          failure: deadlinePassed
+            ? {
+                ...describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message),
+                ...(partial ? { partial: true } : {}),
+                message: `The client gave up when the call's ${describeGrpcTimeout(timeout)} deadline passed.`,
+              }
+            : !upstream?.code
+              ? // A close or timeout rule ends here too; say so instead of "client closed".
+                ruleEnded
+                ? describeRuleEnded(rule!.label)
+                : partial
+                  ? describePartialFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
+                  : describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
               : partial
-                ? describePartialFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
-                : describeFailure('CLIENT_CLOSED', existing.summary.host, req.error?.message)
-            : partial
-              ? describePartialFailure(upstream.code, existing.summary.host, upstream.message)
-              : describeFailure(upstream.code, existing.summary.host, upstream.message),
+                ? describePartialFailure(upstream.code, existing.summary.host, upstream.message)
+                : describeFailure(upstream.code, existing.summary.host, upstream.message),
           ...(clientLeftMidBody
             ? {
                 status: shown?.statusCode ?? existing.summary.status,

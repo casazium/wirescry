@@ -12,6 +12,7 @@ import { generateCACertificate } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { parseHar } from '../src/backend/har';
+import { isError } from '../src/shared/filter';
 import type { ExchangeSummary } from '../src/shared/api';
 import {
   apiClient,
@@ -47,6 +48,14 @@ describe('gRPC status through Wirescry', () => {
         stream.respond({ ':status': 200, ...grpc }, { waitForTrailers: true });
         stream.on('wantTrailers', () => stream.sendTrailers({ 'grpc-status': '0' }));
         stream.end(Buffer.from([0, 0, 0, 0, 0]));
+      } else if (route === '/shop.Orders/Watch') {
+        // A stream that keeps going until the client cancels it.
+        stream.respond({ ':status': 200, ...grpc });
+        stream.write(Buffer.from([0, 0, 0, 0, 0]));
+        stream.on('error', () => undefined);
+      } else if (route === '/shop.Orders/Slow') {
+        // Never answers: the client gives up.
+        stream.on('error', () => undefined);
       } else if (route === '/shop.Web/Call') {
         // gRPC-Web, known only from the response's type; an error sent with nothing else.
         stream.respond(
@@ -127,6 +136,86 @@ describe('gRPC status through Wirescry', () => {
     expect(summary.grpc).toBe(true);
     expect(summary.grpcStatus).toBe(0);
     expect(summary.grpcMessage).toBeUndefined();
+  });
+
+  it('records a stream the client canceled as a gRPC call the client closed', async () => {
+    const api = await apiClient(backend.apiPort);
+    const socket = await tunnelThroughProxy(backend.proxyPort, `localhost:${port}`);
+    const secure = tls.connect({ socket, servername: 'localhost', ca, ALPNProtocols: ['h2'] });
+    const session = http2.connect(`https://localhost:${port}`, { createConnection: () => secure });
+    await new Promise<void>((resolve) => {
+      const req = session.request(
+        {
+          ':method': 'POST',
+          ':path': '/shop.Orders/Watch',
+          'content-type': 'application/grpc',
+          te: 'trailers',
+        },
+        { endStream: true },
+      );
+      req.once('data', () => req.close(http2.constants.NGHTTP2_CANCEL));
+      req.on('error', () => undefined);
+      req.on('close', resolve);
+    });
+    session.close();
+    let found: ExchangeSummary | undefined;
+    await expect
+      .poll(() => {
+        found = exchangesIn(api.messages).find((e) => e.path === '/shop.Orders/Watch' && e.failure);
+        return found;
+      })
+      .toBeTruthy();
+    api.close();
+    expect(found!.grpc).toBe(true);
+    expect(found!.failure?.kind).toBe('client-closed');
+    expect(isError(found!)).toBe(false);
+  });
+
+  /** Sends a call with this deadline, closes it after `after` ms, and returns its summary. */
+  const giveUp = async (urlPath: string, timeout: string, after: number): Promise<ExchangeSummary> => {
+    const api = await apiClient(backend.apiPort);
+    const socket = await tunnelThroughProxy(backend.proxyPort, `localhost:${port}`);
+    const secure = tls.connect({ socket, servername: 'localhost', ca, ALPNProtocols: ['h2'] });
+    const session = http2.connect(`https://localhost:${port}`, { createConnection: () => secure });
+    await new Promise<void>((resolve) => {
+      const req = session.request(
+        {
+          ':method': 'POST',
+          ':path': urlPath,
+          'content-type': 'application/grpc',
+          te: 'trailers',
+          'grpc-timeout': timeout,
+        },
+        { endStream: true },
+      );
+      setTimeout(() => req.close(http2.constants.NGHTTP2_CANCEL), after);
+      req.on('error', () => undefined);
+      req.on('close', resolve);
+    });
+    session.close();
+    let found: ExchangeSummary | undefined;
+    await expect
+      .poll(() => {
+        found = exchangesIn(api.messages).find((e) => e.path === urlPath && e.failure);
+        return found;
+      })
+      .toBeTruthy();
+    api.close();
+    return found!;
+  };
+
+  it('records a call the client gave up on at its deadline as DEADLINE_EXCEEDED', async () => {
+    const summary = await giveUp('/shop.Orders/Slow?deadline', '300m', 400);
+    expect(summary.grpcDeadlineExceeded).toBe(true);
+    expect(summary.failure?.message).toBe("The client gave up when the call's 300 ms deadline passed.");
+    expect(isError(summary)).toBe(true);
+  });
+
+  it('records a call canceled well before its deadline as canceled', async () => {
+    const summary = await giveUp('/shop.Orders/Slow?early', '10S', 100);
+    expect(summary.grpcDeadlineExceeded).toBeUndefined();
+    expect(summary.failure?.kind).toBe('client-closed');
+    expect(isError(summary)).toBe(false);
   });
 
   it('knows a gRPC-Web call from its response alone', async () => {

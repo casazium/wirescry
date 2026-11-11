@@ -8,7 +8,7 @@ import type {
   FormattedBody,
   Header,
 } from '../../shared/api';
-import { binaryHeaderHex, describeGrpcTimeout, grpcStatusName } from '../../shared/grpc';
+import { binaryHeaderHex, describeGrpcTimeout, grpcStatusName, isGrpcClientCancel } from '../../shared/grpc';
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
@@ -150,6 +150,8 @@ export function DetailPane({
   }, [send, summary, stale]);
 
   const redirect = detail?.responseHeaders ? redirectTarget(summary, detail.responseHeaders) : undefined;
+  // A gRPC call its client canceled: routine, so not shown as a failure.
+  const canceled = isGrpcClientCancel(summary);
   // How long a gRPC client gives the call, from its grpc-timeout.
   const deadline = summary.grpc
     ? describeGrpcTimeout(detail?.requestHeaders.find(([n]) => n.toLowerCase() === 'grpc-timeout')?.[1])
@@ -316,7 +318,14 @@ export function DetailPane({
         {copied && <span className="muted">{copied === 'Copy failed' ? copied : `Copied ${copied}`}</span>}
       </div>
       <div className="detail-body">
-        {summary.failure && (
+        {canceled && (
+          <p className="note">
+            The client canceled the call.
+            {summary.failure?.partial &&
+              ' The server had started responding; below is what arrived before then.'}
+          </p>
+        )}
+        {summary.failure && !canceled && (
           <div className="failure" role="alert">
             <strong>{summary.failure.message}</strong>
             {summary.failure.detail && <code>{summary.failure.detail}</code>}
@@ -349,11 +358,15 @@ export function DetailPane({
           <dl className="facts">
             <dt>Status</dt>
             <dd>
-              {summary.failure
-                ? `Failed (${summary.failure.code})`
-                : summary.status !== undefined
-                  ? `${summary.status} ${summary.statusMessage ?? ''}`
-                  : 'Waiting for response'}
+              {canceled
+                ? 'Canceled by the client'
+                : summary.grpcDeadlineExceeded && summary.grpcStatus === undefined
+                  ? 'Deadline passed'
+                  : summary.failure
+                    ? `Failed (${summary.failure.code})`
+                    : summary.status !== undefined
+                      ? `${summary.status} ${summary.statusMessage ?? ''}`
+                      : 'Waiting for response'}
             </dd>
             {deadline && (
               <>
