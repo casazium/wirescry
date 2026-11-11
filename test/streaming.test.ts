@@ -1,4 +1,4 @@
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -62,7 +62,8 @@ describe('streaming bodies', () => {
     const id = await api.completed('/big');
     const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: id });
     expect(detail.responseBody).toEqual({ size: 20 * MB, stored: 16 * MB });
-    expect((await stat(path.join(dataDir, 'bodies', `${id}.response`))).size).toBe(16 * MB);
+    const file = (await readdir(path.join(dataDir, 'bodies'))).find((f) => f.startsWith(`${id}.response.`))!;
+    expect((await stat(path.join(dataDir, 'bodies', file))).size).toBe(16 * MB);
 
     const body = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'response' });
     expect(body.truncated).toBe(true);

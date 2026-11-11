@@ -171,7 +171,10 @@ describe('backend', () => {
     await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/large`, ca);
     const id = await api.completed('/large');
     const bodiesDir = path.join(dataDir, 'bodies');
-    await expect.poll(() => readdir(bodiesDir)).toContain(`${id}.response`);
+    // Each body's file is named for its exchange, side and a number.
+    await expect
+      .poll(async () => (await readdir(bodiesDir)).some((f) => f.startsWith(`${id}.response.`)))
+      .toBe(true);
     const body = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'response' });
     expect(Buffer.from(body.base64, 'base64').length).toBe(200 * 1024);
 
@@ -253,14 +256,18 @@ describe('backend', () => {
     await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/hello?clear=kept`, ca);
     const kept = await api.completed('/hello?clear=kept');
     const bodiesDir = path.join(dataDir, 'bodies');
-    await expect.poll(() => readdir(bodiesDir)).toContain(`${gone}.response`);
+    await expect
+      .poll(async () => (await readdir(bodiesDir)).some((f) => f.startsWith(`${gone}.response.`)))
+      .toBe(true);
 
     await api.send({ command: 'clear', ids: [gone, 'no-such-id'] });
     await expect(api.send({ command: 'getExchange', exchangeId: gone })).rejects.toThrow(
       'Exchange not found',
     );
     await expect(api.send({ command: 'getExchange', exchangeId: kept })).resolves.toBeDefined();
-    await expect.poll(() => readdir(bodiesDir)).not.toContain(`${gone}.response`);
+    await expect
+      .poll(async () => (await readdir(bodiesDir)).some((f) => f.startsWith(`${gone}.response.`)))
+      .toBe(false);
     await expect
       .poll(() =>
         api.messages.some(

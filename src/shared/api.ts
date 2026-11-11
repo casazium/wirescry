@@ -188,6 +188,30 @@ export interface BodyContent {
   truncated: boolean;
 }
 
+/** Part of a body's stored bytes, read while it arrives or after it has finished. */
+export interface BodyRange {
+  /** The bytes as stored, from the offset asked for. */
+  bytes: Uint8Array;
+  /**
+   * True if they're already decoded (a body imported from a HAR file). Otherwise they're as sent:
+   * the Content-Encoding in the headers, if any, is still to be undone.
+   */
+  decoded: boolean;
+  /** Bytes stored so far: every one can be read. */
+  stored: number;
+  /** Bytes that arrived so far. More than `stored` past Wirescry's limit for one body. */
+  size: number;
+  /** True while the body is still arriving. */
+  receiving: boolean;
+  /** True if it ended early, e.g. the connection dropped. */
+  incomplete: boolean;
+  /** Which body this is: it changes if the body is replaced, so offsets into the old one no longer apply. */
+  serial: number;
+}
+
+/** A BodyRange for the UI, its bytes as base64. */
+export type BodyRangeContent = Omit<BodyRange, 'bytes'> & { base64: string };
+
 export type FormatLanguage = 'html' | 'xml' | 'js' | 'css';
 
 /** A body pretty-printed by the backend. */
@@ -440,6 +464,15 @@ export type ClientCommand =
   | { id: number; command: 'plugin'; plugin: string; name: string; args?: unknown }
   | { id: number; command: 'getExchange'; exchangeId: string }
   | { id: number; command: 'getBody'; exchangeId: string; side: BodySide }
+  /** Part of a body's stored bytes, while it arrives or after: BodyRangeContent, or null. At most 1 MB. */
+  | {
+      id: number;
+      command: 'getBodyRange';
+      exchangeId: string;
+      side: BodySide;
+      offset: number;
+      maxBytes: number;
+    }
   | { id: number; command: 'formatBody'; exchangeId: string; side: BodySide };
 
 /** WebSocket subprotocol prefix used to carry the API token. Browsers can't set headers on WebSockets. */

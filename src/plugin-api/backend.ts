@@ -6,13 +6,14 @@
 import type { RequestRuleData, RequestStep, requestSteps } from 'mockttp';
 import type {
   BodyContent,
+  BodyRange,
   BodySide,
   ExchangeAnnotation,
   ExchangeDetail,
   ExchangeSummary,
 } from '../shared/api';
 
-export type { BodyContent, BodySide, ExchangeAnnotation, ExchangeDetail, ExchangeSummary };
+export type { BodyContent, BodyRange, BodySide, ExchangeAnnotation, ExchangeDetail, ExchangeSummary };
 
 /** A proxy rule from a plugin. `id` should be stable; `label` names it in the traffic list. */
 export interface PluginRule extends Pick<RequestRuleData, 'matchers' | 'steps'> {
@@ -96,6 +97,18 @@ export interface BackendPluginHost {
    * (`truncated`). Null if there's none, or the exchange is gone.
    */
   getBody(exchangeId: string, side: BodySide): Promise<BodyContent | null>;
+  /**
+   * Part of a body as stored, from `offset`, at most `maxBytes` (and 1 MB): while it's still
+   * arriving or after. As sent, Content-Encoding not undone, unless `decoded` says so. Null if
+   * there's no body yet (watch the summary's responseReceived), none at all, or the exchange is
+   * gone. Read on from `offset + bytes.length`; if `serial` changes, the body was
+   * replaced, so start again from 0.
+   */
+  readBody(
+    exchangeId: string,
+    side: BodySide,
+    range: { offset: number; maxBytes: number },
+  ): Promise<BodyRange | null>;
   /**
    * Puts this plugin's badge on an exchange, replacing its previous one, or removes it
    * (undefined). Ignored for an exchange that's gone, and until the plugin has started.
