@@ -727,7 +727,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         ...(responseBody ? { responseBody: { size: responseBody.size, stored: responseBody.stored } } : {}),
         importedFrom,
       };
-      store.upsert(detail);
+      // Oldest first, as `removed` above counts: the file's own entries are never the ones dropped.
+      store.upsert(detail, { keepLive: false });
       updates.change(summary);
       noteCompleted(summary);
       imported += 1;

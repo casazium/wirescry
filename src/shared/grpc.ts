@@ -135,3 +135,67 @@ export function grpcResultOf(
 export function isGrpcError(status: number | undefined): boolean {
   return status !== undefined && status !== GRPC_OK && status !== GRPC_CANCELLED;
 }
+
+const TIMEOUT_UNITS: Record<string, number> = {
+  H: 3_600_000,
+  M: 60_000,
+  S: 1000,
+  m: 1,
+  u: 0.001,
+  n: 0.000_001,
+};
+
+/**
+ * A call's deadline from `grpc-timeout` (up to 8 digits and a unit: H, M, S, m, u, n), in
+ * milliseconds. Undefined if the value isn't one.
+ */
+export function grpcTimeoutMs(value: string | undefined): number | undefined {
+  const match = /^(\d{1,8})([HMSmun])$/.exec(value?.trim() ?? '');
+  return match ? Number(match[1]) * TIMEOUT_UNITS[match[2]!]! : undefined;
+}
+
+/** A deadline in plain words: "250 ms", "5 s", "2 min", "1.5 h". */
+export function describeGrpcTimeout(value: string | undefined): string | undefined {
+  const ms = grpcTimeoutMs(value);
+  if (ms === undefined) return undefined;
+  if (ms === 0) return '0 ms';
+  if (ms < 1) return 'under 1 ms';
+  // One decimal place; a value that rounds up to the next unit is said in that unit.
+  const round = (n: number) => Math.round(n * 10) / 10;
+  if (Math.round(ms) < 1000) return `${Math.round(ms)} ms`;
+  if (round(ms / 1000) < 60) return `${round(ms / 1000)} s`;
+  if (round(ms / 60_000) < 60) return `${round(ms / 60_000)} min`;
+  return `${round(ms / 3_600_000)} h`;
+}
+
+/** Bytes shown of a binary header's value; the rest is cut. */
+export const MAX_BINARY_HEADER_BYTES = 64;
+
+/**
+ * A binary (`-bin`) header's value as hex bytes. gRPC sends these base64-encoded, padded or not,
+ * with several values joined by commas. Undefined if it isn't base64.
+ */
+export function binaryHeaderHex(value: string): string | undefined {
+  const parts = value.split(',').map((part) => part.trim());
+  const hexes: string[] = [];
+  for (const part of parts) {
+    const data = part.replace(/=+$/, '');
+    // Base64 characters, a length base64 can have, and padding only where it belongs.
+    if (!/^[A-Za-z0-9+/]*$/.test(data) || data.length % 4 === 1) return undefined;
+    if (part.length > data.length && (part.length % 4 !== 0 || part.length - data.length > 2))
+      return undefined;
+    const size = Math.floor((data.length * 3) / 4);
+    // Decode only what's shown: 4 characters make 3 bytes.
+    const shown = data.slice(0, Math.ceil(MAX_BINARY_HEADER_BYTES / 3) * 4);
+    let bytes: number[];
+    try {
+      // atob takes base64 with or without padding (forgiving-base64).
+      bytes = [...atob(shown)].map((c) => c.charCodeAt(0)).slice(0, MAX_BINARY_HEADER_BYTES);
+    } catch {
+      return undefined;
+    }
+    const hex = bytes.map((b) => b.toString(16).padStart(2, '0')).join(' ');
+    hexes.push(size > MAX_BINARY_HEADER_BYTES ? `${hex} … (${size} bytes)` : hex);
+  }
+  return hexes.join(', ');
+}

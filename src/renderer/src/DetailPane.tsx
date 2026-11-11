@@ -8,7 +8,7 @@ import type {
   FormattedBody,
   Header,
 } from '../../shared/api';
-import { grpcStatusName } from '../../shared/grpc';
+import { binaryHeaderHex, describeGrpcTimeout, grpcStatusName } from '../../shared/grpc';
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
@@ -52,16 +52,28 @@ export interface DetailSection {
 
 type BodyState = { content: BodyContent | null } | { error: string };
 
-function HeaderTable({ headers }: { headers: Header[] }): React.JSX.Element {
+function HeaderTable({ headers, grpc }: { headers: Header[]; grpc?: boolean }): React.JSX.Element {
   return (
     <table className="headers">
       <tbody>
-        {headers.map(([name, value], i) => (
-          <tr key={i}>
-            <th>{name}</th>
-            <td>{value}</td>
-          </tr>
-        ))}
+        {headers.map(([name, value], i) => {
+          // gRPC sends binary metadata base64-encoded in headers whose names end in -bin.
+          const hex = grpc && name.toLowerCase().endsWith('-bin') ? binaryHeaderHex(value) : undefined;
+          return (
+            <tr key={i}>
+              <th>{name}</th>
+              <td>
+                {value}
+                {hex !== undefined && (
+                  <span className="decoded muted" title="Decoded from base64">
+                    <span className="visually-hidden">Decoded: </span>
+                    {hex || '(empty)'}
+                  </span>
+                )}
+              </td>
+            </tr>
+          );
+        })}
       </tbody>
     </table>
   );
@@ -138,6 +150,10 @@ export function DetailPane({
   }, [send, summary, stale]);
 
   const redirect = detail?.responseHeaders ? redirectTarget(summary, detail.responseHeaders) : undefined;
+  // How long a gRPC client gives the call, from its grpc-timeout.
+  const deadline = summary.grpc
+    ? describeGrpcTimeout(detail?.requestHeaders.find(([n]) => n.toLowerCase() === 'grpc-timeout')?.[1])
+    : undefined;
   const followed = redirect && onSelectExchange ? followingRequest?.(redirect) : undefined;
   const requestSize = detail?.requestBody?.size;
   const responseSize = detail?.responseBody?.size;
@@ -227,7 +243,7 @@ export function DetailPane({
       {detail?.responseHeaders && (
         <details open>
           <summary>Response headers{byWirescry && ' (sent by Wirescry)'}</summary>
-          <HeaderTable headers={detail.responseHeaders} />
+          <HeaderTable headers={detail.responseHeaders} grpc={summary.grpc} />
         </details>
       )}
     </>
@@ -253,7 +269,7 @@ export function DetailPane({
       {detail?.responseTrailers && detail.responseTrailers.length > 0 && (
         <details open>
           <summary>Response trailers</summary>
-          <HeaderTable headers={detail.responseTrailers} />
+          <HeaderTable headers={detail.responseTrailers} grpc={summary.grpc} />
         </details>
       )}
     </>
@@ -339,6 +355,12 @@ export function DetailPane({
                   ? `${summary.status} ${summary.statusMessage ?? ''}`
                   : 'Waiting for response'}
             </dd>
+            {deadline && (
+              <>
+                <dt>Deadline</dt>
+                <dd title="The client's grpc-timeout: it gives up after this">{deadline}</dd>
+              </>
+            )}
             {summary.grpcStatus !== undefined && (
               <>
                 <dt>gRPC status</dt>
@@ -448,7 +470,7 @@ export function DetailPane({
         <details open>
           <summary>Request headers</summary>
           {detail ? (
-            <HeaderTable headers={detail.requestHeaders} />
+            <HeaderTable headers={detail.requestHeaders} grpc={summary.grpc} />
           ) : (
             <p className="muted">{stale ? 'Lost when the proxy restarted.' : 'Loading…'}</p>
           )}
@@ -467,7 +489,7 @@ export function DetailPane({
         {detail?.requestTrailers && detail.requestTrailers.length > 0 && (
           <details open>
             <summary>Request trailers</summary>
-            <HeaderTable headers={detail.requestTrailers} />
+            <HeaderTable headers={detail.requestTrailers} grpc={summary.grpc} />
           </details>
         )}
         {!responseFirst && response}
