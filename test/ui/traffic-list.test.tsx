@@ -32,6 +32,41 @@ describe('TrafficList', () => {
     expect(rows[2]!.textContent).toContain('DNS');
   });
 
+  it("shows a failed gRPC call's status by name instead of HTTP's 200, colored as an error", () => {
+    const grpc = { grpc: true as const, contentType: 'application/grpc' };
+    list({
+      rows: [
+        summary('missing', { ...grpc, grpcStatus: 5, grpcMessage: 'order 42 not found' }),
+        summary('fine', { ...grpc, grpcStatus: 0 }),
+        summary('gave-up', { ...grpc, grpcStatus: 1 }),
+        summary('odd', { ...grpc, grpcStatus: 42 }),
+        summary('dropped', {
+          ...grpc,
+          grpcStatus: 14,
+          failure: { kind: 'reset', code: 'ECONNRESET', message: 'reset' } as never,
+        }),
+      ],
+    });
+    const statusOf = (row: Element) => row.querySelector('[role="cell"]:nth-child(2)')!;
+    const [missing, fine, gaveUp, odd, dropped] = screen.getAllByTestId('exchange-row');
+    // A short label fits the narrow column; the tooltip has the full name.
+    expect(statusOf(missing!).textContent).toBe('Not found');
+    expect(statusOf(missing!).className).toBe('status error');
+    expect(statusOf(missing!).getAttribute('title')).toBe('gRPC NOT_FOUND (5): order 42 not found');
+    // OK shows HTTP's status as for any request.
+    expect(statusOf(fine!).textContent).toBe('200');
+    expect(statusOf(fine!).className).toBe('status ok');
+    // The client gave up: not an error.
+    expect(statusOf(gaveUp!).textContent).toBe('Canceled');
+    expect(statusOf(gaveUp!).className).toBe('status warn');
+    expect(statusOf(odd!).textContent).toBe('gRPC 42');
+    expect(statusOf(odd!).getAttribute('title')).toBe('gRPC code 42 (42)');
+    // A failure still says what failed.
+    expect(statusOf(dropped!).textContent).toBe('Reset');
+    // The type column says gRPC.
+    expect(missing!.querySelector('.col-type')?.textContent).toBe('grpc');
+  });
+
   it("shows the device a request came from, and nothing for this computer's", () => {
     list({
       rows: [

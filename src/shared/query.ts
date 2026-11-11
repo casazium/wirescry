@@ -1,10 +1,12 @@
 import type { ExchangeSummary } from './api';
 import { exchangeType } from './exchange-type';
+import { grpcStatusName } from './grpc';
 
 /**
  * The search box's query language. Terms are separated by spaces and must all match.
  *
- * - A plain word matches anywhere in the method, status, URL, content type or failure.
+ * - A plain word matches anywhere in the method, status, URL, content type, failure, or a gRPC
+ *   call's status and message.
  * - `field op value` filters one field:
  *   - `=`  equals, case-insensitive, with `*` and `?` wildcards: `host=api.*`, `method=POST`
  *   - `!=` doesn't equal
@@ -39,6 +41,12 @@ const FIELDS: Record<string, FieldSpec> = {
   rule: { kind: 'text', get: (e) => e.handledBy?.label },
   // Matches the failure's kind (dns, tls, timeout…) or its code (ENOTFOUND…).
   failure: { kind: 'text', get: (e) => (e.failure ? [e.failure.kind, e.failure.code] : undefined) },
+  // A gRPC call's status, by name or number: grpc=NOT_FOUND, grpc=5.
+  grpc: {
+    kind: 'text',
+    get: (e) =>
+      e.grpcStatus !== undefined ? [grpcStatusName(e.grpcStatus), String(e.grpcStatus)] : undefined,
+  },
 };
 
 /**
@@ -190,6 +198,11 @@ function fieldPredicate(fieldName: string, spec: FieldSpec, op: Op, value: strin
 function textHaystack(e: ExchangeSummary): string {
   return `${e.method} ${e.status ?? ''} ${e.url} ${e.contentType ?? ''} ${
     e.failure ? `${e.failure.code} ${e.failure.kind}` : ''
+  } ${
+    // Not OK's name: "ok" would then match every successful call.
+    e.grpcStatus !== undefined && e.grpcStatus !== 0
+      ? `${grpcStatusName(e.grpcStatus)} ${e.grpcMessage ?? ''}`
+      : ''
   }`.toLowerCase();
 }
 

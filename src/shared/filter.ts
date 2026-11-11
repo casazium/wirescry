@@ -1,5 +1,6 @@
 import type { ExchangeSummary } from './api';
 import { exchangeType, type ExchangeType } from './exchange-type';
+import { isGrpcError } from './grpc';
 import { compileQuery, type CompiledQuery } from './query';
 
 export const QUICK_FILTERS = [
@@ -12,6 +13,7 @@ export const QUICK_FILTERS = [
   { id: 'media', label: 'Media' },
   { id: 'font', label: 'Fonts' },
   { id: 'websocket', label: 'WebSockets' },
+  { id: 'grpc', label: 'gRPC' },
   { id: 'other', label: 'Other' },
   { id: 'errors', label: 'Errors' },
 ] as const;
@@ -27,10 +29,16 @@ const NAMED_TYPES = new Set<ExchangeType>([
   'media',
   'font',
   'websocket',
+  'grpc',
 ]);
 
+/** A failure, an HTTP error status, or a gRPC error status (gRPC errors come with HTTP 200). */
 export function isError(exchange: ExchangeSummary): boolean {
-  return exchange.failure !== undefined || (exchange.status !== undefined && exchange.status >= 400);
+  return (
+    exchange.failure !== undefined ||
+    (exchange.status !== undefined && exchange.status >= 400) ||
+    isGrpcError(exchange.grpcStatus)
+  );
 }
 
 function matchesQuick(exchange: ExchangeSummary, filter: QuickFilter): boolean {

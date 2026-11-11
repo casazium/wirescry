@@ -2,6 +2,7 @@ import net from 'node:net';
 import http from 'node:http';
 import https from 'node:https';
 import tls from 'node:tls';
+import { createRequire } from 'node:module';
 import { expect } from 'vitest';
 import { startBackend, type BackendOptions, type RunningBackend } from '../src/backend/backend';
 import WebSocket from 'ws';
@@ -275,4 +276,31 @@ export async function startBackendOnPickedPort(
       if (!taken || attempt >= attempts) throw error;
     }
   }
+}
+
+/** Opens a CONNECT tunnel through the proxy to `target` (host:port). */
+export function tunnelThroughProxy(proxyPort: number, target: string): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port: proxyPort, method: 'CONNECT', path: target });
+    req.once('connect', (res, socket) => {
+      if (res.statusCode === 200) resolve(socket);
+      else reject(new Error(`CONNECT failed: ${res.statusCode}`));
+    });
+    req.once('error', reject);
+    req.end();
+  });
+}
+
+/** A key and certificate for `localhost`, signed by the given CA (e.g. one passed as upstreamCAs). */
+export async function localhostCertificate(ca: {
+  key: string;
+  cert: string;
+}): Promise<{ key: string; cert: string }> {
+  const require = createRequire(import.meta.url);
+  const { getCA } = require('mockttp/dist/util/certificates') as {
+    getCA(options: { key: string; cert: string }): Promise<{
+      generateCertificate(domain: string): Promise<{ key: string; cert: string }>;
+    }>;
+  };
+  return (await getCA(ca)).generateCertificate('localhost');
 }

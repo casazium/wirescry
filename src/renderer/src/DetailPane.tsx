@@ -8,6 +8,7 @@ import type {
   FormattedBody,
   Header,
 } from '../../shared/api';
+import { grpcStatusName } from '../../shared/grpc';
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
@@ -338,6 +339,15 @@ export function DetailPane({
                   ? `${summary.status} ${summary.statusMessage ?? ''}`
                   : 'Waiting for response'}
             </dd>
+            {summary.grpcStatus !== undefined && (
+              <>
+                <dt>gRPC status</dt>
+                <dd>
+                  {grpcStatusName(summary.grpcStatus)} ({summary.grpcStatus})
+                  {summary.grpcMessage ? `: ${summary.grpcMessage}` : ''}
+                </dd>
+              </>
+            )}
             {redirect && (
               <>
                 <dt>Redirects to</dt>

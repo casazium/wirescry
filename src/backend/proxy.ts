@@ -1,6 +1,13 @@
 import net from 'node:net';
 import * as mockttp from 'mockttp';
-import type { BodySide, ExchangeDetail, ExchangeSource, ExchangeTiming, HandledBy } from '../shared/api';
+import type {
+  BodySide,
+  ExchangeDetail,
+  ExchangeSource,
+  ExchangeSummary,
+  ExchangeTiming,
+  HandledBy,
+} from '../shared/api';
 import {
   describeBlocked,
   describeFailure,
@@ -12,6 +19,7 @@ import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
 import { HOST_NAME as DOCKER_HOST_NAME } from './docker/container';
 import { GUARD_HEADER, startEgressGuard, type EgressGuard, type EgressGuardOptions } from './egress-guard';
+import { grpcResultOf, isGrpcContentType } from '../shared/grpc';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
 import type { RequestStore } from './store';
 import type { WebSocketStore } from './websocket-store';
@@ -300,6 +308,21 @@ function mediaType(header: string | string[] | undefined): string | undefined {
   return value?.split(';')[0]?.trim().toLowerCase() || undefined;
 }
 
+/** A gRPC call's summary fields: that it's gRPC, and its status and message if it has one. */
+function grpcFields(
+  grpc: boolean | undefined,
+  headers: mockttp.RawHeaders,
+  trailers: mockttp.RawTrailers | undefined,
+): Pick<ExchangeSummary, 'grpc' | 'grpcStatus' | 'grpcMessage'> {
+  if (!grpc) return {};
+  const result = grpcResultOf(headers, trailers);
+  return {
+    grpc: true as const,
+    ...(result ? { grpcStatus: result.status } : {}),
+    ...(result?.message !== undefined ? { grpcMessage: result.message } : {}),
+  };
+}
+
 function rawHeader(headers: mockttp.RawHeaders, name: string): string | undefined {
   return headers.find(([key]) => key.toLowerCase() === name)?.[1];
 }
@@ -552,6 +575,7 @@ async function startListener(
         path: req.path,
         url: req.url,
         startedAt: req.timingEvents.startTime,
+        ...(isGrpcContentType(mediaType(req.headers['content-type'])) ? { grpc: true as const } : {}),
       },
       requestHeaders: req.rawHeaders,
       timing: timingOf(req.timingEvents),
@@ -595,6 +619,7 @@ async function startListener(
       setTimeout(() => brokenMidBody.delete(res.id), 5000).unref();
     }
     const code = upstream?.code ?? errorCode;
+    const responseType = mediaType(res.headers['content-type']);
     // The egress guard's own answer, when it refused or couldn't connect.
     const verdict = guard?.verdict(rawHeader(res.rawHeaders, GUARD_HEADER));
     update(res.id, (existing) => ({
@@ -621,7 +646,12 @@ async function startListener(
           responseSentTimestamp !== undefined
             ? Math.round(responseSentTimestamp - startTimestamp)
             : undefined,
-        contentType: mediaType(res.headers['content-type']),
+        contentType: responseType,
+        ...grpcFields(
+          existing.summary.grpc || isGrpcContentType(responseType),
+          res.rawHeaders,
+          res.rawTrailers,
+        ),
       },
       responseHeaders: res.rawHeaders,
       ...(res.rawTrailers?.length ? { responseTrailers: res.rawTrailers } : {}),

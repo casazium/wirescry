@@ -5,6 +5,7 @@
  *
  * Pure conversion only; reading bodies and writing files is in backend.ts.
  */
+import { grpcResultOf, isGrpcContentType } from '../shared/grpc';
 import type {
   BodyContent,
   ExchangeDetail,
@@ -465,6 +466,11 @@ function exchangeOf(entry: unknown): ImportedExchange {
   const contentType =
     mediaType(content.mimeType) ??
     mediaType(responseHeaders.find(([n]) => n.toLowerCase() === 'content-type')?.[1]);
+  const grpc =
+    isGrpcContentType(mediaType(requestHeaders.find(([n]) => n.toLowerCase() === 'content-type')?.[1])) ||
+    isGrpcContentType(contentType);
+  const grpcResult =
+    grpc && status !== undefined ? grpcResultOf(responseHeaders, responseTrailers) : undefined;
   // Browsers write status 0 for requests that were canceled, blocked or never answered.
   const failure =
     failureOf(entry._wirescryFailure, entry._error) ??
@@ -500,6 +506,9 @@ function exchangeOf(entry: unknown): ImportedExchange {
       ...(failure ? { failure } : {}),
       ...(websocket ? { websocket: true, messageCount: messages?.length ?? 0 } : {}),
       ...(sourceOf(entry._wirescrySource) ?? {}),
+      ...(grpc ? { grpc: true as const } : {}),
+      ...(grpcResult ? { grpcStatus: grpcResult.status } : {}),
+      ...(grpcResult?.message !== undefined ? { grpcMessage: grpcResult.message } : {}),
     },
     requestHeaders,
     ...(status !== undefined ? { responseHeaders } : {}),

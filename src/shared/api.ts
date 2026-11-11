@@ -38,6 +38,12 @@ export interface ExchangeSummary {
   messageCount?: number;
   /** Set when a plugin rule (e.g. a Pro mock rule) handled this request. */
   handledBy?: HandledBy;
+  /** True for a gRPC call (gRPC or gRPC-Web, by the request's or response's content type). */
+  grpc?: true;
+  /** A gRPC call's status code, such as 5 (NOT_FOUND), once the server has sent it. */
+  grpcStatus?: number;
+  /** The server's message with a gRPC status, decoded, if it sent one (cut to 1,000 characters). */
+  grpcMessage?: string;
   /** True for an exchange loaded from a HAR file rather than captured. */
   imported?: true;
   /** True for a request sent from Wirescry's composer. */
