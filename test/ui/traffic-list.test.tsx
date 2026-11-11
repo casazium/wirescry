@@ -121,6 +121,35 @@ describe('TrafficList', () => {
     expect(long.getAttribute('title')).toBe('From Samsung Galaxy Tab S9 FE+');
   });
 
+  it('shows a response still arriving with its status, a receiving look and its size so far', () => {
+    const live = { status: 200, statusMessage: 'OK', responding: true as const, responseReceived: 2048 };
+    list({
+      rows: [
+        summary('live', { ...live, responseSize: undefined, durationMs: undefined }),
+        summary('stale', { ...live, responseSize: undefined, durationMs: undefined }),
+        summary('done', { status: 200, statusMessage: 'OK', responseSize: 4096 }),
+      ],
+      staleIds: new Set(['stale']),
+    });
+    const [liveRow, staleRow, doneRow] = screen.getAllByTestId('exchange-row');
+    const cell = (row: Element, n: number) => row.querySelector(`[role="cell"]:nth-child(${n})`)!;
+    expect(cell(liveRow!, 2).className).toBe('status ok receiving');
+    expect(cell(liveRow!, 2).textContent).toBe('200 (receiving)');
+    expect(cell(liveRow!, 2).getAttribute('title')).toBe('200 OK: still receiving the response');
+    expect(liveRow!.querySelector('.col-size')!.textContent).toBe('2.0 KB');
+    // From before a restart: it will never finish, so it isn't shown as arriving.
+    expect(cell(staleRow!, 2).className).toBe('status ok');
+    expect(cell(staleRow!, 2).textContent).toBe('200');
+    expect(cell(staleRow!, 2).getAttribute('title')).toBe(
+      '200 OK: the response never finished, as the proxy restarted',
+    );
+    expect(staleRow!.querySelector('.col-size')!.textContent).toBe('');
+    // Finished: as before.
+    expect(cell(doneRow!, 2).className).toBe('status ok');
+    expect(cell(doneRow!, 2).getAttribute('title')).toBe('OK');
+    expect(doneRow!.querySelector('.col-size')!.textContent).toBe('4.0 KB');
+  });
+
   it('selects on click, and clears the selection on a second click', () => {
     const props = list({ selectedId: 'a' });
     fireEvent.click(screen.getAllByTestId('exchange-row')[1]!);

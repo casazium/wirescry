@@ -28,6 +28,8 @@ describe('which exchanges are still going', () => {
   it('counts a request with no response yet, or one still arriving', () => {
     expect(isLive(exchange('a').summary)).toBe(true);
     expect(isLive(live('a').summary)).toBe(true);
+    // Headers in, body still arriving.
+    expect(isLive(exchange('r', { status: 200, responding: true, responseReceived: 5 }).summary)).toBe(true);
   });
 
   it('counts an open WebSocket, not a closed one', () => {

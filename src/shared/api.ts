@@ -24,8 +24,18 @@ export interface ExchangeSummary {
   durationMs?: number;
   /** The response's media type without parameters, e.g. `application/json`. */
   contentType?: string;
-  /** Response body size on the wire, in bytes. */
+  /** Response body size on the wire, in bytes. Set when the response has finished. */
   responseSize?: number;
+  /**
+   * True while the response is arriving: its status and headers are in, its body and trailers
+   * aren't yet. Not set once it has finished or failed.
+   */
+  responding?: true;
+  /**
+   * While responding: response body bytes stored so far, updated a few times a second. Every
+   * byte counted can be read. Not set once the response has finished.
+   */
+  responseReceived?: number;
   /** Set if the real server couldn't be reached, or the client gave up. */
   failure?: ExchangeFailure;
   /** True for a WebSocket connection. */

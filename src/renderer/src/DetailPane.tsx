@@ -135,7 +135,9 @@ export function DetailPane({
   // Where keyboard focus goes after following a redirect: the link itself goes away.
   const overviewHeading = useRef<HTMLHeadingElement>(null);
 
-  // Refetch when the summary changes, e.g. when the response arrives.
+  // Refetch when the summary changes, e.g. when the response arrives; not for each update of the
+  // size so far while it arrives.
+  const summaryKey = JSON.stringify({ ...summary, responseReceived: undefined });
   useEffect(() => {
     // The backend that had it is gone; keep whatever was loaded.
     if (stale) return;
@@ -147,7 +149,7 @@ export function DetailPane({
     return () => {
       active = false;
     };
-  }, [send, summary, stale]);
+  }, [send, summary.id, summaryKey, stale]);
 
   const redirect = detail?.responseHeaders ? redirectTarget(summary, detail.responseHeaders) : undefined;
   // A gRPC call its client canceled: routine, so not shown as a failure.
@@ -159,6 +161,11 @@ export function DetailPane({
   const followed = redirect && onSelectExchange ? followingRequest?.(redirect) : undefined;
   const requestSize = detail?.requestBody?.size;
   const responseSize = detail?.responseBody?.size;
+  // The response is still arriving: its status and headers are in, its body isn't yet.
+  const receiving = summary.responding === true && !stale;
+  // Still arriving when the proxy restarted: it never will now.
+  const neverFinished = summary.responding === true && stale;
+  const receivedText = `Receiving… ${formatBytes(summary.responseReceived ?? 0)} so far`;
   // The server never answered, so the response shown is the error reply Wirescry sent.
   const byWirescry = !!summary.failure && !summary.failure.partial && summary.status !== undefined;
 
@@ -252,6 +259,12 @@ export function DetailPane({
   );
   const responseBodyBlock = (
     <>
+      {receiving && responseSize === undefined && (
+        <details open>
+          <summary>Response body</summary>
+          <p className="muted">{receivedText}</p>
+        </details>
+      )}
       {!!responseSize && (
         <details open>
           <summary>Response body{byWirescry && ' (sent by Wirescry)'}</summary>
@@ -365,7 +378,11 @@ export function DetailPane({
                   : summary.failure
                     ? `Failed (${summary.failure.code})`
                     : summary.status !== undefined
-                      ? `${summary.status} ${summary.statusMessage ?? ''}`
+                      ? receiving
+                        ? `${`${summary.status} ${summary.statusMessage ?? ''}`.trim()} (receiving)`
+                        : neverFinished
+                          ? `${`${summary.status} ${summary.statusMessage ?? ''}`.trim()} (never finished: the proxy restarted)`
+                          : `${summary.status} ${summary.statusMessage ?? ''}`
                       : 'Waiting for response'}
             </dd>
             {deadline && (
@@ -434,7 +451,13 @@ export function DetailPane({
             <dt>Request body</dt>
             <dd>{requestSize !== undefined ? formatBytes(requestSize) : '–'}</dd>
             <dt>Response body</dt>
-            <dd>{responseSize !== undefined ? formatBytes(responseSize) : '–'}</dd>
+            <dd>
+              {responseSize !== undefined
+                ? formatBytes(responseSize)
+                : receiving
+                  ? `${formatBytes(summary.responseReceived ?? 0)} so far`
+                  : '–'}
+            </dd>
           </dl>
         </section>
 

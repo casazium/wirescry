@@ -17,6 +17,8 @@ export interface StoredBody {
 /** Receives a body chunk by chunk as it streams through the proxy. */
 export interface BodyWriter {
   write(chunk: Uint8Array): void;
+  /** Bytes stored so far: fewer than written once the body passes the store's limit. */
+  readonly stored: number;
   /** Finishes the body. `complete` is false if the stream was cut off. */
   end(complete: boolean): Promise<StoredBody>;
 }
@@ -160,7 +162,7 @@ export class HybridBodyStore implements BodyStore {
 class HybridWriter implements BodyWriter {
   private chunks: Buffer[] = [];
   private size = 0;
-  private stored = 0;
+  private storedBytes = 0;
   private stream: WriteStream | undefined;
   private failed: Error | undefined;
   private done = false;
@@ -173,20 +175,24 @@ class HybridWriter implements BodyWriter {
     private readonly onFinish: (entry: Entry | undefined) => void,
   ) {}
 
+  get stored(): number {
+    return this.storedBytes;
+  }
+
   write(chunk: Uint8Array): void {
     if (this.done || chunk.length === 0) return;
     this.size += chunk.length;
-    const room = this.maxBodySize - this.stored;
+    const room = this.maxBodySize - this.storedBytes;
     if (room <= 0) return;
     const part = Buffer.from(chunk.buffer, chunk.byteOffset, Math.min(chunk.length, room));
-    this.stored += part.length;
+    this.storedBytes += part.length;
 
     if (this.stream) {
       this.stream.write(part);
       return;
     }
     this.chunks.push(Buffer.from(part)); // Copy: the caller may reuse its buffer.
-    if (this.stored > this.memoryLimit) {
+    if (this.storedBytes > this.memoryLimit) {
       // Too big for memory: move what we have to a file and stream the rest.
       this.stream = createWriteStream(this.file, { mode: 0o600 });
       this.stream.on('error', (error) => (this.failed = error));
@@ -218,7 +224,7 @@ class HybridWriter implements BodyWriter {
 
   private async finish(complete: boolean): Promise<StoredBody> {
     this.done = true;
-    const info: StoredBody = { size: this.size, stored: this.stored, incomplete: !complete };
+    const info: StoredBody = { size: this.size, stored: this.storedBytes, incomplete: !complete };
     if (!this.stream) {
       this.onFinish({ where: 'memory', data: Buffer.concat(this.chunks), info });
       this.chunks = [];

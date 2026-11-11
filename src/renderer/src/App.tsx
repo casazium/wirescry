@@ -589,7 +589,9 @@ export function App(): React.JSX.Element {
               : composed.failure
                 ? 'The request failed.'
                 : composed.status !== undefined
-                  ? `Response: ${composed.status} ${composed.statusMessage ?? ''}`.trim()
+                  ? `Response: ${`${composed.status} ${composed.statusMessage ?? ''}`.trim()}${
+                      composed.responding && !staleIds.has(composed.id) ? ', still receiving' : ''
+                    }`
                   : 'Waiting for the response…'
           }
           connected={connected}

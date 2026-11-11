@@ -253,6 +253,8 @@ describe('What a device may reach', () => {
       expect(recorded.failure?.message).toContain(`is ${address}, ${description}`);
       expect(recorded.failure?.message).toContain(LOCAL_ACCESS_SWITCH);
       expect(recorded.source).toEqual(PIXEL);
+      // The guard's refusal is never shown as a response arriving from the server.
+      expect(exchangesIn(api.messages).filter((e) => e.path === '/secret' && e.responding)).toEqual([]);
       api.close();
     });
 

@@ -33,7 +33,21 @@ function statusClass(exchange: ExchangeSummary): string {
   return 'status ok';
 }
 
-function statusTitle(exchange: ExchangeSummary): string | undefined {
+/** A response still arriving, unless it's from before the proxy restarted (it never will). */
+function receiving(exchange: ExchangeSummary, stale: boolean): boolean {
+  return exchange.responding === true && !stale;
+}
+
+function statusTitle(exchange: ExchangeSummary, stale: boolean): string | undefined {
+  if (receiving(exchange, stale)) {
+    return `${exchange.status} ${exchange.statusMessage ?? ''}`.trim() + ': still receiving the response';
+  }
+  if (exchange.responding && stale) {
+    return (
+      `${exchange.status} ${exchange.statusMessage ?? ''}`.trim() +
+      ': the response never finished, as the proxy restarted'
+    );
+  }
   if (isGrpcClientCancel(exchange)) return 'The client canceled the call.';
   if (exchange.failure) return exchange.failure.message;
   if (showsGrpcStatus(exchange)) {
@@ -169,7 +183,11 @@ export function TrafficList({
                 <span role="cell" className="method">
                   {e.method}
                 </span>
-                <span role="cell" className={statusClass(e)} title={statusTitle(e)}>
+                <span
+                  role="cell"
+                  className={`${statusClass(e)}${receiving(e, staleIds.has(e.id)) ? ' receiving' : ''}`}
+                  title={statusTitle(e, staleIds.has(e.id))}
+                >
                   {grpcClientSideStatus(e) !== undefined
                     ? grpcStatusLabel(grpcClientSideStatus(e)!)
                     : e.failure
@@ -177,6 +195,7 @@ export function TrafficList({
                       : showsGrpcStatus(e)
                         ? grpcStatusLabel(e.grpcStatus!)
                         : (e.status ?? '…')}
+                  {receiving(e, staleIds.has(e.id)) && <span className="visually-hidden"> (receiving)</span>}
                 </span>
                 <span role="cell" className="muted col-type" title={e.contentType}>
                   {e.status !== undefined && !e.failure ? exchangeType(e) : ''}
@@ -224,7 +243,11 @@ export function TrafficList({
                   )}
                 </span>
                 <span role="cell" className="num col-size">
-                  {e.responseSize !== undefined ? formatBytes(e.responseSize) : ''}
+                  {e.responseSize !== undefined
+                    ? formatBytes(e.responseSize)
+                    : receiving(e, staleIds.has(e.id)) && e.responseReceived !== undefined
+                      ? formatBytes(e.responseReceived)
+                      : ''}
                 </span>
                 <span role="cell" className="num">
                   {formatDuration(e.durationMs)}

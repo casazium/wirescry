@@ -327,6 +327,9 @@ function rawHeader(headers: mockttp.RawHeaders, name: string): string | undefine
   return headers.find(([key]) => key.toLowerCase() === name)?.[1];
 }
 
+/** How often a response's size so far is reported while it arrives, at most. */
+const RECEIVED_EVERY_MS = 250;
+
 /** Ports a proxy without a fixed one tries when another program has 127.0.0.1 on its choice. */
 const LOOPBACK_TAKEN_ATTEMPTS = 5;
 
@@ -470,6 +473,38 @@ async function startListener(
       statusMessage: res.statusMessage,
       rawHeaders: res.rawHeaders,
     });
+    // The response has started: show its status and headers now, while its body arrives. Not
+    // Mockttp's own error reply or the device guard's refusal: the 'response' event reports those
+    // as failures, and showing them first would flash a status the server never sent.
+    if (res.tags.some((tag) => tag.startsWith('passthrough-error:'))) return;
+    if (rawHeader(res.rawHeaders, GUARD_HEADER) !== undefined) return;
+    const existing = store.get(res.id);
+    // Already finished (this event can come after 'response' for a short reply), or failed.
+    if (
+      !existing ||
+      existing.responseHeaders ||
+      existing.summary.failure ||
+      existing.summary.durationMs !== undefined
+    ) {
+      return;
+    }
+    const responseType = mediaType(res.headers['content-type']);
+    const writer = writers.get(`${res.id}:response`);
+    respondingIds.add(res.id);
+    save({
+      ...existing,
+      summary: {
+        ...existing.summary,
+        status: res.statusCode,
+        statusMessage: res.statusMessage,
+        contentType: responseType,
+        responding: true,
+        ...(writer ? { responseReceived: writer.stored } : {}),
+        ...grpcFields(existing.summary.grpc || isGrpcContentType(responseType), res.rawHeaders, undefined),
+      },
+      responseHeaders: res.rawHeaders,
+      timing: timingOf(res.timingEvents),
+    });
   });
 
   await server.on('rule-event', (event: mockttp.RuleEvent<PassthroughEventData>) => {
@@ -499,11 +534,35 @@ async function startListener(
   // Bodies stream into the store chunk by chunk, so large ones never sit in memory whole.
   const writers = new Map<string, BodyWriter>();
 
+  // While a response arrives, its size so far, a few times a second at most: each update goes to
+  // every window. The last chunk before a pause is always reported, by the timer that's waiting.
+  const receivedTimers = new Map<string, NodeJS.Timeout>();
+  // Exchanges this listener marked as responding, so stopping it can end them.
+  const respondingIds = new Set<string>();
+  const noteReceived = (id: string): void => {
+    if (receivedTimers.has(id)) return;
+    const timer = setTimeout(() => {
+      receivedTimers.delete(id);
+      const writer = writers.get(`${id}:response`);
+      const existing = store.get(id);
+      if (!writer || !existing?.summary.responding) return;
+      if (existing.summary.responseReceived === writer.stored) return;
+      save({ ...existing, summary: { ...existing.summary, responseReceived: writer.stored } });
+    }, RECEIVED_EVERY_MS);
+    timer.unref();
+    receivedTimers.set(id, timer);
+  };
+  const stopReceived = (id: string): void => {
+    clearTimeout(receivedTimers.get(id));
+    receivedTimers.delete(id);
+  };
+
   const finishBody = (id: string, side: BodySide, complete: boolean): void => {
     const key = `${id}:${side}`;
     const writer = writers.get(key);
     if (!writer) return;
     writers.delete(key);
+    if (side === 'response') stopReceived(id);
     writer.end(complete).then(
       (info) =>
         recordBody(id, side, {
@@ -555,6 +614,7 @@ async function startListener(
     }
     writer.write(content);
     if (data.isEnded) finishBody(data.id, side, true);
+    else if (side === 'response') noteReceived(data.id);
   };
 
   await server.on('request-body-data', (data) => onBodyData('request', data));
@@ -605,6 +665,8 @@ async function startListener(
     const partial = errorCode !== undefined && (answered.has(res.id) || res.statusCode !== 502);
     answered.delete(res.id);
     sentHeads.delete(res.id);
+    stopReceived(res.id);
+    respondingIds.delete(res.id);
     if (partial && !brokenMidBody.has(res.id)) {
       // HTTP/2: the body may already be recorded as complete.
       brokenMidBody.set(res.id, undefined);
@@ -642,6 +704,8 @@ async function startListener(
                 ),
         status: res.statusCode,
         statusMessage: res.statusMessage,
+        responding: undefined,
+        responseReceived: undefined,
         durationMs:
           responseSentTimestamp !== undefined
             ? Math.round(responseSentTimestamp - startTimestamp)
@@ -667,6 +731,8 @@ async function startListener(
     answered.delete(req.id);
     const sent = sentHeads.get(req.id);
     sentHeads.delete(req.id);
+    stopReceived(req.id);
+    respondingIds.delete(req.id);
     // Whether the server's response had started. Rules other than pass-through send no
     // rule events, so fall back to the timing (unless the upstream failed, when the
     // headers may be Mockttp's 502). Mockttp also sets headersSentTimestamp just after
@@ -713,6 +779,8 @@ async function startListener(
         summary: {
           ...existing.summary,
           handledBy: rule,
+          responding: undefined,
+          responseReceived: undefined,
           ...(deadlinePassed ? { grpcDeadlineExceeded: true as const } : {}),
           failure: deadlinePassed
             ? {
@@ -730,6 +798,11 @@ async function startListener(
               : partial
                 ? describePartialFailure(upstream.code, existing.summary.host, upstream.message)
                 : describeFailure(upstream.code, existing.summary.host, upstream.message),
+          // A head recorded early for a response the server never really started (none should
+          // be): not what the client got.
+          ...(!partial && existing.summary.responding
+            ? { status: undefined, statusMessage: undefined, contentType: undefined }
+            : {}),
           ...(clientLeftMidBody
             ? {
                 status: shown?.statusCode ?? existing.summary.status,
@@ -742,6 +815,7 @@ async function startListener(
               }
             : {}),
         },
+        ...(!partial && existing.summary.responding ? { responseHeaders: undefined } : {}),
         ...(clientLeftMidBody && shown ? { responseHeaders: shown.rawHeaders } : {}),
         timing: timingOf(req.timingEvents),
       };
@@ -955,6 +1029,29 @@ async function startListener(
       const closed = new Promise<void>((resolve) => (loopback ? loopback.close(() => resolve()) : resolve()));
       await server.stop();
       await closed;
+      // Mockttp drops its listeners as it stops, so calls it cut off may never get their 'abort':
+      // end what was still arriving, so nothing stays "receiving" for good.
+      for (const id of respondingIds) {
+        stopReceived(id);
+        finishBody(id, 'response', false);
+        update(id, (existing) =>
+          existing.summary.responding
+            ? {
+                ...existing,
+                summary: {
+                  ...existing.summary,
+                  responding: undefined,
+                  responseReceived: undefined,
+                  failure: existing.summary.failure ?? {
+                    ...describePartialFailure('PROXY_STOPPED', existing.summary.host),
+                    message: 'The proxy restarted while the response was arriving.',
+                  },
+                },
+              }
+            : existing,
+        );
+      }
+      respondingIds.clear();
     },
   };
 }

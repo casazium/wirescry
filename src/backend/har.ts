@@ -14,7 +14,7 @@ import type {
   Header,
   WebSocketMessages,
 } from '../shared/api';
-import type { ExchangeFailure, FailureKind } from '../shared/failure';
+import { describePartialFailure, type ExchangeFailure, type FailureKind } from '../shared/failure';
 import { formFields } from '../shared/form-fields';
 
 /** The largest HAR file Wirescry imports. */
@@ -79,6 +79,9 @@ const span = (from: number | undefined, to: number | undefined): number =>
   from !== undefined && to !== undefined && to >= from ? Math.round((to - from) * 1000) / 1000 : -1;
 
 /** One HAR entry. Wirescry-only facts go in fields starting with "_", as the format allows. */
+/** Said of a response exported while it was still arriving: what's in the file is only its start. */
+const STILL_ARRIVING = 'The response was still arriving when this was exported.';
+
 export function harEntry(item: HarExportItem): Record<string, unknown> {
   const { detail, requestBody, responseBody, messages } = item;
   const { summary, timing } = detail;
@@ -161,7 +164,9 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
       content,
       redirectURL: headerValue(detail.responseHeaders, 'location') ?? '',
       headersSize: -1,
-      bodySize: summary.responseSize ?? detail.responseBody?.size ?? (summary.status ? 0 : -1),
+      bodySize: summary.responding
+        ? -1
+        : (summary.responseSize ?? detail.responseBody?.size ?? (summary.status ? 0 : -1)),
     },
     cache: {},
     timings: {
@@ -174,10 +179,16 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
       receive: Math.max(0, receive),
     },
   };
-  if (summary.failure) {
+  // A response still arriving is exported as cut off, so it doesn't come back as finished.
+  const failure: ExchangeFailure | undefined =
+    summary.failure ??
+    (summary.responding
+      ? { ...describePartialFailure('INCOMPLETE', summary.host), message: STILL_ARRIVING }
+      : undefined);
+  if (failure) {
     // _error is the browsers' field (a message); _wirescryFailure keeps Wirescry's details.
-    entry._error = summary.failure.message;
-    entry._wirescryFailure = summary.failure;
+    entry._error = failure.message;
+    entry._wirescryFailure = failure;
   }
   if (summary.handledBy) entry._wirescryRule = summary.handledBy.label;
   // The device it came from (e.g. an Android phone), when not this computer.

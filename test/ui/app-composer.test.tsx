@@ -199,6 +199,48 @@ describe('Send and Cancel', () => {
     expect(screen.getByText('Response: 201 Created')).toBeTruthy();
   });
 
+  it('says a response is still arriving, keeps Cancel, then announces it finished', async () => {
+    fake.reply = (c) =>
+      c.command === 'composeSend'
+        ? { exchangeId: 'c9' }
+        : c.command === 'getExchange'
+          ? detail(summary('c9', { composed: true }), 'x')
+          : undefined;
+    await started([]);
+    compose();
+    fireEvent.change(screen.getByLabelText('URL'), { target: { value: 'https://api.test/stream' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    });
+    const arriving = summary('c9', {
+      composed: true,
+      status: 200,
+      statusMessage: 'OK',
+      responding: true,
+      responseReceived: 10,
+      responseSize: undefined,
+      durationMs: undefined,
+    });
+    await act(async () =>
+      client().onMessage({ type: 'exchanges', exchanges: [arriving], removed: [] } as ServerMessage),
+    );
+    await frame();
+    await frame();
+    expect(screen.getByText('Response: 200 OK, still receiving')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeTruthy();
+    await act(async () =>
+      client().onMessage({
+        type: 'exchanges',
+        exchanges: [summary('c9', { composed: true, status: 200, statusMessage: 'OK' })],
+        removed: [],
+      } as ServerMessage),
+    );
+    await frame();
+    await frame();
+    expect(screen.getByText('Response: 200 OK')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
+  });
+
   it('shows the response before the request it sent, unlike Traffic', async () => {
     fake.reply = (c) =>
       c.command === 'composeSend'
