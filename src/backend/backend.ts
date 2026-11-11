@@ -4,6 +4,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import type {
   BodyContent,
+  BodyRangeContent,
   ExchangeAnnotation,
   BodySide,
   ClientCommand,
@@ -308,6 +309,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     getBody: async (id, side) => {
       const exchange = store.get(id);
       return exchange ? readBody(exchange, side) : null;
+    },
+    readBody: async (id, side, offset, maxBytes) => {
+      const exchange = store.get(id);
+      if (!exchange) return null;
+      const range = await bodies.readRange(id, side, offset, maxBytes);
+      // Bodies imported from HAR files are stored decoded.
+      return range ? { ...range, decoded: exchange.importedFrom !== undefined } : null;
     },
     annotate: (plugin, id, annotation) => annotate(plugin, id, annotation),
     clearAnnotations: (plugin) => {
@@ -916,6 +924,28 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         const exchange = store.get(command.exchangeId);
         if (!exchange) throw new Error('Exchange not found');
         const content: BodyContent | null = await readBody(exchange, command.side);
+        return content;
+      }
+      case 'getBodyRange': {
+        if (command.side !== 'request' && command.side !== 'response') {
+          throw new Error('side must be request or response');
+        }
+        const exchange = store.get(command.exchangeId);
+        if (!exchange) throw new Error('Exchange not found');
+        const range = await bodies.readRange(
+          command.exchangeId,
+          command.side,
+          command.offset,
+          command.maxBytes,
+        );
+        if (!range) return null;
+        const { bytes, ...rest } = range;
+        const content: BodyRangeContent = {
+          ...rest,
+          // Bodies imported from HAR files are stored decoded.
+          decoded: exchange.importedFrom !== undefined,
+          base64: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).toString('base64'),
+        };
         return content;
       }
       case 'plugin': {

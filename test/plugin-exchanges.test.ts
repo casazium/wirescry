@@ -128,6 +128,15 @@ describe('PluginHost and a plugin’s lifetime', () => {
       onStatusChange: () => undefined,
       getExchange: () => ({ summary: summary, requestHeaders: [], timing: {} }) as never,
       getBody: async () => ({ base64: '', size: 0, truncated: false }),
+      readBody: async () => ({
+        bytes: new Uint8Array([1, 2]),
+        decoded: false,
+        stored: 2,
+        size: 2,
+        receiving: false,
+        incomplete: false,
+        serial: 1,
+      }),
       annotate: (...args) => annotated.push(args),
       clearAnnotations: () => undefined,
     });
@@ -160,6 +169,7 @@ describe('PluginHost and a plugin’s lifetime', () => {
     pluginHost.exchangeCompleted(summary);
     expect(plugin.completed).toEqual([]);
     // Nor can it read or badge anything yet.
+    expect(await plugin.host!.readBody('x', 'response', { offset: 0, maxBytes: 1 })).toBeNull();
     expect(plugin.host!.getExchange('x')).toBeUndefined();
     expect(await plugin.host!.getBody('x', 'response')).toBeNull();
     plugin.host!.annotate('x', { label: 'Early', tone: 'ok' });
@@ -171,6 +181,9 @@ describe('PluginHost and a plugin’s lifetime', () => {
 
     // Once started, it can.
     expect(plugin.host!.getExchange('x')).toBeDefined();
+    expect(await plugin.host!.readBody('x', 'response', { offset: 0, maxBytes: 1 })).toMatchObject({
+      stored: 2,
+    });
     plugin.host!.annotate('x', { label: 'Now', tone: 'ok' });
     expect(annotated).toEqual([['watcher', 'x', { label: 'Now', tone: 'ok' }]]);
     annotated = [];
@@ -179,6 +192,7 @@ describe('PluginHost and a plugin’s lifetime', () => {
     pluginHost.exchangeCompleted(summary);
     expect(plugin.completed).toHaveLength(1);
     // Nor can it read or badge anything once stopped.
+    expect(await plugin.host!.readBody('x', 'response', { offset: 0, maxBytes: 1 })).toBeNull();
     expect(plugin.host!.getExchange('x')).toBeUndefined();
     expect(await plugin.host!.getBody('x', 'response')).toBeNull();
     plugin.host!.annotate('x', { label: 'Late', tone: 'ok' });

@@ -3,6 +3,7 @@ import path from 'node:path';
 import * as mockttp from 'mockttp';
 import type {
   BodyContent,
+  BodyRange,
   BodySide,
   ExchangeAnnotation,
   ExchangeDetail,
@@ -74,6 +75,7 @@ export interface PluginHostOptions {
   onStatusChange(): void;
   getExchange(exchangeId: string): ExchangeDetail | undefined;
   getBody(exchangeId: string, side: BodySide): Promise<BodyContent | null>;
+  readBody(exchangeId: string, side: BodySide, offset: number, maxBytes: number): Promise<BodyRange | null>;
   /** Sets or removes a plugin's badge on an exchange (already validated). */
   annotate(plugin: string, exchangeId: string, annotation: ExchangeAnnotation | undefined): void;
   /** Removes all of a plugin's badges, e.g. when it fails. */
@@ -170,6 +172,15 @@ export class PluginHost {
                 throw new Error('side must be request or response');
               if (!this.hasStarted(plugin)) return null;
               return this.options.getBody(String(exchangeId), side);
+            },
+            readBody: async (exchangeId, side, range) => {
+              if (side !== 'request' && side !== 'response')
+                throw new Error('side must be request or response');
+              const { offset, maxBytes } = (range ?? {}) as { offset?: unknown; maxBytes?: unknown };
+              if (typeof offset !== 'number' || typeof maxBytes !== 'number')
+                throw new Error('offset and maxBytes must be numbers');
+              if (!this.hasStarted(plugin)) return null;
+              return this.options.readBody(String(exchangeId), side, offset, maxBytes);
             },
             annotate: (exchangeId, annotation) => {
               if (!this.hasStarted(plugin)) return;
