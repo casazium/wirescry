@@ -18,6 +18,7 @@ import {
 import type { BodyStore, BodyWriter } from './body-store';
 import type { CertificateAuthority } from './ca';
 import { HOST_NAME as DOCKER_HOST_NAME } from './docker/container';
+import { isLoopbackHost } from './upstream-target';
 import { GUARD_HEADER, startEgressGuard, type EgressGuard, type EgressGuardOptions } from './egress-guard';
 import { describeGrpcTimeout, grpcDeadlinePassed, grpcResultOf, isGrpcContentType } from '../shared/grpc';
 import { SETUP_HOST, setupPageHtml } from './setup-page';
@@ -639,6 +640,10 @@ async function startListener(
       },
       requestHeaders: req.rawHeaders,
       timing: timingOf(req.timingEvents),
+      destination: { hostname: req.destination.hostname, port: req.destination.port },
+      ...(req.remoteIpAddress && isLoopbackHost(req.remoteIpAddress)
+        ? { fromThisComputer: true as const }
+        : {}),
     });
   });
 

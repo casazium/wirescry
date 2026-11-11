@@ -151,6 +151,13 @@ export interface ExchangeDetail {
   responseBody?: BodyInfo;
   /** For an imported exchange: the file it came from. Its bodies are stored decoded. */
   importedFrom?: string;
+  /**
+   * Where the proxy sends the request: the host and port the client tunneled to, or asked for.
+   * Can differ from the URL's, which may name the server by its Host header.
+   */
+  destination?: { hostname: string; port: number };
+  /** True if the client was on this computer (not a container on its own network, or a device). */
+  fromThisComputer?: true;
 }
 
 /** One WebSocket message, without its content. */

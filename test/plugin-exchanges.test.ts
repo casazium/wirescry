@@ -137,6 +137,7 @@ describe('PluginHost and a plugin’s lifetime', () => {
         incomplete: false,
         serial: 1,
       }),
+      upstreamTarget: () => ({ refused: 'not here' }),
       annotate: (...args) => annotated.push(args),
       clearAnnotations: () => undefined,
     });
@@ -170,6 +171,7 @@ describe('PluginHost and a plugin’s lifetime', () => {
     expect(plugin.completed).toEqual([]);
     // Nor can it read or badge anything yet.
     expect(await plugin.host!.readBody('x', 'response', { offset: 0, maxBytes: 1 })).toBeNull();
+    expect(plugin.host!.upstreamTarget!('x')).toBeNull();
     expect(plugin.host!.getExchange('x')).toBeUndefined();
     expect(await plugin.host!.getBody('x', 'response')).toBeNull();
     plugin.host!.annotate('x', { label: 'Early', tone: 'ok' });
@@ -184,6 +186,7 @@ describe('PluginHost and a plugin’s lifetime', () => {
     expect(await plugin.host!.readBody('x', 'response', { offset: 0, maxBytes: 1 })).toMatchObject({
       stored: 2,
     });
+    expect(plugin.host!.upstreamTarget!('x')).toEqual({ refused: 'not here' });
     plugin.host!.annotate('x', { label: 'Now', tone: 'ok' });
     expect(annotated).toEqual([['watcher', 'x', { label: 'Now', tone: 'ok' }]]);
     annotated = [];
@@ -193,6 +196,7 @@ describe('PluginHost and a plugin’s lifetime', () => {
     expect(plugin.completed).toHaveLength(1);
     // Nor can it read or badge anything once stopped.
     expect(await plugin.host!.readBody('x', 'response', { offset: 0, maxBytes: 1 })).toBeNull();
+    expect(plugin.host!.upstreamTarget!('x')).toBeNull();
     expect(plugin.host!.getExchange('x')).toBeUndefined();
     expect(await plugin.host!.getBody('x', 'response')).toBeNull();
     plugin.host!.annotate('x', { label: 'Late', tone: 'ok' });
