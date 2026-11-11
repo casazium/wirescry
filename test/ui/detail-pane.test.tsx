@@ -309,6 +309,45 @@ describe('DetailPane order and timing', () => {
     expect(document.querySelector('.decoded')).toBeNull();
   });
 
+  it('shows a gRPC call its client canceled as canceled, not as a failure', async () => {
+    await shown(
+      {},
+      summary('c', {
+        grpc: true,
+        contentType: 'application/grpc',
+        failure: { ...describeFailure('CLIENT_CLOSED', 'api.test'), partial: true },
+      }),
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText('Canceled by the client')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'The client canceled the call. The server had started responding; below is what arrived before then.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows a gRPC call whose deadline passed as a failure, saying so', async () => {
+    await shown(
+      {},
+      summary('d', {
+        grpc: true,
+        grpcDeadlineExceeded: true,
+        failure: { ...describeFailure('CLIENT_CLOSED', 'api.test'), message: 'The client gave up at 5 s.' },
+      }),
+    );
+    expect(screen.getByRole('alert').textContent).toContain('The client gave up at 5 s.');
+    expect(screen.getByText('Deadline passed')).toBeTruthy();
+    expect(screen.queryByText('Canceled by the client')).toBeNull();
+  });
+
+  it('still shows another request the client closed as a failure', async () => {
+    await shown({}, summary('p', { failure: describeFailure('CLIENT_CLOSED', 'api.test') }));
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByText('Failed (CLIENT_CLOSED)')).toBeTruthy();
+    expect(screen.queryByText('Canceled by the client')).toBeNull();
+  });
+
   it('shows no gRPC status for other requests, or before the call has one', async () => {
     await shown({});
     expect(screen.queryByText('gRPC status')).toBeNull();

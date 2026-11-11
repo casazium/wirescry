@@ -44,6 +44,8 @@ export interface ExchangeSummary {
   grpcStatus?: number;
   /** The server's message with a gRPC status, decoded, if it sent one (cut to 1,000 characters). */
   grpcMessage?: string;
+  /** True when the client closed a gRPC call at or after its deadline (its grpc-timeout). */
+  grpcDeadlineExceeded?: true;
   /** True for an exchange loaded from a HAR file rather than captured. */
   imported?: true;
   /** True for a request sent from Wirescry's composer. */

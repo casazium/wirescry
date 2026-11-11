@@ -13,6 +13,9 @@ import {
   isGrpcContentType,
   grpcStatusLabel,
   GRPC_STATUS_NAMES,
+  grpcClientSideStatus,
+  grpcDeadlinePassed,
+  isGrpcClientCancel,
   isGrpcError,
   MAX_GRPC_MESSAGE,
   binaryHeaderHex,
@@ -269,5 +272,71 @@ describe('binary gRPC metadata', () => {
     expect(binaryHeaderHex('QQ=')).toBeUndefined();
     expect(binaryHeaderHex('QUJD=')).toBeUndefined();
     expect(binaryHeaderHex('QQ===')).toBeUndefined();
+  });
+});
+
+describe('a gRPC call its client canceled', () => {
+  const closed = { kind: 'client-closed', code: 'CLIENT_CLOSED', message: 'x' } as never;
+  const reset = { kind: 'reset', code: 'ECONNRESET', message: 'x' } as never;
+
+  it('is a gRPC call whose client closed it', () => {
+    expect(isGrpcClientCancel(call({ failure: closed }))).toBe(true);
+    expect(isGrpcClientCancel(call({ grpc: undefined, failure: closed }))).toBe(false);
+    expect(isGrpcClientCancel(call({ failure: reset }))).toBe(false);
+    expect(isGrpcClientCancel(call())).toBe(false);
+  });
+
+  it("isn't an error, but other requests the client closed still are", () => {
+    expect(isError(call({ failure: closed }))).toBe(false);
+    expect(isError(call({ grpc: undefined, contentType: 'application/json', failure: closed }))).toBe(true);
+    expect(isError(call({ failure: reset }))).toBe(true);
+  });
+
+  it('is found as CANCELLED, and still by its failure', () => {
+    const canceled = call({ failure: closed });
+    expect(matchesFilter(canceled, 'grpc=CANCELLED', 'all')).toBe(true);
+    expect(matchesFilter(canceled, 'grpc=1', 'all')).toBe(true);
+    expect(matchesFilter(canceled, 'failure=client-closed', 'all')).toBe(true);
+    expect(matchesFilter(canceled, '', 'errors')).toBe(false);
+    expect(matchesFilter(call({ grpc: undefined, failure: closed }), 'grpc=CANCELLED', 'all')).toBe(false);
+    // The server's own status wins.
+    expect(matchesFilter(call({ failure: closed, grpcStatus: 13 }), 'grpc=INTERNAL', 'all')).toBe(true);
+  });
+});
+
+describe('a gRPC call whose deadline passed', () => {
+  const closed = { kind: 'client-closed', code: 'CLIENT_CLOSED', message: 'gave up' } as never;
+
+  it('is told by time, allowing for the client starting its clock first', () => {
+    expect(grpcDeadlinePassed('5S', 5000)).toBe(true);
+    expect(grpcDeadlinePassed('5S', 4600)).toBe(true); // within a tenth
+    expect(grpcDeadlinePassed('5S', 4000)).toBe(false);
+    expect(grpcDeadlinePassed('30M', 1_799_100)).toBe(true); // at most a second early
+    expect(grpcDeadlinePassed('30M', 1_798_000)).toBe(false);
+    expect(grpcDeadlinePassed('500m', 400)).toBe(true); // at least 100 ms early
+    expect(grpcDeadlinePassed('500m', 300)).toBe(false);
+    expect(grpcDeadlinePassed(undefined, 99_999)).toBe(false);
+    expect(grpcDeadlinePassed('soon', 99_999)).toBe(false);
+  });
+
+  it("isn't a cancel: it's DEADLINE_EXCEEDED, and an error", () => {
+    const timedOut = call({ failure: closed, grpcDeadlineExceeded: true });
+    expect(isGrpcClientCancel(timedOut)).toBe(false);
+    expect(grpcClientSideStatus(timedOut)).toBe(4);
+    expect(isError(timedOut)).toBe(true);
+    expect(matchesFilter(timedOut, 'grpc=DEADLINE_EXCEEDED', 'all')).toBe(true);
+    expect(matchesFilter(timedOut, 'grpc=CANCELLED', 'all')).toBe(false);
+  });
+
+  it('gives way to a status the server sent, everywhere', () => {
+    const answered = call({ failure: closed, grpcStatus: 13 });
+    expect(isGrpcClientCancel(answered)).toBe(false);
+    expect(grpcClientSideStatus(answered)).toBeUndefined();
+    expect(isError(answered)).toBe(true);
+    expect(
+      grpcClientSideStatus(call({ failure: closed, grpcStatus: 13, grpcDeadlineExceeded: true })),
+    ).toBeUndefined();
+    expect(grpcClientSideStatus(call({ failure: closed }))).toBe(1);
+    expect(grpcClientSideStatus(call({ grpc: undefined, failure: closed }))).toBeUndefined();
   });
 });

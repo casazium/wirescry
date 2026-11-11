@@ -1,6 +1,6 @@
 import type { ExchangeSummary } from './api';
 import { exchangeType } from './exchange-type';
-import { grpcStatusName } from './grpc';
+import { grpcClientSideStatus, grpcStatusName } from './grpc';
 
 /**
  * The search box's query language. Terms are separated by spaces and must all match.
@@ -44,8 +44,11 @@ const FIELDS: Record<string, FieldSpec> = {
   // A gRPC call's status, by name or number: grpc=NOT_FOUND, grpc=5.
   grpc: {
     kind: 'text',
-    get: (e) =>
-      e.grpcStatus !== undefined ? [grpcStatusName(e.grpcStatus), String(e.grpcStatus)] : undefined,
+    get: (e) => {
+      // Without a status from the server, what the client ended with: CANCELLED or DEADLINE_EXCEEDED.
+      const status = e.grpcStatus ?? grpcClientSideStatus(e);
+      return status !== undefined ? [grpcStatusName(status), String(status)] : undefined;
+    },
   },
 };
 

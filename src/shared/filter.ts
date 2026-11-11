@@ -1,6 +1,6 @@
 import type { ExchangeSummary } from './api';
 import { exchangeType, type ExchangeType } from './exchange-type';
-import { isGrpcError } from './grpc';
+import { isGrpcClientCancel, isGrpcError } from './grpc';
 import { compileQuery, type CompiledQuery } from './query';
 
 export const QUICK_FILTERS = [
@@ -34,6 +34,8 @@ const NAMED_TYPES = new Set<ExchangeType>([
 
 /** A failure, an HTTP error status, or a gRPC error status (gRPC errors come with HTTP 200). */
 export function isError(exchange: ExchangeSummary): boolean {
+  // The client canceling a gRPC call is routine, like a CANCELLED status.
+  if (isGrpcClientCancel(exchange)) return false;
   return (
     exchange.failure !== undefined ||
     (exchange.status !== undefined && exchange.status >= 400) ||
