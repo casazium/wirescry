@@ -491,10 +491,19 @@ describe('BackendSupervisor’s other jobs', () => {
     child.stdout.emit('data', Buffer.from('first line\nsecond '));
     child.stdout.emit('data', 'half\n\n');
     child.stderr.emit('data', 'went wrong\n');
+    // Node's own warnings on stderr aren't errors: a deprecation notice is info, others warn.
+    child.stderr.emit(
+      'data',
+      '(node:9) [DEP0190] DeprecationWarning: shell option true\n(Use `node --trace-deprecation ...` to show where the warning was created)\n(node:9) MaxListenersExceededWarning: leak\n(Use `node --trace-warnings ...` to show where the warning was created)\n',
+    );
     expect(written).toEqual([
       ['backend', 'info', 'first line'],
       ['backend', 'info', 'second half'],
       ['backend', 'error', 'went wrong'],
+      ['backend', 'info', '(node:9) [DEP0190] DeprecationWarning: shell option true'],
+      ['backend', 'info', '(Use `node --trace-deprecation ...` to show where the warning was created)'],
+      ['backend', 'warn', '(node:9) MaxListenersExceededWarning: leak'],
+      ['backend', 'warn', '(Use `node --trace-warnings ...` to show where the warning was created)'],
     ]);
   });
 });
