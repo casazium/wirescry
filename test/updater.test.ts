@@ -18,6 +18,8 @@ const fake = vi.hoisted(() => ({
   shown: [] as Array<{ type: string; message: string; detail: string; buttons: string[] }>,
   home: '',
   calls: [] as string[],
+  /** What each quitAndInstall was given: isSilent, isForceRunAfter. */
+  installArgs: [] as Array<[boolean | undefined, boolean | undefined]>,
 }));
 
 vi.mock('electron', () => ({
@@ -50,8 +52,9 @@ vi.mock('electron-updater', async () => {
       fake.calls.push('check');
       return null;
     }
-    quitAndInstall() {
+    quitAndInstall(isSilent?: boolean, isForceRunAfter?: boolean) {
       fake.calls.push('quitAndInstall');
+      fake.installArgs.push([isSilent, isForceRunAfter]);
     }
   }
   return { autoUpdater: new FakeAutoUpdater() };
@@ -86,6 +89,7 @@ beforeEach(async () => {
   fake.answers = [];
   fake.shown = [];
   fake.calls = [];
+  fake.installArgs = [];
   fake.home = await mkdtemp(path.join(os.tmpdir(), 'wirescry-updater-home-'));
   logged.length = 0;
   autoUpdater.removeAllListeners();
@@ -216,6 +220,8 @@ describe('The updater', () => {
       buttons: ['Restart Now', 'Later'],
     });
     expect(fake.calls).toEqual(['beforeInstall', 'quitAndInstall']);
+    // Silently, and started again afterwards: not the installer's pages, as on Windows before.
+    expect(fake.installArgs).toEqual([[true, true]]);
     expect(u.installing).toBe(true);
   });
 

@@ -160,7 +160,10 @@ export class Updater {
       if (result === 0) {
         this.setInstalling(true);
         await this.beforeInstall().catch(() => undefined);
-        autoUpdater.quitAndInstall();
+        // Silently, then start again: on Windows the installer otherwise shows all its pages
+        // ("Choose Installation Options", Next, Finish), as for a first install. macOS ignores
+        // both, and an AppImage restarts after it updates either way.
+        autoUpdater.quitAndInstall(true, true);
       }
     } finally {
       this.prompting = false;
