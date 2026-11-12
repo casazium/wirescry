@@ -5,6 +5,8 @@
 // headers, then a separate end of stream. That means the same thing in HTTP, but gRPC sends most
 // errors exactly this way ("Trailers-Only"), and gRPC clients (Go, Node, Java) then ignore the
 // status and report INTERNAL instead. The patch sends the headers and the end together.
+// A reply made by a rule's callback (plugins' rules, a breakpoint's reply) with no body and no
+// trailers is split the same way, and is sent the same way too.
 //
 // Run by `postinstall`. Safe to run again. Fails the install if Mockttp's code has changed so the
 // patch no longer fits: check whether the new Mockttp already has the fix, and remove this script
@@ -17,6 +19,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const MARKER = 'Wirescry patch: headers-only HTTP/2 responses';
+/** Marks the part for callback replies, added later: an install patched before has MARKER only. */
+export const CALLBACK_MARKER = 'Wirescry patch: headers-only HTTP/2 callback replies';
 
 const HELPER = `
 // ${MARKER} (scripts/patch-mockttp.mjs in Wirescry).
@@ -32,15 +36,50 @@ function wirescryHeadOnly(response, status, statusMessage, headers) {
 }
 `;
 
-/** Each edit: text to find (exactly once), and what replaces it. */
+const CALLBACK_CHECK = `// ${CALLBACK_MARKER}: which replies may go out as headers alone.
+// Node checks the status and headers only when it sends them, which for these is inside end(), too
+// late for Mockttp to report a problem (the exchange would never finish). So only a status and
+// headers Node surely accepts go that way; anything else goes the usual way, as before.
+const wirescryHttp = require("http");
+function wirescryCanEndWithHead(status, headers) {
+    if (!Number.isInteger(status) || status < 200 || status > 599)
+        return false;
+    const pairs = headers === undefined ? [] : Array.isArray(headers) ? headers : Object.entries(headers);
+    const perConnection = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te'];
+    try {
+        for (const [name, value] of pairs) {
+            wirescryHttp.validateHeaderName(name);
+            if (perConnection.includes(name.toLowerCase()))
+                return false;
+            const values = Array.isArray(value) ? value : [value];
+            // Node allows some headers only once; of those given more than once, only cookies are surely fine.
+            if (values.length !== 1 && name.toLowerCase() !== 'set-cookie')
+                return false;
+            for (const one of values)
+                wirescryHttp.validateHeaderValue(name, one);
+        }
+    }
+    catch {
+        return false;
+    }
+    return true;
+}
+`;
+
+/**
+ * Each edit: text to find (exactly once), what replaces it, and a tag: text only that part has,
+ * so a part from another version of this script is noticed instead of patched over.
+ */
 export const EDITS = [
   {
     name: 'helper',
+    tag: `// ${MARKER} (scripts/patch-mockttp.mjs in Wirescry).`,
     find: 'const request_utils_1 = require("../../util/request-utils");\n',
     replace: 'const request_utils_1 = require("../../util/request-utils");\n' + HELPER,
   },
   {
     name: 'detect',
+    tag: `                // ${MARKER}: if the server`,
     find: '                (0, request_utils_1.writeHead)(clientRes, serverStatusCode, serverStatusMessage, serverRawHeaders\n',
     replace:
       '                // ' +
@@ -55,15 +94,58 @@ export const EDITS = [
       '                    serverRes.req?._request?._readableState?.ended === true;\n' +
       '                (wirescryHeadersOnly ? wirescryHeadOnly : request_utils_1.writeHead)(clientRes, serverStatusCode, serverStatusMessage, serverRawHeaders\n',
   },
+  {
+    name: 'callback-check',
+    tag: `// ${CALLBACK_MARKER}: which replies`,
+    find: 'async function writeResponseFromCallback(result, response) {\n',
+    replace: CALLBACK_CHECK + 'async function writeResponseFromCallback(result, response) {\n',
+  },
+  {
+    name: 'callback',
+    tag: `    // ${CALLBACK_MARKER}: with no body`,
+    find:
+      '    (0, request_utils_1.writeHead)(response, result.statusCode || 200, result.statusMessage, result.headers);\n' +
+      '    if (result.trailers)\n' +
+      '        response.addTrailers(result.trailers);\n' +
+      '    response.end(result.rawBody || "");\n',
+    replace:
+      '    // ' +
+      CALLBACK_MARKER +
+      ': with no body and no trailers, send the headers\n' +
+      '    // marked as the end of the stream. end("") would send them first, then a separate end.\n' +
+      '    if ((0, request_utils_1.isHttp2)(response) && !result.trailers && !(result.rawBody?.length > 0) &&\n' +
+      '        wirescryCanEndWithHead(result.statusCode || 200, result.headers)) {\n' +
+      '        wirescryHeadOnly(response, result.statusCode || 200, result.statusMessage, result.headers);\n' +
+      '        response.end();\n' +
+      '        return;\n' +
+      '    }\n' +
+      '    (0, request_utils_1.writeHead)(response, result.statusCode || 200, result.statusMessage, result.headers);\n' +
+      '    if (result.trailers)\n' +
+      '        response.addTrailers(result.trailers);\n' +
+      '    response.end(result.rawBody || "");\n',
+  },
 ];
+
+/** The text the packaging check looks for: every part of the patch is in place. */
+export const MARKERS = [MARKER, CALLBACK_MARKER];
 
 export const TARGET = 'dist/rules/requests/request-step-impls.js';
 
-/** Applies the edits to the text. Returns the new text, or throws saying which edit didn't fit. */
+/**
+ * Applies the edits to the text, skipping any already there (so an install patched by an older
+ * version of this script gets the newer parts). Returns the new text, or throws saying which edit
+ * didn't fit, or which is there from another version of the script.
+ */
 export function patchText(text) {
-  if (text.includes(MARKER)) return text;
   let out = text;
   for (const edit of EDITS) {
+    if (out.includes(edit.replace)) continue;
+    if (out.includes(edit.tag)) {
+      throw new Error(
+        `Mockttp's ${TARGET} has the "${edit.name}" part of another version of this patch. ` +
+          'Reinstall Mockttp (delete node_modules/mockttp, then npm install).',
+      );
+    }
     const count = out.split(edit.find).length - 1;
     if (count !== 1) {
       throw new Error(
@@ -89,7 +171,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const packageDir = process.argv[2] ?? path.join(root, 'node_modules', 'mockttp');
   try {
     const result = patchMockttp(packageDir);
-    console.log(`Mockttp: ${result} (headers-only HTTP/2 responses).`);
+    console.log(`Mockttp: ${result} (headers-only HTTP/2 responses and callback replies).`);
   } catch (error) {
     console.error(`Mockttp patch failed. ${error instanceof Error ? error.message : error}`);
     console.error('See scripts/patch-mockttp.mjs for what to do.');

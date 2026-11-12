@@ -47,7 +47,13 @@ function checkBuild(context) {
   // Mockttp is patched after install (scripts/patch-mockttp.mjs); an install with
   // --ignore-scripts would skip that silently.
   const mockttpFile = path.join(__dirname, 'node_modules/mockttp/dist/rules/requests/request-step-impls.js');
-  if (!fs.readFileSync(mockttpFile, 'utf8').includes('Wirescry patch: headers-only HTTP/2 responses')) {
+  // Every part's marker (MARKERS in scripts/patch-mockttp.mjs).
+  const mockttpText = fs.readFileSync(mockttpFile, 'utf8');
+  const markers = [
+    'Wirescry patch: headers-only HTTP/2 responses',
+    'Wirescry patch: headers-only HTTP/2 callback replies',
+  ];
+  if (!markers.every((marker) => mockttpText.includes(marker))) {
     throw new Error('Mockttp is not patched. Run `node scripts/patch-mockttp.mjs` (npm install runs it).');
   }
   const out = path.join(__dirname, 'out');
