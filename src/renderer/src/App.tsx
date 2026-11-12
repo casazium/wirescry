@@ -20,6 +20,7 @@ import {
   runBeforeSend,
   sameDraft,
   draftFromExchange,
+  runFromExchange,
   draftToRequest,
   EMPTY_DRAFT,
   requestToDraft,
@@ -177,7 +178,15 @@ export function App(): React.JSX.Element {
     const body = detail.requestBody?.size
       ? ((await send({ command: 'getBody', exchangeId: exchange.id, side: 'request' })) as BodyContent | null)
       : null;
-    const filled = draftFromExchange(exchange, detail, body);
+    const own = draftFromExchange(exchange, detail, body);
+    // A plugin may fill in what the app can't, such as a gRPC call's message as JSON.
+    const edit = await runFromExchange(
+      activeComposerExtensions,
+      exchange,
+      draftToRequest(own.draft),
+      pluginApi,
+    );
+    const filled = edit ? { draft: requestToDraft(edit.request), note: edit.note } : own;
     const current = draftRef.current;
     // Unsent edits can come back with Undo.
     const unsent = !sameDraft(current, EMPTY_DRAFT) && !sameDraft(current, settledDraft);

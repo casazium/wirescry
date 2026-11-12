@@ -100,6 +100,25 @@ export interface UiComposerExtension {
    * `setRequest` keeps neither.
    */
   beforeSend?(request: ComposerRequest, api: UiPluginApi): ComposerRequest | Promise<ComposerRequest>;
+  /**
+   * Called by Edit and resend with the captured exchange and the request the app made from it
+   * (headers Wirescry sets left out; a body that isn't text left out). Return a request to open
+   * in its place, such as one whose binary body is written as text the plugin can send, with a
+   * note to show; or undefined to leave the app's. The first plugin that answers is used. A throw
+   * counts as no answer.
+   */
+  fromExchange?(
+    exchange: ExchangeSummary,
+    request: ComposerRequest,
+    api: UiPluginApi,
+  ): ComposerEdit | undefined | Promise<ComposerEdit | undefined>;
+}
+
+/** What a plugin opens in Compose for Edit and resend. */
+export interface ComposerEdit {
+  request: ComposerRequest;
+  /** Shown above the editor, such as what couldn't be copied. Cut short past 300 characters. */
+  note?: string;
 }
 
 export interface UiPlugin {
