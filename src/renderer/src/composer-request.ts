@@ -157,6 +157,11 @@ export async function runBeforeSend(
   return next;
 }
 
+/** The longest note a plugin's Edit and resend answer shows; a longer one is cut short. */
+const MAX_EDIT_NOTE = 300;
+const shortNote = (note: string): string =>
+  note.length <= MAX_EDIT_NOTE ? note : `${note.slice(0, MAX_EDIT_NOTE - 1)}…`;
+
 /** Whether a plugin's answer to Edit and resend is a request the composer can hold. */
 function isComposerEdit(value: unknown): value is ComposerEdit {
   if (!value || typeof value !== 'object') return false;
@@ -170,7 +175,7 @@ function isComposerEdit(value: unknown): value is ComposerEdit {
     new TextEncoder().encode(body).length <= MAX_DRAFT_BODY &&
     Array.isArray(headers) &&
     headers.every((h) => Array.isArray(h) && typeof h[0] === 'string' && typeof h[1] === 'string') &&
-    (note === undefined || (typeof note === 'string' && note.length <= 300))
+    (note === undefined || typeof note === 'string')
   );
 }
 
@@ -189,7 +194,7 @@ export async function runFromExchange(
     try {
       const answer = await extension.fromExchange(exchange, request, apiFor(plugin));
       if (isComposerEdit(answer))
-        return { request: answer.request, ...(answer.note ? { note: answer.note } : {}) };
+        return { request: answer.request, ...(answer.note ? { note: shortNote(answer.note) } : {}) };
     } catch {
       // The app's own request is used instead.
     }

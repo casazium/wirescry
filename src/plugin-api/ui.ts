@@ -117,7 +117,7 @@ export interface UiComposerExtension {
 /** What a plugin opens in Compose for Edit and resend. */
 export interface ComposerEdit {
   request: ComposerRequest;
-  /** Shown above the editor, such as what couldn't be copied. At most 300 characters. */
+  /** Shown above the editor, such as what couldn't be copied. Cut short past 300 characters. */
   note?: string;
 }
 

@@ -230,7 +230,6 @@ describe('runFromExchange', () => {
     ['a body that isn’t text', { request: { ...base, body: null } }],
     ['a body over 512 KB', { request: { ...base, body: 'x'.repeat(512 * 1024 + 1) } }],
     ['a note that isn’t text', { request: base, note: 5 }],
-    ['a note over 300 characters', { request: base, note: 'n'.repeat(301) }],
   ])('skips an answer with %s, for the next plugin', async (_name, bad) => {
     const good = { request: { ...base, body: 'ok' } };
     const answer = await runFromExchange(
@@ -243,6 +242,16 @@ describe('runFromExchange', () => {
       apiFor,
     );
     expect(answer).toEqual(good);
+  });
+
+  it('cuts a note over 300 characters short, keeping the answer', async () => {
+    const answer = await runFromExchange(
+      [{ plugin: 'p', extension: ext(() => ({ request: base, note: 'n'.repeat(301) })) }],
+      exchange,
+      base,
+      apiFor,
+    );
+    expect(answer).toEqual({ request: base, note: `${'n'.repeat(299)}…` });
   });
 
   it('takes a body of exactly 512 KB, and a note of 300 characters', async () => {
