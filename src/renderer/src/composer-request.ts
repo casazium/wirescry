@@ -1,5 +1,5 @@
 import type { BodyContent, ComposerRequest, ExchangeDetail, ExchangeSummary, Header } from '../../shared/api';
-import type { UiComposerExtension, UiPluginApi } from '../../plugin-api/ui';
+import type { ComposerEdit, UiComposerExtension, UiPluginApi } from '../../plugin-api/ui';
 import { base64ToBytes } from './bytes';
 
 /** What the composer's fields hold: headers as typed, one `Name: value` per line. */
@@ -155,6 +155,46 @@ export async function runBeforeSend(
       throw new Error('It couldn’t be sent: a plugin returned no request.');
   }
   return next;
+}
+
+/** Whether a plugin's answer to Edit and resend is a request the composer can hold. */
+function isComposerEdit(value: unknown): value is ComposerEdit {
+  if (!value || typeof value !== 'object') return false;
+  const { request, note } = value as Partial<ComposerEdit>;
+  if (!request || typeof request !== 'object') return false;
+  const { method, url, headers, body } = request;
+  return (
+    typeof method === 'string' &&
+    typeof url === 'string' &&
+    typeof body === 'string' &&
+    new TextEncoder().encode(body).length <= MAX_DRAFT_BODY &&
+    Array.isArray(headers) &&
+    headers.every((h) => Array.isArray(h) && typeof h[0] === 'string' && typeof h[1] === 'string') &&
+    (note === undefined || (typeof note === 'string' && note.length <= 300))
+  );
+}
+
+/**
+ * Asks each plugin in turn for Edit and resend's request: the first that answers with one the
+ * composer can hold is used. A plugin that throws, or answers with something else, is skipped.
+ */
+export async function runFromExchange(
+  extensions: Array<{ plugin: string; extension: UiComposerExtension }>,
+  exchange: ExchangeSummary,
+  request: ComposerRequest,
+  apiFor: (plugin: string) => UiPluginApi,
+): Promise<ComposerEdit | undefined> {
+  for (const { plugin, extension } of extensions) {
+    if (!extension.fromExchange) continue;
+    try {
+      const answer = await extension.fromExchange(exchange, request, apiFor(plugin));
+      if (isComposerEdit(answer))
+        return { request: answer.request, ...(answer.note ? { note: answer.note } : {}) };
+    } catch {
+      // The app's own request is used instead.
+    }
+  }
+  return undefined;
 }
 
 /** Whether Cancel can still stop this sent request: until its response has fully arrived. */

@@ -7,6 +7,7 @@ import {
   checkSendSize,
   forSending,
   runBeforeSend,
+  runFromExchange,
   sameDraft,
   draftFromExchange,
   draftToRequest,
@@ -166,6 +167,91 @@ describe('ComposerView shortcuts', () => {
 
 const base: ComposerRequest = { method: 'GET', url: 'https://a.example/', headers: [], body: '' };
 const apiFor = (plugin: string) => ({ plugin }) as unknown as UiPluginApi;
+
+describe('runFromExchange', () => {
+  const exchange = { id: 'x1', path: '/p' } as unknown as Parameters<typeof runFromExchange>[1];
+  const ext = (fromExchange: UiComposerExtension['fromExchange']) => ({ fromExchange });
+
+  it('uses the first plugin that answers, skipping ones without the hook, that throw or say nothing', async () => {
+    const seen: string[] = [];
+    const answer = { request: { ...base, body: 'decoded' }, note: 'From two.' };
+    const extensions: Array<{ plugin: string; extension: UiComposerExtension }> = [
+      { plugin: 'none', extension: {} },
+      {
+        plugin: 'throws',
+        extension: ext(() => {
+          seen.push('throws');
+          throw new Error('broke');
+        }),
+      },
+      {
+        plugin: 'quiet',
+        extension: ext(async () => {
+          seen.push('quiet');
+          return undefined;
+        }),
+      },
+      {
+        plugin: 'two',
+        extension: ext(async (e, r, api) => {
+          seen.push(`two:${e.id}:${r.url}:${(api as unknown as { plugin: string }).plugin}`);
+          return answer;
+        }),
+      },
+      { plugin: 'later', extension: ext(() => (seen.push('later'), answer)) },
+    ];
+    expect(await runFromExchange(extensions, exchange, base, apiFor)).toEqual(answer);
+    expect(seen).toEqual(['throws', 'quiet', 'two:x1:https://a.example/:two']);
+  });
+
+  it('answers nothing when no plugin does', async () => {
+    expect(
+      await runFromExchange([{ plugin: 'none', extension: {} }], exchange, base, apiFor),
+    ).toBeUndefined();
+    expect(await runFromExchange([], exchange, base, apiFor)).toBeUndefined();
+  });
+
+  it('leaves out an empty note', async () => {
+    const answer = await runFromExchange(
+      [{ plugin: 'p', extension: ext(() => ({ request: base, note: '' })) }],
+      exchange,
+      base,
+      apiFor,
+    );
+    expect(answer).toEqual({ request: base });
+  });
+
+  it.each([
+    ['no request', {}],
+    ['a request that isn’t one', { request: 'GET /' }],
+    ['a method that isn’t text', { request: { ...base, method: 1 } }],
+    ['headers that aren’t pairs of text', { request: { ...base, headers: [['a']] } }],
+    ['headers that aren’t a list', { request: { ...base, headers: 'a: b' } }],
+    ['a body that isn’t text', { request: { ...base, body: null } }],
+    ['a body over 512 KB', { request: { ...base, body: 'x'.repeat(512 * 1024 + 1) } }],
+    ['a note that isn’t text', { request: base, note: 5 }],
+    ['a note over 300 characters', { request: base, note: 'n'.repeat(301) }],
+  ])('skips an answer with %s, for the next plugin', async (_name, bad) => {
+    const good = { request: { ...base, body: 'ok' } };
+    const answer = await runFromExchange(
+      [
+        { plugin: 'bad', extension: ext(() => bad as never) },
+        { plugin: 'good', extension: ext(() => good) },
+      ],
+      exchange,
+      base,
+      apiFor,
+    );
+    expect(answer).toEqual(good);
+  });
+
+  it('takes a body of exactly 512 KB, and a note of 300 characters', async () => {
+    const edge = { request: { ...base, body: 'x'.repeat(512 * 1024) }, note: 'n'.repeat(300) };
+    expect(
+      await runFromExchange([{ plugin: 'p', extension: ext(() => edge) }], exchange, base, apiFor),
+    ).toEqual(edge);
+  });
+});
 
 describe('runBeforeSend', () => {
   it('runs plugins in order, each getting the last one’s result, and skips ones without the hook', async () => {
