@@ -244,7 +244,11 @@ export class Composer {
           secureSocket.destroy();
           socket.destroy();
         };
+        let closing = false;
         destroy = () => {
+          // Once: closing the stream fires its 'close' handler, which calls this again, and
+          // tearing down then would cut the graceful close short (on Windows, the frame is lost).
+          if (closing) return;
           // RST_STREAM with CANCEL tells the proxy the client gave up. It's sent before the
           // connection closes (else it may never leave). A stream that ended normally is already
           // closed, so a finished call isn't marked as cancelled.
@@ -255,6 +259,7 @@ export class Composer {
           // Everything closes gracefully, so the frame goes out first: destroying a socket with
           // data still unread sends a TCP reset, which on Windows can drop the frame on its way.
           // A peer that never lets go is dropped after a second.
+          closing = true;
           const flushed = setTimeout(teardown, 1000);
           flushed.unref?.();
           secureSocket.once('close', () => {
