@@ -252,16 +252,17 @@ export class Composer {
             teardown();
             return;
           }
-          // Closing the session gracefully lets the frame go out first, before the socket ends
-          // (destroying it at once loses the frame on Windows). A peer that never lets go is
-          // dropped after a second.
+          // Everything closes gracefully, so the frame goes out first: destroying a socket with
+          // data still unread sends a TCP reset, which on Windows can drop the frame on its way.
+          // A peer that never lets go is dropped after a second.
           const flushed = setTimeout(teardown, 1000);
           flushed.unref?.();
-          stream.close(http2.constants.NGHTTP2_CANCEL);
-          session.close(() => {
+          secureSocket.once('close', () => {
             clearTimeout(flushed);
             teardown();
           });
+          stream.close(http2.constants.NGHTTP2_CANCEL);
+          session.close(() => secureSocket.end());
         };
         session.on('error', (error) => {
           if (settled) done();
