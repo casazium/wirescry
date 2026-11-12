@@ -5,6 +5,7 @@ import { PluginErrorBoundary } from '../../src/renderer/src/PluginView';
 import {
   canCancel,
   checkSendSize,
+  forSending,
   runBeforeSend,
   sameDraft,
   draftFromExchange,
@@ -262,6 +263,15 @@ describe('send size and draft comparison', () => {
     expect(() => checkSendSize({ ...base, body: 'x'.repeat(400 * 1024) })).not.toThrow();
     // Quotes double when escaped as JSON.
     expect(() => checkSendSize({ ...base, body: '"'.repeat(500 * 1024) })).toThrow('too large to send');
+  });
+  it('leaves out the text when a plugin gave the body as bytes', () => {
+    const big = { ...base, body: 'x'.repeat(500 * 1024) };
+    const bytes = { ...big, bodyBase64: Buffer.alloc(512 * 1024).toString('base64'), grpc: true };
+    expect(() => checkSendSize(bytes)).toThrow('too large to send');
+    expect(forSending(bytes)).toEqual({ ...bytes, body: '' });
+    expect(() => checkSendSize(forSending(bytes))).not.toThrow();
+    // Text alone is sent as it is.
+    expect(forSending(big)).toBe(big);
   });
   it('compares every field', () => {
     expect(sameDraft(EMPTY_DRAFT, { ...EMPTY_DRAFT })).toBe(true);

@@ -96,6 +96,8 @@ export interface UiComposerExtension {
   /**
    * Called on Send, before anything is sent: returns the request to send, e.g. with
    * variables filled in. Throw to stop the send; the message is shown to the user.
+   * This is where a plugin sets `grpc` or `bodyBase64`: the editor holds text only, so
+   * `setRequest` keeps neither.
    */
   beforeSend?(request: ComposerRequest, api: UiPluginApi): ComposerRequest | Promise<ComposerRequest>;
 }

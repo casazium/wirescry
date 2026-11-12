@@ -93,15 +93,26 @@ export interface PluginAnnotation extends ExchangeAnnotation {
 }
 
 /**
- * A request written in the composer. Text bodies only. Headers are sent as written, except
- * that Content-Length, Transfer-Encoding, Connection and Host are set by Wirescry.
+ * A request written in the composer. Headers are sent as written, except that Content-Length,
+ * Transfer-Encoding, Connection, Host and TE are set by Wirescry.
  */
 export interface ComposerRequest {
   method: string;
   /** An absolute http:// or https:// URL. */
   url: string;
   headers: Header[];
+  /** The body as text. */
   body: string;
+  /**
+   * The body as bytes, in base64, sent instead of `body`. For plugins: the composer itself only
+   * writes text. At most 512 KB once decoded.
+   */
+  bodyBase64?: string;
+  /**
+   * Send it as a gRPC call: over HTTP/2, with `te: trailers`. Only a POST to an https:// URL,
+   * since Wirescry reaches a server over HTTP/2 only with TLS.
+   */
+  grpc?: boolean;
 }
 
 /** A plugin rule that handled a request. */

@@ -16,6 +16,7 @@ import { ComposerView } from './ComposerView';
 import {
   canCancel,
   checkSendSize,
+  forSending,
   runBeforeSend,
   sameDraft,
   draftFromExchange,
@@ -194,7 +195,7 @@ export function App(): React.JSX.Element {
 
   /** Sends from the Compose tab: plugins get to change it first (e.g. fill in variables). */
   const sendComposed = async (request: ComposerRequest): Promise<void> => {
-    const next = await runBeforeSend(activeComposerExtensions, request, pluginApi);
+    const next = forSending(await runBeforeSend(activeComposerExtensions, request, pluginApi));
     checkSendSize(next);
     const sent = draft;
     const { exchangeId } = (await send({ command: 'composeSend', request: next })) as { exchangeId: string };
