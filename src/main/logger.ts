@@ -88,11 +88,17 @@ export function lineSplitter(onLine: (line: string) => void): (chunk: Buffer | s
   };
 }
 
-/** A warning as Node prints it: `(node:1234) [DEP0190] DeprecationWarning: …`. */
+/**
+ * A warning as Node prints it: `(node:1234) [DEP0190] DeprecationWarning: …`. A warning whose code
+ * or type doesn't look like Node's keeps its level: when unsure, it stays as loud as it was.
+ */
 const NODE_WARNING = /^\(node:\d+\) (?:\[[A-Z0-9_-]+\] )?([A-Za-z]*Warning): /;
-/** The hint Node prints after a warning: ``(Use `Wirescry --trace-deprecation ...` to show …)``. */
+/**
+ * The hint Node prints after a warning: ``(Use `Wirescry --trace-deprecation ...` to show …)``. Its
+ * flag says which kind it follows: --trace-deprecation for a deprecation, --trace-warnings otherwise.
+ */
 const NODE_WARNING_HINT =
-  /^\(Use `[^`]*--trace-(?:deprecation|warnings) \.\.\.` to show where the warning was created\)$/;
+  /^\(Use `[^`]*--trace-(deprecation|warnings) \.\.\.` to show where the warning was created\)$/;
 
 /**
  * The level for a line of output that may be one of Node's own warnings, which Node writes to
@@ -103,5 +109,7 @@ export function levelForOutput(text: string, level: LogLevel): LogLevel {
   if (level === 'info') return level;
   const warning = NODE_WARNING.exec(text);
   if (warning) return warning[1] === 'DeprecationWarning' ? 'info' : 'warn';
-  return NODE_WARNING_HINT.test(text) ? 'info' : level;
+  const hint = NODE_WARNING_HINT.exec(text);
+  if (hint) return hint[1] === 'deprecation' ? 'info' : 'warn';
+  return level;
 }

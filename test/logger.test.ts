@@ -67,7 +67,8 @@ describe('levelForOutput', () => {
     ],
     ['(node:12) DeprecationWarning: Buffer() is deprecated', 'error', 'info'],
     ['(Use `Wirescry --trace-deprecation ...` to show where the warning was created)', 'error', 'info'],
-    ['(Use `node --trace-warnings ...` to show where the warning was created)', 'error', 'info'],
+    // The hint after another kind of warning stays at that warning's level.
+    ['(Use `node --trace-warnings ...` to show where the warning was created)', 'error', 'warn'],
     // Other Node warnings stay warnings.
     ['(node:12) MaxListenersExceededWarning: Possible EventEmitter memory leak detected.', 'error', 'warn'],
     ['(node:12) [UNDICI-EHPA] Warning: EnvHttpProxyAgent is experimental', 'error', 'warn'],
