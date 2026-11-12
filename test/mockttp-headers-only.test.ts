@@ -9,7 +9,7 @@ import tls from 'node:tls';
 import { createRequire } from 'node:module';
 import { generateCACertificate } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { EDITS, MARKER, patchText, TARGET } from '../scripts/patch-mockttp.mjs';
+import { CALLBACK_MARKER, EDITS, MARKER, MARKERS, patchText, TARGET } from '../scripts/patch-mockttp.mjs';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { ExchangeDetail } from '../src/shared/api';
 import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
@@ -24,6 +24,8 @@ describe('the Mockttp patch script', () => {
   it('applies every part to text that has each place once', () => {
     const out = patchText(pristine);
     expect(out).toContain(MARKER);
+    expect(out).toContain(CALLBACK_MARKER);
+    expect(EDITS.map((edit) => edit.name)).toEqual(['helper', 'detect', 'callback']);
     for (const edit of EDITS) expect(out).toContain(edit.replace);
     expect(out).toContain('before\n');
   });
@@ -31,6 +33,33 @@ describe('the Mockttp patch script', () => {
   it('leaves patched text alone, so running it twice is safe', () => {
     const once = patchText(pristine);
     expect(patchText(once)).toBe(once);
+    // Each part once: the helper, for one, keeps the text it was found by.
+    for (const edit of EDITS) expect(once.split(edit.replace).length - 1).toBe(1);
+  });
+
+  it('adds the newer parts to an install patched by an older version of the script', () => {
+    const [helper, detect] = EDITS;
+    const older = pristine.replace(helper!.find, helper!.replace).replace(detect!.find, detect!.replace);
+    expect(older).toContain(MARKER);
+    expect(older).not.toContain(CALLBACK_MARKER);
+    const out = patchText(older);
+    expect(out).toBe(patchText(pristine));
+  });
+
+  it('refuses when the callback part no longer fits', () => {
+    const missing = pristine.replace(EDITS[2]!.find, 'something else\n');
+    expect(() => patchText(missing)).toThrow(/"callback" part of the patch matches 0 places/);
+  });
+
+  it('sends a callback reply as headers alone only over HTTP/2, with no body and no trailers', () => {
+    const callback = EDITS[2]!.replace;
+    expect(callback).toContain('(0, request_utils_1.isHttp2)(response)');
+    expect(callback).toContain('!result.trailers');
+    expect(callback).toContain('!(result.rawBody?.length > 0)');
+    // A bare end(): end("") would send the headers before the end.
+    expect(callback).toMatch(/wirescryHeadOnly\(response[^\n]*\n\s*response\.end\(\);\n\s*return;/);
+    // Otherwise, exactly as Mockttp did.
+    expect(callback.endsWith(EDITS[2]!.find)).toBe(true);
   });
 
   it('refuses when Mockttp has changed so a part no longer fits', () => {
@@ -47,7 +76,10 @@ describe('the Mockttp patch script', () => {
     const require = createRequire(import.meta.url);
     const root = path.dirname(path.dirname(require.resolve('mockttp')));
     const builder = readFileSync(path.join(root, '..', '..', 'electron-builder.cjs'), 'utf8');
-    expect(builder).toContain(`'${MARKER}'`);
+    expect(MARKERS).toEqual([MARKER, CALLBACK_MARKER]);
+    for (const marker of MARKERS) expect(builder).toContain(`'${marker}'`);
+    // All of them, not any: an install patched by an older script has the first one only.
+    expect(builder).toMatch(/markers\.every\(\(marker\) => mockttpText\.includes\(marker\)\)/);
     const config = require('../electron-builder.cjs') as { beforePack: (context: object) => void };
     // With the installed (patched) Mockttp, this check passes (later checks may fail: no build here).
     expect(() => config.beforePack({ electronPlatformName: 'darwin', arch: 3 })).not.toThrow(
@@ -59,7 +91,8 @@ describe('the Mockttp patch script', () => {
     const require = createRequire(import.meta.url);
     // Mockttp's main file is dist/main.js.
     const packageDir = path.dirname(path.dirname(require.resolve('mockttp')));
-    expect(readFileSync(path.join(packageDir, TARGET), 'utf8')).toContain(MARKER);
+    const installed = readFileSync(path.join(packageDir, TARGET), 'utf8');
+    for (const marker of MARKERS) expect(installed).toContain(marker);
   });
 });
 
