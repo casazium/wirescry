@@ -1,4 +1,5 @@
 import http from 'node:http';
+import http2 from 'node:http2';
 import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
@@ -25,12 +26,18 @@ const MANAGED_HEADERS = new Set([
   'proxy-connection',
   'upgrade',
   'te',
+  'http2-settings',
 ]);
 
 const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+/** Standard base64, padded. */
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/** A request checked and cleaned up, with its URL parsed and its body as bytes. */
+export type ValidComposerRequest = ComposerRequest & { parsedUrl: URL; bodyBytes: Buffer };
 
 /** Checks a request from the UI and returns it cleaned up. Throws with a message for the user. */
-export function validateComposerRequest(input: unknown): ComposerRequest & { parsedUrl: URL } {
+export function validateComposerRequest(input: unknown): ValidComposerRequest {
   const request = input as Partial<ComposerRequest> | null;
   if (!request || typeof request !== 'object') throw new Error('No request to send.');
   const method = typeof request.method === 'string' ? request.method.trim().toUpperCase() : '';
@@ -52,6 +59,15 @@ export function validateComposerRequest(input: unknown): ComposerRequest & { par
   if (!parsedUrl.hostname) throw new Error('The URL needs a host.');
   if (parsedUrl.username || parsedUrl.password) {
     throw new Error('Put credentials in an Authorization header, not in the URL.');
+  }
+  if (request.grpc !== undefined && typeof request.grpc !== 'boolean') {
+    throw new Error('Whether it’s a gRPC call must be true or false.');
+  }
+  const grpc = request.grpc === true;
+  if (grpc && method !== 'POST') throw new Error('A gRPC call is sent as POST.');
+  // Wirescry's proxy reaches a server over HTTP/2 only with TLS, and gRPC needs HTTP/2.
+  if (grpc && parsedUrl.protocol !== 'https:') {
+    throw new Error('Wirescry can send a gRPC call only to an https:// URL.');
   }
 
   if (!Array.isArray(request.headers)) throw new Error('Headers must be a list.');
@@ -79,12 +95,31 @@ export function validateComposerRequest(input: unknown): ComposerRequest & { par
   }
 
   const body = typeof request.body === 'string' ? request.body : '';
-  if (Buffer.byteLength(body) > MAX_COMPOSER_BODY) {
-    throw new Error(`The body can be at most ${MAX_COMPOSER_BODY / 1024} KB.`);
+  const tooLarge = `The body can be at most ${MAX_COMPOSER_BODY / 1024} KB.`;
+  let bodyBytes: Buffer;
+  const { bodyBase64 } = request;
+  if (bodyBase64 !== undefined) {
+    if (typeof bodyBase64 !== 'string') throw new Error('The body’s bytes must be in base64.');
+    // Checked before decoding, so an oversized body is never decoded.
+    if (bodyBase64.length > Math.ceil(MAX_COMPOSER_BODY / 3) * 4) throw new Error(tooLarge);
+    if (!BASE64.test(bodyBase64)) throw new Error('The body’s bytes aren’t valid base64.');
+    bodyBytes = Buffer.from(bodyBase64, 'base64');
+  } else {
+    bodyBytes = Buffer.from(body);
   }
+  if (bodyBytes.length > MAX_COMPOSER_BODY) throw new Error(tooLarge);
   // A fragment stays in the client; it's never sent.
   parsedUrl.hash = '';
-  return { method, url: parsedUrl.href, headers, body, parsedUrl };
+  return {
+    method,
+    url: parsedUrl.href,
+    headers,
+    body,
+    ...(bodyBase64 !== undefined ? { bodyBase64 } : {}),
+    ...(grpc ? { grpc } : {}),
+    parsedUrl,
+    bodyBytes,
+  };
 }
 
 interface Waiting {
@@ -115,12 +150,11 @@ export class Composer {
 
   /** Sends it, resolving with the exchange id once the proxy has it. The response is recorded as usual. */
   async send(input: unknown): Promise<{ exchangeId: string }> {
-    const { method, headers, body, parsedUrl } = validateComposerRequest(input);
+    const { method, headers, parsedUrl, bodyBytes, grpc } = validateComposerRequest(input);
     const secure = parsedUrl.protocol === 'https:';
     const port = Number(parsedUrl.port) || (secure ? 443 : 80);
     const raw: string[] = [];
     for (const [name, value] of headers) raw.push(name, value);
-    const bodyBytes = Buffer.from(body);
     const sendsBody = bodyBytes.length > 0 || !['GET', 'HEAD', 'DELETE', 'OPTIONS', 'TRACE'].includes(method);
     raw.push('Host', parsedUrl.host);
     if (sendsBody) raw.push('Content-Length', String(bodyBytes.length));
@@ -197,6 +231,89 @@ export class Composer {
         req.end(sendsBody ? bodyBytes : undefined);
       };
 
+      /** A gRPC call: one HTTP/2 stream on its own session, over the TLS tunnel to the proxy. */
+      const issueHttp2 = (secureSocket: tls.TLSSocket): void => {
+        if (secureSocket.alpnProtocol !== 'h2') {
+          fail(new Error("Wirescry's proxy didn't agree to HTTP/2."));
+          return;
+        }
+        const session = http2.connect(`https://${parsedUrl.host}`, { createConnection: () => secureSocket });
+        let stream: http2.ClientHttp2Stream | undefined;
+        const teardown = (): void => {
+          session.destroy();
+          secureSocket.destroy();
+          socket.destroy();
+        };
+        let closing = false;
+        destroy = () => {
+          // Once: closing the stream fires its 'close' handler, which calls this again, and
+          // tearing down then would cut the graceful close short (on Windows, the frame is lost).
+          if (closing) return;
+          // RST_STREAM with CANCEL tells the proxy the client gave up. It's sent before the
+          // connection closes (else it may never leave). A stream that ended normally is already
+          // closed, so a finished call isn't marked as cancelled.
+          if (!stream || stream.closed || stream.destroyed) {
+            teardown();
+            return;
+          }
+          // Everything closes gracefully, so the frame goes out first: destroying a socket with
+          // data still unread sends a TCP reset, which on Windows can drop the frame on its way.
+          // A peer that never lets go is dropped after a second.
+          closing = true;
+          const flushed = setTimeout(teardown, 1000);
+          flushed.unref?.();
+          secureSocket.once('close', () => {
+            clearTimeout(flushed);
+            teardown();
+          });
+          stream.close(http2.constants.NGHTTP2_CANCEL);
+          session.close(() => secureSocket.end());
+        };
+        session.on('error', (error) => {
+          if (settled) done();
+          else fail(new Error(`Couldn't send the request: ${error.message}`));
+        });
+        // HTTP/2 header names are lowercase; a name given more than once is sent once per value.
+        // No prototype, so names such as `constructor` or `__proto__` are ordinary headers.
+        const fields: http2.OutgoingHttpHeaders = Object.assign(Object.create(null) as object, {
+          ':method': method,
+          ':scheme': 'https',
+          ':authority': parsedUrl.host,
+          ':path': `${parsedUrl.pathname}${parsedUrl.search}`,
+        });
+        for (const [name, value] of headers) {
+          const key = name.toLowerCase();
+          const had = fields[key];
+          fields[key] = had === undefined ? value : [...(Array.isArray(had) ? had : [String(had)]), value];
+        }
+        // gRPC servers need it, to know the client reads trailers.
+        fields.te = 'trailers';
+        try {
+          stream = session.request(fields);
+        } catch (error) {
+          // Node refuses some headers given twice, such as Content-Type.
+          fail(new Error(`Couldn't send the request: ${(error as Error).message}`));
+          return;
+        }
+        stream.on('response', (head) => {
+          // A response before the proxy recorded the request: the proxy itself refused it.
+          if (!settled)
+            fail(new Error(`Wirescry's proxy refused the request (${head[':status'] ?? 'no status'}).`));
+        });
+        // The proxy records the response and its trailers; this side only has to read it. Once the
+        // stream has closed (after its trailers), its session is closed too.
+        stream.resume();
+        stream.on('error', (error) => {
+          if (settled) done();
+          else fail(new Error(`Couldn't send the request: ${error.message}`));
+        });
+        stream.on('close', () => {
+          if (settled) done();
+          else fail(new Error("Wirescry's proxy closed the stream without recording the request."));
+        });
+        stream.end(bodyBytes);
+      };
+
       socket.on('error', (error) => {
         if (!settled) fail(new Error(`Couldn't send the request: ${error.message}`));
       });
@@ -230,7 +347,8 @@ export class Composer {
           ca: this.options.caCert(),
           // This hop only reaches Wirescry's own proxy, whose certificate is pinned by `ca`.
           checkServerIdentity: () => undefined,
-          ALPNProtocols: ['http/1.1'],
+          // The proxy talks HTTP/2 to the server only when the client does.
+          ALPNProtocols: grpc ? ['h2'] : ['http/1.1'],
         });
         destroy = () => {
           secureSocket.destroy();
@@ -239,7 +357,8 @@ export class Composer {
         secureSocket.on('error', (error) => {
           if (!settled) fail(new Error(`Couldn't send the request: ${error.message}`));
         });
-        issue(() => secureSocket, `${parsedUrl.pathname}${parsedUrl.search}`, https);
+        if (grpc) secureSocket.once('secureConnect', () => issueHttp2(secureSocket));
+        else issue(() => secureSocket, `${parsedUrl.pathname}${parsedUrl.search}`, https);
       });
       connectReq.on('error', (error) => {
         if (!settled) fail(new Error(`Couldn't send the request: ${error.message}`));

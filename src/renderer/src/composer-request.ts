@@ -18,6 +18,14 @@ export const MAX_DRAFT_BODY = 512 * 1024;
 /** The most a request can take as JSON: each message to the backend is capped at 1 MB. */
 export const MAX_SEND_JSON = 900 * 1024;
 
+/**
+ * The request as sent to the backend: when a plugin gave the body as bytes, its text is left out,
+ * since only the bytes are sent (and both together could pass the size limit).
+ */
+export function forSending(request: ComposerRequest): ComposerRequest {
+  return request.bodyBase64 !== undefined ? { ...request, body: '' } : request;
+}
+
 /** Throws if the request is too large to send in one message to the backend. */
 export function checkSendSize(request: ComposerRequest): void {
   if (new TextEncoder().encode(JSON.stringify(request)).length > MAX_SEND_JSON) {
@@ -40,6 +48,7 @@ const MANAGED = new Set([
   'proxy-connection',
   'upgrade',
   'te',
+  'http2-settings',
 ]);
 
 export function headersToText(headers: Header[]): string {
