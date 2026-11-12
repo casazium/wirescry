@@ -19,13 +19,14 @@ import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
 // like that ("Trailers-Only"), and gRPC clients report INTERNAL instead of the real status otherwise.
 
 describe('the Mockttp patch script', () => {
+  const part = (name: string) => EDITS.find((edit) => edit.name === name)!;
   const pristine = EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
 
   it('applies every part to text that has each place once', () => {
     const out = patchText(pristine);
     expect(out).toContain(MARKER);
     expect(out).toContain(CALLBACK_MARKER);
-    expect(EDITS.map((edit) => edit.name)).toEqual(['helper', 'detect', 'callback']);
+    expect(EDITS.map((edit) => edit.name)).toEqual(['helper', 'detect', 'callback-check', 'callback']);
     for (const edit of EDITS) expect(out).toContain(edit.replace);
     expect(out).toContain('before\n');
   });
@@ -47,24 +48,44 @@ describe('the Mockttp patch script', () => {
   });
 
   it('refuses when the callback part no longer fits', () => {
-    const missing = pristine.replace(EDITS[2]!.find, 'something else\n');
+    const missing = pristine.replace(part('callback').find, 'something else\n');
     expect(() => patchText(missing)).toThrow(/"callback" part of the patch matches 0 places/);
   });
 
   it('sends a callback reply as headers alone only over HTTP/2, with no body and no trailers', () => {
-    const callback = EDITS[2]!.replace;
+    const callback = part('callback').replace;
     expect(callback).toContain('(0, request_utils_1.isHttp2)(response)');
     expect(callback).toContain('!result.trailers');
     expect(callback).toContain('!(result.rawBody?.length > 0)');
+    expect(callback).toContain('wirescryCanEndWithHead(result.statusCode || 200, result.headers)');
     // A bare end(): end("") would send the headers before the end.
     expect(callback).toMatch(/wirescryHeadOnly\(response[^\n]*\n\s*response\.end\(\);\n\s*return;/);
     // Otherwise, exactly as Mockttp did.
-    expect(callback.endsWith(EDITS[2]!.find)).toBe(true);
+    expect(callback.endsWith(part('callback').find)).toBe(true);
   });
 
   it('refuses when Mockttp has changed so a part no longer fits', () => {
     const missing = pristine.replace(EDITS[1]!.find, 'something else\n');
     expect(() => patchText(missing)).toThrow(/"detect" part of the patch matches 0 places/);
+  });
+
+  it('refuses to patch over a part from another version of the script, rather than add a second', () => {
+    for (const edit of EDITS) {
+      const tagged = patchText(pristine).replace(
+        edit.replace,
+        `${edit.tag} (an older wording)\n${edit.find}`,
+      );
+      expect(() => patchText(tagged)).toThrow(new RegExp(`"${edit.name}" part of another version`));
+    }
+  });
+
+  it('gives every part a tag of its own, found in its text only', () => {
+    for (const edit of EDITS) {
+      expect(edit.replace).toContain(edit.tag);
+      expect(edit.find).not.toContain(edit.tag);
+      const others = EDITS.filter((other) => other !== edit);
+      for (const other of others) expect(other.replace).not.toContain(edit.tag);
+    }
   });
 
   it('refuses when a place appears twice, rather than guess', () => {
@@ -85,6 +106,16 @@ describe('the Mockttp patch script', () => {
     expect(() => config.beforePack({ electronPlatformName: 'darwin', arch: 3 })).not.toThrow(
       /Mockttp is not patched/,
     );
+  });
+
+  it("fits Mockttp's real file: undoing it gives text the script patches to the same", () => {
+    const require = createRequire(import.meta.url);
+    const packageDir = path.dirname(path.dirname(require.resolve('mockttp')));
+    const installed = readFileSync(path.join(packageDir, TARGET), 'utf8');
+    let original = installed;
+    for (const edit of [...EDITS].reverse()) original = original.replace(edit.replace, () => edit.find);
+    expect(original).not.toContain('Wirescry patch');
+    expect(patchText(original)).toBe(installed);
   });
 
   it('has been applied to the installed Mockttp', () => {

@@ -4,8 +4,8 @@ export const MARKER: string;
 export const CALLBACK_MARKER: string;
 /** Every part's marker: the packaging check needs them all. */
 export const MARKERS: readonly string[];
-/** Each part of the patch: text found exactly once in Mockttp's file, and what replaces it. */
-export const EDITS: ReadonlyArray<{ name: string; find: string; replace: string }>;
+/** Each part of the patch: text found exactly once in Mockttp's file, what replaces it, and text only that part has. */
+export const EDITS: ReadonlyArray<{ name: string; tag: string; find: string; replace: string }>;
 /** The patched file, relative to Mockttp's package folder. */
 export const TARGET: string;
 /** Applies the parts not yet there to the file's text, or throws naming the part that no longer fits. */
