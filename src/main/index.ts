@@ -17,7 +17,7 @@ import {
 import { IPC, type BackendState, type ExportResult, type MenuState } from '../shared/ipc';
 import { APP_ORIGIN, handleAppProtocol, registerAppSchemeAsPrivileged } from './app-protocol';
 import { BackendSupervisor, type SecureStorage } from './backend-supervisor';
-import { FileLogger, type LogLevel } from './logger';
+import { FileLogger, levelForOutput, type LogLevel } from './logger';
 import { buildMenu, updateMenu } from './menu';
 import { aboutDetail, DOCS_URL, ISSUES_URL, WEBSITE } from './about';
 import { checkMenuChoices, contextMenuItems } from './context-menu';
@@ -50,7 +50,8 @@ for (const [method, level] of [
   const original = console[method].bind(console);
   console[method] = (...args: unknown[]) => {
     original(...args);
-    logger.write('main', level, format(...args));
+    const text = format(...args);
+    logger.write('main', levelForOutput(text, level), text);
   };
 }
 process.on('uncaughtException', (error) => console.error('Uncaught exception:', error));

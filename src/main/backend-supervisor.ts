@@ -30,7 +30,7 @@ export interface SecureStorage {
   encrypt(text: string): Promise<string>;
   decrypt(base64: string): Promise<string>;
 }
-import { lineSplitter, type FileLogger } from './logger';
+import { levelForOutput, lineSplitter, type FileLogger } from './logger';
 
 /** How long the backend gets to stop cleanly on quit before it's killed. */
 const SHUTDOWN_TIMEOUT_MS = 3000;
@@ -130,7 +130,7 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     child.stderr?.on(
       'data',
       lineSplitter((line) => {
-        logger?.write('backend', 'error', line);
+        logger?.write('backend', levelForOutput(line, 'error'), line);
         process.stderr.write(line + '\n');
       }),
     );
