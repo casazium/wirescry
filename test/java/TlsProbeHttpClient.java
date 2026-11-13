@@ -9,6 +9,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import javax.net.ssl.SSLHandshakeException;
 
 /**
  * Like TlsProbe, with Java 11's HttpClient, which checks certificates through an SSLEngine. The
@@ -29,9 +30,15 @@ public class TlsProbeHttpClient {
             client.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(5)).build(), HttpResponse.BodyHandlers.ofString());
         result = response.statusCode() == 200 ? "OK" : "FAIL status " + response.statusCode();
       } catch (Exception e) {
+        // Java 11's client wraps a failed handshake in a plain IOException; later ones throw it
+        // as is. Name the handshake's exception either way, so the tests read the same on both.
+        Throwable named = e;
         Throwable root = e;
-        while (root.getCause() != null && root.getCause() != root) root = root.getCause();
-        result = "FAIL " + e.getClass().getName() + ": " + String.valueOf(root.getMessage()).replace('\n', ' ');
+        while (root.getCause() != null && root.getCause() != root) {
+          root = root.getCause();
+          if (root instanceof SSLHandshakeException && !(named instanceof SSLHandshakeException)) named = root;
+        }
+        result = "FAIL " + named.getClass().getName() + ": " + String.valueOf(root.getMessage()).replace('\n', ' ');
       }
       System.out.println(result);
       System.out.flush();
