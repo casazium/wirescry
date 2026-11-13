@@ -1,5 +1,5 @@
 import { createHash, X509Certificate } from 'node:crypto';
-import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, rm, stat, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
@@ -280,7 +280,46 @@ export async function installAgentJars(
     await chmod(file, 0o600);
   }
   await chmod(stubFile, 0o600);
+  // Marks the pair as in use now: pruneAgentJars keeps pairs a Wirescry used lately.
+  const now = new Date();
+  await utimes(implFile, now, now);
+  await utimes(weaverFile, now, now);
   return name;
+}
+
+/** How long a pair no Wirescry has installed stays: long enough for the JVMs that loaded it. */
+export const AGENT_JARS_KEPT_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Deletes the agent pairs in `dir/jars` other than `current` (installAgentJars' name) that no
+ * Wirescry has installed for `keptMs`, so each update doesn't leave a few MB behind for good. A
+ * JVM still running one keeps the files it has open (on Windows, the delete fails and it's left
+ * for next time); it only loses the weaver if it never needed it in all that time. Returns the
+ * names deleted.
+ */
+export async function pruneAgentJars(
+  dir: string,
+  current: string,
+  keptMs = AGENT_JARS_KEPT_MS,
+  now = Date.now(),
+): Promise<string[]> {
+  const jars = path.join(dir, 'jars');
+  const deleted: string[] = [];
+  for (const name of await readdir(jars).catch(() => [] as string[])) {
+    const pair = /^(wirescry-agent-impl-[0-9A-Za-z.+_-]{1,64}?)(-weaver)?\.jar$/.exec(name);
+    if (!pair || `jars/${pair[1]}.jar` === current) continue;
+    const file = path.join(jars, name);
+    // A pair goes by its agent's time, so its weaver never goes first.
+    const used = await stat(path.join(jars, `${pair[1]}.jar`)).catch(() => undefined);
+    if (used && now - used.mtimeMs < keptMs) continue;
+    try {
+      await rm(file);
+      deleted.push(name);
+    } catch {
+      // Held open (Windows), or gone already.
+    }
+  }
+  return deleted;
 }
 
 /** Every readable status file in `dir/status`. Half-written or damaged ones are left out. */

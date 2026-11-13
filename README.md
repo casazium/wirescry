@@ -90,10 +90,11 @@ The backend tests start the real proxy and API, push an HTTPS request through th
 ## Package
 
 ```bash
+node scripts/build-java-agent.mjs
 npm run package
 ```
 
-Builds unsigned installers for the current platform into `release/`. Use `package:mac`, `package:win` or `package:linux` for a specific one.
+The first line builds the Java agent, which every installer carries. It needs a JDK 17 or later; see [native/java-agent/README.md](native/java-agent/README.md). The second builds unsigned installers for the current platform into `release/`. Use `package:mac`, `package:win` or `package:linux` for a specific one.
 
 Signed releases, notarization and auto-update are handled by the release workflow; see [docs/RELEASING.md](docs/RELEASING.md).
 

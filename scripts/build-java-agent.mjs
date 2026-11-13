@@ -216,11 +216,24 @@ export async function buildJavaAgent(outDir = buildDir) {
     cpSync(from, to);
   }
   // Byte Buddy's license and notice go with it (Apache-2.0, section 4), and the license of the ASM
-  // it bundles (BSD-3-Clause).
+  // it bundles (BSD-3-Clause). The app's notices list them from the copies in licenses/, which
+  // must be the same texts.
+  const kept = JSON.parse(readFileSync(path.join(source, 'licenses', 'index.json'), 'utf8'));
+  if (kept.byteBuddy !== byteBuddy.version) {
+    throw new Error(
+      `native/java-agent/licenses is for Byte Buddy ${kept.byteBuddy}: update it for ${byteBuddy.version}.`,
+    );
+  }
   for (const name of ['LICENSE', 'NOTICE', path.join('licenses', 'ASM')]) {
     const from = path.join(unpacked, 'META-INF', name);
     if (!existsSync(from))
       throw new Error(`Byte Buddy ${byteBuddy.version} has no META-INF/${name}: check its licensing.`);
+    const copy = kept.inJar[name.split(path.sep).join('/')];
+    if (!copy || !readFileSync(from).equals(readFileSync(path.join(source, 'licenses', copy)))) {
+      throw new Error(
+        `Byte Buddy's META-INF/${name} differs from native/java-agent/licenses: update the copy.`,
+      );
+    }
     const to = path.join(weaverClasses, 'META-INF', 'byte-buddy', name);
     mkdirSync(path.dirname(to), { recursive: true });
     cpSync(from, to);

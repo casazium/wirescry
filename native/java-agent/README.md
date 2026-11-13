@@ -65,17 +65,18 @@ Not covered:
 
 ## Building
 
-You need a JDK 17 or later, from `JAVA_HOME` or on PATH. Run:
+You need a JDK 17 or later, from `JAVA_HOME` or on PATH, and, the first time, access to Maven Central for Byte Buddy (about 4.5 MB, checked by SHA-256). Rebuild after changing the version in package.json. Run:
 
 ```bash
 node scripts/build-java-agent.mjs
 ```
 
-The jars are written to `build/`, and the build is reproducible.
+The jars are written to `build/`, and the build is reproducible. The app ships the stub, the implementation and the weaver in its resources (`java-agent/`), and copies them into the data folder when it starts with the agent's setting on (`javaAgentStartup` in settings.json, set by hand for now). The release workflow builds them once, on Linux, for every platform. Byte Buddy's and ASM's license texts are kept in `licenses/` for the app's notices; the build checks they match the ones in Byte Buddy's jar.
 
 ## Files
 
-- **`control.properties`** is written by Wirescry and read by every agent. `src/backend/java/agent-files.ts` writes it.
+- **`control.properties`** is written by Wirescry and read by every agent. `src/backend/java/agent-files.ts` writes it. While the agent's setting is on, `src/backend/java/agent-host.ts` keeps it current: it moves the heartbeat (`seq`) every 5 seconds, follows the port and the CA, and says `enabled=false` on a clean quit, just before the proxy closes. Agents read it within a second, so a request sent in that second may be refused. When Wirescry quits any other way (an update, a crash, Windows logging off), agents on Java 9+ notice Wirescry's process is gone within a second, and those on Java 8 when the heartbeat stops, after about 15 seconds.
+- **`jars/`** keeps one implementation and weaver pair per Wirescry build. Each start marks its own pair as used, and deletes pairs no Wirescry has used for a week. JVMs still running one keep the files they have open.
 - **`status/<pid>-<id>.properties`** is written by each agent and read by Wirescry.
 
 Both use `key=value` lines and end with `end=1`. Both are written to a temporary file and then renamed into place. Both must be writable by their user only.

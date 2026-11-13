@@ -3,6 +3,9 @@
  * runs on every build. Tests run the backend with its launch flags, so here it should find
  * nothing; with each part broken, it should say which.
  */
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => {
@@ -46,5 +49,33 @@ describe('selfCheck', () => {
       toBodyContent: async () => ({ base64: Buffer.from('garbled').toString('base64') }),
     }));
     expect(await check()).toEqual(['decoding a gzip body gave "garbled"']);
+  });
+
+  describe('the packaged Java agent', () => {
+    const resources = async (names: string[]) => {
+      const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry resources-'));
+      await mkdir(path.join(dir, 'java-agent'));
+      for (const name of names) await writeFile(path.join(dir, 'java-agent', name), '');
+      return dir;
+    };
+    const selfCheck = async (dir: string) => (await import('../src/backend/self-check')).selfCheck(dir);
+
+    it('finds nothing wrong when the app’s resources hold its three jars', async () => {
+      const dir = await resources([
+        'wirescry-agent.jar',
+        'wirescry-agent-impl.jar',
+        'wirescry-agent-weaver.jar',
+      ]);
+      expect(await selfCheck(dir)).toEqual([]);
+      await rm(dir, { recursive: true });
+    });
+
+    it('says so when one is missing, even with a development build to fall back on', async () => {
+      const dir = await resources(['wirescry-agent.jar', 'wirescry-agent-impl.jar']);
+      expect(await selfCheck(dir)).toEqual([
+        `the Java agent's jars aren't in ${path.join(dir, 'java-agent')}`,
+      ]);
+      await rm(dir, { recursive: true });
+    });
   });
 });

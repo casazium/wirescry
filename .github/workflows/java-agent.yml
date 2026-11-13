@@ -9,6 +9,7 @@ on:
     paths:
       - native/java-agent/**
       - src/backend/java/**
+      - src/backend/backend.ts
       - scripts/build-java-agent.mjs
       - test/java-agent*.ts
       - test/java/**
@@ -85,6 +86,6 @@ jobs:
           echo "JAVA_HOME=$build" >> "$GITHUB_ENV"
           echo "WIRESCRY_JAVA_TARGETS=$targets" >> "$GITHUB_ENV"
           echo "WIRESCRY_JAVA_ATTACHER=$attach_home/bin/$exe" >> "$GITHUB_ENV"
-      - run: npx vitest run test/java-agent-files.test.ts test/java-agent.test.ts test/java-agent-trust.test.ts test/java-agent-proxy.test.ts
+      - run: npx vitest run test/java-agent-files.test.ts test/java-agent.test.ts test/java-agent-trust.test.ts test/java-agent-proxy.test.ts test/java-agent-host.test.ts
         env:
           WIRESCRY_REQUIRE_JAVA: '1'

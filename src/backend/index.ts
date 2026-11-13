@@ -98,9 +98,13 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
       notify: (title, body) => post({ type: 'notify', title, body }),
       // The self-test checks what loads: it has no business with the user's devices.
       android: data.selfCheck ? false : 'setting',
+      // Follows its setting; not for the self-test, whose control file real JVMs would read.
+      javaAgent: !data.selfCheck,
       onStartupStep: (name) => mark(`${name} done`),
     });
-    const checked = data.selfCheck ? await selfCheck() : undefined;
+    const checked = data.selfCheck
+      ? await selfCheck((process as { resourcesPath?: string }).resourcesPath)
+      : undefined;
     if (checked) mark('self-check done');
     post({
       type: 'ready',

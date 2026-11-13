@@ -1,5 +1,8 @@
-/** When the proxy's own port is taken while it restarts, Wirescry keeps a proxy running. */
-import { mkdtemp, rm } from 'node:fs/promises';
+/**
+ * When the proxy's own port is taken while it restarts, Wirescry keeps a proxy running, and tells
+ * Java agents where.
+ */
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,14 +28,28 @@ it.each(['127.0.0.1', '0.0.0.0'])(
   'moves to another port, and says so, when %s on its own is taken during a certificate reset',
   async (host) => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-port-taken-'));
+    // Stand-ins for the Java agent's jars: only the control file matters here.
+    const jarDir = path.join(dataDir, 'built');
+    await mkdir(jarDir);
+    const jars = { stub: '', impl: '', weaver: '' };
+    for (const part of ['stub', 'impl', 'weaver'] as const) {
+      jars[part] = path.join(jarDir, `${part}.jar`);
+      await writeFile(jars[part], part);
+    }
+    const controlPort = async () =>
+      /^proxyPort=(\d+)$/m.exec(
+        await readFile(path.join(dataDir!, 'java-agent', 'control.properties'), 'utf8').catch(() => ''),
+      )?.[1];
     // Picked by the system, so no other test file wants it, and retried if one takes it first.
     backend = await startBackendOnPickedPort({
       dataDir,
       token: TOKEN,
       allowedOrigins: [UI_ORIGIN],
       docker: false,
+      javaAgent: { jars },
     });
     const port = backend.proxyPort;
+    await expect.poll(controlPort).toBe(String(port));
     const api = await apiClient(backend.apiPort);
     // Something else grabs the port the moment it's free.
     thief = net.createServer();
@@ -61,6 +78,7 @@ it.each(['127.0.0.1', '0.0.0.0'])(
     const moved = backend.proxyPort;
     expect(moved).not.toBe(port);
     await expect.poll(() => last(api.messages)?.proxyPort).toBe(moved);
+    expect(await controlPort()).toBe(String(moved));
     expect((await httpViaProxy(moved, 'http://wirescry.internal/')).status).toBe(200);
     api.close();
   },

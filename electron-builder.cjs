@@ -17,6 +17,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { Arch } = require('electron-builder');
+const { JAVA_AGENT_JARS, checkJavaAgent } = require('./scripts/check-java-agent.cjs');
 
 const env = process.env;
 
@@ -33,6 +34,10 @@ const dockerPipe = {
   filter: ['wirescry-docker-pipe.exe'],
 };
 const electronNotices = { from: 'out/licenses-electron', to: 'licenses' };
+// The Java agent (native/java-agent), built by scripts/build-java-agent.mjs. Lands in
+// resources/java-agent/; the backend copies it into the data folder (src/backend/java/agent-host.ts).
+// The attacher isn't shipped yet.
+const javaAgent = { from: 'native/java-agent/build', to: 'java-agent', filter: JAVA_AGENT_JARS };
 
 /**
  * Refuses to package a build without up-to-date license notices, or with Pro's readable
@@ -71,6 +76,7 @@ function checkBuild(context) {
   ) {
     throw new Error('Missing or old license notices. Build with `npm run build`, which writes them.');
   }
+  checkJavaAgent(path.join(__dirname, javaAgent.from));
   if (context.electronPlatformName === 'win32') {
     const helper = path.join(
       __dirname,
@@ -210,7 +216,7 @@ module.exports = {
   },
 
   mac: {
-    extraResources: [notices, electronNotices],
+    extraResources: [notices, electronNotices, javaAgent],
     category: 'public.app-category.developer-tools',
     target: [
       // The zip is what the auto-updater downloads; the dmg is for first installs.
@@ -232,7 +238,7 @@ module.exports = {
   },
 
   win: {
-    extraResources: [notices, dockerPipe],
+    extraResources: [notices, dockerPipe, javaAgent],
     target: [{ target: 'nsis', arch: ['x64', 'arm64'] }],
     ...(azureSigning ? { azureSignOptions: azureSigning } : {}),
   },
@@ -244,7 +250,7 @@ module.exports = {
   },
 
   linux: {
-    extraResources: [notices],
+    extraResources: [notices, javaAgent],
     category: 'Development',
     // AppImage can auto-update; deb is updated by reinstalling.
     target: ['AppImage', 'deb'],
