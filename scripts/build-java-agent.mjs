@@ -2,16 +2,30 @@
 // Builds Wirescry's Java agent (native/java-agent) into native/java-agent/build/:
 //
 //   wirescry-agent.jar       the stub that -javaagent: and the Attach API name (Java 8+)
-//   wirescry-agent-impl.jar  the agent itself, which the stub loads (Java 8+)
+//   wirescry-agent-impl.jar  the agent itself, which the stub loads (Java 8+), with its weaver and
+//                            Byte Buddy under weaver/, which only the agent's own class loader reads
 //   wirescry-attach.jar      lists JVMs and loads the agent into one (runs on JDK 11+)
 //
 //   node scripts/build-java-agent.mjs
 //
 // Needs a JDK 17 or later: JAVA_HOME's, else the one on PATH. The jars target Java 8 (the attacher
 // Java 11) whatever JDK builds them, and are reproducible: fixed timestamps, sorted entries.
+//
+// Byte Buddy (Apache-2.0) is fetched once from Maven Central into native/java-agent/deps/ and
+// checked against the SHA-256 below; a file that doesn't match is never used.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -23,6 +37,36 @@ export const jars = {
   impl: path.join(buildDir, 'wirescry-agent-impl.jar'),
   attach: path.join(buildDir, 'wirescry-attach.jar'),
 };
+/**
+ * Byte Buddy, pinned. Its release was three weeks old when chosen (the newest, 1.18.17, was 12
+ * days old). The SHA-256 is Maven Central's, and matched its published SHA-512 too.
+ */
+export const byteBuddy = {
+  version: '1.18.16',
+  url: 'https://repo1.maven.org/maven2/net/bytebuddy/byte-buddy/1.18.16/byte-buddy-1.18.16.jar',
+  sha256: '666e4b302cea0baf5c43484675a15e1ad8537101c63cdfcc95fdbcfab35cf24a',
+  file: path.join(source, 'deps', 'byte-buddy-1.18.16.jar'),
+};
+
+const sha256Of = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
+
+/** Byte Buddy's jar: the one in deps/ if its SHA-256 matches, else fetched and checked. */
+export async function fetchByteBuddy() {
+  if (existsSync(byteBuddy.file) && sha256Of(byteBuddy.file) === byteBuddy.sha256) return byteBuddy.file;
+  mkdirSync(path.dirname(byteBuddy.file), { recursive: true });
+  const response = await fetch(byteBuddy.url);
+  if (!response.ok) throw new Error(`Fetching Byte Buddy: HTTP ${response.status} from ${byteBuddy.url}`);
+  const temp = `${byteBuddy.file}.download`;
+  writeFileSync(temp, Buffer.from(await response.arrayBuffer()));
+  const got = sha256Of(temp);
+  if (got !== byteBuddy.sha256) {
+    rmSync(temp, { force: true });
+    throw new Error(`Byte Buddy's SHA-256 is ${got}, not the pinned ${byteBuddy.sha256}. Not used.`);
+  }
+  renameSync(temp, byteBuddy.file);
+  return byteBuddy.file;
+}
+
 /** Every entry's timestamp: the jars are the same bytes for the same sources. */
 const DATE = '2026-01-01T00:00:00Z';
 
@@ -99,7 +143,7 @@ function packJar(jar, manifest, classes, out) {
 }
 
 /** Builds the three jars. Returns their paths and SHA-256 digests. */
-export function buildJavaAgent() {
+export async function buildJavaAgent() {
   const javac = jdkTool('javac');
   const jar = jdkTool('jar');
   if (!javac || !jar) {
@@ -108,6 +152,7 @@ export function buildJavaAgent() {
     );
   }
   const version = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+  const byteBuddyJar = await fetchByteBuddy();
   rmSync(buildDir, { recursive: true, force: true });
   const gen = path.join(buildDir, 'gen');
   const classes = path.join(buildDir, 'classes');
@@ -130,6 +175,28 @@ export function buildJavaAgent() {
     path.join(classes, 'impl'),
     ['-cp', path.join(classes, 'stub')],
   );
+  // The weaver and Byte Buddy go under weaver/ in the implementation's jar: classes there are
+  // invisible to the program, and loaded only by the agent's WeaverLoader. Byte Buddy's base
+  // classes (Java 5 and 8) only: its versions/ folders serve Java 9's module and Java 24's
+  // Class-File API, which the weaver doesn't use.
+  const weaverClasses = path.join(classes, 'impl', 'weaver');
+  compile(javac, 8, javaFiles(path.join(source, 'weaver')), weaverClasses, ['-cp', byteBuddyJar]);
+  const unpacked = path.join(buildDir, 'byte-buddy');
+  mkdirSync(unpacked, { recursive: true });
+  execFileSync(jar, ['--extract', '--file', byteBuddyJar], { cwd: unpacked, stdio: 'inherit' });
+  for (const entry of readdirSync(unpacked, { recursive: true, encoding: 'utf8' })) {
+    const from = path.join(unpacked, entry);
+    if (!statSync(from).isFile() || !entry.endsWith('.class') || entry.startsWith('META-INF')) continue;
+    if (entry === 'module-info.class') continue;
+    const to = path.join(weaverClasses, entry);
+    mkdirSync(path.dirname(to), { recursive: true });
+    cpSync(from, to);
+  }
+  // Byte Buddy's license and notice go with it (Apache-2.0, section 4).
+  mkdirSync(path.join(classes, 'impl', 'META-INF', 'byte-buddy'), { recursive: true });
+  for (const name of ['LICENSE', 'NOTICE']) {
+    cpSync(path.join(unpacked, 'META-INF', name), path.join(classes, 'impl', 'META-INF', 'byte-buddy', name));
+  }
   compile(javac, 11, javaFiles(path.join(source, 'attach')), path.join(classes, 'attach'), [
     '--add-modules',
     'jdk.attach',
@@ -160,15 +227,12 @@ export function buildJavaAgent() {
   );
 
   return Object.fromEntries(
-    Object.entries(jars).map(([name, file]) => [
-      name,
-      { file, sha256: createHash('sha256').update(readFileSync(file)).digest('hex') },
-    ]),
+    Object.entries(jars).map(([name, file]) => [name, { file, sha256: sha256Of(file) }]),
   );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  for (const { file, sha256 } of Object.values(buildJavaAgent())) {
+  for (const { file, sha256 } of Object.values(await buildJavaAgent())) {
     console.log(`Built ${path.relative(root, file)}  sha256 ${sha256}`);
   }
 }

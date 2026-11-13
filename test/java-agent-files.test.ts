@@ -3,7 +3,10 @@ import { mkdtemp, mkdir, chmod, readdir, readFile, rm, stat, writeFile } from 'n
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { X509Certificate } from 'node:crypto';
+import { generateCACertificate } from 'mockttp';
 import {
+  caSha256,
   formatControl,
   installAgentJars,
   makeAgentFolder,
@@ -53,6 +56,7 @@ describe('the control file', () => {
         wirescryPid: 99,
         statusDelayMs: 0,
         caSha256: 'a'.repeat(64),
+        caPath: '/data dir/ca.pem',
         detached: ['a1', 'b_2'],
       }),
     ).toBe(
@@ -67,6 +71,7 @@ describe('the control file', () => {
         'wirescryPid=99',
         'statusDelayMs=0',
         `caSha256=${'a'.repeat(64)}`,
+        'caPath=/data dir/ca.pem',
         'detached=a1,b_2',
         'end=1',
         '',
@@ -88,8 +93,22 @@ describe('the control file', () => {
     ['an uppercase CA hash', { caSha256: 'A'.repeat(64) }],
     ['an id with a comma', { detached: ['a,b'] }],
     ['an id with a newline', { detached: ['a\nenabled=false'] }],
+    ['a relative CA path', { caPath: 'ca.pem' }],
+    ['a CA path with a newline', { caPath: '/tmp/ca.pem\nenabled=false' }],
+    ['a CA path over 1024 characters', { caPath: `/${'a'.repeat(1024)}` }],
   ])('refuses %s', (_, change) => {
     expect(() => formatControl({ ...control, ...change })).toThrow();
+  });
+});
+
+describe('the CA’s hash', () => {
+  it('is the SHA-256 of the certificate’s DER encoding, which the agent computes too', async () => {
+    const { cert } = await generateCACertificate({ subject: { commonName: 'Hash test CA' } });
+    const fingerprint = new X509Certificate(cert).fingerprint256.replaceAll(':', '').toLowerCase();
+    expect(caSha256(cert)).toBe(fingerprint);
+    // Line endings and blank lines in the file don't change it.
+    expect(caSha256(`\n${cert.replaceAll('\n', '\r\n')}\n`)).toBe(fingerprint);
+    expect(() => caSha256('not a certificate')).toThrow();
   });
 });
 

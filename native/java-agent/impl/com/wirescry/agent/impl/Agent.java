@@ -40,7 +40,10 @@ public final class Agent {
   final File dir;
   private final long startedNanos = System.nanoTime();
   private final Liveness liveness = new Liveness();
-  private Control lastGood;
+  private volatile Control lastGood;
+  private final Hooks hooks = new Hooks();
+  private final Instrumentation inst;
+  private boolean retransformed;
   /**
    * How long a startup agent waits before its first status file: the control file's, kept after a
    * bad read, so an agent that turns off still says so.
@@ -52,10 +55,11 @@ public final class Agent {
   private String reason = "starting";
   private Status status;
 
-  private Agent(String route, String id, File dir) {
+  private Agent(String route, String id, File dir, Instrumentation inst) {
     this.route = route;
     this.id = id;
     this.dir = dir;
+    this.inst = inst;
   }
 
   /**
@@ -67,7 +71,9 @@ public final class Agent {
     if (running != null || dir == null) return;
     String id = "attach".equals(route) ? attachId(args) : randomId();
     if (id == null) return;
-    final Agent agent = new Agent(route, id, dir);
+    final Agent agent = new Agent(route, id, dir, inst);
+    // Only compares class names until a class it changes loads: cheap before main.
+    inst.addTransformer(agent.hooks, true);
     agent.poll(true);
     Thread thread =
         new Thread(
@@ -84,10 +90,16 @@ public final class Agent {
     running = agent;
   }
 
-  /** Whether the agent is on: what later pull requests' hooks ask before changing anything. */
+  /** Whether the agent is on: what hooks ask before changing anything. */
   public static boolean isOn() {
     Agent agent = running;
     return agent != null && agent.on;
+  }
+
+  /** The last good settings, or null. */
+  static Control settings() {
+    Agent agent = running;
+    return agent == null ? null : agent.lastGood;
   }
 
   /**
@@ -152,7 +164,16 @@ public final class Agent {
         badRead();
       }
     }
+    if (!first && !retransformed) {
+      // Classes the agent changes that loaded before it (an attach): once, after main has begun.
+      retransformed = true;
+      hooks.retransformLoaded(inst);
+    }
     if (!first) writeStatusIfDue();
+  }
+
+  String hookReport() {
+    return hooks.report();
   }
 
   private void badRead() {

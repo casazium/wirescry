@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, X509Certificate } from 'node:crypto';
 import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -43,7 +43,9 @@ export interface AgentControl {
   wirescryPid?: number;
   /** How long a startup agent waits before writing its status file (default 5 s). */
   statusDelayMs?: number;
+  /** Wirescry's CA: its SHA-256 (see caSha256) and its PEM file's absolute path. */
   caSha256?: string;
+  caPath?: string;
   /** Attached agents switched off, by id. */
   detached: string[];
 }
@@ -81,6 +83,12 @@ export function formatControl(control: AgentControl): string {
   }
   if (control.caSha256 !== undefined && !/^[0-9a-f]{64}$/.test(control.caSha256))
     throw new Error('Bad CA hash');
+  if (control.caPath !== undefined) {
+    const ca = control.caPath;
+    // One line, and a path the agent takes as absolute on this system.
+    if (!path.isAbsolute(ca) || ca.length > 1024 || /[\r\n\0]/.test(ca))
+      throw new Error(`Bad CA path: ${ca}`);
+  }
   for (const id of control.detached) if (!ID.test(id)) throw new Error(`Bad agent id: ${id}`);
   const lines = [
     `protocol=${AGENT_PROTOCOL}`,
@@ -93,10 +101,19 @@ export function formatControl(control: AgentControl): string {
     ...(control.wirescryPid !== undefined ? [`wirescryPid=${control.wirescryPid}`] : []),
     ...(delay !== undefined ? [`statusDelayMs=${delay}`] : []),
     ...(control.caSha256 ? [`caSha256=${control.caSha256}`] : []),
+    ...(control.caPath ? [`caPath=${control.caPath}`] : []),
     `detached=${control.detached.join(',')}`,
     'end=1',
   ];
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * The SHA-256, in hex, of a CA certificate's DER encoding: what the control file's `caSha256` is.
+ * The agent checks the CA it reads against it, and takes a change as a new CA.
+ */
+export function caSha256(pem: string): string {
+  return createHash('sha256').update(new X509Certificate(pem).raw).digest('hex');
 }
 
 /** A status file's contents, or undefined if it's half-written, damaged or from another protocol. */
