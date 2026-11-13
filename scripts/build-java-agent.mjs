@@ -26,14 +26,20 @@ export const jars = {
 /** Every entry's timestamp: the jars are the same bytes for the same sources. */
 const DATE = '2026-01-01T00:00:00Z';
 
-/** A JDK tool (javac, jar) from JAVA_HOME, else PATH, if it's JDK 17 or later. */
+/**
+ * A JDK tool (javac, jar) from JAVA_HOME, else PATH, if it's JDK 17 or later. On macOS, PATH's
+ * /usr/bin tools are placeholders that offer to install Java in a dialog when run, so there the
+ * JDK comes from JAVA_HOME or /usr/libexec/java_home (which answers without a dialog), never PATH.
+ */
 export function jdkTool(name) {
   const exe = process.platform === 'win32' ? `${name}.exe` : name;
-  const candidates = [process.env.JAVA_HOME && path.join(process.env.JAVA_HOME, 'bin', exe), exe].filter(
-    Boolean,
-  );
+  let home = process.env.JAVA_HOME;
+  if (!home && process.platform === 'darwin') {
+    const found = spawnSync('/usr/libexec/java_home', { encoding: 'utf8' });
+    if (found.status === 0) home = found.stdout.trim();
+  }
+  const candidates = home ? [path.join(home, 'bin', exe)] : process.platform === 'darwin' ? [] : [exe];
   for (const tool of candidates) {
-    // macOS has a placeholder javac that only says Java isn't installed (and exits non-zero).
     const run = spawnSync(tool, ['--version'], { encoding: 'utf8' });
     const major = Number(/(\d+)(?:\.\d+)*/.exec(`${run.stdout}${run.stderr}`)?.[1]);
     if (run.status === 0 && major >= 17) return tool;
@@ -78,11 +84,18 @@ function packJar(jar, manifest, classes, out) {
     .filter((entry) => statSync(path.join(classes, entry)).isFile())
     .map((entry) => entry.split(path.sep).join('/'))
     .sort();
-  // -C applies to the one file after it, so each entry gets its own.
-  const files = entries.flatMap((entry) => ['-C', classes, entry]);
-  execFileSync(jar, ['--create', `--date=${DATE}`, '--file', out, '--manifest', manifestFile, ...files], {
-    stdio: 'inherit',
-  });
+  // -C applies to the one file after it, so each entry gets its own. In an argument file: with
+  // Byte Buddy's classes the command line would pass Windows' length limit.
+  const quote = (arg) => `"${arg.replaceAll('\\', '/')}"`;
+  const argFile = `${classes}.args`;
+  writeFileSync(argFile, entries.map((entry) => `-C ${quote(classes)} ${quote(entry)}`).join('\n'));
+  execFileSync(
+    jar,
+    ['--create', `--date=${DATE}`, '--file', out, '--manifest', manifestFile, `@${argFile}`],
+    {
+      stdio: 'inherit',
+    },
+  );
 }
 
 /** Builds the three jars. Returns their paths and SHA-256 digests. */
@@ -99,29 +112,24 @@ export function buildJavaAgent() {
   const gen = path.join(buildDir, 'gen');
   const classes = path.join(buildDir, 'classes');
 
-  // The implementation runs from the bootstrap class path and can't see the stub's classes, so it
-  // gets its own copy of the stub's permission check, made here so the two never differ.
   const implGen = path.join(gen, 'com', 'wirescry', 'agent', 'impl');
   mkdirSync(implGen, { recursive: true });
-  const perms = readFileSync(path.join(source, 'stub', 'com', 'wirescry', 'agent', 'Perms.java'), 'utf8');
-  writeFileSync(
-    path.join(implGen, 'Perms.java'),
-    perms
-      .replace(
-        'package com.wirescry.agent;',
-        '// Made from stub/com/wirescry/agent/Perms.java by scripts/build-java-agent.mjs.\npackage com.wirescry.agent.impl;',
-      )
-      .replace('public final class Perms', 'final class Perms')
-      .replace('public static boolean private_', 'static boolean private_'),
-  );
-  if (!/^[0-9A-Za-z.+-]+$/.test(version)) throw new Error(`Unexpected version ${version}`);
+  if (!/^[0-9A-Za-z.+-]{1,40}$/.test(version)) throw new Error(`Unexpected version ${version}`);
   writeFileSync(
     path.join(implGen, 'Version.java'),
     `// Made by scripts/build-java-agent.mjs.\npackage com.wirescry.agent.impl;\n\nfinal class Version {\n  static final String AGENT = "${version}";\n\n  private Version() {}\n}\n`,
   );
 
   compile(javac, 8, javaFiles(path.join(source, 'stub')), path.join(classes, 'stub'));
-  compile(javac, 8, [...javaFiles(path.join(source, 'impl')), ...javaFiles(gen)], path.join(classes, 'impl'));
+  // The implementation runs from the bootstrap class path, where it can't see the stub's classes:
+  // it gets its own copy of the stub's permission check, compiled from the same source.
+  const perms = path.join(source, 'stub', 'com', 'wirescry', 'agent', 'Perms.java');
+  compile(
+    javac,
+    8,
+    [...javaFiles(path.join(source, 'impl')), ...javaFiles(gen), perms],
+    path.join(classes, 'impl'),
+  );
   compile(javac, 11, javaFiles(path.join(source, 'attach')), path.join(classes, 'attach'), [
     '--add-modules',
     'jdk.attach',
@@ -134,19 +142,19 @@ export function buildJavaAgent() {
 
   packJar(
     jar,
-    `Premain-Class: com.wirescry.agent.Stub\nAgent-Class: com.wirescry.agent.Stub\nCan-Retransform-Classes: true\nImplementation-Title: Wirescry Java agent\nImplementation-Version: ${version}`,
+    `Premain-Class: com.wirescry.agent.Stub\nCreated-By: Wirescry build\nAgent-Class: com.wirescry.agent.Stub\nCan-Retransform-Classes: true\nImplementation-Title: Wirescry Java agent\nImplementation-Version: ${version}`,
     path.join(classes, 'stub'),
     jars.stub,
   );
   packJar(
     jar,
-    `Implementation-Title: Wirescry Java agent implementation\nImplementation-Version: ${version}`,
+    `Implementation-Title: Wirescry Java agent implementation\nCreated-By: Wirescry build\nImplementation-Version: ${version}`,
     path.join(classes, 'impl'),
     jars.impl,
   );
   packJar(
     jar,
-    `Main-Class: com.wirescry.attach.Main\nImplementation-Version: ${version}`,
+    `Main-Class: com.wirescry.attach.Main\nCreated-By: Wirescry build\nImplementation-Version: ${version}`,
     path.join(classes, 'attach'),
     jars.attach,
   );

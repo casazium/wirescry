@@ -4,6 +4,7 @@
  */
 package com.wirescry.agent.impl;
 
+import com.wirescry.agent.Perms;
 import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -32,7 +33,7 @@ final class Status {
 
   Status(Agent agent) {
     this.agent = agent;
-    this.pid = Liveness.Processes.self();
+    this.pid = Liveness.Real.self();
   }
 
   void write(boolean on, String reason, Control control, boolean beatDue) {

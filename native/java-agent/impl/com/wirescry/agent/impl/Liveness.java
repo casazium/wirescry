@@ -5,6 +5,7 @@
 package com.wirescry.agent.impl;
 
 import java.lang.reflect.Method;
+import java.util.Optional;
 
 /**
  * Whether Wirescry is still running, so an agent stops sending traffic to a proxy that's gone.
@@ -15,39 +16,64 @@ import java.lang.reflect.Method;
  *   <li>The heartbeat: Wirescry changes `seq` every few seconds. Unchanged for {@link
  *       Agent#STALE_READS_OFF} reads in a row means gone. Reads are counted, not timed, so a clock
  *       change or sleep doesn't matter. This works on every Java.
- *   <li>On Java 9 and later, Wirescry's process: the first time a pid is seen, its start time is
- *       noted; from then on the pid must exist with that same start time. This notices a crash
- *       within a second. Node has no start time that matches Java's, so Wirescry never writes one.
+ *   <li>On Java 9 and later, Wirescry's process. When a read shows the heartbeat has just moved,
+ *       Wirescry is surely alive, so the start time of its pid is noted then. Until the next move,
+ *       the pid must still exist with that start time. This notices a crash within a second, and a
+ *       new Wirescry that got the same pid is noted again at its first heartbeat. Node has no start
+ *       time that matches Java's, so Wirescry never writes one.
  * </ul>
  */
 final class Liveness {
+  /** What the process check needs; tests give their own. */
+  interface Processes {
+    /** "Can't tell": no ProcessHandle (Java 8). */
+    Object UNKNOWN = new Object();
+
+    /** The live process `pid`, null if there's none, or UNKNOWN. */
+    Object handle(long pid);
+
+    /** The process's start time, or null if the system doesn't say. */
+    Object startInstant(Object handle);
+  }
+
+  private final Processes processes;
   private long lastSeq = -1;
   private int staleReads;
-  private long pid;
-  private Object startInstant;
+  private long notedPid;
+  private Object notedStart;
 
-  boolean alive(Control control) {
-    if (control.seq == lastSeq) staleReads++;
-    else staleReads = 0;
+  Liveness() {
+    this(Real.INSTANCE);
+  }
+
+  Liveness(Processes processes) {
+    this.processes = processes;
+  }
+
+  /** `checkProcess` is false for the read before main, which uses the heartbeat rule only. */
+  boolean alive(Control control, boolean checkProcess) {
+    boolean moved = control.seq != lastSeq;
+    staleReads = moved ? 0 : staleReads + 1;
     lastSeq = control.seq;
     if (staleReads >= Agent.STALE_READS_OFF) return false;
-    if (control.wirescryPid == 0) return true;
-    Object handle = Processes.handle(control.wirescryPid);
-    if (handle == Processes.UNKNOWN) return true; // Java 8: the heartbeat alone.
+    if (!checkProcess || control.wirescryPid == 0) return true;
+    Object handle = processes.handle(control.wirescryPid);
+    if (handle == Processes.UNKNOWN) return true;
     if (handle == null) return false;
-    Object start = Processes.startInstant(handle);
-    if (pid != control.wirescryPid) {
-      pid = control.wirescryPid;
-      startInstant = start;
+    Object start = processes.startInstant(handle);
+    if (moved) {
+      notedPid = control.wirescryPid;
+      notedStart = start;
       return true;
     }
-    return startInstant == null || startInstant.equals(start);
+    // Nothing noted for this pid yet: the heartbeat hasn't moved since it appeared.
+    if (notedPid != control.wirescryPid || notedStart == null) return true;
+    return notedStart.equals(start);
   }
 
   /** java.lang.ProcessHandle (Java 9+) by reflection: the agent is compiled for Java 8. */
-  static final class Processes {
-    /** "Can't tell": this Java has no ProcessHandle. */
-    static final Object UNKNOWN = new Object();
+  static final class Real implements Processes {
+    static final Real INSTANCE = new Real();
 
     private static final Method OF, IS_ALIVE, INFO, START, CURRENT, PID;
 
@@ -72,12 +98,11 @@ final class Liveness {
       PID = pid;
     }
 
-    /** The live process `pid`, null if there's none, or UNKNOWN on Java 8. */
-    static Object handle(long pid) {
+    @Override
+    public Object handle(long pid) {
       if (OF == null) return UNKNOWN;
       try {
-        Object optional = OF.invoke(null, pid);
-        Object handle = optional.getClass().getMethod("orElse", Object.class).invoke(optional, (Object) null);
+        Object handle = ((Optional<?>) OF.invoke(null, pid)).orElse(null);
         if (handle == null || !Boolean.TRUE.equals(IS_ALIVE.invoke(handle))) return null;
         return handle;
       } catch (Exception e) {
@@ -85,11 +110,10 @@ final class Liveness {
       }
     }
 
-    /** The process's start time (an Optional's value), or null if the system doesn't say. */
-    static Object startInstant(Object handle) {
+    @Override
+    public Object startInstant(Object handle) {
       try {
-        Object optional = START.invoke(INFO.invoke(handle));
-        return optional.getClass().getMethod("orElse", Object.class).invoke(optional, (Object) null);
+        return ((Optional<?>) START.invoke(INFO.invoke(handle))).orElse(null);
       } catch (Exception e) {
         return null;
       }
@@ -107,16 +131,16 @@ final class Liveness {
       }
       try {
         // Java 8 on Linux: /proc/self is a link named after this process.
-        String name = new java.io.File("/proc/self").getCanonicalFile().getName();
-        if (name.matches("[0-9]{1,18}")) return Long.parseLong(name);
+        long pid = Control.number(new java.io.File("/proc/self").getCanonicalFile().getName());
+        if (pid > 0) return pid;
       } catch (Exception e) {
         // fall through
       }
       try {
         // "<pid>@<host>" on HotSpot and OpenJ9.
         String name = java.lang.management.ManagementFactory.getRuntimeMXBean().getName();
-        String digits = name.substring(0, name.indexOf('@'));
-        if (digits.matches("[0-9]{1,18}")) return Long.parseLong(digits);
+        long pid = Control.number(name.substring(0, name.indexOf('@')));
+        if (pid > 0) return pid;
       } catch (Throwable e) {
         // fall through
       }

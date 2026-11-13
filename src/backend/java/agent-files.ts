@@ -18,7 +18,12 @@ import path from 'node:path';
  * code in, or redirect the traffic of, every Java program the user starts), and stays off.
  */
 
-/** The format both sides speak; the agent's Control.PROTOCOL. */
+/**
+ * The format both sides speak; the agent's Control.PROTOCOL. In each file, `protocol` is the oldest
+ * protocol a reader must speak to use it. Adding keys keeps the number (readers ignore keys they
+ * don't know), so agents already running in JVMs, which keep the agent they loaded, keep working.
+ * Raise it only for a change an older reader would misread; older agents then turn off.
+ */
 export const AGENT_PROTOCOL = 1;
 const ID = /^[A-Za-z0-9_-]{1,64}$/;
 const IMPL = /^jars\/wirescry-agent-impl-[0-9A-Za-z.+_-]{1,64}\.jar$/;
@@ -115,7 +120,8 @@ export function parseStatus(text: string): AgentStatus | undefined {
       return undefined;
     }
   }
-  if (!ended || fields.get('protocol') !== String(AGENT_PROTOCOL)) return undefined;
+  const protocol = Number(fields.get('protocol'));
+  if (!ended || !Number.isInteger(protocol) || protocol < 1 || protocol > AGENT_PROTOCOL) return undefined;
   const number = (key: string, min = 0) => {
     const value = fields.get(key);
     if (value === undefined || !/^-?\d{1,18}$/.test(value)) return undefined;
@@ -242,6 +248,10 @@ export async function installAgentJars(
   const name = `jars/wirescry-agent-impl-${built.version}-${sha8}.jar`;
   const implFile = path.join(dir, name);
   if (!(await readFile(implFile).catch(() => undefined))?.equals(impl)) await writeWhole(implFile, impl);
+  // The agent refuses jars others can write. Same bytes restored with looser permissions (from a
+  // backup, say) would leave it off for good, so they're set every time.
+  await chmod(implFile, 0o600);
+  await chmod(stubFile, 0o600);
   return name;
 }
 

@@ -20,11 +20,15 @@ import java.util.jar.JarFile;
  * control file next to it, checks that only this user can change either, puts the jar on the
  * bootstrap class path and starts it. Whatever goes wrong, it returns quietly: a `-javaagent`
  * whose premain throws stops the JVM before main, and Wirescry must never stop a program.
+ *
+ * <p>This jar is replaced only when it differs, and a JVM may run an old copy for a long time, so
+ * what it relies on is frozen: the control file's `impl=` line, the jar name rule below, and the
+ * implementation's {@code Agent.start(String, Instrumentation, String, File)}. Perms is also in
+ * the implementation jar (the same class, loaded again from the bootstrap class path).
  */
 public final class Stub {
   private static final String AGENT_CLASS = "com.wirescry.agent.impl.Agent";
-  /** The implementation jar's name, as the control file gives it. Nothing else is loaded. */
-  private static final String IMPL_PATTERN = "jars/wirescry-agent-impl-[0-9A-Za-z.+_-]{1,64}\\.jar";
+  private static final String IMPL_PREFIX = "jars/wirescry-agent-impl-";
 
   private Stub() {}
 
@@ -45,7 +49,10 @@ public final class Stub {
         if (dir == null) return;
         File impl = implJar(dir);
         if (impl == null) return;
-        inst.appendToBootstrapClassLoaderSearch(new JarFile(impl));
+        // The JVM adds the jar by its path; this JarFile only names it.
+        try (JarFile jar = new JarFile(impl)) {
+          inst.appendToBootstrapClassLoaderSearch(jar);
+        }
         agent = Class.forName(AGENT_CLASS, true, null);
       } else {
         dir = ownFolder();
@@ -81,14 +88,42 @@ public final class Stub {
   static File implJar(File dir) throws Exception {
     File control = new File(dir, "control.properties");
     if (!Perms.private_(dir) || !Perms.private_(control)) return null;
+    String text = new String(Files.readAllBytes(control.toPath()), StandardCharsets.UTF_8);
     String name = null;
-    for (String line : new String(Files.readAllBytes(control.toPath()), StandardCharsets.UTF_8).split("\n")) {
-      if (line.startsWith("impl=")) name = line.substring("impl=".length()).trim();
+    int start = 0;
+    while (start < text.length()) {
+      int end = text.indexOf('\n', start);
+      if (end < 0) end = text.length();
+      String line = text.substring(start, end).trim();
+      if (line.startsWith("impl=")) {
+        if (name != null) return null;
+        name = line.substring("impl=".length());
+      }
+      start = end + 1;
     }
-    if (name == null || !name.matches(IMPL_PATTERN)) return null;
+    if (!implName(name)) return null;
     File jar = new File(dir, name);
     File jars = jar.getParentFile();
     if (!Perms.private_(jars) || !Perms.private_(jar) || !jar.isFile()) return null;
     return jar;
+  }
+
+  /**
+   * Whether `name` is `jars/wirescry-agent-impl-<1 to 64 of 0-9 A-Z a-z . + _ ->.jar`: nothing that
+   * leaves the jars folder. Checked by hand: a regular expression here would be the program's first,
+   * before its main.
+   */
+  static boolean implName(String name) {
+    if (name == null || !name.startsWith(IMPL_PREFIX) || !name.endsWith(".jar")) return false;
+    String middle = name.substring(IMPL_PREFIX.length(), name.length() - ".jar".length());
+    if (middle.isEmpty() || middle.length() > 64) return false;
+    for (int i = 0; i < middle.length(); i++) {
+      char c = middle.charAt(i);
+      boolean ok =
+          (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')
+              || c == '.' || c == '+' || c == '_' || c == '-';
+      if (!ok) return false;
+    }
+    return true;
   }
 }

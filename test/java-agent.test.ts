@@ -11,7 +11,7 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -84,12 +84,27 @@ beforeAll(async () => {
   if (run.status !== 0) throw new Error(run.stderr);
 }, 120_000);
 
-afterEach(() => {
-  for (const child of children.splice(0)) child.kill('SIGKILL');
+afterEach(async () => {
+  // Wait for each to exit: on Windows a JVM holds its agent's jars open, and the folder can't be
+  // removed until it's gone.
+  await Promise.all(
+    children.splice(0).map(
+      (child) =>
+        new Promise<void>((resolve) => {
+          if (child.exitCode !== null || child.signalCode !== null) return resolve();
+          const timer = setTimeout(resolve, 5000);
+          child.once('exit', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          child.kill('SIGKILL');
+        }),
+    ),
+  );
 });
 
 afterAll(async () => {
-  if (work) await rm(work, { recursive: true, force: true });
+  if (work) await rm(work, { recursive: true, force: true, maxRetries: 5 });
 });
 
 /** A fresh `<data folder>/java-agent` with the jars installed, and the control file written. */
@@ -173,9 +188,36 @@ async function statusOf(dir: string, pid: number | undefined): Promise<AgentStat
 const newId = () => `t${randomBytes(6).toString('hex')}`;
 
 describe.skipIf(!buildJava)('the Java agent', () => {
-  it('builds the same jars from the same sources', () => {
+  it('builds the same jars from the same sources, on one machine', () => {
     expect(buildJavaAgent().impl.sha256).toBe(built.impl.sha256);
   }, 120_000);
+
+  it('decides whether Wirescry is alive by the rules, with a fake process table', () => {
+    const out = path.join(work, 'liveness-check');
+    const compiled = spawnSync(
+      javac!,
+      [
+        '--release',
+        '8',
+        '-Xlint:-options',
+        '-cp',
+        built.impl.file,
+        '-d',
+        out,
+        path.join(import.meta.dirname, 'java', 'LivenessCheck.java'),
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(compiled.stderr).toBe('');
+    const result = spawnSync(
+      buildJava!,
+      ['-cp', [built.impl.file, out].join(path.delimiter), 'com.wirescry.agent.impl.LivenessCheck'],
+      { encoding: 'utf8' },
+    );
+    expect(result.stdout).not.toContain('FAIL');
+    expect(result.stdout.match(/^ok /gm)).toHaveLength(12);
+    expect(result.status).toBe(0);
+  });
 
   for (const java of javas) {
     const major = majorOf(java);
@@ -199,6 +241,29 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         expect(r.stderr()).toBe('');
       });
 
+      it('adds little to a program’s start', async () => {
+        const agent = await agentFolder({ statusDelayMs: undefined });
+        const time = async (extra: string[]) => {
+          const begin = performance.now();
+          expect(await probe(java, 0, extra).exit).toBe(0);
+          return performance.now() - begin;
+        };
+        const median = (xs: number[]) => xs.sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
+        await time([]); // warm the file cache
+        const plain: number[] = [];
+        const withAgent: number[] = [];
+        for (let i = 0; i < 5; i++) {
+          plain.push(await time([]));
+          withAgent.push(await time([`-javaagent:${agent.stub}`]));
+        }
+        const cost = median(withAgent) - median(plain);
+        console.log(
+          `Java ${major}: start ${median(plain).toFixed(0)} ms, with the agent ${cost.toFixed(0)} ms more`,
+        );
+        // Generous, for slow CI machines: it's tens of milliseconds on a laptop.
+        expect(cost).toBeLessThan(1000);
+      }, 60_000);
+
       it('follows a change of port, and turns off for a program started with startup agents off', async () => {
         const agent = await agentFolder();
         const r = probe(java, 8000, [`-javaagent:${agent.stub}`]);
@@ -217,33 +282,72 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           });
       });
 
-      it('doesn’t write a status file for a short program, unless asked to at once', async () => {
+      it('doesn’t write a status file for a short program, nor before main', async () => {
         const agent = await agentFolder({ statusDelayMs: undefined }); // 5 s, like javac
         const r = probe(java, 300, [`-javaagent:${agent.stub}`]);
         expect(await r.exit).toBe(0);
         expect(await readdir(path.join(agent.dir, 'status'))).toEqual([]);
+        // Asked to write at once, it still waits for the control thread's first read, after main.
+        await agent.update({ statusDelayMs: 0 });
+        const quick = probe(java, 300, [`-javaagent:${agent.stub}`]);
+        expect(await quick.exit).toBe(0);
+        expect(await readdir(path.join(agent.dir, 'status'))).toEqual([]);
       });
 
-      it('never stops a program: no agent jar, a bad name, or an unknown protocol', async () => {
-        for (const change of [
-          { impl: 'jars/wirescry-agent-impl-0.0.0-missing.jar' },
-          { impl: 'jars/wirescry-agent-impl-0.0.0-x.jar' },
-        ]) {
-          const agent = await agentFolder(change);
-          const r = probe(java, 200, [`-javaagent:${agent.stub}`]);
-          expect(await r.exit).toBe(0);
-          expect(r.stdout()).toContain('done');
-          expect(await readdir(path.join(agent.dir, 'status'))).toEqual([]);
-        }
-        // A name that climbs out of jars/, which Wirescry never writes, and a protocol this agent
-        // doesn't know (loaded, but off). Both written by hand, since formatControl refuses them.
+      it('never stops a program: a missing agent jar, or names Wirescry would never write', async () => {
         const agent = await agentFolder();
         const file = path.join(agent.dir, 'control.properties');
         const good = await readFile(file, 'utf8');
-        await writeWhole(file, good.replace(/impl=.*/, `impl=jars/../${agent.impl}`));
-        const r = probe(java, 200, [`-javaagent:${agent.stub}`]);
+        // Written by hand: formatControl refuses all but the first.
+        // A folder whose name passes the prefix check, for a name that climbs back out of it.
+        await mkdir(path.join(agent.dir, 'jars', 'wirescry-agent-impl-0'), { mode: 0o700 });
+        for (const impl of [
+          'jars/wirescry-agent-impl-0.0.0-missing.jar',
+          'jars/evil.jar',
+          `jars/../${agent.impl}`,
+          `jars/wirescry-agent-impl-0/../${path.basename(agent.impl)}`,
+        ]) {
+          await writeWhole(file, good.replace(/impl=.*/, `impl=${impl}`));
+          // Long enough for a loaded agent's first status file (a second in), had it loaded.
+          const r = probe(java, 2000, [`-javaagent:${agent.stub}`]);
+          expect(await r.exit).toBe(0);
+          expect(r.stdout()).toBe(`started${os.EOL}done${os.EOL}`);
+          expect(r.stderr()).toBe('');
+          expect(await readdir(path.join(agent.dir, 'status'))).toEqual([]);
+        }
+      });
+
+      it('never loads the agent from a control file naming it twice', async () => {
+        const agent = await agentFolder();
+        const file = path.join(agent.dir, 'control.properties');
+        const good = await readFile(file, 'utf8');
+        // Had the stub taken the second name, the agent would load, find the key twice, and write
+        // a status file after its default 5 s.
+        const names = `jars/wirescry-agent-impl-0.0.0-missing.jar\nimpl=${agent.impl}`;
+        await writeWhole(file, good.replace(/impl=.*/, `impl=${names}`));
+        const r = probe(java, 6500, [`-javaagent:${agent.stub}`]);
         expect(await r.exit).toBe(0);
         expect(await readdir(path.join(agent.dir, 'status'))).toEqual([]);
+      });
+
+      it('ignores keys it doesn’t know, and turns off for a protocol it doesn’t or a key given twice', async () => {
+        const agent = await agentFolder();
+        const file = path.join(agent.dir, 'control.properties');
+        const good = await readFile(file, 'utf8');
+        // From a newer Wirescry that only added a key.
+        await writeWhole(file, good.replace('end=1', 'newerSetting=yes\nend=1'));
+        const r = probe(java, 1500, [`-javaagent:${agent.stub}`]);
+        await expect
+          .poll(() => statusOf(agent.dir, r.child.pid))
+          .toMatchObject({ enabled: true, reason: 'on' });
+        expect(await r.exit).toBe(0);
+        await writeWhole(file, good.replace('end=1', 'enabled=false\nend=1'));
+        const twice = probe(java, 7000, [`-javaagent:${agent.stub}`]);
+        await started(twice);
+        await expect
+          .poll(() => statusOf(agent.dir, twice.child.pid), { timeout: 10_000 })
+          .toMatchObject({ enabled: false, reason: 'bad-control' });
+        expect(await twice.exit).toBe(0);
         await writeWhole(file, good.replace('protocol=1', 'protocol=2'));
         // Without good settings, the status file waits the default 5 s.
         const r2 = probe(java, 7000, [`-javaagent:${agent.stub}`]);
@@ -260,13 +364,22 @@ describe.skipIf(!buildJava)('the Java agent', () => {
       it.skipIf(!posix)('refuses files other users can change, and the program still runs', async () => {
         const agent = await agentFolder();
         await chmod(agent.dir, 0o770);
-        const r = probe(java, 200, [`-javaagent:${agent.stub}`]);
+        // Each runs long enough for a loaded agent's first status file (a second in).
+        const r = probe(java, 2000, [`-javaagent:${agent.stub}`]);
         expect(await r.exit).toBe(0);
         expect(await readdir(path.join(agent.dir, 'status'))).toEqual([]);
         await chmod(agent.dir, 0o700);
         await chmod(path.join(agent.dir, agent.impl), 0o666);
-        const r2 = probe(java, 200, [`-javaagent:${agent.stub}`]);
+        const r2 = probe(java, 2000, [`-javaagent:${agent.stub}`]);
         expect(await r2.exit).toBe(0);
+        expect(await readdir(path.join(agent.dir, 'status'))).toEqual([]);
+        // A link in place of the jar, even to a private copy: a link could be pointed elsewhere.
+        const copy = path.join(path.dirname(agent.dir), 'copy.jar');
+        await rename(path.join(agent.dir, agent.impl), copy);
+        await chmod(copy, 0o600);
+        await symlink(copy, path.join(agent.dir, agent.impl));
+        const r3 = probe(java, 2000, [`-javaagent:${agent.stub}`]);
+        expect(await r3.exit).toBe(0);
         expect(await readdir(path.join(agent.dir, 'status'))).toEqual([]);
       });
 
@@ -274,7 +387,8 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         const agent = await agentFolder();
         const r = probe(java, 8000, [`-javaagent:${agent.stub}`]);
         await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ enabled: true });
-        await chmod(path.join(agent.dir, 'control.properties'), 0o622);
+        // Writable by others only (not the group), so each check is tested on its own.
+        await chmod(path.join(agent.dir, 'control.properties'), 0o602);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid))
           .toMatchObject({
@@ -292,6 +406,8 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         // Half-written: no end=1. One poll sees it, then a good file returns.
         await writeWhole(file, good.replace('end=1\n', ''));
         await new Promise((resolve) => setTimeout(resolve, 1200));
+        // At least one poll has seen it, and the agent is still on.
+        expect(await statusOf(agent.dir, r.child.pid)).toMatchObject({ enabled: true, reason: 'on' });
         await writeWhole(file, good);
         await new Promise((resolve) => setTimeout(resolve, 1200));
         expect(await statusOf(agent.dir, r.child.pid)).toMatchObject({ enabled: true, reason: 'on' });
@@ -334,7 +450,8 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         const agent = await agentFolder({ wirescryPid: undefined });
         const r = probe(java, 30000, [`-javaagent:${agent.stub}`]);
         await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ enabled: true });
-        await new Promise((resolve) => setTimeout(resolve, 10_000));
+        // Well inside the 15 reads, however slow the first was.
+        await new Promise((resolve) => setTimeout(resolve, 8000));
         expect(await statusOf(agent.dir, r.child.pid)).toMatchObject({ enabled: true });
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
@@ -416,7 +533,10 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           const agent = await agentFolder();
           const r = probe(java, 8000);
           await started(r);
-          expect(attacher(['load', String(r.child.pid), agent.stub, 'id=../x']).code).toBe(0);
+          // A dot would make a writable file name; the others can't name a file at all.
+          for (const args of ['id=bad.id', 'id=../x', 'id=', 'nonsense', 'id=a,id=b']) {
+            expect(attacher(['load', String(r.child.pid), agent.stub, args]).code).toBe(0);
+          }
           await new Promise((resolve) => setTimeout(resolve, 1500));
           expect(await readStatuses(agent.dir)).toEqual([]);
           // Nothing written anywhere: the id would have named the status file.
@@ -428,6 +548,10 @@ describe.skipIf(!buildJava)('the Java agent', () => {
             'wirescry-agent.jar',
           ]);
           expect((await readdir(path.dirname(agent.dir))).sort()).toEqual(['java-agent']);
+          // None of them started an agent, so a good id still can.
+          const id = newId();
+          expect(attacher(['load', String(r.child.pid), agent.stub, `id=${id}`]).code).toBe(0);
+          await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ id, enabled: true });
         });
       });
     });

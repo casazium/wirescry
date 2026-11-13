@@ -4,20 +4,29 @@
  */
 package com.wirescry.agent.impl;
 
-import java.util.Arrays;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
  * Wirescry's settings for every agent, from `control.properties` (written by
  * src/backend/java/agent-files.ts). One `key=value` per line, UTF-8, ending with `end=1`: a file
- * without that line is half-written or damaged, and is a bad read. Unknown keys are ignored, so a
- * newer Wirescry can add some; a `protocol` this agent doesn't know is a bad read.
+ * without that line is half-written or damaged, and is a bad read, as is a key given twice.
+ *
+ * <p>Versions: `protocol` is the oldest protocol a reader must speak to use the file. A newer
+ * Wirescry that only adds keys keeps writing the old number, and agents already running in JVMs
+ * (which keep the agent they loaded) ignore keys they don't know. Only a change older agents
+ * would misread raises it, and those agents then turn off rather than guess.
+ *
+ * <p>No regular expressions: this runs before the program's main.
  */
 final class Control {
+  /** The protocol this agent speaks. */
   static final int PROTOCOL = 1;
-  private static final String ID = "[A-Za-z0-9_-]{1,64}";
 
   final boolean enabled;
   /** Whether agents loaded at startup (not attached) are on. */
@@ -36,39 +45,26 @@ final class Control {
   /** Agents Wirescry has detached, by id. */
   final Set<String> detached;
 
-  private Control(
-      boolean enabled,
-      boolean startup,
-      int proxyPort,
-      long config,
-      long seq,
-      long wirescryPid,
-      long statusDelayMs,
-      String caSha256,
-      Set<String> detached) {
-    this.enabled = enabled;
-    this.startup = startup;
-    this.proxyPort = proxyPort;
-    this.config = config;
-    this.seq = seq;
-    this.wirescryPid = wirescryPid;
-    this.statusDelayMs = statusDelayMs;
-    this.caSha256 = caSha256;
+  private Control(Map<String, String> f, Set<String> detached) {
+    this.enabled = "true".equals(f.get("enabled"));
+    this.startup = "true".equals(f.get("startup"));
+    this.proxyPort = (int) number(f.get("proxyPort"));
+    this.config = number(f.get("config"));
+    this.seq = number(f.get("seq"));
+    this.wirescryPid = f.containsKey("wirescryPid") ? number(f.get("wirescryPid")) : 0;
+    this.statusDelayMs = f.containsKey("statusDelayMs") ? number(f.get("statusDelayMs")) : 5000;
+    this.caSha256 = f.containsKey("caSha256") ? f.get("caSha256") : "";
     this.detached = detached;
   }
 
-  /** The settings in `text`, or null if it's half-written, damaged or from an unknown protocol. */
+  /** The settings in `text`, or null if it's half-written, damaged or needs a newer protocol. */
   static Control parse(String text) {
-    String protocol = null, enabled = null, startup = null, port = null, config = null, seq = null;
-    String pid = null, delay = null, ca = null, detached = null;
+    Map<String, String> f = new HashMap<String, String>();
     boolean ended = false;
-    for (String raw : text.split("\n", -1)) {
+    for (String raw : split(text, '\n')) {
       String line = raw.endsWith("\r") ? raw.substring(0, raw.length() - 1) : raw;
-      if (ended) {
-        if (line.isEmpty()) continue;
-        return null;
-      }
       if (line.isEmpty()) continue;
+      if (ended) return null;
       int eq = line.indexOf('=');
       if (eq <= 0) return null;
       String key = line.substring(0, eq);
@@ -76,68 +72,81 @@ final class Control {
       if (key.equals("end")) {
         if (!value.equals("1")) return null;
         ended = true;
-      } else if (key.equals("protocol")) protocol = value;
-      else if (key.equals("enabled")) enabled = value;
-      else if (key.equals("startup")) startup = value;
-      else if (key.equals("proxyPort")) port = value;
-      else if (key.equals("config")) config = value;
-      else if (key.equals("seq")) seq = value;
-      else if (key.equals("wirescryPid")) pid = value;
-      else if (key.equals("statusDelayMs")) delay = value;
-      else if (key.equals("caSha256")) ca = value;
-      else if (key.equals("detached")) detached = value;
+      } else if (f.put(key, value) != null) {
+        return null;
+      }
     }
-    if (!ended || !String.valueOf(PROTOCOL).equals(protocol)) return null;
-    Boolean on = bool(enabled);
-    Boolean atStartup = bool(startup);
-    long portNumber = number(port);
-    long configNumber = number(config);
-    long seqNumber = number(seq);
-    long pidNumber = pid == null ? 0 : number(pid);
-    long delayMs = delay == null ? 5000 : number(delay);
-    if (on == null || atStartup == null) return null;
-    if (portNumber < 1 || portNumber > 65535) return null;
-    if (configNumber < 0 || seqNumber < 0 || pidNumber < 0) return null;
-    if (delayMs < 0 || delayMs > 60_000) return null;
-    String caHex = ca == null ? "" : ca;
-    if (!caHex.isEmpty() && !caHex.matches("[0-9a-f]{64}")) return null;
+    if (!ended) return null;
+    long protocol = number(f.get("protocol"));
+    if (protocol < 1 || protocol > PROTOCOL) return null;
+    if (!bool(f.get("enabled")) || !bool(f.get("startup"))) return null;
+    long port = number(f.get("proxyPort"));
+    if (port < 1 || port > 65535) return null;
+    if (number(f.get("config")) < 0 || number(f.get("seq")) < 0) return null;
+    if (f.containsKey("wirescryPid") && number(f.get("wirescryPid")) < 0) return null;
+    if (f.containsKey("statusDelayMs")) {
+      long delay = number(f.get("statusDelayMs"));
+      if (delay < 0 || delay > 60_000) return null;
+    }
+    if (f.containsKey("caSha256") && !hex64(f.get("caSha256"))) return null;
     Set<String> ids = new HashSet<String>();
+    String detached = f.get("detached");
     if (detached != null && !detached.isEmpty()) {
-      for (String id : detached.split(",", -1)) {
-        if (!id.matches(ID)) return null;
+      for (String id : split(detached, ',')) {
+        if (!validId(id)) return null;
         ids.add(id);
       }
     }
-    return new Control(
-        on,
-        atStartup,
-        (int) portNumber,
-        configNumber,
-        seqNumber,
-        pidNumber,
-        delayMs,
-        caHex,
-        Collections.unmodifiableSet(ids));
+    return new Control(f, Collections.unmodifiableSet(ids));
   }
 
+  /** An agent id: 1 to 64 of A-Z, a-z, 0-9, `_` and `-`. It names the status file. */
   static boolean validId(String id) {
-    return id != null && id.matches(ID);
+    if (id == null || id.isEmpty() || id.length() > 64) return false;
+    for (int i = 0; i < id.length(); i++) {
+      char c = id.charAt(i);
+      boolean ok =
+          (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+      if (!ok) return false;
+    }
+    return true;
   }
 
-  private static Boolean bool(String value) {
-    if ("true".equals(value)) return Boolean.TRUE;
-    if ("false".equals(value)) return Boolean.FALSE;
-    return null;
+  /** `text` split at each `sep`, keeping empty parts (String.split may compile a regex). */
+  static List<String> split(String text, char sep) {
+    List<String> parts = new ArrayList<String>();
+    int start = 0;
+    for (int i = 0; i <= text.length(); i++) {
+      if (i == text.length() || text.charAt(i) == sep) {
+        parts.add(text.substring(start, i));
+        start = i + 1;
+      }
+    }
+    return parts;
   }
 
-  /** A non-negative decimal number of at most 18 digits, or -1. */
-  private static long number(String value) {
-    if (value == null || !value.matches("[0-9]{1,18}")) return -1;
-    return Long.parseLong(value);
+  private static boolean bool(String value) {
+    return "true".equals(value) || "false".equals(value);
   }
 
-  @Override
-  public String toString() {
-    return "Control" + Arrays.asList(enabled, startup, proxyPort, config, seq, wirescryPid);
+  private static boolean hex64(String value) {
+    if (value == null || value.length() != 64) return false;
+    for (int i = 0; i < 64; i++) {
+      char c = value.charAt(i);
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+  }
+
+  /** A non-negative decimal number of 1 to 18 digits, or -1. */
+  static long number(String value) {
+    if (value == null || value.isEmpty() || value.length() > 18) return -1;
+    long n = 0;
+    for (int i = 0; i < value.length(); i++) {
+      char c = value.charAt(i);
+      if (c < '0' || c > '9') return -1;
+      n = n * 10 + (c - '0');
+    }
+    return n;
   }
 }

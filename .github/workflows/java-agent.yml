@@ -1,6 +1,6 @@
 name: Java agent
 
-# Wirescry's Java agent (native/java-agent) on every Java GitHub's images carry, from 8 to 25,
+# Wirescry's Java agent (native/java-agent) on every Java GitHub's images carry (8 to 25 on Linux),
 # loaded at startup and attached, on each OS. Attaching takes a JDK on Wirescry's side; nightly
 # runs try JDK 11, 21 and 25 as the attacher against every target, pull requests JDK 21.
 
@@ -11,6 +11,9 @@ on:
       - src/backend/java/**
       - scripts/build-java-agent.mjs
       - test/java-agent*.ts
+      - test/java/**
+      - package.json
+      - vitest.config.mts
       - .github/workflows/java-agent.yml
   schedule:
     - cron: '17 6 * * *'
@@ -55,6 +58,13 @@ jobs:
             echo "Found $name: $home"
             targets="${targets:+$targets$delim}$home/bin/$exe"
           done
+          # Ubuntu's image carries 8, 11, 17, 21 and 25: missing one there means the run proves less
+          # than it claims. Other images carry fewer (macOS arm64 has no 8), listed above.
+          if [ "$RUNNER_OS" = Linux ]; then
+            for major in 8 11 17 21 25; do
+              v="JAVA_HOME_${major}_X64"; test -n "${!v}" || { echo "No Java $major on this image."; exit 1; }
+            done
+          fi
           build="${JAVA_HOME_21_X64:-$JAVA_HOME_21_arm64}"
           attach_name="JAVA_HOME_${ATTACHER}_X64"; attach_home="${!attach_name}"
           [ -n "$attach_home" ] || { attach_name="JAVA_HOME_${ATTACHER}_arm64"; attach_home="${!attach_name}"; }

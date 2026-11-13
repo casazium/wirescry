@@ -101,7 +101,10 @@ public final class Main {
       System.out.println(failure("agent-init-failed", e.getMessage()));
       return 1;
     } catch (Exception e) {
-      System.out.println(failure("load-failed", e.toString()));
+      // Some JDKs report a refused load as an I/O error with the same advice in its message.
+      String message = e.toString();
+      String reason = message.contains("EnableDynamicAgentLoading") ? "dynamic-loading-disabled" : "load-failed";
+      System.out.println(failure(reason, message));
       return 1;
     } finally {
       try {

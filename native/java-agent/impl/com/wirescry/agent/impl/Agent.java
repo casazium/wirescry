@@ -9,6 +9,7 @@ import java.lang.instrument.Instrumentation;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.NoSuchFileException;
+import com.wirescry.agent.Perms;
 import java.util.Random;
 
 /**
@@ -17,9 +18,11 @@ import java.util.Random;
  * with the agent has its settings before main. A daemon thread then reads the file every second,
  * decides whether the agent is on, and writes this JVM's status file for Wirescry.
  *
- * <p>Startup cost matters: this runs before main in every JVM that loads the agent. It touches no
- * logging, JMX, TLS or networking classes, and uses no lambdas (each would start the
- * java.lang.invoke machinery early).
+ * <p>Startup cost matters: this runs before main in every JVM that loads the agent. Before main it
+ * reads one file and starts one thread: no regular expressions, no process or time classes, no
+ * status file, no logging, JMX, TLS or networking, and no lambdas (each would start the
+ * java.lang.invoke machinery early). Those wait for the control thread's first read, a second
+ * later. agentmain returns as quickly, for the same reasons and so the attacher isn't kept waiting.
  */
 public final class Agent {
   /** Reads of a half-written or damaged control file in a row that turn the agent off. */
@@ -30,7 +33,7 @@ public final class Agent {
   /** A status file is rewritten at least this often, so Wirescry can tell a live JVM from a dead one. */
   static final int STATUS_EVERY_POLLS = 5;
 
-  private static Agent running;
+  private static volatile Agent running;
 
   final String route;
   final String id;
@@ -38,8 +41,14 @@ public final class Agent {
   private final long startedNanos = System.nanoTime();
   private final Liveness liveness = new Liveness();
   private Control lastGood;
+  /**
+   * How long a startup agent waits before its first status file: the control file's, kept after a
+   * bad read, so an agent that turns off still says so.
+   */
+  private long statusDelayMs = 5000;
   private int badReads;
-  private boolean on;
+  /** Read by hooks on any thread, so volatile. */
+  private volatile boolean on;
   private String reason = "starting";
   private Status status;
 
@@ -59,7 +68,7 @@ public final class Agent {
     String id = "attach".equals(route) ? attachId(args) : randomId();
     if (id == null) return;
     final Agent agent = new Agent(route, id, dir);
-    agent.poll();
+    agent.poll(true);
     Thread thread =
         new Thread(
             new Runnable() {
@@ -81,10 +90,20 @@ public final class Agent {
     return agent != null && agent.on;
   }
 
-  /** The id Wirescry gave in the attach arguments (`id=<id>`), or null if they're wrong. */
+  /**
+   * The id in the attach arguments, or null if there's none or it's not a good one. The arguments
+   * are comma-separated `key=value` pairs; keys this agent doesn't know are ignored, so a later
+   * Wirescry can add some.
+   */
   static String attachId(String args) {
-    if (args == null || !args.startsWith("id=")) return null;
-    String id = args.substring("id=".length());
+    if (args == null) return null;
+    String id = null;
+    for (String pair : Control.split(args, ',')) {
+      if (pair.startsWith("id=")) {
+        if (id != null) return null;
+        id = pair.substring("id=".length());
+      }
+    }
     return Control.validId(id) ? id : null;
   }
 
@@ -101,15 +120,18 @@ public final class Agent {
     while (true) {
       try {
         Thread.sleep(POLL_MS);
-        poll();
+        poll(false);
       } catch (Throwable ignored) {
         // Keep going: the next read may work. An interrupt can't come from Wirescry.
       }
     }
   }
 
-  /** One read of the control file: decides on or off, and writes the status file when due. */
-  synchronized void poll() {
+  /**
+   * One read of the control file: decides on or off, and writes the status file when due. The first,
+   * before main (`first`), skips Wirescry's process check and the status file (see the class note).
+   */
+  synchronized void poll(boolean first) {
     File control = new File(dir, "control.properties");
     Control read = null;
     if (!Perms.private_(dir)) {
@@ -122,7 +144,7 @@ public final class Agent {
         } else {
           read = Control.parse(text);
           if (read == null) badRead();
-          else accept(read);
+          else accept(read, !first);
         }
       } catch (NoSuchFileException e) {
         off("no-control");
@@ -130,7 +152,7 @@ public final class Agent {
         badRead();
       }
     }
-    writeStatusIfDue();
+    if (!first) writeStatusIfDue();
   }
 
   private void badRead() {
@@ -142,10 +164,11 @@ public final class Agent {
     // Otherwise keep the last good settings: a scanner or a slow write may hold the file briefly.
   }
 
-  private void accept(Control control) {
+  private void accept(Control control, boolean checkProcess) {
     badReads = 0;
     lastGood = control;
-    if (!liveness.alive(control)) off("wirescry-gone");
+    statusDelayMs = control.statusDelayMs;
+    if (!liveness.alive(control, checkProcess)) off("wirescry-gone");
     else if (!control.enabled) off("off");
     else if (!"attach".equals(route) && !control.startup) off("startup-off");
     else if (control.detached.contains(id)) off("detached");
@@ -164,7 +187,7 @@ public final class Agent {
 
   private void writeStatusIfDue() {
     polls++;
-    long delayMs = "attach".equals(route) ? 0 : lastGood == null ? 5000 : lastGood.statusDelayMs;
+    long delayMs = "attach".equals(route) ? 0 : statusDelayMs;
     if ((System.nanoTime() - startedNanos) / 1_000_000 < delayMs) return;
     if (status == null) status = new Status(this);
     status.write(on, reason, lastGood, polls % STATUS_EVERY_POLLS == 0);

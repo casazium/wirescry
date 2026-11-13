@@ -123,7 +123,8 @@ describe('status files', () => {
   it.each<[string, string]>([
     ['without end=1 (half-written)', status().replace('end=1\n', '')],
     ['with lines after end=1', `${status()}enabled=false\n`],
-    ['from another protocol', status({ protocol: '2' })],
+    ['from a newer protocol', status({ protocol: '2' })],
+    ['from protocol 0', status({ protocol: '0' })],
     ['with a key twice', `enabled=false\n${status()}`],
     ['with a line that has no =', status().replace('hooks=', 'hooks')],
     ['with an unknown route', status({ route: 'magic' })],
@@ -227,6 +228,23 @@ describe('files on disk', () => {
       'Bad version',
     );
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'makes the jars this user’s alone again when their bytes match',
+    async () => {
+      const agentDir = path.join(dir, 'java-agent');
+      const stub = path.join(dir, 'stub.jar');
+      const impl = path.join(dir, 'impl.jar');
+      await writeFile(stub, 'stub-1');
+      await writeFile(impl, 'impl-1');
+      const name = await installAgentJars(agentDir, { stub, impl, version: '0.1.30' });
+      await chmod(path.join(agentDir, name), 0o664);
+      await chmod(path.join(agentDir, 'wirescry-agent.jar'), 0o646);
+      await installAgentJars(agentDir, { stub, impl, version: '0.1.30' });
+      expect((await stat(path.join(agentDir, name))).mode & 0o777).toBe(0o600);
+      expect((await stat(path.join(agentDir, 'wirescry-agent.jar'))).mode & 0o777).toBe(0o600);
+    },
+  );
 
   it('keeps the stub a running JVM holds open on Windows, but not when there is none', async () => {
     const agentDir = path.join(dir, 'java-agent');
