@@ -173,12 +173,20 @@ function attacher(args: string[]) {
   });
   return {
     code: result.status,
+    /** Everything it printed, for an assertion's message. */
+    why: `${result.stdout}${result.stderr}`,
     lines: result.stdout
       .trim()
       .split('\n')
       .filter(Boolean)
       .map((l) => JSON.parse(l)),
   };
+}
+
+/** Runs the attacher, and fails with what it printed unless it exits 0. */
+function expectAttached(args: string[]) {
+  const { code, why } = attacher(args);
+  expect(code, why).toBe(0);
 }
 
 async function statusOf(dir: string, pid: number | undefined): Promise<AgentStatus | undefined> {
@@ -263,6 +271,38 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         // Generous, for slow CI machines: it's tens of milliseconds on a laptop.
         expect(cost).toBeLessThan(1000);
       }, 60_000);
+
+      it.skipIf(major < 11)('leaves class-data sharing on: no warning in the program’s output', async () => {
+        // A shared archive of our own, like the one most JDKs ship (this test's may not), made for
+        // runs with an agent (java.instrument). Appending to the bootstrap class path would make
+        // HotSpot warn on every start.
+        const archive = path.join(work, `classes-${major}.jsa`);
+        const dump = spawnSync(
+          java,
+          [
+            '-Xshare:dump',
+            '--add-modules',
+            'java.instrument',
+            `-XX:SharedArchiveFile=${archive}`,
+            '-cp',
+            progDir,
+          ],
+          { encoding: 'utf8' },
+        );
+        expect(dump.status, dump.stderr).toBe(0);
+        const agent = await agentFolder();
+        const r = probe(java, 1500, [
+          `-XX:SharedArchiveFile=${archive}`,
+          '-Xshare:auto',
+          `-javaagent:${agent.stub}`,
+        ]);
+        await expect
+          .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
+          .toMatchObject({ enabled: true });
+        expect(await r.exit).toBe(0);
+        expect(r.stderr()).toBe('');
+        expect(r.stdout()).toBe(`started${os.EOL}done${os.EOL}`);
+      });
 
       it('follows a change of port, and turns off for a program started with startup agents off', async () => {
         const agent = await agentFolder();
@@ -467,8 +507,8 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         it('lists the program by its main class only, never its arguments', async () => {
           const r = probe(java, 15000, [], ['--password=hunter2']);
           await started(r);
-          const { code, lines } = attacher(['list']);
-          expect(code).toBe(0);
+          const { code, lines, why } = attacher(['list']);
+          expect(code, why).toBe(0);
           expect(lines).toContainEqual({ pid: String(r.child.pid), name: 'Probe' });
           expect(JSON.stringify(lines)).not.toContain('hunter2');
           // The attacher leaves itself out.
@@ -480,8 +520,8 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           const r = probe(java, 20000);
           await started(r);
           const id = newId();
-          const { code, lines } = attacher(['load', String(r.child.pid), agent.stub, `id=${id}`]);
-          expect(code).toBe(0);
+          const { code, lines, why } = attacher(['load', String(r.child.pid), agent.stub, `id=${id}`]);
+          expect(code, why).toBe(0);
           expect(lines[0]).toMatchObject({ ok: true });
           expect(lines[0].java).toMatch(major === 8 ? /^1\.8/ : new RegExp(`^${major}`));
           // startup=false doesn't apply to an attached agent.
@@ -496,7 +536,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           await expect
             .poll(() => statusOf(agent.dir, r.child.pid))
             .toMatchObject({ enabled: false, reason: 'detached' });
-          expect(attacher(['load', String(r.child.pid), agent.stub, `id=${newId()}`]).code).toBe(0);
+          expectAttached(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
           await agent.update({ detached: [], config: 3, seq: 3 });
           await expect
             .poll(() => statusOf(agent.dir, r.child.pid))
@@ -510,7 +550,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           const agent = await agentFolder();
           const r = probe(java, 15000, ['-XX:-EnableDynamicAgentLoading']);
           await started(r);
-          const { code, lines } = attacher(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
+          const { code, lines, why } = attacher(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
           expect(code).toBe(1);
           expect(lines[0]).toMatchObject({ ok: false, reason: 'dynamic-loading-disabled' });
         });
@@ -535,7 +575,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           await started(r);
           // A dot would make a writable file name; the others can't name a file at all.
           for (const args of ['id=bad.id', 'id=../x', 'id=', 'nonsense', 'id=a,id=b']) {
-            expect(attacher(['load', String(r.child.pid), agent.stub, args]).code).toBe(0);
+            expectAttached(['load', String(r.child.pid), agent.stub, args]);
           }
           await new Promise((resolve) => setTimeout(resolve, 1500));
           expect(await readStatuses(agent.dir)).toEqual([]);
@@ -550,7 +590,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           expect((await readdir(path.dirname(agent.dir))).sort()).toEqual(['java-agent']);
           // None of them started an agent, so a good id still can.
           const id = newId();
-          expect(attacher(['load', String(r.child.pid), agent.stub, `id=${id}`]).code).toBe(0);
+          expectAttached(['load', String(r.child.pid), agent.stub, `id=${id}`]);
           await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ id, enabled: true });
         });
       });

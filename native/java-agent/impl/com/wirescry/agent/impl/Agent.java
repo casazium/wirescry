@@ -13,8 +13,8 @@ import com.wirescry.agent.Perms;
 import java.util.Random;
 
 /**
- * Wirescry's Java agent, started by the stub (com.wirescry.agent.Stub) from the bootstrap class
- * path, once per JVM. It reads Wirescry's control file once before returning, so a program started
+ * Wirescry's Java agent, started by the stub (com.wirescry.agent.Stub) from the system class
+ * loader, once per JVM. It reads Wirescry's control file once before returning, so a program started
  * with the agent has its settings before main. A daemon thread then reads the file every second,
  * decides whether the agent is on, and writes this JVM's status file for Wirescry.
  *

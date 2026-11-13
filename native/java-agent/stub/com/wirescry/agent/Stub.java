@@ -17,14 +17,17 @@ import java.util.jar.JarFile;
  * option copied into an IDE keeps working across Wirescry updates.
  *
  * <p>It does as little as it can. It reads the name of the agent's implementation jar from the
- * control file next to it, checks that only this user can change either, puts the jar on the
- * bootstrap class path and starts it. Whatever goes wrong, it returns quietly: a `-javaagent`
+ * control file next to it, checks that only this user can change either, adds the jar to the
+ * system class loader (where this jar is too) and starts it. Not the bootstrap class path:
+ * appending there turns off class-data sharing for the program's own classes, and HotSpot prints a
+ * warning in every program it runs. Hooks in JDK classes find the agent through the system class
+ * loader instead. Whatever goes wrong, it returns quietly: a `-javaagent`
  * whose premain throws stops the JVM before main, and Wirescry must never stop a program.
  *
  * <p>This jar is replaced only when it differs, and a JVM may run an old copy for a long time, so
  * what it relies on is frozen: the control file's `impl=` line, the jar name rule below, and the
- * implementation's {@code Agent.start(String, Instrumentation, String, File)}. Perms is also in
- * the implementation jar (the same class, loaded again from the bootstrap class path).
+ * implementation's {@code Agent.start(String, Instrumentation, String, File)}, and {@code
+ * Perms.private_(File)}, which the implementation uses from this jar.
  */
 public final class Stub {
   private static final String AGENT_CLASS = "com.wirescry.agent.impl.Agent";
@@ -51,9 +54,9 @@ public final class Stub {
         if (impl == null) return;
         // The JVM adds the jar by its path; this JarFile only names it.
         try (JarFile jar = new JarFile(impl)) {
-          inst.appendToBootstrapClassLoaderSearch(jar);
+          inst.appendToSystemClassLoaderSearch(jar);
         }
-        agent = Class.forName(AGENT_CLASS, true, null);
+        agent = Class.forName(AGENT_CLASS, true, ClassLoader.getSystemClassLoader());
       } else {
         dir = ownFolder();
       }
@@ -68,7 +71,7 @@ public final class Stub {
   /** The implementation, if an earlier start in this JVM loaded it. */
   private static Class<?> loadedAgent() {
     try {
-      return Class.forName(AGENT_CLASS, false, null);
+      return Class.forName(AGENT_CLASS, false, ClassLoader.getSystemClassLoader());
     } catch (ClassNotFoundException e) {
       return null;
     }

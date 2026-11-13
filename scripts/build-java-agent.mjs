@@ -121,14 +121,14 @@ export function buildJavaAgent() {
   );
 
   compile(javac, 8, javaFiles(path.join(source, 'stub')), path.join(classes, 'stub'));
-  // The implementation runs from the bootstrap class path, where it can't see the stub's classes:
-  // it gets its own copy of the stub's permission check, compiled from the same source.
-  const perms = path.join(source, 'stub', 'com', 'wirescry', 'agent', 'Perms.java');
+  // The implementation uses the stub's permission check, from the stub's jar: both are on the
+  // system class loader.
   compile(
     javac,
     8,
-    [...javaFiles(path.join(source, 'impl')), ...javaFiles(gen), perms],
+    [...javaFiles(path.join(source, 'impl')), ...javaFiles(gen)],
     path.join(classes, 'impl'),
+    ['-cp', path.join(classes, 'stub')],
   );
   compile(javac, 11, javaFiles(path.join(source, 'attach')), path.join(classes, 'attach'), [
     '--add-modules',
