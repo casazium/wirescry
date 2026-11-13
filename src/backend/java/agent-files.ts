@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, X509Certificate } from 'node:crypto';
 import { chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -7,7 +7,8 @@ import path from 'node:path';
  *
  * - `wirescry-agent.jar`: the stub, at a path that never changes, so a `-javaagent:` option copied
  *   into an IDE keeps working across updates.
- * - `jars/wirescry-agent-impl-<version>-<sha8>.jar`: the agent, one copy per build. A running JVM
+ * - `jars/wirescry-agent-impl-<version>-<sha8>.jar`, with its weaver (Byte Buddy) beside it as
+ *   `…-<sha8>-weaver.jar`: the agent, one pair per build. A running JVM
  *   keeps the copy it loaded open, so copies are added, never replaced, and Windows updates can
  *   still replace the app's own files.
  * - `control.properties`: Wirescry's settings for every agent, read before a program's main and
@@ -43,7 +44,9 @@ export interface AgentControl {
   wirescryPid?: number;
   /** How long a startup agent waits before writing its status file (default 5 s). */
   statusDelayMs?: number;
+  /** Wirescry's CA: its SHA-256 (see caSha256) and its PEM file's absolute path. */
   caSha256?: string;
+  caPath?: string;
   /** Attached agents switched off, by id. */
   detached: string[];
 }
@@ -81,6 +84,12 @@ export function formatControl(control: AgentControl): string {
   }
   if (control.caSha256 !== undefined && !/^[0-9a-f]{64}$/.test(control.caSha256))
     throw new Error('Bad CA hash');
+  if (control.caPath !== undefined) {
+    const ca = control.caPath;
+    // One line, and a path the agent takes as absolute on this system.
+    if (!path.isAbsolute(ca) || ca.length > 1024 || /[\r\n\0]/.test(ca))
+      throw new Error(`Bad CA path: ${ca}`);
+  }
   for (const id of control.detached) if (!ID.test(id)) throw new Error(`Bad agent id: ${id}`);
   const lines = [
     `protocol=${AGENT_PROTOCOL}`,
@@ -93,10 +102,19 @@ export function formatControl(control: AgentControl): string {
     ...(control.wirescryPid !== undefined ? [`wirescryPid=${control.wirescryPid}`] : []),
     ...(delay !== undefined ? [`statusDelayMs=${delay}`] : []),
     ...(control.caSha256 ? [`caSha256=${control.caSha256}`] : []),
+    ...(control.caPath ? [`caPath=${control.caPath}`] : []),
     `detached=${control.detached.join(',')}`,
     'end=1',
   ];
   return `${lines.join('\n')}\n`;
+}
+
+/**
+ * The SHA-256, in hex, of a CA certificate's DER encoding: what the control file's `caSha256` is.
+ * The agent checks the CA it reads against it, and takes a change as a new CA.
+ */
+export function caSha256(pem: string): string {
+  return createHash('sha256').update(new X509Certificate(pem).raw).digest('hex');
 }
 
 /** A status file's contents, or undefined if it's half-written, damaged or from another protocol. */
@@ -226,7 +244,7 @@ export async function writeControl(dir: string, control: AgentControl, ops?: Fil
  */
 export async function installAgentJars(
   dir: string,
-  built: { stub: string; impl: string; version: string },
+  built: { stub: string; impl: string; weaver: string; version: string },
   ops?: FileOps,
 ): Promise<string> {
   if (!/^[0-9A-Za-z.+-]{1,40}$/.test(built.version)) throw new Error(`Bad version: ${built.version}`);
@@ -244,13 +262,23 @@ export async function installAgentJars(
     }
   }
   const impl = await readFile(built.impl);
-  const sha8 = createHash('sha256').update(impl).digest('hex').slice(0, 8);
+  const weaver = await readFile(built.weaver);
+  // Named by both: a pair a running JVM may hold is never overwritten, even when only the weaver
+  // (a Byte Buddy update) changed.
+  const sha8 = createHash('sha256').update(impl).update(weaver).digest('hex').slice(0, 8);
   const name = `jars/wirescry-agent-impl-${built.version}-${sha8}.jar`;
   const implFile = path.join(dir, name);
-  if (!(await readFile(implFile).catch(() => undefined))?.equals(impl)) await writeWhole(implFile, impl);
-  // The agent refuses jars others can write. Same bytes restored with looser permissions (from a
-  // backup, say) would leave it off for good, so they're set every time.
-  await chmod(implFile, 0o600);
+  // The agent finds its weaver by its own name (Hooks.weaverJar).
+  const weaverFile = implFile.replace(/\.jar$/, '-weaver.jar');
+  for (const [file, bytes] of [
+    [implFile, impl],
+    [weaverFile, weaver],
+  ] as const) {
+    if (!(await readFile(file).catch(() => undefined))?.equals(bytes)) await writeWhole(file, bytes);
+    // The agent refuses jars others can write. Same bytes restored with looser permissions (from a
+    // backup, say) would leave it off for good, so they're set every time.
+    await chmod(file, 0o600);
+  }
   await chmod(stubFile, 0o600);
   return name;
 }

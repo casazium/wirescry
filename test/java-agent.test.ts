@@ -2,49 +2,37 @@
  * Wirescry's Java agent (native/java-agent) in real JVMs: loaded at startup and attached, with the
  * control and status files (src/backend/java/agent-files.ts) as Wirescry writes and reads them.
  *
- * Needs a JDK 17 or later (JAVA_HOME, else PATH) to build the jars, which also attaches. The
- * programs run on that JDK, or on each Java in WIRESCRY_JAVA_TARGETS (a list of java executables,
- * separated by the path delimiter), which the Java agent workflow sets to Java 8 through 25. It
- * attaches with WIRESCRY_JAVA_ATTACHER if set (a JDK 11+ java).
- * WIRESCRY_REQUIRE_JAVA=1 makes a missing JDK fail the run instead of skipping it.
+ * What it needs to run: see test/java-agent-helpers.ts.
  */
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { buildJavaAgent, jdkTool } from '../scripts/build-java-agent.mjs';
+import { describe, expect, it } from 'vitest';
+import { buildJavaAgent } from '../scripts/build-java-agent.mjs';
+import { readStatuses, writeWhole } from '../src/backend/java/agent-files';
 import {
-  installAgentJars,
-  readStatuses,
-  writeControl,
-  writeWhole,
-  type AgentControl,
-  type AgentStatus,
-} from '../src/backend/java/agent-files';
+  agentFolder,
+  attacher,
+  buildJava,
+  compileJava,
+  expectAttached,
+  javac,
+  javas,
+  majorOf,
+  newId,
+  posix,
+  run,
+  setUpJavaAgentTests,
+  shared,
+  statusOf,
+  track,
+  type Run,
+} from './java-agent-helpers';
 
-const javac = jdkTool('javac');
-const exe = process.platform === 'win32' ? 'java.exe' : 'java';
-const buildJava = javac && path.join(path.dirname(javac), exe);
-if (!buildJava && process.env.WIRESCRY_REQUIRE_JAVA === '1') {
-  throw new Error('WIRESCRY_REQUIRE_JAVA=1, but no JDK 17 or later was found (set JAVA_HOME).');
-}
-const targets = (process.env.WIRESCRY_JAVA_TARGETS ?? '').split(path.delimiter).filter(Boolean);
-/** The java that attaches: WIRESCRY_JAVA_ATTACHER (JDK 11+), else the building JDK's. */
-const attachJava = process.env.WIRESCRY_JAVA_ATTACHER || buildJava;
-const javas = targets.length > 0 ? targets : buildJava ? [buildJava] : [];
-const posix = process.platform !== 'win32';
 /** The agent reports the version it was built as: package.json's. */
 const { version } = JSON.parse(readFileSync(path.join(import.meta.dirname, '..', 'package.json'), 'utf8'));
-
-/** The major version a java executable reports ("1.8.0_412" is 8). */
-function majorOf(java: string): number {
-  const text = spawnSync(java, ['-version'], { encoding: 'utf8' }).stderr ?? '';
-  const match = /version "(?:1\.)?(\d+)/.exec(text);
-  return match ? Number(match[1]) : 0;
-}
 
 const PROBE = `
 import java.io.*;
@@ -61,102 +49,14 @@ public class Probe {
 }
 `;
 
-let work: string;
 let progDir: string;
-let built: Awaited<ReturnType<typeof buildJavaAgent>>;
-const children: ChildProcess[] = [];
 
-beforeAll(async () => {
-  if (!buildJava) return;
-  // A space in the path, like macOS's "Application Support".
-  work = await mkdtemp(path.join(os.tmpdir(), 'wirescry java agent-'));
-  built = buildJavaAgent();
-  progDir = path.join(work, 'prog');
-  await writeFile(path.join(work, 'Probe.java'), PROBE);
+setUpJavaAgentTests(async () => {
+  progDir = path.join(shared.work, 'prog');
+  await writeFile(path.join(shared.work, 'Probe.java'), PROBE);
   // Compiled for Java 8, so every target runs it.
-  const run = spawnSync(
-    javac!,
-    ['--release', '8', '-Xlint:-options', '-d', progDir, path.join(work, 'Probe.java')],
-    {
-      encoding: 'utf8',
-    },
-  );
-  if (run.status !== 0) throw new Error(run.stderr);
-}, 120_000);
-
-afterEach(async () => {
-  // Wait for each to exit: on Windows a JVM holds its agent's jars open, and the folder can't be
-  // removed until it's gone.
-  await Promise.all(
-    children.splice(0).map(
-      (child) =>
-        new Promise<void>((resolve) => {
-          if (child.exitCode !== null || child.signalCode !== null) return resolve();
-          const timer = setTimeout(resolve, 5000);
-          child.once('exit', () => {
-            clearTimeout(timer);
-            resolve();
-          });
-          child.kill('SIGKILL');
-        }),
-    ),
-  );
+  compileJava(8, progDir, [path.join(shared.work, 'Probe.java')]);
 });
-
-afterAll(async () => {
-  if (work) await rm(work, { recursive: true, force: true, maxRetries: 5 });
-});
-
-/** A fresh `<data folder>/java-agent` with the jars installed, and the control file written. */
-async function agentFolder(change: Partial<AgentControl> = {}) {
-  const dir = path.join(await mkdtemp(path.join(work, 'data ')), 'java-agent');
-  const impl = await installAgentJars(dir, {
-    stub: built.stub.file,
-    impl: built.impl.file,
-    version: '0.0.0-test',
-  });
-  let control: AgentControl = {
-    impl,
-    enabled: true,
-    startup: true,
-    proxyPort: 8000,
-    config: 1,
-    seq: 1,
-    wirescryPid: process.pid,
-    statusDelayMs: 0,
-    detached: [],
-    ...change,
-  };
-  await writeControl(dir, control);
-  return {
-    dir,
-    stub: path.join(dir, 'wirescry-agent.jar'),
-    impl,
-    control: () => control,
-    async update(next: Partial<AgentControl>) {
-      control = { ...control, ...next };
-      await writeControl(dir, control);
-    },
-  };
-}
-
-interface Run {
-  child: ChildProcess;
-  stdout: () => string;
-  stderr: () => string;
-  exit: Promise<number | null>;
-}
-
-function run(java: string, args: string[]): Run {
-  const child = spawn(java, args, { stdio: ['ignore', 'pipe', 'pipe'] });
-  children.push(child);
-  let stdout = '';
-  let stderr = '';
-  child.stdout!.on('data', (d) => (stdout += d));
-  child.stderr!.on('data', (d) => (stderr += d));
-  const exit = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
-  return { child, stdout: () => stdout, stderr: () => stderr, exit };
-}
 
 const probe = (java: string, ms: number, extra: string[] = [], programArgs: string[] = []) =>
   run(java, [...extra, '-cp', progDir, 'Probe', String(ms), ...programArgs]);
@@ -166,42 +66,15 @@ async function started(r: Run) {
   await expect.poll(r.stdout, { timeout: 10_000 }).toContain('started');
 }
 
-function attacher(args: string[]) {
-  const result = spawnSync(attachJava!, ['-jar', built.attach.file, ...args], {
-    encoding: 'utf8',
-    timeout: 60_000,
-  });
-  return {
-    code: result.status,
-    /** Everything it printed, for an assertion's message. */
-    why: `${result.stdout}${result.stderr}`,
-    lines: result.stdout
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map((l) => JSON.parse(l)),
-  };
-}
-
-/** Runs the attacher, and fails with what it printed unless it exits 0. */
-function expectAttached(args: string[]) {
-  const { code, why } = attacher(args);
-  expect(code, why).toBe(0);
-}
-
-async function statusOf(dir: string, pid: number | undefined): Promise<AgentStatus | undefined> {
-  return (await readStatuses(dir)).find((s) => s.pid === pid);
-}
-
-const newId = () => `t${randomBytes(6).toString('hex')}`;
-
 describe.skipIf(!buildJava)('the Java agent', () => {
-  it('builds the same jars from the same sources, on one machine', () => {
-    expect(buildJavaAgent().impl.sha256).toBe(built.impl.sha256);
+  it('builds the same jars from the same sources, on one machine', async () => {
+    const again = await buildJavaAgent(path.join(shared.work, 'build-again'));
+    expect(again.impl.sha256).toBe(shared.built.impl.sha256);
+    expect(again.weaver.sha256).toBe(shared.built.weaver.sha256);
   }, 120_000);
 
   it('decides whether Wirescry is alive by the rules, with a fake process table', () => {
-    const out = path.join(work, 'liveness-check');
+    const out = path.join(shared.work, 'liveness-check');
     const compiled = spawnSync(
       javac!,
       [
@@ -209,7 +82,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         '8',
         '-Xlint:-options',
         '-cp',
-        built.impl.file,
+        shared.built.impl.file,
         '-d',
         out,
         path.join(import.meta.dirname, 'java', 'LivenessCheck.java'),
@@ -219,7 +92,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
     expect(compiled.stderr).toBe('');
     const result = spawnSync(
       buildJava!,
-      ['-cp', [built.impl.file, out].join(path.delimiter), 'com.wirescry.agent.impl.LivenessCheck'],
+      ['-cp', [shared.built.impl.file, out].join(path.delimiter), 'com.wirescry.agent.impl.LivenessCheck'],
       { encoding: 'utf8' },
     );
     expect(result.stdout).not.toContain('FAIL');
@@ -278,7 +151,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           // A shared archive of our own, like the one most JDKs ship (this test's may not), made for
           // runs with an agent (java.instrument). Appending to the bootstrap class path would make
           // HotSpot warn on every start.
-          const archive = path.join(work, `classes-${major}.jsa`);
+          const archive = path.join(shared.work, `classes-${major}.jsa`);
           const dump = spawnSync(
             java,
             [
@@ -476,8 +349,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
 
       it.skipIf(major < 9)('turns off within seconds when Wirescry’s process is gone (Java 9+)', async () => {
         // Stands in for Wirescry's backend.
-        const wirescry = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)']);
-        children.push(wirescry);
+        const wirescry = track(spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)']));
         const agent = await agentFolder({ wirescryPid: wirescry.pid });
         const r = probe(java, 15000, [`-javaagent:${agent.stub}`]);
         await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ enabled: true });

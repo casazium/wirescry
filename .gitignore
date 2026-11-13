@@ -33,3 +33,6 @@ native/docker-pipe/bin/
 
 # The Java agent, built by scripts/build-java-agent.mjs
 native/java-agent/build/
+
+# Byte Buddy, fetched by scripts/build-java-agent.mjs and checked by SHA-256
+native/java-agent/deps/

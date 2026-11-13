@@ -40,8 +40,10 @@ final class Control {
   final long wirescryPid;
   /** How long a startup agent waits before writing its status file, in milliseconds. */
   final long statusDelayMs;
-  /** The CA's SHA-256, in hex, or "" if not given. */
+  /** The CA's SHA-256 (of its DER encoding), in hex, or "" if not given. */
   final String caSha256;
+  /** Wirescry's CA certificate (PEM), an absolute path, or "" if not given. */
+  final String caPath;
   /** Agents Wirescry has detached, by id. */
   final Set<String> detached;
 
@@ -54,6 +56,7 @@ final class Control {
     this.wirescryPid = f.containsKey("wirescryPid") ? number(f.get("wirescryPid")) : 0;
     this.statusDelayMs = f.containsKey("statusDelayMs") ? number(f.get("statusDelayMs")) : 5000;
     this.caSha256 = f.containsKey("caSha256") ? f.get("caSha256") : "";
+    this.caPath = f.containsKey("caPath") ? f.get("caPath") : "";
     this.detached = detached;
   }
 
@@ -89,6 +92,10 @@ final class Control {
       if (delay < 0 || delay > 60_000) return null;
     }
     if (f.containsKey("caSha256") && !hex64(f.get("caSha256"))) return null;
+    if (f.containsKey("caPath")) {
+      String ca = f.get("caPath");
+      if (ca.isEmpty() || ca.length() > 1024 || !new java.io.File(ca).isAbsolute()) return null;
+    }
     Set<String> ids = new HashSet<String>();
     String detached = f.get("detached");
     if (detached != null && !detached.isEmpty()) {

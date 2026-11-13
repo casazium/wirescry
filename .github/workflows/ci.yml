@@ -76,6 +76,12 @@ jobs:
             Start-Sleep -Seconds 2
           }
           docker version
+      # Byte Buddy, which the agent's build fetches from Maven Central and checks by its pinned
+      # SHA-256 (scripts/build-java-agent.mjs): fetched once, not by every job.
+      - uses: actions/cache@v6
+        with:
+          path: native/java-agent/deps
+          key: byte-buddy-${{ hashFiles('scripts/build-java-agent.mjs') }}
       - run: npm test
         env:
           # The Docker relay against the runner's real Docker, over named pipes (Windows only).
@@ -101,7 +107,7 @@ jobs:
       - run: npm ci
       # The Docker relay's tests skip here without the pipe helper; the check job runs them. The
       # Java agent's run in JVMs, not in Electron's Node: the check job runs those too.
-      - run: npm run test:electron -- --exclude test/java-agent.test.ts
+      - run: npm run test:electron -- --exclude 'test/java-agent.test.ts' --exclude 'test/java-agent-trust.test.ts'
 
   smoke:
     # The free app, built and driven end to end (e2e/smoke.test.ts). Release builds run the

@@ -85,8 +85,7 @@ final class Status {
       s.append("port=").append(control.proxyPort).append('\n');
       if (!control.caSha256.isEmpty()) s.append("caSha256=").append(control.caSha256).append('\n');
     }
-    // Filled in by the hooks that later pull requests add.
-    s.append("hooks=").append('\n');
+    s.append("hooks=").append(agent.hookReport()).append('\n');
     return s.toString();
   }
 
