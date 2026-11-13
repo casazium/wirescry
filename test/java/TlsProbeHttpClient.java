@@ -29,7 +29,9 @@ public class TlsProbeHttpClient {
             client.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(5)).build(), HttpResponse.BodyHandlers.ofString());
         result = response.statusCode() == 200 ? "OK" : "FAIL status " + response.statusCode();
       } catch (Exception e) {
-        result = "FAIL " + e.getClass().getName();
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+        result = "FAIL " + e.getClass().getName() + ": " + String.valueOf(root.getMessage()).replace('\n', ' ');
       }
       System.out.println(result);
       System.out.flush();

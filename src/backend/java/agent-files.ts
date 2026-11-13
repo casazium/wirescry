@@ -7,7 +7,8 @@ import path from 'node:path';
  *
  * - `wirescry-agent.jar`: the stub, at a path that never changes, so a `-javaagent:` option copied
  *   into an IDE keeps working across updates.
- * - `jars/wirescry-agent-impl-<version>-<sha8>.jar`: the agent, one copy per build. A running JVM
+ * - `jars/wirescry-agent-impl-<version>-<sha8>.jar`, with its weaver (Byte Buddy) beside it as
+ *   `…-<sha8>-weaver.jar`: the agent, one pair per build. A running JVM
  *   keeps the copy it loaded open, so copies are added, never replaced, and Windows updates can
  *   still replace the app's own files.
  * - `control.properties`: Wirescry's settings for every agent, read before a program's main and
@@ -243,7 +244,7 @@ export async function writeControl(dir: string, control: AgentControl, ops?: Fil
  */
 export async function installAgentJars(
   dir: string,
-  built: { stub: string; impl: string; version: string },
+  built: { stub: string; impl: string; weaver: string; version: string },
   ops?: FileOps,
 ): Promise<string> {
   if (!/^[0-9A-Za-z.+-]{1,40}$/.test(built.version)) throw new Error(`Bad version: ${built.version}`);
@@ -261,13 +262,23 @@ export async function installAgentJars(
     }
   }
   const impl = await readFile(built.impl);
-  const sha8 = createHash('sha256').update(impl).digest('hex').slice(0, 8);
+  const weaver = await readFile(built.weaver);
+  // Named by both: a pair a running JVM may hold is never overwritten, even when only the weaver
+  // (a Byte Buddy update) changed.
+  const sha8 = createHash('sha256').update(impl).update(weaver).digest('hex').slice(0, 8);
   const name = `jars/wirescry-agent-impl-${built.version}-${sha8}.jar`;
   const implFile = path.join(dir, name);
-  if (!(await readFile(implFile).catch(() => undefined))?.equals(impl)) await writeWhole(implFile, impl);
-  // The agent refuses jars others can write. Same bytes restored with looser permissions (from a
-  // backup, say) would leave it off for good, so they're set every time.
-  await chmod(implFile, 0o600);
+  // The agent finds its weaver by its own name (Hooks.weaverJar).
+  const weaverFile = implFile.replace(/\.jar$/, '-weaver.jar');
+  for (const [file, bytes] of [
+    [implFile, impl],
+    [weaverFile, weaver],
+  ] as const) {
+    if (!(await readFile(file).catch(() => undefined))?.equals(bytes)) await writeWhole(file, bytes);
+    // The agent refuses jars others can write. Same bytes restored with looser permissions (from a
+    // backup, say) would leave it off for good, so they're set every time.
+    await chmod(file, 0o600);
+  }
   await chmod(stubFile, 0o600);
   return name;
 }

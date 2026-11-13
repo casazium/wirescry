@@ -89,6 +89,18 @@ afterAll(() => {
   for (const server of servers.splice(0)) server.close();
 });
 
+/** A chain no trusted CA signed, as the JDK words it. */
+const UNTRUSTED = /^FAIL \S*SSLHandshakeException: .*unable to find valid certification path/;
+/**
+ * A trusted chain for another host, as the JDK's wrapper for a hand-written trust manager words
+ * it. Elsewhere a Wirescry chain for the wrong host fails the agent's check, and the JDK's own
+ * rejection (UNTRUSTED) stands: the tests' servers differ only in host name, so that's the host
+ * check at work.
+ */
+const WRONG_HOST = /^FAIL \S*SSLHandshakeException: .*No subject alternative DNS name matching localhost/;
+/** Turns on the bytecode verifier for JDK classes too, so a bad rewrite fails the test. */
+const VERIFY = ['-XX:+UnlockDiagnosticVMOptions', '-XX:+BytecodeVerificationLocal'];
+
 /** The control file's CA settings for `ca`. */
 const caSettings = (ca: Ca) => ({ caPath: ca.file, caSha256: ca.sha256 });
 
@@ -112,24 +124,49 @@ async function connect(r: Run): Promise<string> {
   return r.stdout().split('\n').filter(Boolean)[before]!.trim();
 }
 
-describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
+// Several JVMs per test, and Java 8 starts slowly on Windows.
+describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }, () => {
   for (const java of javas) {
     const major = majorOf(java);
     describe(`on Java ${major}`, () => {
+      it('costs the first certificate check the weaver’s loading, once', async () => {
+        const agent = await agentFolder(caSettings(wirescry));
+        // From the program's start: building its client already loads the JDK's trust manager,
+        // and with it the weaver.
+        const firstTwo = async (jvm: string[]) => {
+          let begin = performance.now();
+          const r = await tlsProbe(java, ['url', url.other], jvm);
+          await connect(r);
+          const first = performance.now() - begin;
+          begin = performance.now();
+          await connect(r);
+          return { first, second: performance.now() - begin };
+        };
+        const plain = await firstTwo([]);
+        const hooked = await firstTwo([`-javaagent:${agent.stub}`]);
+        console.log(
+          `Java ${major}: start to first rejected handshake ${plain.first.toFixed(0)} ms, with the agent ${(hooked.first - plain.first).toFixed(0)} ms more; second ${plain.second.toFixed(0)} vs ${hooked.second.toFixed(0)} ms`,
+        );
+        // Generous for CI: Byte Buddy loads and weaves once, then nothing more.
+        expect(hooked.first - plain.first).toBeLessThan(5000);
+        expect(hooked.second - plain.second).toBeLessThan(500);
+      });
+
       it('changes nothing without the agent: Wirescry’s CA isn’t trusted', async () => {
         const r = await tlsProbe(java, ['url', url.good]);
-        expect(await connect(r)).toMatch(/^FAIL .*SSLHandshakeException/);
+        expect(await connect(r)).toMatch(UNTRUSTED);
       });
 
       it('trusts a server Wirescry’s CA signed, and only for its host (HttpsURLConnection)', async () => {
         const agent = await agentFolder(caSettings(wirescry));
         const jvm = [`-javaagent:${agent.stub}`];
-        const good = await tlsProbe(java, ['url', url.good], jvm);
+        // JDK classes aren't verified by default: here they are, so a bad rewrite fails the test.
+        const good = await tlsProbe(java, ['url', url.good], [...jvm, ...VERIFY]);
         expect(await connect(good)).toBe('OK');
         await expect.poll(() => statusOf(agent.dir, good.child.pid)).toMatchObject({ hooks: ['trust:ok'] });
         // Not another CA's, and not Wirescry's for the wrong host.
-        expect(await connect(await tlsProbe(java, ['url', url.other], jvm))).toMatch(/^FAIL /);
-        expect(await connect(await tlsProbe(java, ['url', url.wrongHost], jvm))).toMatch(/^FAIL /);
+        expect(await connect(await tlsProbe(java, ['url', url.other], jvm))).toMatch(UNTRUSTED);
+        expect(await connect(await tlsProbe(java, ['url', url.wrongHost], jvm))).toMatch(UNTRUSTED);
         expect(good.stderr()).toBe('');
       });
 
@@ -137,8 +174,8 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
         const agent = await agentFolder(caSettings(wirescry));
         const jvm = [`-javaagent:${agent.stub}`];
         expect(await connect(await tlsProbe(java, ['socket', url.good], jvm))).toBe('OK');
-        expect(await connect(await tlsProbe(java, ['socket', url.wrongHost], jvm))).toMatch(/^FAIL /);
-        expect(await connect(await tlsProbe(java, ['socket', url.other], jvm))).toMatch(/^FAIL /);
+        expect(await connect(await tlsProbe(java, ['socket', url.wrongHost], jvm))).toMatch(UNTRUSTED);
+        expect(await connect(await tlsProbe(java, ['socket', url.other], jvm))).toMatch(UNTRUSTED);
       });
 
       it('also reaches a program’s own trust store, which keeps trusting what it did', async () => {
@@ -148,26 +185,35 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
         expect(await connect(await tlsProbe(java, ['store', url.good, other.file], jvm))).toBe('OK');
         expect(await connect(await tlsProbe(java, ['store', url.other, other.file], jvm))).toBe('OK');
         expect(await connect(await tlsProbe(java, ['store', url.wrongHost, other.file], jvm))).toMatch(
-          /^FAIL /,
+          UNTRUSTED,
         );
       });
 
       it('leaves a hand-written trust manager alone', async () => {
         const agent = await agentFolder(caSettings(wirescry));
         const r = await tlsProbe(java, ['own', url.good], [`-javaagent:${agent.stub}`]);
-        expect(await connect(r)).toMatch(/^FAIL /);
+        expect(await connect(r)).toMatch(/^FAIL \S*SSLHandshakeException: trusts nothing$/);
+      });
+
+      it('reaches a hand-written trust manager that asks the JDK’s, which still checks the host', async () => {
+        // The two-argument check, wrapped by the JDK, which adds the host name check itself.
+        const agent = await agentFolder(caSettings(wirescry));
+        const jvm = [`-javaagent:${agent.stub}`];
+        expect(await connect(await tlsProbe(java, ['wrap', url.good], jvm))).toBe('OK');
+        expect(await connect(await tlsProbe(java, ['wrap', url.wrongHost], jvm))).toMatch(WRONG_HOST);
+        expect(await connect(await tlsProbe(java, ['wrap', url.other], jvm))).toMatch(UNTRUSTED);
       });
 
       it('trusts only while the agent is on', async () => {
         const agent = await agentFolder({ ...caSettings(wirescry), enabled: false });
         const r = await tlsProbe(java, ['url', url.good], [`-javaagent:${agent.stub}`]);
-        expect(await connect(r)).toMatch(/^FAIL /);
+        expect(await connect(r)).toMatch(UNTRUSTED);
         await agent.update({ enabled: true });
         await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ enabled: true });
         expect(await connect(r)).toBe('OK');
         await agent.update({ enabled: false });
         await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ enabled: false });
-        expect(await connect(r)).toMatch(/^FAIL /);
+        expect(await connect(r)).toMatch(UNTRUSTED);
       });
 
       it('follows a CA reset, and stops trusting the old CA', async () => {
@@ -175,7 +221,7 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
         const old = await tlsProbe(java, ['url', url.good], [`-javaagent:${agent.stub}`]);
         const fresh = await tlsProbe(java, ['url', url.afterReset], [`-javaagent:${agent.stub}`]);
         expect(await connect(old)).toBe('OK');
-        expect(await connect(fresh)).toMatch(/^FAIL /);
+        expect(await connect(fresh)).toMatch(UNTRUSTED);
         await agent.update(caSettings(reset));
         await expect
           .poll(() => statusOf(agent.dir, old.child.pid))
@@ -183,7 +229,7 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
         await expect
           .poll(() => statusOf(agent.dir, fresh.child.pid))
           .toMatchObject({ caSha256: reset.sha256 });
-        expect(await connect(old)).toMatch(/^FAIL /);
+        expect(await connect(old)).toMatch(UNTRUSTED);
         expect(await connect(fresh)).toBe('OK');
       });
 
@@ -191,10 +237,13 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
         // The file is another CA's: someone swapped it, or it's stale.
         const agent = await agentFolder({ caPath: other.file, caSha256: wirescry.sha256 });
         const r = await tlsProbe(java, ['url', url.good], [`-javaagent:${agent.stub}`]);
-        expect(await connect(r)).toMatch(/^FAIL /);
+        expect(await connect(r)).toMatch(UNTRUSTED);
         const r2 = await tlsProbe(java, ['url', url.other], [`-javaagent:${agent.stub}`]);
         // The other CA isn't trusted either: it doesn't match.
-        expect(await connect(r2)).toMatch(/^FAIL /);
+        expect(await connect(r2)).toMatch(UNTRUSTED);
+        await expect
+          .poll(() => statusOf(agent.dir, r.child.pid))
+          .toMatchObject({ hooks: ['trust:ca-mismatch'] });
       });
 
       it.skipIf(!posix)('trusts no CA file that other users can change', async () => {
@@ -203,13 +252,28 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
         await chmod(file, 0o664);
         const agent = await agentFolder({ caPath: file, caSha256: wirescry.sha256 });
         const r = await tlsProbe(java, ['url', url.good], [`-javaagent:${agent.stub}`]);
-        expect(await connect(r)).toMatch(/^FAIL /);
+        expect(await connect(r)).toMatch(UNTRUSTED);
+        await expect
+          .poll(() => statusOf(agent.dir, r.child.pid))
+          .toMatchObject({ hooks: ['trust:ca-unsafe'] });
+      });
+
+      it('trusts nothing when the CA file is missing, and says so', async () => {
+        const agent = await agentFolder({
+          caPath: path.join(shared.work, 'no-such-ca.pem'),
+          caSha256: wirescry.sha256,
+        });
+        const r = await tlsProbe(java, ['url', url.good], [`-javaagent:${agent.stub}`]);
+        expect(await connect(r)).toMatch(UNTRUSTED);
+        await expect
+          .poll(() => statusOf(agent.dir, r.child.pid))
+          .toMatchObject({ hooks: ['trust:ca-missing'] });
       });
 
       it('reaches clients built before it was attached', async () => {
         const agent = await agentFolder(caSettings(wirescry));
-        const r = await tlsProbe(java, ['url', url.good]);
-        expect(await connect(r)).toMatch(/^FAIL /);
+        const r = await tlsProbe(java, ['url', url.good], VERIFY);
+        expect(await connect(r)).toMatch(UNTRUSTED);
         expectAttached(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
@@ -224,9 +288,9 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
           const atStart = await tlsProbe(java, ['httpclient', url.good], [`-javaagent:${agent.stub}`]);
           expect(await connect(atStart)).toBe('OK');
           const wrong = await tlsProbe(java, ['httpclient', url.wrongHost], [`-javaagent:${agent.stub}`]);
-          expect(await connect(wrong)).toMatch(/^FAIL /);
+          expect(await connect(wrong)).toMatch(UNTRUSTED);
           const before = await tlsProbe(java, ['httpclient', url.good]);
-          expect(await connect(before)).toMatch(/^FAIL /);
+          expect(await connect(before)).toMatch(UNTRUSTED);
           expectAttached(['load', String(before.child.pid), agent.stub, `id=${newId()}`]);
           await expect
             .poll(() => statusOf(agent.dir, before.child.pid), { timeout: 10_000 })
@@ -240,7 +304,7 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
         const file = path.join(agent.dir, 'control.properties');
         await writeWhole(file, (await readFile(file, 'utf8')).replace(/caPath=.*/, 'caPath=wirescry-ca.pem'));
         const r = await tlsProbe(java, ['url', url.good], [`-javaagent:${agent.stub}`]);
-        expect(await connect(r)).toMatch(/^FAIL /);
+        expect(await connect(r)).toMatch(UNTRUSTED);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
           .toMatchObject({ enabled: false, reason: 'bad-control' });
@@ -249,7 +313,8 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', () => {
       it('says the hook is waiting until the program first checks a certificate', async () => {
         const agent = await agentFolder(caSettings(wirescry));
         const r = await tlsProbe(java, ['own', url.good], [`-javaagent:${agent.stub}`]);
-        // The hand-written manager never loads the JDK's.
+        // A connection whose hand-written manager never loads the JDK's.
+        expect(await connect(r)).toMatch(/trusts nothing/);
         await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ hooks: ['trust:waiting'] });
       });
     });

@@ -2,11 +2,15 @@
 // Builds Wirescry's Java agent (native/java-agent) into native/java-agent/build/:
 //
 //   wirescry-agent.jar       the stub that -javaagent: and the Attach API name (Java 8+)
-//   wirescry-agent-impl.jar  the agent itself, which the stub loads (Java 8+), with its weaver and
-//                            Byte Buddy under weaver/, which only the agent's own class loader reads
+//   wirescry-agent-impl.jar  the agent itself, which the stub loads (Java 8+)
+//   wirescry-agent-weaver.jar  the weaver and Byte Buddy, which only the agent's own class loader
+//                            loads, next to the agent's jar
 //   wirescry-attach.jar      lists JVMs and loads the agent into one (runs on JDK 11+)
 //
 //   node scripts/build-java-agent.mjs
+//
+// Offline, put the pinned Byte Buddy jar in native/java-agent/deps/ by hand: it's used if its
+// SHA-256 matches.
 //
 // Needs a JDK 17 or later: JAVA_HOME's, else the one on PATH. The jars target Java 8 (the attacher
 // Java 11) whatever JDK builds them, and are reproducible: fixed timestamps, sorted entries.
@@ -14,7 +18,7 @@
 // Byte Buddy (Apache-2.0) is fetched once from Maven Central into native/java-agent/deps/ and
 // checked against the SHA-256 below; a file that doesn't match is never used.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   cpSync,
   existsSync,
@@ -32,11 +36,16 @@ import { fileURLToPath } from 'node:url';
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const source = path.join(root, 'native', 'java-agent');
 export const buildDir = path.join(source, 'build');
-export const jars = {
-  stub: path.join(buildDir, 'wirescry-agent.jar'),
-  impl: path.join(buildDir, 'wirescry-agent-impl.jar'),
-  attach: path.join(buildDir, 'wirescry-attach.jar'),
+const JAR_NAMES = {
+  stub: 'wirescry-agent.jar',
+  impl: 'wirescry-agent-impl.jar',
+  weaver: 'wirescry-agent-weaver.jar',
+  attach: 'wirescry-attach.jar',
 };
+/** The jars a build into `dir` makes. */
+export const jarsIn = (dir = buildDir) =>
+  Object.fromEntries(Object.entries(JAR_NAMES).map(([part, name]) => [part, path.join(dir, name)]));
+export const jars = jarsIn();
 /**
  * Byte Buddy, pinned. Its release was three weeks old when chosen (the newest, 1.18.17, was 12
  * days old). The SHA-256 is Maven Central's, and matched its published SHA-512 too.
@@ -54,9 +63,20 @@ const sha256Of = (file) => createHash('sha256').update(readFileSync(file)).diges
 export async function fetchByteBuddy() {
   if (existsSync(byteBuddy.file) && sha256Of(byteBuddy.file) === byteBuddy.sha256) return byteBuddy.file;
   mkdirSync(path.dirname(byteBuddy.file), { recursive: true });
-  const response = await fetch(byteBuddy.url);
-  if (!response.ok) throw new Error(`Fetching Byte Buddy: HTTP ${response.status} from ${byteBuddy.url}`);
-  const temp = `${byteBuddy.file}.download`;
+  let response;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      response = await fetch(byteBuddy.url, { signal: AbortSignal.timeout(60_000) });
+      if (response.ok) break;
+      throw new Error(`HTTP ${response.status}`);
+    } catch (error) {
+      if (attempt >= 2) {
+        throw new Error(`Fetching Byte Buddy from ${byteBuddy.url}: ${error.message}`, { cause: error });
+      }
+    }
+  }
+  // Its own name: builds running at once (test files in parallel) each write their own.
+  const temp = `${byteBuddy.file}.${process.pid}.${randomUUID()}.download`;
   writeFileSync(temp, Buffer.from(await response.arrayBuffer()));
   const got = sha256Of(temp);
   if (got !== byteBuddy.sha256) {
@@ -142,8 +162,12 @@ function packJar(jar, manifest, classes, out) {
   );
 }
 
-/** Builds the three jars. Returns their paths and SHA-256 digests. */
-export async function buildJavaAgent() {
+/**
+ * Builds the jars into `outDir` (default native/java-agent/build/), replacing what's there.
+ * Returns their paths and SHA-256 digests.
+ */
+export async function buildJavaAgent(outDir = buildDir) {
+  const jars = jarsIn(outDir);
   const javac = jdkTool('javac');
   const jar = jdkTool('jar');
   if (!javac || !jar) {
@@ -153,9 +177,9 @@ export async function buildJavaAgent() {
   }
   const version = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
   const byteBuddyJar = await fetchByteBuddy();
-  rmSync(buildDir, { recursive: true, force: true });
-  const gen = path.join(buildDir, 'gen');
-  const classes = path.join(buildDir, 'classes');
+  rmSync(outDir, { recursive: true, force: true });
+  const gen = path.join(outDir, 'gen');
+  const classes = path.join(outDir, 'classes');
 
   const implGen = path.join(gen, 'com', 'wirescry', 'agent', 'impl');
   mkdirSync(implGen, { recursive: true });
@@ -175,13 +199,12 @@ export async function buildJavaAgent() {
     path.join(classes, 'impl'),
     ['-cp', path.join(classes, 'stub')],
   );
-  // The weaver and Byte Buddy go under weaver/ in the implementation's jar: classes there are
-  // invisible to the program, and loaded only by the agent's WeaverLoader. Byte Buddy's base
-  // classes (Java 5 and 8) only: its versions/ folders serve Java 9's module and Java 24's
-  // Class-File API, which the weaver doesn't use.
-  const weaverClasses = path.join(classes, 'impl', 'weaver');
+  // The weaver and Byte Buddy go in a jar of their own, which only the agent's own class loader
+  // reads (see Hooks.java). Byte Buddy's base classes (Java 5 and 8) only: its versions/ folders
+  // serve Java 9's module and Java 24's Class-File API, which the weaver doesn't use.
+  const weaverClasses = path.join(classes, 'weaver');
   compile(javac, 8, javaFiles(path.join(source, 'weaver')), weaverClasses, ['-cp', byteBuddyJar]);
-  const unpacked = path.join(buildDir, 'byte-buddy');
+  const unpacked = path.join(outDir, 'byte-buddy');
   mkdirSync(unpacked, { recursive: true });
   execFileSync(jar, ['--extract', '--file', byteBuddyJar], { cwd: unpacked, stdio: 'inherit' });
   for (const entry of readdirSync(unpacked, { recursive: true, encoding: 'utf8' })) {
@@ -192,17 +215,22 @@ export async function buildJavaAgent() {
     mkdirSync(path.dirname(to), { recursive: true });
     cpSync(from, to);
   }
-  // Byte Buddy's license and notice go with it (Apache-2.0, section 4).
-  mkdirSync(path.join(classes, 'impl', 'META-INF', 'byte-buddy'), { recursive: true });
-  for (const name of ['LICENSE', 'NOTICE']) {
-    cpSync(path.join(unpacked, 'META-INF', name), path.join(classes, 'impl', 'META-INF', 'byte-buddy', name));
+  // Byte Buddy's license and notice go with it (Apache-2.0, section 4), and the license of the ASM
+  // it bundles (BSD-3-Clause).
+  for (const name of ['LICENSE', 'NOTICE', path.join('licenses', 'ASM')]) {
+    const from = path.join(unpacked, 'META-INF', name);
+    if (!existsSync(from))
+      throw new Error(`Byte Buddy ${byteBuddy.version} has no META-INF/${name}: check its licensing.`);
+    const to = path.join(weaverClasses, 'META-INF', 'byte-buddy', name);
+    mkdirSync(path.dirname(to), { recursive: true });
+    cpSync(from, to);
   }
   compile(javac, 11, javaFiles(path.join(source, 'attach')), path.join(classes, 'attach'), [
     '--add-modules',
     'jdk.attach',
   ]);
   // The license goes in each jar, since the jars run inside other people's programs.
-  for (const part of ['stub', 'impl', 'attach']) {
+  for (const part of ['stub', 'impl', 'weaver', 'attach']) {
     mkdirSync(path.join(classes, part, 'META-INF'), { recursive: true });
     cpSync(path.join(source, 'LICENSE'), path.join(classes, part, 'META-INF', 'LICENSE'));
   }
@@ -218,6 +246,12 @@ export async function buildJavaAgent() {
     `Implementation-Title: Wirescry Java agent implementation\nCreated-By: Wirescry build\nImplementation-Version: ${version}`,
     path.join(classes, 'impl'),
     jars.impl,
+  );
+  packJar(
+    jar,
+    `Implementation-Title: Wirescry Java agent weaver\nCreated-By: Wirescry build\nImplementation-Version: ${version}`,
+    path.join(classes, 'weaver'),
+    jars.weaver,
   );
   packJar(
     jar,

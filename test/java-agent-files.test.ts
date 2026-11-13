@@ -228,22 +228,32 @@ describe('files on disk', () => {
     const agentDir = path.join(dir, 'java-agent');
     const stub = path.join(dir, 'stub.jar');
     const impl = path.join(dir, 'impl.jar');
+    const weaver = path.join(dir, 'weaver.jar');
     await writeFile(stub, 'stub-1');
     await writeFile(impl, 'impl-1');
-    const first = await installAgentJars(agentDir, { stub, impl, version: '0.1.30' });
+    await writeFile(weaver, 'weaver-1');
+    const first = await installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' });
     expect(first).toMatch(/^jars\/wirescry-agent-impl-0\.1\.30-[0-9a-f]{8}\.jar$/);
     expect(await readFile(path.join(agentDir, first), 'utf8')).toBe('impl-1');
+    expect(await readFile(path.join(agentDir, first.replace(/\.jar$/, '-weaver.jar')), 'utf8')).toBe(
+      'weaver-1',
+    );
     await writeFile(impl, 'impl-2');
     await writeFile(stub, 'stub-2');
-    const second = await installAgentJars(agentDir, { stub, impl, version: '0.1.30' });
+    const second = await installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' });
     expect(second).not.toBe(first);
-    // The first build's copy stays: a running JVM may have it open.
+    // A new weaver alone (a Byte Buddy update) is a new pair too.
+    await writeFile(weaver, 'weaver-2');
+    const third = await installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' });
+    expect(new Set([first, second, third]).size).toBe(3);
+    // Earlier pairs stay: a running JVM may have them open.
+    const pair = (n: string) => [n, n.replace(/\.jar$/, '-weaver.jar')].map((f) => f.slice('jars/'.length));
     expect((await readdir(path.join(agentDir, 'jars'))).sort()).toEqual(
-      [first, second].map((n) => n.slice('jars/'.length)).sort(),
+      [first, second, third].flatMap(pair).sort(),
     );
     expect(await readFile(path.join(agentDir, 'wirescry-agent.jar'), 'utf8')).toBe('stub-2');
-    expect(await installAgentJars(agentDir, { stub, impl, version: '0.1.30' })).toBe(second);
-    await expect(installAgentJars(agentDir, { stub, impl, version: '1/../x' })).rejects.toThrow(
+    expect(await installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' })).toBe(third);
+    await expect(installAgentJars(agentDir, { stub, impl, weaver, version: '1/../x' })).rejects.toThrow(
       'Bad version',
     );
   });
@@ -254,13 +264,18 @@ describe('files on disk', () => {
       const agentDir = path.join(dir, 'java-agent');
       const stub = path.join(dir, 'stub.jar');
       const impl = path.join(dir, 'impl.jar');
+      const weaver = path.join(dir, 'weaver.jar');
       await writeFile(stub, 'stub-1');
       await writeFile(impl, 'impl-1');
-      const name = await installAgentJars(agentDir, { stub, impl, version: '0.1.30' });
+      await writeFile(weaver, 'weaver-1');
+      const name = await installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' });
+      const weaverName = name.replace(/\.jar$/, '-weaver.jar');
       await chmod(path.join(agentDir, name), 0o664);
+      await chmod(path.join(agentDir, weaverName), 0o666);
       await chmod(path.join(agentDir, 'wirescry-agent.jar'), 0o646);
-      await installAgentJars(agentDir, { stub, impl, version: '0.1.30' });
+      await installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' });
       expect((await stat(path.join(agentDir, name))).mode & 0o777).toBe(0o600);
+      expect((await stat(path.join(agentDir, weaverName))).mode & 0o777).toBe(0o600);
       expect((await stat(path.join(agentDir, 'wirescry-agent.jar'))).mode & 0o777).toBe(0o600);
     },
   );
@@ -269,26 +284,32 @@ describe('files on disk', () => {
     const agentDir = path.join(dir, 'java-agent');
     const stub = path.join(dir, 'stub.jar');
     const impl = path.join(dir, 'impl.jar');
+    const weaver = path.join(dir, 'weaver.jar');
     await writeFile(stub, 'stub-1');
     await writeFile(impl, 'impl-1');
-    await installAgentJars(agentDir, { stub, impl, version: '0.1.30' });
+    await writeFile(weaver, 'weaver-1');
+    await installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' });
     await writeFile(stub, 'stub-2');
     const busy = {
       rename: vi.fn().mockRejectedValue(Object.assign(new Error('busy'), { code: 'EBUSY' })),
       sleep: async () => undefined,
     };
-    expect(await installAgentJars(agentDir, { stub, impl, version: '0.1.30' }, busy)).toMatch(/^jars\//);
+    expect(await installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' }, busy)).toMatch(
+      /^jars\//,
+    );
     expect(await readFile(path.join(agentDir, 'wirescry-agent.jar'), 'utf8')).toBe('stub-1');
     await rm(path.join(agentDir, 'wirescry-agent.jar'));
-    await expect(installAgentJars(agentDir, { stub, impl, version: '0.1.30' }, busy)).rejects.toThrow('busy');
+    await expect(installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' }, busy)).rejects.toThrow(
+      'busy',
+    );
     const denied = {
       rename: vi.fn().mockRejectedValue(Object.assign(new Error('read-only'), { code: 'EROFS' })),
       sleep: async () => undefined,
     };
     await writeFile(path.join(agentDir, 'wirescry-agent.jar'), 'stub-1');
-    await expect(installAgentJars(agentDir, { stub, impl, version: '0.1.30' }, denied)).rejects.toThrow(
-      'read-only',
-    );
+    await expect(
+      installAgentJars(agentDir, { stub, impl, weaver, version: '0.1.30' }, denied),
+    ).rejects.toThrow('read-only');
   });
 
   it('reads status files whose names agree with what they say', async () => {

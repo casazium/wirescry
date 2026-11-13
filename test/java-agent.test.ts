@@ -68,7 +68,9 @@ async function started(r: Run) {
 
 describe.skipIf(!buildJava)('the Java agent', () => {
   it('builds the same jars from the same sources, on one machine', async () => {
-    expect((await buildJavaAgent()).impl.sha256).toBe(shared.built.impl.sha256);
+    const again = await buildJavaAgent(path.join(shared.work, 'build-again'));
+    expect(again.impl.sha256).toBe(shared.built.impl.sha256);
+    expect(again.weaver.sha256).toBe(shared.built.weaver.sha256);
   }, 120_000);
 
   it('decides whether Wirescry is alive by the rules, with a fake process table', () => {

@@ -43,6 +43,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # Byte Buddy, which the agent's build fetches from Maven Central and checks by its pinned
+      # SHA-256 (scripts/build-java-agent.mjs): fetched once, not by every job.
+      - uses: actions/cache@v6
+        with:
+          path: native/java-agent/deps
+          key: byte-buddy-${{ hashFiles('scripts/build-java-agent.mjs') }}
       # Ubuntu's image no longer carries Java 8, which programs still run on.
       - uses: actions/setup-java@v6
         if: runner.os == 'Linux'
@@ -79,6 +85,6 @@ jobs:
           echo "JAVA_HOME=$build" >> "$GITHUB_ENV"
           echo "WIRESCRY_JAVA_TARGETS=$targets" >> "$GITHUB_ENV"
           echo "WIRESCRY_JAVA_ATTACHER=$attach_home/bin/$exe" >> "$GITHUB_ENV"
-      - run: npx vitest run test/java-agent-files.test.ts test/java-agent.test.ts
+      - run: npx vitest run test/java-agent-files.test.ts test/java-agent.test.ts test/java-agent-trust.test.ts
         env:
           WIRESCRY_REQUIRE_JAVA: '1'

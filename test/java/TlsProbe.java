@@ -23,7 +23,7 @@ import javax.net.ssl.X509TrustManager;
 
 /**
  * A TLS client for test/java-agent.test.ts, Java 8+. Builds its client first, prints "ready",
- * then connects once for each line on stdin, printing "OK" or "FAIL <exception>". So a test can
+ * then connects once for each line on stdin, printing "OK" or "FAIL <exception>: <root cause>". So a test can
  * attach the agent between connections, to a client built before it. Each connection is new and
  * makes a full handshake: no keep-alive, and no TLS session resumed (which skips the certificate
  * check the test is about).
@@ -33,6 +33,8 @@ import javax.net.ssl.X509TrustManager;
  *   TlsProbe socket URL         an SSLSocket with HTTPS host name checks
  *   TlsProbe store URL CA.pem   a context trusting only CA.pem, by the JDK's own trust manager
  *   TlsProbe own URL            a hand-written trust manager that trusts nothing
+ *   TlsProbe wrap URL           a hand-written trust manager that asks the JDK's default one
+ *                               (its two-argument check; the JDK adds the host name check)
  * </pre>
  */
 public class TlsProbe {
@@ -53,7 +55,9 @@ public class TlsProbe {
         connect(mode, url, factory);
         result = "OK";
       } catch (Exception e) {
-        result = "FAIL " + e.getClass().getName();
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) root = root.getCause();
+        result = "FAIL " + e.getClass().getName() + ": " + String.valueOf(root.getMessage()).replace('\n', ' ');
       }
       System.out.println(result);
       System.out.flush();
@@ -75,6 +79,28 @@ public class TlsProbe {
       TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
       tmf.init(store);
       context.init(null, tmf.getTrustManagers(), null);
+    } else if (mode.equals("wrap")) {
+      TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+      tmf.init((KeyStore) null);
+      final X509TrustManager jdk = (X509TrustManager) tmf.getTrustManagers()[0];
+      context.init(
+          null,
+          new TrustManager[] {
+            new X509TrustManager() {
+              public void checkClientTrusted(X509Certificate[] chain, String type) throws CertificateException {
+                jdk.checkClientTrusted(chain, type);
+              }
+
+              public void checkServerTrusted(X509Certificate[] chain, String type) throws CertificateException {
+                jdk.checkServerTrusted(chain, type);
+              }
+
+              public X509Certificate[] getAcceptedIssuers() {
+                return jdk.getAcceptedIssuers();
+              }
+            }
+          },
+          null);
     } else {
       context.init(
           null,

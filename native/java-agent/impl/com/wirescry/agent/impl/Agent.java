@@ -164,8 +164,9 @@ public final class Agent {
         badRead();
       }
     }
-    if (!first && !retransformed) {
-      // Classes the agent changes that loaded before it (an attach): once, after main has begun.
+    if (!first && !retransformed && "attach".equals(route)) {
+      // Classes the agent changes that loaded before it was attached: once, from this thread. A
+      // startup agent's transformer was there before any of them loaded.
       retransformed = true;
       hooks.retransformLoaded(inst);
     }
@@ -173,7 +174,7 @@ public final class Agent {
   }
 
   String hookReport() {
-    return hooks.report();
+    return hooks.report(lastGood);
   }
 
   private void badRead() {

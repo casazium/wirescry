@@ -62,7 +62,8 @@ export function setUpJavaAgentTests(more?: () => Promise<void>) {
     if (!buildJava) return;
     // A space in the path, like macOS's "Application Support".
     shared.work = await mkdtemp(path.join(os.tmpdir(), 'wirescry java agent-'));
-    shared.built = await buildJavaAgent();
+    // Each test file builds its own: files run in parallel, and a build replaces its folder.
+    shared.built = await buildJavaAgent(path.join(shared.work, 'build'));
     await more?.();
   }, 180_000);
 
@@ -114,6 +115,7 @@ export async function agentFolder(change: Partial<AgentControl> = {}) {
   const impl = await installAgentJars(dir, {
     stub: shared.built.stub.file,
     impl: shared.built.impl.file,
+    weaver: shared.built.weaver.file,
     version: '0.0.0-test',
   });
   let control: AgentControl = {
