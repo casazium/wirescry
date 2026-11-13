@@ -8,7 +8,7 @@ import net.bytebuddy.asm.Advice;
 
 /**
  * Code put at the end of the JDK's default X.509 trust manager's
- * checkServerTrusted(chain, authType, Socket): HttpsURLConnection and SSLSocket. See TrustWeaver.
+ * checkServerTrusted(chain, authType, Socket): HttpsURLConnection and SSLSocket. See Weaver.
  */
 public final class TrustSocketAdvice {
   private TrustSocketAdvice() {}

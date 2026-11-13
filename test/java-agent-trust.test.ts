@@ -163,7 +163,9 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
         // JDK classes aren't verified by default: here they are, so a bad rewrite fails the test.
         const good = await tlsProbe(java, ['url', url.good], [...jvm, ...VERIFY]);
         expect(await connect(good)).toBe('OK');
-        await expect.poll(() => statusOf(agent.dir, good.child.pid)).toMatchObject({ hooks: ['trust:ok'] });
+        await expect
+          .poll(() => statusOf(agent.dir, good.child.pid))
+          .toMatchObject({ hooks: expect.arrayContaining(['trust:ok']) });
         // Not another CA's, and not Wirescry's for the wrong host.
         expect(await connect(await tlsProbe(java, ['url', url.other], jvm))).toMatch(UNTRUSTED);
         expect(await connect(await tlsProbe(java, ['url', url.wrongHost], jvm))).toMatch(UNTRUSTED);
@@ -243,7 +245,7 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
         expect(await connect(r2)).toMatch(UNTRUSTED);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid))
-          .toMatchObject({ hooks: ['trust:ca-mismatch'] });
+          .toMatchObject({ hooks: expect.arrayContaining(['trust:ca-mismatch']) });
       });
 
       it.skipIf(!posix)('trusts no CA file that other users can change', async () => {
@@ -255,7 +257,7 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
         expect(await connect(r)).toMatch(UNTRUSTED);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid))
-          .toMatchObject({ hooks: ['trust:ca-unsafe'] });
+          .toMatchObject({ hooks: expect.arrayContaining(['trust:ca-unsafe']) });
       });
 
       it.skipIf(!posix)('loads no weaver that other users can change', async () => {
@@ -263,7 +265,9 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
         await chmod(path.join(agent.dir, agent.impl.replace(/\.jar$/, '-weaver.jar')), 0o664);
         const r = await tlsProbe(java, ['url', url.good], [`-javaagent:${agent.stub}`]);
         expect(await connect(r)).toMatch(UNTRUSTED);
-        await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ hooks: ['trust:failed'] });
+        await expect
+          .poll(() => statusOf(agent.dir, r.child.pid))
+          .toMatchObject({ hooks: expect.arrayContaining(['trust:failed']) });
       });
 
       it('trusts nothing when the CA file is missing, and says so', async () => {
@@ -275,7 +279,7 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
         expect(await connect(r)).toMatch(UNTRUSTED);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid))
-          .toMatchObject({ hooks: ['trust:ca-missing'] });
+          .toMatchObject({ hooks: expect.arrayContaining(['trust:ca-missing']) });
       });
 
       it('reaches clients built before it was attached', async () => {
@@ -285,7 +289,7 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
         expectAttached(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
-          .toMatchObject({ enabled: true, hooks: ['trust:ok'] });
+          .toMatchObject({ enabled: true, hooks: expect.arrayContaining(['trust:ok']) });
         expect(await connect(r)).toBe('OK');
       });
 
@@ -302,7 +306,7 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
           expectAttached(['load', String(before.child.pid), agent.stub, `id=${newId()}`]);
           await expect
             .poll(() => statusOf(agent.dir, before.child.pid), { timeout: 10_000 })
-            .toMatchObject({ enabled: true, hooks: ['trust:ok'] });
+            .toMatchObject({ enabled: true, hooks: expect.arrayContaining(['trust:ok']) });
           expect(await connect(before)).toBe('OK');
         },
       );
@@ -323,7 +327,9 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
         const r = await tlsProbe(java, ['own', url.good], [`-javaagent:${agent.stub}`]);
         // A connection whose hand-written manager never loads the JDK's.
         expect(await connect(r)).toMatch(/trusts nothing/);
-        await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ hooks: ['trust:waiting'] });
+        await expect
+          .poll(() => statusOf(agent.dir, r.child.pid))
+          .toMatchObject({ hooks: expect.arrayContaining(['trust:waiting']) });
       });
     });
   }

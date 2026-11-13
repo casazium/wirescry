@@ -85,6 +85,6 @@ jobs:
           echo "JAVA_HOME=$build" >> "$GITHUB_ENV"
           echo "WIRESCRY_JAVA_TARGETS=$targets" >> "$GITHUB_ENV"
           echo "WIRESCRY_JAVA_ATTACHER=$attach_home/bin/$exe" >> "$GITHUB_ENV"
-      - run: npx vitest run test/java-agent-files.test.ts test/java-agent.test.ts test/java-agent-trust.test.ts
+      - run: npx vitest run test/java-agent-files.test.ts test/java-agent.test.ts test/java-agent-trust.test.ts test/java-agent-proxy.test.ts
         env:
           WIRESCRY_REQUIRE_JAVA: '1'
