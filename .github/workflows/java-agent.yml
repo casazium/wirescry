@@ -1,0 +1,68 @@
+name: Java agent
+
+# Wirescry's Java agent (native/java-agent) on every Java GitHub's images carry, from 8 to 25,
+# loaded at startup and attached, on each OS. Attaching takes a JDK on Wirescry's side; nightly
+# runs try JDK 11, 21 and 25 as the attacher against every target, pull requests JDK 21.
+
+on:
+  pull_request:
+    paths:
+      - native/java-agent/**
+      - src/backend/java/**
+      - scripts/build-java-agent.mjs
+      - test/java-agent*.ts
+      - .github/workflows/java-agent.yml
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: java-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  versions:
+    name: Java versions (${{ matrix.os }}, attacher JDK ${{ matrix.attacher }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        attacher: ${{ fromJSON(github.event_name == 'pull_request' && '["21"]' || '["11","21","25"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Find the JDKs
+        shell: bash
+        env:
+          ATTACHER: ${{ matrix.attacher }}
+        run: |
+          # The images name each JDK JAVA_HOME_<major>_<arch>. Build with 21; run on all of them.
+          exe=java; [ "$RUNNER_OS" = Windows ] && exe=java.exe
+          delim=:; [ "$RUNNER_OS" = Windows ] && delim=';'
+          targets=""
+          for name in $(env | grep -oE '^JAVA_HOME_[0-9]+_(X64|arm64)=' | tr -d = | sort -t_ -k3 -n); do
+            home="${!name}"
+            [ -x "$home/bin/$exe" ] || continue
+            echo "Found $name: $home"
+            targets="${targets:+$targets$delim}$home/bin/$exe"
+          done
+          build="${JAVA_HOME_21_X64:-$JAVA_HOME_21_arm64}"
+          attach_name="JAVA_HOME_${ATTACHER}_X64"; attach_home="${!attach_name}"
+          [ -n "$attach_home" ] || { attach_name="JAVA_HOME_${ATTACHER}_arm64"; attach_home="${!attach_name}"; }
+          test -n "$build" || { echo "No JDK 21 on this image."; exit 1; }
+          test -n "$attach_home" || { echo "No JDK $ATTACHER on this image."; exit 1; }
+          echo "JAVA_HOME=$build" >> "$GITHUB_ENV"
+          echo "WIRESCRY_JAVA_TARGETS=$targets" >> "$GITHUB_ENV"
+          echo "WIRESCRY_JAVA_ATTACHER=$attach_home/bin/$exe" >> "$GITHUB_ENV"
+      - run: npx vitest run test/java-agent-files.test.ts test/java-agent.test.ts
+        env:
+          WIRESCRY_REQUIRE_JAVA: '1'
