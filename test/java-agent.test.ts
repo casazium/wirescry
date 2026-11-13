@@ -551,7 +551,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           const r = probe(java, 15000, ['-XX:-EnableDynamicAgentLoading']);
           await started(r);
           const { code, lines, why } = attacher(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
-          expect(code).toBe(1);
+          expect(code, why).toBe(1);
           expect(lines[0]).toMatchObject({ ok: false, reason: 'dynamic-loading-disabled' });
         });
 
