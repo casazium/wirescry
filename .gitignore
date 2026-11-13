@@ -30,3 +30,6 @@ Thumbs.db
 
 # The Docker pipe helper, built by scripts/build-docker-pipe.mjs
 native/docker-pipe/bin/
+
+# The Java agent, built by scripts/build-java-agent.mjs
+native/java-agent/build/

@@ -53,6 +53,15 @@ jobs:
           # The race detector needs a C compiler, which only the macOS and Linux images have set up.
           if [ "$RUNNER_OS" = Windows ]; then go test -count=1 -v ./...; else go test -race -count=1 ./...; fi
       - run: node scripts/build-docker-pipe.mjs
+      # The Java agent's tests (test/java-agent*.test.ts) build it with a JDK 17+ and run it.
+      # GitHub's images carry several JDKs; use their JDK 21 whatever JAVA_HOME says (Windows'
+      # default is 8). .github/workflows/java-agent.yml runs the agent on every Java from 8 to 25.
+      - name: Use JDK 21
+        shell: bash
+        run: |
+          jdk="${JAVA_HOME_21_X64:-$JAVA_HOME_21_arm64}"
+          test -n "$jdk" || { echo "This runner image has no JDK 21."; exit 1; }
+          echo "JAVA_HOME=$jdk" >> "$GITHUB_ENV"
       # GitHub's Windows images have Docker, but its service isn't always running yet.
       - name: Start Docker (Windows)
         if: runner.os == 'Windows'
@@ -73,6 +82,8 @@ jobs:
           WIRESCRY_WINDOWS_DOCKER_E2E: ${{ matrix.os == 'windows-latest' && '1' || '' }}
           # Tests that need the helper fail instead of skipping without it.
           WIRESCRY_REQUIRE_PIPE_HELPER: '1'
+          # And the Java agent's, without a JDK.
+          WIRESCRY_REQUIRE_JAVA: '1'
 
   electron:
     # The backend's tests under Electron's own Node, as the app runs them. It uses BoringSSL, not
@@ -88,8 +99,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # The Docker relay's tests skip here without the pipe helper; the check job runs them.
-      - run: npm run test:electron
+      # The Docker relay's tests skip here without the pipe helper; the check job runs them. The
+      # Java agent's run in JVMs, not in Electron's Node: the check job runs those too.
+      - run: npm run test:electron -- --exclude test/java-agent.test.ts
 
   smoke:
     # The free app, built and driven end to end (e2e/smoke.test.ts). Release builds run the
