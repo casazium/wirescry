@@ -8,7 +8,7 @@ import net.bytebuddy.asm.Advice;
 
 /**
  * Code put at the end of the JDK's default X.509 trust manager's
- * checkServerTrusted(chain, authType): what a hand-written trust manager that wraps the JDK's calls. See TrustWeaver.
+ * checkServerTrusted(chain, authType): what a hand-written trust manager that wraps the JDK's calls. See Weaver.
  */
 public final class TrustPlainAdvice {
   private TrustPlainAdvice() {}

@@ -164,9 +164,10 @@ public final class Agent {
         badRead();
       }
     }
-    if (!first && !retransformed && "attach".equals(route)) {
-      // Classes the agent changes that loaded before it was attached: once, from this thread. A
-      // startup agent's transformer was there before any of them loaded.
+    if (!first && !retransformed) {
+      // Classes the agent changes that loaded before its transformer: once, from this thread. For
+      // an attach, those the program loaded; at startup, those an agent named before this one
+      // loaded in its own premain (a monitoring agent sending its first report, say).
       retransformed = true;
       hooks.retransformLoaded(inst);
     }
