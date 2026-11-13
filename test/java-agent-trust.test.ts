@@ -258,6 +258,14 @@ describe.skipIf(!buildJava)('the Java agent’s trust hook', { timeout: 90_000 }
           .toMatchObject({ hooks: ['trust:ca-unsafe'] });
       });
 
+      it.skipIf(!posix)('loads no weaver that other users can change', async () => {
+        const agent = await agentFolder(caSettings(wirescry));
+        await chmod(path.join(agent.dir, agent.impl.replace(/\.jar$/, '-weaver.jar')), 0o664);
+        const r = await tlsProbe(java, ['url', url.good], [`-javaagent:${agent.stub}`]);
+        expect(await connect(r)).toMatch(UNTRUSTED);
+        await expect.poll(() => statusOf(agent.dir, r.child.pid)).toMatchObject({ hooks: ['trust:failed'] });
+      });
+
       it('trusts nothing when the CA file is missing, and says so', async () => {
         const agent = await agentFolder({
           caPath: path.join(shared.work, 'no-such-ca.pem'),
