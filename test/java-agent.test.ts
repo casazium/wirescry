@@ -272,37 +272,42 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         expect(cost).toBeLessThan(1000);
       }, 60_000);
 
-      it.skipIf(major < 11)('leaves class-data sharing on: no warning in the program’s output', async () => {
-        // A shared archive of our own, like the one most JDKs ship (this test's may not), made for
-        // runs with an agent (java.instrument). Appending to the bootstrap class path would make
-        // HotSpot warn on every start.
-        const archive = path.join(work, `classes-${major}.jsa`);
-        const dump = spawnSync(
-          java,
-          [
-            '-Xshare:dump',
-            '--add-modules',
-            'java.instrument',
+      it.skipIf(major < 11)(
+        'leaves class-data sharing on: no warning in the program’s output',
+        async (ctx) => {
+          // A shared archive of our own, like the one most JDKs ship (this test's may not), made for
+          // runs with an agent (java.instrument). Appending to the bootstrap class path would make
+          // HotSpot warn on every start.
+          const archive = path.join(work, `classes-${major}.jsa`);
+          const dump = spawnSync(
+            java,
+            [
+              '-Xshare:dump',
+              '--add-modules',
+              'java.instrument',
+              `-XX:SharedArchiveFile=${archive}`,
+              '-cp',
+              progDir,
+            ],
+            { encoding: 'utf8' },
+          );
+          // Some builds can't share classes at all (one macOS JDK), and then can't warn about it.
+          if (/not supported in this VM/.test(`${dump.stdout}${dump.stderr}`)) return ctx.skip();
+          expect(dump.status, dump.stderr).toBe(0);
+          const agent = await agentFolder();
+          const r = probe(java, 1500, [
             `-XX:SharedArchiveFile=${archive}`,
-            '-cp',
-            progDir,
-          ],
-          { encoding: 'utf8' },
-        );
-        expect(dump.status, dump.stderr).toBe(0);
-        const agent = await agentFolder();
-        const r = probe(java, 1500, [
-          `-XX:SharedArchiveFile=${archive}`,
-          '-Xshare:auto',
-          `-javaagent:${agent.stub}`,
-        ]);
-        await expect
-          .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
-          .toMatchObject({ enabled: true });
-        expect(await r.exit).toBe(0);
-        expect(r.stderr()).toBe('');
-        expect(r.stdout()).toBe(`started${os.EOL}done${os.EOL}`);
-      });
+            '-Xshare:auto',
+            `-javaagent:${agent.stub}`,
+          ]);
+          await expect
+            .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
+            .toMatchObject({ enabled: true });
+          expect(await r.exit).toBe(0);
+          expect(r.stderr()).toBe('');
+          expect(r.stdout()).toBe(`started${os.EOL}done${os.EOL}`);
+        },
+      );
 
       it('follows a change of port, and turns off for a program started with startup agents off', async () => {
         const agent = await agentFolder();

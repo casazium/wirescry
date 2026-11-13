@@ -84,16 +84,23 @@ public final class Main {
       System.out.println(failure("attach-failed", e.toString()));
       return 1;
     }
+    String javaVersion = "";
+    String javaHome = "";
     try {
       Properties props = vm.getSystemProperties();
-      String javaVersion = props.getProperty("java.version", "");
-      String javaHome = props.getProperty("java.home", "");
+      javaVersion = props.getProperty("java.version", "");
+      javaHome = props.getProperty("java.home", "");
       vm.loadAgent(jar, agentArgs);
       System.out.println(
           "{\"ok\":true,\"java\":" + json(javaVersion) + ",\"javaHome\":" + json(javaHome) + "}");
       return 0;
     } catch (AgentLoadException e) {
       String message = String.valueOf(e.getMessage());
+      if (java8LoadedOk(javaVersion, message)) {
+        System.out.println(
+            "{\"ok\":true,\"java\":" + json(javaVersion) + ",\"javaHome\":" + json(javaHome) + "}");
+        return 0;
+      }
       String reason = message.contains("EnableDynamicAgentLoading") ? "dynamic-loading-disabled" : "agent-load-failed";
       System.out.println(failure(reason, message));
       return 1;
@@ -113,6 +120,18 @@ public final class Main {
         // The program may have exited.
       }
     }
+  }
+
+  /**
+   * Whether a load "failed" only because a Java 8 target answered in Java 8's way. Since Java 9 a
+   * JVM answers a load with "return code: N", and this JDK's attach code reads anything else as an
+   * error message. A Java 8 JVM answers with the bare return code, so a load that worked arrives
+   * as an error whose message is "0". The agent's status file then confirms it's running.
+   */
+  static boolean java8LoadedOk(String javaVersion, String message) {
+    if (!javaVersion.startsWith("1.")) return false;
+    String m = message.trim();
+    return m.equals("0") || m.endsWith(": 0");
   }
 
   private static String failure(String reason, String message) {
