@@ -134,8 +134,11 @@ Anyone who can push a branch to this repo and start a manual run could change th
 ## Building locally
 
 ```bash
+node scripts/build-java-agent.mjs
 npm run package
 ```
+
+The first line builds the Java agent (it needs a JDK 17 or later). The release workflow builds it once, on Linux, and every platform ships those jars.
 
 Builds unsigned installers for the current platform into `release/<version>/`. To skip looking for a signing certificate in your keychain on macOS, set `CSC_IDENTITY_AUTO_DISCOVERY=false`.
 

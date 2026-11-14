@@ -35,6 +35,9 @@ on:
       - 'e2e/**'
       - 'scripts/notarize-dmg.cjs'
       - 'src/main/**'
+      - 'native/java-agent/**'
+      - 'scripts/build-java-agent.mjs'
+      - 'scripts/check-java-agent.cjs'
   workflow_dispatch:
     inputs:
       pro_ref:
@@ -121,9 +124,41 @@ jobs:
             echo "Pro: not included (free build)" >> "$GITHUB_STEP_SUMMARY"
           fi
 
+  # The Java agent's jars run in any JVM on any computer, so they're built once, here, and every
+  # platform ships the same bytes (the build is reproducible on one machine, not across JDKs).
+  java-agent:
+    name: Build the Java agent
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      # The image's JDK 21, as the agent's CI uses.
+      - name: Use JDK 21
+        run: |
+          test -n "$JAVA_HOME_21_X64" || { echo "This runner image has no JDK 21."; exit 1; }
+          echo "JAVA_HOME=$JAVA_HOME_21_X64" >> "$GITHUB_ENV"
+      # Byte Buddy, fetched from Maven Central and checked by its pinned SHA-256.
+      - uses: actions/cache@v6
+        with:
+          path: native/java-agent/deps
+          key: byte-buddy-${{ hashFiles('scripts/build-java-agent.mjs') }}
+      - run: node scripts/build-java-agent.mjs
+      - uses: actions/upload-artifact@v7
+        with:
+          name: java-agent
+          path: |
+            native/java-agent/build/wirescry-agent.jar
+            native/java-agent/build/wirescry-agent-impl.jar
+            native/java-agent/build/wirescry-agent-weaver.jar
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Build (${{ matrix.os }})
-    needs: pro
+    needs: [pro, java-agent]
     strategy:
       fail-fast: false
       matrix:
@@ -165,6 +200,11 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: java-agent
+          path: native/java-agent/build
 
       # Windows ships the Docker pipe helper (native/docker-pipe, Go) for x64 and arm64.
       - uses: actions/setup-go@v7

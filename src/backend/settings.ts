@@ -15,6 +15,11 @@ export interface Settings {
   experimentalWindowsDocker?: boolean;
   /** The adb to start the ADB server with, if not found the usual way. An absolute path. */
   adbPath?: string;
+  /**
+   * true: Java programs started from Wirescry's terminals, or with its JVM option, load its agent.
+   * Off by default. Set by hand in settings.json until Setup has a switch for it.
+   */
+  javaAgentStartup?: boolean;
 }
 
 const FILE = 'settings.json';
@@ -32,6 +37,7 @@ export async function loadSettings(dir: string): Promise<Settings> {
       ...(raw.dockerSetup === false ? { dockerSetup: false } : {}),
       ...(raw.androidSetup === false ? { androidSetup: false } : {}),
       ...(raw.experimentalWindowsDocker === true ? { experimentalWindowsDocker: true } : {}),
+      ...(raw.javaAgentStartup === true ? { javaAgentStartup: true } : {}),
       ...(typeof raw.adbPath === 'string' && path.isAbsolute(raw.adbPath) && raw.adbPath.length < 1000
         ? { adbPath: raw.adbPath }
         : {}),

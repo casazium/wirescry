@@ -52,6 +52,8 @@ import { deviceListenerSet, type DeviceListeners } from './device-listeners';
 import { startProxy, type RunningProxy } from './proxy';
 import { cleanHost, Refusals } from './refusals';
 import { isValidPort, loadSettings, saveSettings, type Settings } from './settings';
+import { findAgentJars, JAVA_AGENT_DIR, JavaAgentHost, type AgentJars } from './java/agent-host';
+import type { FileOps } from './java/agent-files';
 import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
 import type { BackendPlugin } from '../plugin-api/backend';
@@ -131,6 +133,13 @@ export interface BackendOptions {
   encryptor?: Encryptor;
   /** This Wirescry's version and build date, for plugins. Defaults suit tests. */
   app?: { version: string; releaseDate: string };
+  /**
+   * Java programs' agent (native/java-agent). true: find its jars, and run it while the
+   * javaAgentStartup setting is on (the app passes this). Jars given here run it whatever the
+   * setting (tests). Left out or false, it's off, so tests never write a control file that real
+   * JVMs read.
+   */
+  javaAgent?: boolean | { jars: AgentJars; heartbeatMs?: number; ops?: FileOps };
 }
 
 export interface HarImportCounts {
@@ -169,6 +178,17 @@ export interface RunningBackend {
 }
 
 export type { DeviceListeners } from './device-listeners';
+
+/** How long quitting waits to tell Java agents (see stopJavaAgent). */
+const JAVA_AGENT_STOP_MS = 500;
+
+/** Logged once per start: a packaged app without its agent is a broken build. */
+function noAgentJars(): undefined {
+  console.error(
+    "[wirescry] java agent: its jars aren't in the app; Java programs get the terminal's options alone",
+  );
+  return undefined;
+}
 
 /** How long a finished exchange's body may take to be stored before plugins are told anyway. */
 const COMPLETION_GRACE_MS = 10_000;
@@ -215,6 +235,29 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   // Set once the proxy is up; status() can be asked for before that (e.g. by Docker setup).
   // Written once the proxy is up; status() can be asked for before that (Docker's callbacks).
   let terminalScripts: Awaited<ReturnType<typeof writeShellScripts>> = {};
+  let javaAgent: JavaAgentHost | undefined;
+  // eslint-disable-next-line prefer-const -- assigned later, once the proxy is up
+  let agentStarting: Promise<void> | undefined;
+  /** Says off to Java agents, within JAVA_AGENT_STOP_MS (on Windows a rename can wait on readers). */
+  const stopJavaAgent = async (): Promise<void> => {
+    const stopped = (async () => {
+      await agentStarting;
+      await javaAgent?.stop();
+    })().catch(() => undefined);
+    await Promise.race([stopped, new Promise((resolve) => setTimeout(resolve, JAVA_AGENT_STOP_MS).unref())]);
+  };
+  /** After the port, the certificate or a setup setting changes: terminal scripts and Java agents. */
+  const refreshSetup = async (): Promise<void> => {
+    // Each whatever the other does.
+    const agent = javaAgent?.update(agentSettings()).catch((error: unknown) => {
+      console.error('[wirescry] java agent: control file not updated:', error);
+    });
+    try {
+      terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+    } finally {
+      await agent;
+    }
+  };
   // eslint-disable-next-line prefer-const -- assigned later, after what status() reads exists
   let android: AndroidSetup | undefined;
   const updates = new UpdateBatcher((message) => broadcast(message));
@@ -494,8 +537,44 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   step('proxy');
   await docker.refresh();
   step('docker');
+  // Java programs' agent: its jars installed and its control file written, in the background (it
+  // reads and hashes a few MB). Nothing else waits for it; see agentStarting.
+  const agentJars = !options.javaAgent
+    ? undefined
+    : options.javaAgent === true
+      ? settings.javaAgentStartup === true
+        ? (findAgentJars() ?? noAgentJars())
+        : undefined
+      : options.javaAgent.jars;
+  const agentSettings = () => ({
+    proxyPort: proxy.port,
+    caPath: ca.certPath,
+    caPem: ca.cert,
+    startup: options.javaAgent === true ? settings.javaAgentStartup === true : true,
+  });
+  const agentOptions = typeof options.javaAgent === 'object' ? options.javaAgent : undefined;
+  agentStarting = agentJars
+    ? JavaAgentHost.start(
+        {
+          dir: path.join(dataDir, JAVA_AGENT_DIR),
+          jars: agentJars,
+          version: options.app?.version ?? '0.0.0',
+          heartbeatMs: agentOptions?.heartbeatMs,
+          ops: agentOptions?.ops,
+        },
+        agentSettings(),
+      ).then(
+        async (host) => {
+          javaAgent = host;
+          // The port or the certificate may have changed while it started.
+          await host.update(agentSettings());
+          // A quit while it started is done by stopJavaAgent, which waits for this.
+        },
+        (error: unknown) => console.error('[wirescry] java agent not set up:', error),
+      )
+    : undefined;
   // Rewritten whenever the port or certificate changes, so the one-line setup stays current.
-  terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+  await refreshSetup();
   // Android devices over the user's ADB server. Started in the background: finding or starting
   // the server can take a few seconds, and nothing else waits for it.
   // A device an earlier run left set up has no internet until it's put back: Android setup stays
@@ -544,7 +623,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         console.error(`[wirescry] proxy couldn't reopen port ${previousPort}:`, again);
         proxy = await openProxy(undefined);
         await proxy.refreshRules();
-        terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+        await refreshSetup();
         broadcast({ type: 'status', status: status() });
         throw new Error(
           `Port ${previousPort} was taken while the proxy restarted, so it's on port ${proxy.port} now.`,
@@ -556,7 +635,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     }
     // Plugins may have changed their rules while the new proxy was starting; reapply.
     await proxy.refreshRules();
-    terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+    await refreshSetup();
   };
 
   // Commands that restart the proxy run one at a time.
@@ -784,7 +863,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         if (!terminal) throw new Error(`Terminal not found: ${command.terminalId}`);
         // Docker may have been installed or started since; the new terminal should know.
         if (await docker.refresh()) {
-          terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+          await refreshSetup();
           broadcast({ type: 'status', status: status() });
         }
         await launchTerminal(terminal, currentTerminalEnv(), {
@@ -799,7 +878,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         return composer.cancel(String(command.exchangeId));
       case 'rescanBrowsers':
         browsers = await detectBrowsers();
-        if (await docker.refresh()) terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+        if (await docker.refresh()) await refreshSetup();
         broadcast({ type: 'status', status: status() });
         return status().browsers;
       case 'clear':
@@ -889,7 +968,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         settings = { ...settings, dockerSetup: command.enabled === true ? undefined : false };
         await saveSettings(dataDir, settings);
         // New terminals get DOCKER_HOST only while it's on.
-        terminalScripts = await writeShellScripts(dataDir, currentTerminalEnv());
+        await refreshSetup();
         broadcast({ type: 'status', status: status() });
         return undefined;
       }
@@ -1047,10 +1126,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
     async stop() {
       stopping = true;
-      // First, and quickly: put capturing devices back before their listeners go (a device left
-      // pointing at a closed port has no internet), well inside the time the app gives the
-      // backend to stop. Any it can't reach keep their records, and are offered Restore next time.
-      await android?.stopAll(ANDROID_STOP_TIMEOUT_MS);
+      // First, and quickly, side by side: put capturing devices back before their listeners go (a
+      // device left pointing at a closed port has no internet), well inside the time the app gives
+      // the backend to stop; any it can't reach keep their records, and are offered Restore next
+      // time. And tell Java agents to stop sending to the proxy before it closes; they read it
+      // within a second, so a request or two may still be refused (Java 8 agents that miss it
+      // stop when the heartbeat does).
+      await Promise.all([android?.stopAll(ANDROID_STOP_TIMEOUT_MS), stopJavaAgent()]);
       android?.stop();
       composer.close();
       clearRefusals();

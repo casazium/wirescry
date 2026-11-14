@@ -7,7 +7,8 @@
  *   dependencies (shipped as node_modules) plus the packages bundled into the built
  *   code, which the build lists in out/<part>/.bundled-packages.json.
  *   Also the Go modules in Windows' Docker pipe helper (native/docker-pipe), from
- *   native/docker-pipe/licenses, which must match the helper's go.mod.
+ *   native/docker-pipe/licenses, which must match the helper's go.mod, and Byte Buddy and the ASM
+ *   it bundles, in the Java agent, from native/java-agent/licenses.
  * - out/licenses-electron: Electron's LICENSE (as LICENSE.electron.txt) and
  *   LICENSES.chromium.html, for macOS builds, which electron-builder leaves them out
  *   of. Windows and Linux builds already carry them.
@@ -27,6 +28,7 @@ import {
 import { dirname, join, relative, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { byteBuddy } from './build-java-agent.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const out = join(root, 'out');
@@ -216,6 +218,27 @@ for (const notice of goNotices) {
     license: notice.license,
     homepage: notice.homepage,
     files: [{ name: 'LICENSE', text: readFileSync(join(pipeDir, 'licenses', notice.file), 'utf8') }],
+  });
+}
+
+// The Java agent's weaver jar carries Byte Buddy, which carries ASM. Their texts are kept in
+// native/java-agent/licenses; the agent's build checks them against the ones in Byte Buddy's jar.
+const agentLicenses = join(root, 'native/java-agent/licenses');
+const agentNotices = JSON.parse(readFileSync(join(agentLicenses, 'index.json'), 'utf8'));
+if (agentNotices.byteBuddy !== byteBuddy.version) {
+  fail(
+    `native/java-agent/licenses is for Byte Buddy ${agentNotices.byteBuddy}, but the agent builds with ${byteBuddy.version}: update its texts`,
+  );
+}
+for (const notice of agentNotices.notices) {
+  entries.push({
+    id: `${notice.id} (in the Java agent)`,
+    license: notice.license,
+    homepage: notice.homepage,
+    files: notice.files.map((file) => ({
+      name: file,
+      text: readFileSync(join(agentLicenses, file), 'utf8'),
+    })),
   });
 }
 
