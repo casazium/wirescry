@@ -107,7 +107,7 @@ jobs:
       - run: npm ci
       # The Docker relay's tests skip here without the pipe helper; the check job runs them. The
       # Java agent's run in JVMs, not in Electron's Node: the check job runs those too.
-      - run: npm run test:electron -- --exclude 'test/java-agent.test.ts' --exclude 'test/java-agent-trust.test.ts' --exclude 'test/java-agent-proxy.test.ts' --exclude 'test/java-agent-host.test.ts'
+      - run: npm run test:electron -- --exclude 'test/java-agent.test.ts' --exclude 'test/java-agent-trust.test.ts' --exclude 'test/java-agent-proxy.test.ts' --exclude 'test/java-agent-host.test.ts' --exclude 'test/java-agent-startup.test.ts'
 
   smoke:
     # The free app, built and driven end to end (e2e/smoke.test.ts). Release builds run the

@@ -17,7 +17,7 @@ export interface Settings {
   adbPath?: string;
   /**
    * true: Java programs started from Wirescry's terminals, or with its JVM option, load its agent.
-   * Off by default. Set by hand in settings.json until Setup has a switch for it.
+   * Off by default; Setup's Java programs section switches it.
    */
   javaAgentStartup?: boolean;
 }
