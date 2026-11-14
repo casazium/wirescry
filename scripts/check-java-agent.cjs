@@ -3,8 +3,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-/** The jars every installer ships (the attacher isn't shipped yet). */
-const JAVA_AGENT_JARS = ['wirescry-agent.jar', 'wirescry-agent-impl.jar', 'wirescry-agent-weaver.jar'];
+/** The jars every installer ships: the stub, the agent, its weaver and the attacher. */
+const JAVA_AGENT_JARS = [
+  'wirescry-agent.jar',
+  'wirescry-agent-impl.jar',
+  'wirescry-agent-weaver.jar',
+  'wirescry-attach.jar',
+];
 
 /**
  * The names of a zip's entries, from its central directory. Enough for the jars this build makes

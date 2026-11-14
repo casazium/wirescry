@@ -31,7 +31,7 @@ if (!buildJava && process.env.WIRESCRY_REQUIRE_JAVA === '1') {
 }
 const targets = (process.env.WIRESCRY_JAVA_TARGETS ?? '').split(path.delimiter).filter(Boolean);
 /** The java that attaches: WIRESCRY_JAVA_ATTACHER (JDK 11+), else the building JDK's. */
-const attachJava = process.env.WIRESCRY_JAVA_ATTACHER || buildJava;
+export const attachJava = process.env.WIRESCRY_JAVA_ATTACHER || buildJava;
 /** The javas the programs run on. */
 export const javas = targets.length > 0 ? targets : buildJava ? [buildJava] : [];
 export const posix = process.platform !== 'win32';

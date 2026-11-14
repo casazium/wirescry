@@ -153,6 +153,7 @@ jobs:
             native/java-agent/build/wirescry-agent.jar
             native/java-agent/build/wirescry-agent-impl.jar
             native/java-agent/build/wirescry-agent-weaver.jar
+            native/java-agent/build/wirescry-attach.jar
           if-no-files-found: error
           retention-days: 1
 

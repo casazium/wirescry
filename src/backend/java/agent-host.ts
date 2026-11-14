@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import {
   caSha256,
   installAgentJars,
@@ -17,12 +18,15 @@ export interface AgentJars {
   stub: string;
   impl: string;
   weaver: string;
+  /** The attacher, run from where it is (it isn't copied into the data folder). */
+  attach: string;
 }
 
 export const JAR_NAMES: AgentJars = {
   stub: 'wirescry-agent.jar',
   impl: 'wirescry-agent-impl.jar',
   weaver: 'wirescry-agent-weaver.jar',
+  attach: 'wirescry-attach.jar',
 };
 
 /**
@@ -44,10 +48,23 @@ export function findAgentJars(
       stub: path.join(dir, JAR_NAMES.stub),
       impl: path.join(dir, JAR_NAMES.impl),
       weaver: path.join(dir, JAR_NAMES.weaver),
+      attach: path.join(dir, JAR_NAMES.attach),
     };
     if (Object.values(jars).every((file) => existsSync(file))) return jars;
   }
   return undefined;
+}
+
+/** The `detached` ids in the control file an earlier Wirescry left, or none. */
+export async function readDetached(dir: string): Promise<string[]> {
+  const text = await readFile(path.join(dir, 'control.properties'), 'utf8').catch(() => '');
+  const line = /^detached=(.*)$/m.exec(text);
+  if (!line?.[1]) return [];
+  return line[1]
+    .replace(/\r$/, '')
+    .split(',')
+    .filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id))
+    .slice(0, 1000);
 }
 
 /** What the agents follow, from Wirescry's own state. */
@@ -89,14 +106,17 @@ export class JavaAgentHost {
   private timer: ReturnType<typeof setInterval> | undefined;
   private writes: Promise<void> = Promise.resolve();
   private heartbeatFailed = false;
+  private detached: Set<string>;
 
   private constructor(
     private readonly options: JavaAgentHostOptions,
     private readonly impl: string,
     settings: AgentSettings,
+    detached: Iterable<string>,
   ) {
     this.settings = settings;
     this.ca = caSha256(settings.caPem);
+    this.detached = new Set(detached);
   }
 
   /**
@@ -109,7 +129,8 @@ export class JavaAgentHost {
       { ...options.jars, version: options.version },
       options.ops,
     );
-    const host = new JavaAgentHost(options, impl, settings);
+    // Attached agents the user turned off stay off when Wirescry starts again.
+    const host = new JavaAgentHost(options, impl, settings, await readDetached(options.dir));
     await host.write();
     host.timer = setInterval(() => host.beat(), options.heartbeatMs ?? 5000);
     host.timer.unref();
@@ -163,6 +184,34 @@ export class JavaAgentHost {
     await this.write();
   }
 
+  /** The control file's `config` now: agents report it back once they've applied it. */
+  get currentConfig(): number {
+    return this.config;
+  }
+
+  /** Attached agents turned off, by id. */
+  get detachedIds(): ReadonlySet<string> {
+    return this.detached;
+  }
+
+  /**
+   * Turns attached agents off (`off`), or back on, by id, and forgets ids no agent reports any
+   * more (`keep`: the ids of agents alive now), so the list doesn't grow for good.
+   */
+  async setDetached(change: { off?: string[]; on?: string[]; keep?: ReadonlySet<string> }): Promise<void> {
+    if (!this.enabled) return;
+    const next = new Set(this.detached);
+    for (const id of change.on ?? []) next.delete(id);
+    for (const id of change.off ?? []) next.add(id);
+    if (change.keep)
+      for (const id of next) if (!change.keep.has(id) && !change.off?.includes(id)) next.delete(id);
+    if (next.size === this.detached.size && [...next].every((id) => this.detached.has(id))) return;
+    this.detached = next;
+    // Agents re-read on a `config` change; detaching doesn't change what an applied agent sends
+    // where, so it keeps the number, like the startup setting.
+    await this.write();
+  }
+
   /** Says off to every agent, and stops the heartbeat. Wirescry is quitting. */
   async stop(): Promise<void> {
     if (this.timer) clearInterval(this.timer);
@@ -191,7 +240,7 @@ export class JavaAgentHost {
       wirescryPid: this.options.pid ?? process.pid,
       caSha256: this.ca,
       caPath: this.settings.caPath,
-      detached: [],
+      detached: [...this.detached].sort(),
     };
   }
 }

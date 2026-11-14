@@ -443,7 +443,9 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           const notJava = attacher(['load', String(process.pid), agent.stub, 'id=a']);
           expect(notJava.code).toBe(1);
           expect(notJava.lines[0]).toMatchObject({ ok: false });
-          expect(['attach-not-supported', 'attach-failed']).toContain(notJava.lines[0].reason);
+          // Refused before attaching: an attach would send it SIGQUIT, which ends a process that
+          // isn't Java (this test's own, here).
+          expect(notJava.lines[0].reason).toBe('not-a-jvm');
         });
 
         it('starts nothing for attach arguments without a good id', async () => {

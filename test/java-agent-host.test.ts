@@ -11,7 +11,13 @@ import path from 'node:path';
 import { generateCACertificate } from 'mockttp';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { caSha256, pruneAgentJars, type FileOps } from '../src/backend/java/agent-files';
-import { findAgentJars, JAR_NAMES, JavaAgentHost, type AgentSettings } from '../src/backend/java/agent-host';
+import {
+  findAgentJars,
+  JAR_NAMES,
+  JavaAgentHost,
+  type AgentJars,
+  type AgentSettings,
+} from '../src/backend/java/agent-host';
 import { createRequire } from 'node:module';
 import net from 'node:net';
 import { jarsIn } from '../scripts/build-java-agent.mjs';
@@ -29,7 +35,7 @@ import {
 } from './java-agent-helpers';
 
 let work: string;
-let jars: { stub: string; impl: string; weaver: string };
+let jars: AgentJars;
 let pems: string[];
 const hosts: JavaAgentHost[] = [];
 
@@ -39,6 +45,7 @@ beforeAll(async () => {
     stub: path.join(work, 'stub.jar'),
     impl: path.join(work, 'impl.jar'),
     weaver: path.join(work, 'weaver.jar'),
+    attach: path.join(work, 'attach.jar'),
   };
   for (const [name, file] of Object.entries(jars)) await writeFile(file, `not really a ${name} jar`);
   pems = [(await generateCACertificate()).cert, (await generateCACertificate()).cert];
@@ -333,29 +340,37 @@ describe('finding the agent’s jars', () => {
       expect(built[part]).toBe(path.join('/b', JAR_NAMES[part]));
   });
 
-  it('takes the app’s resources when all three are there', async () => {
+  it('takes the app’s resources when all four are there', async () => {
     const resources = await mkdtemp(path.join(work, 'resources '));
     await mkdir(path.join(resources, 'java-agent'));
-    for (const name of ['wirescry-agent.jar', 'wirescry-agent-impl.jar', 'wirescry-agent-weaver.jar']) {
+    for (const name of [
+      'wirescry-agent.jar',
+      'wirescry-agent-impl.jar',
+      'wirescry-agent-weaver.jar',
+      'wirescry-attach.jar',
+    ]) {
       await writeFile(path.join(resources, 'java-agent', name), '');
     }
     expect(findAgentJars(resources)).toEqual({
       stub: path.join(resources, 'java-agent', 'wirescry-agent.jar'),
       impl: path.join(resources, 'java-agent', 'wirescry-agent-impl.jar'),
       weaver: path.join(resources, 'java-agent', 'wirescry-agent-weaver.jar'),
+      attach: path.join(resources, 'java-agent', 'wirescry-attach.jar'),
     });
   });
 
-  it('never takes resources with a jar missing', async () => {
-    const resources = await mkdtemp(path.join(work, 'resources '));
-    await mkdir(path.join(resources, 'java-agent'));
-    for (const name of ['wirescry-agent.jar', 'wirescry-agent-impl.jar']) {
-      await writeFile(path.join(resources, 'java-agent', name), '');
+  it('never takes resources with a jar missing, the attacher included', async () => {
+    for (const missing of Object.values(JAR_NAMES)) {
+      const resources = await mkdtemp(path.join(work, 'resources '));
+      await mkdir(path.join(resources, 'java-agent'));
+      for (const name of Object.values(JAR_NAMES).filter((n) => n !== missing)) {
+        await writeFile(path.join(resources, 'java-agent', name), '');
+      }
+      // A development build of the agent, if there is one, is the fallback.
+      const found = findAgentJars(resources);
+      expect(found?.stub.startsWith(resources), missing).not.toBe(true);
+      if (found) expect(found.stub).toBe(path.resolve('native/java-agent/build/wirescry-agent.jar'));
     }
-    // A development build of the agent, if there is one, is the fallback.
-    const found = findAgentJars(resources);
-    expect(found?.stub.startsWith(resources)).not.toBe(true);
-    if (found) expect(found.stub).toBe(path.resolve('native/java-agent/build/wirescry-agent.jar'));
   });
 });
 
@@ -701,6 +716,7 @@ describe.skipIf(!buildJava)('JVMs following the host', { timeout: 90_000 }, () =
               stub: shared.built.stub.file,
               impl: shared.built.impl.file,
               weaver: shared.built.weaver.file,
+              attach: shared.built.attach.file,
             },
             version: '0.0.0-test',
             heartbeatMs: 200,

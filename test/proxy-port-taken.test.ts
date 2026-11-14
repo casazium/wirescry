@@ -31,7 +31,7 @@ it.each(['127.0.0.1', '0.0.0.0'])(
     // Stand-ins for the Java agent's jars: only the control file matters here.
     const jarDir = path.join(dataDir, 'built');
     await mkdir(jarDir);
-    const jars = { stub: '', impl: '', weaver: '' };
+    const jars = { stub: '', impl: '', weaver: '', attach: '' };
     for (const part of ['stub', 'impl', 'weaver'] as const) {
       jars[part] = path.join(jarDir, `${part}.jar`);
       await writeFile(jars[part], part);

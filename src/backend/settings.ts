@@ -20,6 +20,11 @@ export interface Settings {
    * Off by default; Setup's Java programs section switches it.
    */
   javaAgentStartup?: boolean;
+  /**
+   * true: the user agreed that Java 21 and later print a warning on the program's standard error
+   * when Wirescry attaches its agent, so Attach no longer asks.
+   */
+  javaAttachWarningOk?: boolean;
 }
 
 const FILE = 'settings.json';
@@ -38,6 +43,7 @@ export async function loadSettings(dir: string): Promise<Settings> {
       ...(raw.androidSetup === false ? { androidSetup: false } : {}),
       ...(raw.experimentalWindowsDocker === true ? { experimentalWindowsDocker: true } : {}),
       ...(raw.javaAgentStartup === true ? { javaAgentStartup: true } : {}),
+      ...(raw.javaAttachWarningOk === true ? { javaAttachWarningOk: true } : {}),
       ...(typeof raw.adbPath === 'string' && path.isAbsolute(raw.adbPath) && raw.adbPath.length < 1000
         ? { adbPath: raw.adbPath }
         : {}),
