@@ -37,14 +37,22 @@ export interface JavaAttachOptions {
 export type AttachReply = { attached: true } | { needsConfirmation: 'java-warning' };
 
 /** What a refusal means for the user, by the attacher's reason. */
-export function attachNote(result: Extract<LoadResult, { ok: false }>): string {
-  const message = result.message ? ` (${result.message})` : '';
+export function attachNote(
+  result: Extract<LoadResult, { ok: false }>,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const message = result.message ? ` (${result.message.replace(/[.\s]+$/, '')})` : '';
   switch (result.reason) {
     case 'dynamic-loading-disabled':
       return "This program refuses agents loaded while it runs (it was started with -XX:-EnableDynamicAgentLoading). Start it with Wirescry's JVM option instead.";
     case 'attach-not-supported':
     case 'attach-failed':
-      return `Java didn't let Wirescry attach${message}. Programs run by another user, or as administrator, can't be attached to; nor can ones started with -XX:+DisableAttachMechanism.`;
+      if (/respond within/i.test(result.message ?? '')) {
+        return "The program didn't answer in time: it may be paused in a debugger, or very busy. Try again.";
+      }
+      return platform === 'win32'
+        ? `Java didn't let Wirescry attach${message}. Programs run as administrator, or by another user, can't be attached to; nor can ones started with -XX:+DisableAttachMechanism.`
+        : `Java didn't let Wirescry attach${message}. Programs started with -XX:+DisableAttachMechanism can't be attached to.`;
     case 'agent-load-failed':
     case 'agent-init-failed':
     case 'load-failed':
@@ -63,7 +71,10 @@ export class JavaAttach {
   private searching: Promise<JdkSearch> | undefined;
   private listed: ListedJvm[] | undefined;
   private listError: string | undefined;
+  /** Agents writing now (shown), and agents whose program runs, writing or not. */
   private statuses: AgentStatus[] = [];
+  private running: AgentStatus[] = [];
+  private refreshing: Promise<JavaAttachStatus> | undefined;
   private readonly busy = new Map<number, 'attaching' | 'detaching'>();
   private readonly notes = new Map<number, string>();
   private readonly reader: StatusReader;
@@ -113,8 +124,15 @@ export class JavaAttach {
     };
   }
 
-  /** Looks for a JDK again, lists programs, and reads the status files. */
-  async refresh(): Promise<JavaAttachStatus> {
+  /** Looks for a JDK again, lists programs, and reads the status files. One at a time. */
+  refresh(): Promise<JavaAttachStatus> {
+    this.refreshing ??= this.refreshOnce().finally(() => {
+      this.refreshing = undefined;
+    });
+    return this.refreshing;
+  }
+
+  private async refreshOnce(): Promise<JavaAttachStatus> {
     this.looked = true;
     this.checking = true;
     this.changed();
@@ -142,8 +160,9 @@ export class JavaAttach {
     try {
       const host = await this.ensureHost();
       await this.readStatuses();
+      // Any agent whose program runs, writing or not (paused in a debugger, say).
       const agent =
-        this.statuses.find((s) => s.pid === pid && s.enabled) ?? this.statuses.find((s) => s.pid === pid);
+        this.running.find((s) => s.pid === pid && s.enabled) ?? this.running.find((s) => s.pid === pid);
       if (agent) {
         if (agent.route === 'startup' && agent.reason === 'startup-off') {
           const note =
@@ -157,7 +176,7 @@ export class JavaAttach {
       }
       if (confirmWarning && !this.options.warningOk()) await this.options.saveWarningOk();
       const jdk = (await this.jdk()).jdk;
-      if (!jdk) throw new Error("Wirescry didn't find a JDK 11 or later to attach with.");
+      if (!jdk) throw new Error("Wirescry didn't find a JDK it can attach with.");
       const tool = (this.options.attacher ?? makeAttacher)(jdk.java, this.options.attachJar);
       const id = `a${randomBytes(9).toString('hex')}`;
       const result = await tool.load(pid, host.stubPath, id, this.options.warningOk());
@@ -179,14 +198,15 @@ export class JavaAttach {
   /** Turns `pid`'s agent off. It stays loaded (agents can't be unloaded), sending nothing. */
   async detach(pid: number): Promise<void> {
     if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('Not a process id.');
-    this.notes.delete(pid);
-    const host = await this.ensureHost();
-    await this.readStatuses();
-    const ids = this.statuses.filter((s) => s.pid === pid).map((s) => s.id);
-    if (ids.length === 0) throw new Error("Wirescry's agent isn't running in this program.");
+    if (this.busy.has(pid)) throw new Error('Wirescry is already doing something to this program.');
     this.busy.set(pid, 'detaching');
+    this.notes.delete(pid);
     this.changed();
     try {
+      const host = await this.ensureHost();
+      await this.readStatuses();
+      const ids = this.running.filter((s) => s.pid === pid).map((s) => s.id);
+      if (ids.length === 0) throw new Error("Wirescry's agent isn't running in this program.");
       await host.setDetached({ off: ids });
     } finally {
       this.busy.delete(pid);
@@ -239,8 +259,9 @@ export class JavaAttach {
   }
 
   private async readStatuses(): Promise<void> {
-    const { live, present } = await this.reader.read();
+    const { live, running, present } = await this.reader.read();
     this.statuses = live;
+    this.running = running;
     // Ids of agents whose program ended leave the control file's detached list.
     if (this.host && present) await this.host.setDetached({ keep: present });
   }

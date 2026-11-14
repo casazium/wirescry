@@ -5,6 +5,7 @@
  *
  * What these tests need to run: see test/java-agent-helpers.ts.
  */
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import http from 'node:http';
@@ -68,8 +69,8 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
     backend = undefined;
   });
 
-  async function start() {
-    dataDir = await mkdtemp(path.join(shared.work, 'backend '));
+  async function start(again = false, staleMs?: number) {
+    if (!again) dataDir = await mkdtemp(path.join(shared.work, 'backend '));
     backend = await startBackendOnPickedPort({
       dataDir,
       token: TOKEN,
@@ -98,6 +99,7 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
             passed: [],
           }),
           pollMs: 250,
+          ...(staleMs ? { statusReader: { staleMs } } : {}),
         },
       },
     });
@@ -112,8 +114,8 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
   };
   const programOf = (pid: number | undefined) => attachStatus()?.programs.find((p) => p.pid === pid);
 
-  async function probe(java: string, flags: string[] = []): Promise<Run> {
-    const r = run(java, [...flags, '-cp', probes, 'ProxyProbe'], { stdin: true });
+  async function probe(java: string, flags: string[] = [], args: string[] = []): Promise<Run> {
+    const r = run(java, [...flags, '-cp', probes, 'ProxyProbe', ...args], { stdin: true });
     await expect.poll(r.stdout, { timeout: 15_000 }).toContain('ready');
     return r;
   }
@@ -132,7 +134,8 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
     describe(`on Java ${major}`, () => {
       it('lists, attaches, sends through Wirescry, detaches, and attaches again', async () => {
         await start();
-        const r = await probe(java, ['-Dsecret.token=hunter2']);
+        // An argument: what a JVM's display name holds after its main class.
+        const r = await probe(java, [], ['--token=hunter2']);
         // macOS sets this in every JVM, and it would keep 127.0.0.1 direct.
         expect(await ask(r, 'clear http.nonProxyHosts')).toBe('cleared');
         const pid = r.child.pid!;
@@ -170,6 +173,39 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
         await expect.poll(() => programOf(pid)?.agent, { timeout: 20_000 }).toMatchObject({ id, on: true });
         expect(await ask(r, 'select http://example.test/')).toBe(`HTTP 127.0.0.1:${backend!.proxyPort}`);
       }, 90_000);
+
+      it('keeps a detached program detached across a restart, and while it was paused', async () => {
+        await start(false, 3000);
+        const r = await probe(java);
+        expect(await ask(r, 'clear http.nonProxyHosts')).toBe('cleared');
+        const pid = r.child.pid!;
+        await api!.send({ command: 'javaAttach', pid, confirmWarning: true });
+        await expect.poll(() => programOf(pid)?.agent?.on, { timeout: 20_000 }).toBe(true);
+        await api!.send({ command: 'javaDetach', pid });
+        await expect.poll(() => programOf(pid)?.agent?.reason, { timeout: 20_000 }).toBe('detached');
+
+        // Wirescry quits and starts again, with the same data folder: still detached.
+        api!.close();
+        await backend!.stop();
+        await start(true, 3000);
+        await api!.send({ command: 'javaRefresh' });
+        await expect.poll(() => programOf(pid)?.agent?.reason, { timeout: 20_000 }).toBe('detached');
+        expect(await ask(r, 'select http://example.test/')).toBe('DIRECT');
+
+        if (process.platform !== 'win32') {
+          // Paused (as a debugger would) past the time a status may stand still: not shown, yet
+          // still detached when it goes on.
+          r.child.kill('SIGSTOP');
+          try {
+            await expect.poll(() => programOf(pid)?.agent, { timeout: 20_000 }).toBeUndefined();
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+          } finally {
+            r.child.kill('SIGCONT');
+          }
+          await expect.poll(() => programOf(pid)?.agent?.reason, { timeout: 20_000 }).toBe('detached');
+          expect(await ask(r, 'select http://example.test/')).toBe('DIRECT');
+        }
+      }, 120_000);
 
       it.skipIf(major < 21)(
         'asks before Java 21’s warning, and remembers the answer',
@@ -210,6 +246,7 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
         await expect(api!.send({ command: 'javaAttach', pid, confirmWarning: true })).rejects.toThrow(
           /doesn't list this process/,
         );
+        expect(programOf(pid)?.note).toMatch(/doesn't list this process/);
         expect(await ask(r, 'select http://example.test/')).toBe('DIRECT');
         expect(r.child.exitCode).toBeNull();
       }, 60_000);
@@ -231,6 +268,27 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
       );
     });
   }
+
+  // Before 17, attaching here sends SIGQUIT without checking the process catches it.
+  const oldAttachers = javas.filter((java) => majorOf(java) >= 11 && majorOf(java) < 17);
+  it.skipIf(process.platform === 'win32' || oldAttachers.length === 0)(
+    'never attaches from a JDK before 17 on Linux or macOS',
+    () => {
+      for (const java of oldAttachers) {
+        const result = spawnSync(
+          java,
+          ['-jar', shared.built.attach.file, 'load', String(process.pid), shared.built.stub.file, 'id=a'],
+          {
+            encoding: 'utf8',
+            timeout: 30_000,
+          },
+        );
+        expect(result.status, result.stdout + result.stderr).toBe(2);
+        expect(JSON.parse(result.stdout.trim())).toMatchObject({ ok: false, reason: 'attacher-too-old' });
+      }
+    },
+    60_000,
+  );
 
   it('refuses a process that isn’t Java, and leaves it alone', async () => {
     await start();

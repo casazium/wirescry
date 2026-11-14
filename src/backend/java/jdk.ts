@@ -3,10 +3,20 @@ import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * Finding a JDK that can run Wirescry's attacher (native/java-agent/attach): Java 11 or later,
- * with the jdk.attach module. A runtime without it (a JRE, or a trimmed jlink image) can't attach.
- * Any such JDK attaches to programs on Java 8 and later.
+ * Finding a JDK that can run Wirescry's attacher (native/java-agent/attach), with the jdk.attach
+ * module: a runtime without it (a JRE, or a trimmed jlink image) can't attach. Any such JDK attaches
+ * to programs on Java 8 and later.
+ *
+ * On macOS and Linux it must be Java 17 or later. Attaching there sends the program SIGQUIT, which
+ * ends a process that isn't Java; from 17 the JDK first checks that the process catches it, while
+ * 11 sends it regardless. A pid that a Java program which crashed left listed, now reused by
+ * another program, would otherwise be ended. On Windows, which sends no signal, 11 will do.
  */
+
+/** The oldest JDK that attaches safely on `platform`. */
+export function minimumAttachJava(platform: NodeJS.Platform): number {
+  return platform === 'win32' ? 11 : 17;
+}
 
 export interface Jdk {
   /** The JDK's folder (its java.home). */
@@ -66,8 +76,9 @@ export async function checkJdk(
   const fields = parseRelease(text);
   const version = fields.get('JAVA_VERSION') ?? '';
   const major = majorOf(version);
-  if (major < 11)
-    return `${home} is Java ${version || 'of an unknown version'}; attaching needs Java 11 or later`;
+  const minimum = minimumAttachJava(platform);
+  if (major < minimum)
+    return `${home} is Java ${version || 'of an unknown version'}; attaching needs Java ${minimum} or later`;
   if (!(fields.get('MODULES') ?? '').split(/\s+/).includes('jdk.attach')) {
     return `${home} is a runtime without the jdk.attach module (a JRE, or a trimmed one)`;
   }

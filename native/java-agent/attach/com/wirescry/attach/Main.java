@@ -14,7 +14,8 @@ import java.util.Properties;
 
 /**
  * Wirescry's attacher: lists running JVMs and loads Wirescry's agent into one. Run by Wirescry
- * with a JDK 11 or later (it needs the jdk.attach module); the target can be Java 8 or later.
+ * with a JDK 17 or later (11 on Windows; it needs the jdk.attach module); the target can be Java 8
+ * or later.
  *
  * <pre>
  *   list                       one JSON line per JVM: {"pid":"…","name":"…"}
@@ -81,6 +82,14 @@ public final class Main {
     }
     if (!new File(jar).isAbsolute()) {
       System.out.println(failure("bad-jar", "The agent's path must be absolute."));
+      return 2;
+    }
+    // Before 17, attaching on Linux and macOS sends SIGQUIT without first checking that the process
+    // catches it (as a JVM does): a pid a crashed JVM left listed, now another program's, would be
+    // ended. Windows sends no signal.
+    boolean windows = System.getProperty("os.name", "").startsWith("Windows");
+    if (!windows && Runtime.version().feature() < 17) {
+      System.out.println(failure("attacher-too-old", "Attaching here needs a JDK 17 or later."));
       return 2;
     }
     // Only a JVM that lists itself. On Linux and macOS, attaching to a process that isn't one can

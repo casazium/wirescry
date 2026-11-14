@@ -28,11 +28,17 @@ export interface StatusReaderOptions {
   now?: () => number;
   /** Whether a process runs: by default process.kill(pid, 0). */
   alive?: (pid: number) => boolean;
+  /** How long a beat may stand still (default STATUS_STALE_MS). For tests. */
+  staleMs?: number;
 }
 
-function processAlive(pid: number): boolean {
+/** Whether a process runs: signal 0 checks without sending anything. */
+export function processAlive(
+  pid: number,
+  kill: (pid: number, signal: number) => void = process.kill,
+): boolean {
   try {
-    process.kill(pid, 0);
+    kill(pid, 0);
     return true;
   } catch (error) {
     // EPERM: it runs, as another user.
@@ -40,26 +46,42 @@ function processAlive(pid: number): boolean {
   }
 }
 
+export interface StatusRead {
+  /** Agents writing now: what Setup shows. */
+  live: AgentStatus[];
+  /**
+   * Agents whose program still runs, writing or not: one paused at a debugger's breakpoint stops
+   * writing, but is still there to turn on or off.
+   */
+  running: AgentStatus[];
+  /**
+   * The ids of every agent whose program still runs, by the status files' names, whether or not a
+   * file could be read this time (a scanner holding it, a rename on Windows, a newer format): a
+   * detached agent must stay detached. Undefined when the folder couldn't be read: nothing known.
+   */
+  present: Set<string> | undefined;
+}
+
 export class StatusReader {
   private readonly seen = new Map<string, Seen>();
   private readonly now: () => number;
   private readonly alive: (pid: number) => boolean;
+  private readonly staleMs: number;
 
   constructor(
     private readonly dir: string,
     options: StatusReaderOptions = {},
   ) {
     this.now = options.now ?? Date.now;
-    this.alive = options.alive ?? processAlive;
+    this.alive = options.alive ?? ((pid) => processAlive(pid));
+    this.staleMs = options.staleMs ?? STATUS_STALE_MS;
   }
 
   /**
-   * The status files of agents that are alive (`live`), and the ids of every agent whose program
-   * still runs (`present`), live or not: one stopped at a debugger's breakpoint stops writing, but
-   * must stay detached when it goes on. Deletes the files of agents whose program is gone, and
-   * temporary files an agent left behind.
+   * Reads the status files (see StatusRead). Deletes the files of agents whose program is gone, and
+   * temporary or damaged files left over.
    */
-  async read(): Promise<{ live: AgentStatus[]; present: Set<string> | undefined }> {
+  async read(): Promise<StatusRead> {
     const folder = path.join(this.dir, 'status');
     let names: string[];
     try {
@@ -67,27 +89,31 @@ export class StatusReader {
     } catch (error) {
       // No folder yet: no agents. Unreadable: nothing is known, so nothing is taken as gone.
       const missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
-      return { live: [], present: missing ? new Set() : undefined };
+      return { live: [], running: [], present: missing ? new Set() : undefined };
     }
     const now = this.now();
     const live: AgentStatus[] = [];
+    const running: AgentStatus[] = [];
     const present = new Set<string>();
     const keys = new Set<string>();
     for (const name of names) {
       const file = path.join(folder, name);
-      const temp = /^(\d{1,18})-[A-Za-z0-9_-]{1,64}\.tmp$/.exec(name);
-      if (temp) {
-        const info = await stat(file).catch(() => undefined);
+      const match = /^(\d{1,18})-([A-Za-z0-9_-]{1,64})\.(properties|tmp)$/.exec(name);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      if (!this.alive(pid)) {
+        // Its program ended: the file, and any temporary one it left, go.
+        await rm(file, { force: true }).catch(() => undefined);
+        continue;
+      }
+      present.add(match[2]!);
+      const info = await stat(file).catch(() => undefined);
+      if (match[3] === 'tmp') {
         if (info && now - info.mtimeMs > STATUS_DELETE_MS)
           await rm(file, { force: true }).catch(() => undefined);
         continue;
       }
-      const match = /^(\d{1,18})-([A-Za-z0-9_-]{1,64})\.properties$/.exec(name);
-      if (!match) continue;
-      const [info, text] = await Promise.all([
-        stat(file).catch(() => undefined),
-        readFile(file, 'utf8').catch(() => undefined),
-      ]);
+      const text = await readFile(file, 'utf8').catch(() => undefined);
       if (!info || text === undefined) continue;
       const status = parseStatus(text);
       // The file's name must agree with what it says.
@@ -104,18 +130,13 @@ export class StatusReader {
           : // First seen: the file's time says how long ago it was written.
             { beat: status.beat, movedAt: before ? now : Math.min(now, info.mtimeMs) };
       this.seen.set(name, seen);
-      if (!this.alive(status.pid)) {
-        await rm(file, { force: true }).catch(() => undefined);
-        keys.delete(name);
-        continue;
-      }
-      present.add(status.id);
+      running.push(status);
       // A program whose agent stopped writing (stuck, or paused) isn't shown; nor is one a reused
       // pid now names, whose file is the old program's.
-      if (now - seen.movedAt <= STATUS_STALE_MS) live.push(status);
+      if (now - seen.movedAt <= this.staleMs) live.push(status);
     }
     for (const key of this.seen.keys()) if (!keys.has(key)) this.seen.delete(key);
-    return { live, present };
+    return { live, running, present };
   }
 }
 

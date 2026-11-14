@@ -63,8 +63,7 @@ export async function readDetached(dir: string): Promise<string[]> {
   return line[1]
     .replace(/\r$/, '')
     .split(',')
-    .filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id))
-    .slice(0, 1000);
+    .filter((id) => /^[A-Za-z0-9_-]{1,64}$/.test(id));
 }
 
 /** What the agents follow, from Wirescry's own state. */

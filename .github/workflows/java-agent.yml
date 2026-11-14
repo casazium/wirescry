@@ -2,7 +2,8 @@ name: Java agent
 
 # Wirescry's Java agent (native/java-agent) on every Java GitHub's images carry, plus 8 on Linux,
 # loaded at startup and attached, on each OS. Attaching takes a JDK on Wirescry's side; nightly
-# runs try JDK 11, 21 and 25 as the attacher against every target, pull requests JDK 21.
+# runs try JDK 17, 21 and 25 as the attacher against every target, pull requests JDK 21. (Before 17,
+# attaching on Linux and macOS can send SIGQUIT to a process that isn't Java; Wirescry needs 17 there.)
 
 on:
   pull_request:
@@ -35,7 +36,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        attacher: ${{ fromJSON(github.event_name == 'pull_request' && '["21"]' || '["11","21","25"]') }}
+        attacher: ${{ fromJSON(github.event_name == 'pull_request' && '["21"]' || '["17","21","25"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:

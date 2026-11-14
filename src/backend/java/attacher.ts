@@ -34,19 +34,46 @@ export type RunAttacher = (
 export const LIST_TIMEOUT_MS = 10_000;
 export const LOAD_TIMEOUT_MS = 60_000;
 
+/** Variables a JVM reads options or a class path from, which the attacher mustn't take. */
+const JVM_VARIABLES = new Set(['JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH']);
+
+/**
+ * Wirescry's environment without the JVM's option variables: another agent named there would run
+ * with the attacher's rights, and logging options there print to standard output, where the
+ * attacher's answer goes. Windows names ignore case.
+ */
+export function attacherEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !JVM_VARIABLES.has(key.toUpperCase())));
+}
+
+const firstLine = (text: string | undefined): string | undefined =>
+  text
+    ?.split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean)
+    ?.slice(0, 300);
+
 export const runAttacher: RunAttacher = (java, jar, args, timeoutMs) =>
   new Promise((resolve) => {
     execFile(
       java,
       ['-jar', jar, ...args],
-      { timeout: timeoutMs, windowsHide: true, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
-      (error, stdout) => {
+      {
+        env: attacherEnv(),
+        timeout: timeoutMs,
+        windowsHide: true,
+        maxBuffer: 4 * 1024 * 1024,
+        encoding: 'utf8',
+      },
+      (error, stdout, stderr) => {
         const failed = error as (NodeJS.ErrnoException & { killed?: boolean; code?: unknown }) | null;
         if (failed && typeof failed.code !== 'number') {
           resolve({
             code: null,
             stdout: stdout ?? '',
-            error: failed.killed ? `it didn't finish within ${timeoutMs / 1000} s` : failed.message,
+            error: failed.killed
+              ? `it didn't finish within ${timeoutMs / 1000} s`
+              : (firstLine(stderr) ?? (failed.code === 'ENOENT' ? `${java} wasn't found` : "it didn't run")),
           });
           return;
         }
@@ -106,7 +133,7 @@ export function parseLoad(result: RunResult): LoadResult {
   const lines = jsonLines(result.stdout);
   const line = lines?.length === 1 ? lines[0] : undefined;
   if (!line) {
-    return { ok: false, reason: 'attacher-failed', message: "The attacher's answer wasn't readable." };
+    return { ok: false, reason: 'attacher-failed', message: "the attacher's answer wasn't readable" };
   }
   if (line.ok === true && result.code === 0) {
     return { ok: true, java: short(line.java, 64) ?? '', javaHome: short(line.javaHome, 1024) ?? '' };
@@ -119,7 +146,7 @@ export function parseLoad(result: RunResult): LoadResult {
       ...(short(line.java, 64) !== undefined ? { java: short(line.java, 64) } : {}),
     };
   }
-  return { ok: false, reason: 'attacher-failed', message: "The attacher's answer wasn't readable." };
+  return { ok: false, reason: 'attacher-failed', message: "the attacher's answer wasn't readable" };
 }
 
 export interface Attacher {
