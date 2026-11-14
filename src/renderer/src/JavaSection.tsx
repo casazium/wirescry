@@ -81,7 +81,8 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
           </div>
         </>
       )}
-      {send && (
+      {/* With a problem (the agent missing, or a path Java can't take), attaching can't work either. */}
+      {send && !java.problem && (
         <JavaPrograms attach={java.attach} platform={status.platform} connected={connected} send={send} />
       )}
       <details className="coverage">

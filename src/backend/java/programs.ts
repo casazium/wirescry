@@ -170,7 +170,8 @@ export function programsOf(input: ProgramsInput): JavaProgram[] {
       id: status.id,
       route: status.route,
       on: status.enabled,
-      reason: input.detached.has(status.id) && status.reason !== 'detached' ? 'detaching' : status.reason,
+      // Detaching: asked, and the agent still on. One off for another reason stays as it says.
+      reason: input.detached.has(status.id) && status.enabled ? 'detaching' : status.reason,
       java: status.java,
       current: status.appliedConfig === input.config,
       hooks: status.hooks,

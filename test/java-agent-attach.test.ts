@@ -456,14 +456,20 @@ describe('the list of programs', () => {
         status({ pid: 10, id: 'second', enabled: false, reason: 'off' }),
         status({ pid: 10, id: 'first' }),
         status({ pid: 11, id: 'x' }),
+        // Detached, then off for another reason first (the startup setting): it says so, not
+        // "detaching" for good.
+        status({ pid: 12, id: 'y', route: 'startup', enabled: false, reason: 'startup-off' }),
+        status({ pid: 13, id: 'z', enabled: false, reason: 'detached' }),
       ],
       config: 5,
       version: '1.0.0',
-      detached: new Set(['x']),
+      detached: new Set(['x', 'y', 'z']),
     });
     expect(programs.map((p) => [p.pid, p.agent?.id, p.agent?.reason])).toEqual([
       [10, 'first', 'on'],
       [11, 'x', 'detaching'],
+      [12, 'y', 'startup-off'],
+      [13, 'z', 'detached'],
     ]);
   });
 });
