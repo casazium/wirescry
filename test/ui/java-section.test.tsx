@@ -170,6 +170,15 @@ describe('Java section, running programs', () => {
     expect(send).toHaveBeenCalledTimes(3);
   });
 
+  it('looks once, even when the page renders it again with a new send', () => {
+    const calls = vi.fn<(command: Command) => Promise<unknown>>(async () => undefined);
+    const status = { ...withJava({ startup: false }), platform: 'darwin' as const };
+    const view = render(<JavaSection status={status} send={(c) => calls(c)} />);
+    view.rerender(<JavaSection status={status} send={(c) => calls(c)} />);
+    view.rerender(<JavaSection status={status} send={(c) => calls(c)} />);
+    expect(calls).toHaveBeenCalledTimes(1);
+  });
+
   it('doesn’t look by itself once the backend has a list, or while disconnected', () => {
     const send = vi.fn(async () => undefined);
     show(attach(), send);
@@ -272,7 +281,7 @@ describe('Java section, running programs', () => {
     expect(screen.queryByRole('textbox', { name: 'Attach by process id' })).toBeNull();
   });
 
-  it('attaches and detaches, and shows what it’s doing', () => {
+  it('attaches and detaches, and shows what it’s doing', async () => {
     const { send, rerender } = show(
       attach({
         programs: [
@@ -285,6 +294,8 @@ describe('Java section, running programs', () => {
     expect(send).toHaveBeenLastCalledWith({ command: 'javaAttach', pid: 10 });
     fireEvent.click(buttonIn('On')!);
     expect(send).toHaveBeenLastCalledWith({ command: 'javaDetach', pid: 11 });
+    // The replies are in: what disables the buttons now is the backend's busy.
+    await act(async () => undefined);
     rerender(
       attach({
         programs: [
