@@ -35,8 +35,8 @@ const dockerPipe = {
 };
 const electronNotices = { from: 'out/licenses-electron', to: 'licenses' };
 // The Java agent (native/java-agent), built by scripts/build-java-agent.mjs. Lands in
-// resources/java-agent/; the backend copies it into the data folder (src/backend/java/agent-host.ts).
-// The attacher isn't shipped yet.
+// resources/java-agent/; the backend copies the agent into the data folder (src/backend/java/agent-host.ts)
+// and runs the attacher from here.
 const javaAgent = { from: 'native/java-agent/build', to: 'java-agent', filter: JAVA_AGENT_JARS };
 
 /**

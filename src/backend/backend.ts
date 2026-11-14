@@ -54,6 +54,7 @@ import { startProxy, type RunningProxy } from './proxy';
 import { cleanHost, Refusals } from './refusals';
 import { isValidPort, loadSettings, saveSettings, type Settings } from './settings';
 import { findAgentJars, JAVA_AGENT_DIR, JavaAgentHost, type AgentJars } from './java/agent-host';
+import { JavaAttach, type JavaAttachOptions } from './java/attach-manager';
 import type { FileOps } from './java/agent-files';
 import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
@@ -140,7 +141,16 @@ export interface BackendOptions {
    * setting (tests), unless `followSetting`. Left out or false, it's off, so tests never write a
    * control file that real JVMs read.
    */
-  javaAgent?: boolean | { jars: AgentJars; heartbeatMs?: number; ops?: FileOps; followSetting?: boolean };
+  javaAgent?:
+    | boolean
+    | {
+        jars: AgentJars;
+        heartbeatMs?: number;
+        ops?: FileOps;
+        followSetting?: boolean;
+        /** Replaces how attaching finds a JDK and runs the attacher, and how often it reads status. */
+        attach?: Partial<Pick<JavaAttachOptions, 'findJdk' | 'attacher' | 'pollMs' | 'statusReader'>>;
+      };
 }
 
 export interface HarImportCounts {
@@ -237,6 +247,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   // Written once the proxy is up; status() can be asked for before that (Docker's callbacks).
   let terminalScripts: Awaited<ReturnType<typeof writeShellScripts>> = {};
   let javaAgent: JavaAgentHost | undefined;
+  let javaAttach: JavaAttach | undefined;
   let agentStarting: Promise<void> | undefined;
   /** Why the agent couldn't be set up, for Setup. */
   let agentProblem: string | undefined;
@@ -330,6 +341,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
             startup: agentStartup,
             ...(javaAgent ? { stubPath: javaAgent.stubPath } : {}),
             ...(agentProblem ? { problem: agentProblem } : {}),
+            ...(javaAttach?.status() ? { attach: javaAttach.status() } : {}),
           },
         }
       : {}),
@@ -570,10 +582,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     caPem: ca.cert,
     startup: agentStartup,
   });
+  let foundJars: AgentJars | undefined;
+  const agentJars = (): AgentJars | undefined =>
+    agentOptions ? agentOptions.jars : (foundJars ??= findAgentJars() ?? noAgentJars());
   /** Starts the agent's host, unless it's running or starting. Once started, it runs until quit. */
   const startJavaAgent = (): void => {
     if (javaAgent || agentStarting || !options.javaAgent) return;
-    const jars = agentOptions ? agentOptions.jars : (findAgentJars() ?? noAgentJars());
+    const jars = agentJars();
     if (!jars) {
       agentProblem = "This copy of Wirescry doesn't include its Java agent.";
       return;
@@ -613,6 +628,35 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   ) {
     startJavaAgent();
   }
+  /** The running host, started if need be: attached agents follow its control file. */
+  const agentHost = async (): Promise<JavaAgentHost> => {
+    startJavaAgent();
+    await agentStarting;
+    if (!javaAgent) throw new Error(agentProblem ?? "Wirescry's Java agent isn't set up.");
+    return javaAgent;
+  };
+  /** Attaching to running programs, made when Setup first asks. */
+  const javaAttacher = (): JavaAttach => {
+    if (!options.javaAgent) throw new Error('Java setup is off.');
+    if (javaAttach) return javaAttach;
+    const jars = agentJars();
+    if (!jars) throw new Error("This copy of Wirescry doesn't include its Java agent.");
+    javaAttach = new JavaAttach({
+      dir: path.join(dataDir, JAVA_AGENT_DIR),
+      attachJar: jars.attach,
+      version: options.app?.version ?? '0.0.0',
+      host: agentHost,
+      warningOk: () => settings.javaAttachWarningOk === true,
+      saveWarningOk: async () => {
+        const next = { ...settings, javaAttachWarningOk: true };
+        await saveSettings(dataDir, next);
+        settings = next;
+      },
+      changed: () => broadcast({ type: 'status', status: status() }),
+      ...agentOptions?.attach,
+    });
+    return javaAttach;
+  };
   // Rewritten whenever the port or certificate changes, so the one-line setup stays current.
   await refreshSetup();
   // Android devices over the user's ADB server. Started in the background: finding or starting
@@ -1016,6 +1060,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         broadcast({ type: 'status', status: status() });
         return undefined;
       }
+      case 'javaRefresh':
+        return javaAttacher().refresh();
+      case 'javaAttach':
+        return javaAttacher().attach(Number(command.pid), command.confirmWarning === true);
+      case 'javaDetach':
+        await javaAttacher().detach(Number(command.pid));
+        return undefined;
       case 'setDockerSetup': {
         docker.setActive(command.enabled === true);
         settings = { ...settings, dockerSetup: command.enabled === true ? undefined : false };
@@ -1185,6 +1236,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       // time. And tell Java agents to stop sending to the proxy before it closes; they read it
       // within a second, so a request or two may still be refused (Java 8 agents that miss it
       // stop when the heartbeat does).
+      javaAttach?.stop();
       await Promise.all([android?.stopAll(ANDROID_STOP_TIMEOUT_MS), stopJavaAgent()]);
       android?.stop();
       composer.close();

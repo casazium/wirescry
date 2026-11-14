@@ -60,11 +60,12 @@ describe('selfCheck', () => {
     };
     const selfCheck = async (dir: string) => (await import('../src/backend/self-check')).selfCheck(dir);
 
-    it('finds nothing wrong when the app’s resources hold its three jars', async () => {
+    it('finds nothing wrong when the app’s resources hold its four jars', async () => {
       const dir = await resources([
         'wirescry-agent.jar',
         'wirescry-agent-impl.jar',
         'wirescry-agent-weaver.jar',
+        'wirescry-attach.jar',
       ]);
       expect(await selfCheck(dir)).toEqual([]);
       await rm(dir, { recursive: true });
@@ -72,6 +73,18 @@ describe('selfCheck', () => {
 
     it('says so when one is missing, even with a development build to fall back on', async () => {
       const dir = await resources(['wirescry-agent.jar', 'wirescry-agent-impl.jar']);
+      expect(await selfCheck(dir)).toEqual([
+        `the Java agent's jars aren't in ${path.join(dir, 'java-agent')}`,
+      ]);
+      await rm(dir, { recursive: true });
+    });
+
+    it('says so when only the attacher is missing', async () => {
+      const dir = await resources([
+        'wirescry-agent.jar',
+        'wirescry-agent-impl.jar',
+        'wirescry-agent-weaver.jar',
+      ]);
       expect(await selfCheck(dir)).toEqual([
         `the Java agent's jars aren't in ${path.join(dir, 'java-agent')}`,
       ]);

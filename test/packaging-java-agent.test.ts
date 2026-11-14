@@ -68,11 +68,12 @@ async function jars(change: Record<string, Buffer | null> = {}): Promise<string>
 }
 
 describe('the Java agent packaging check', () => {
-  it('ships the stub, the agent and its weaver, not the attacher yet', () => {
+  it('ships the stub, the agent, its weaver and the attacher', () => {
     expect(JAVA_AGENT_JARS).toEqual([
       'wirescry-agent.jar',
       'wirescry-agent-impl.jar',
       'wirescry-agent-weaver.jar',
+      'wirescry-attach.jar',
     ]);
   });
 

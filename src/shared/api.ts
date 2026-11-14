@@ -401,7 +401,7 @@ export interface RefusedConnections {
   epoch?: number;
 }
 
-/** Docker setup, as the Setup page shows it. */
+/** Java programs' agent, as the Setup page shows it. */
 export interface JavaAgentStatus {
   /** The setting: Java programs started from Wirescry's terminals, or with its option, load the agent. */
   startup: boolean;
@@ -409,8 +409,59 @@ export interface JavaAgentStatus {
   stubPath?: string;
   /** Why the agent can't be used, if it can't. */
   problem?: string;
+  /** Attaching to programs already running. Missing until Wirescry first looks. */
+  attach?: JavaAttachStatus;
 }
 
+/** Attaching the agent to running Java programs, as the Setup page shows it. */
+export interface JavaAttachStatus {
+  /**
+   * ready: a JDK that can attach was found, and the list is current. checking: looking.
+   * no-jdk: none found (`passed` says why each place was passed over). failed: listing failed
+   * (`error` says why); programs with the agent are still shown.
+   */
+  state: 'ready' | 'checking' | 'no-jdk' | 'failed';
+  /** The JDK that attaches. */
+  jdk?: { home: string; version: string };
+  error?: string;
+  passed?: string[];
+  /** Running Java programs, and any program whose agent reports. Never their arguments. */
+  programs: JavaProgram[];
+  /** The user has agreed once to Java 21 and later printing a warning when the agent is attached. */
+  warningOk: boolean;
+}
+
+/** A running Java program. Its name comes from the program: show it as text only. */
+export interface JavaProgram {
+  /** Its process id. Reused by other programs later, so only for now. */
+  pid: number;
+  /** Its main class or jar file name, or empty if only its agent reports it. */
+  name: string;
+  /** Wirescry's agent in it, while that agent reports. */
+  agent?: {
+    id: string;
+    /** startup: loaded when the program started. attach: attached from Setup. */
+    route: 'startup' | 'attach';
+    /** Sending its traffic through Wirescry now. */
+    on: boolean;
+    /** Why it's on or off: on, off, startup-off, detached, detaching, wirescry-gone, bad-control, no-control, unsafe-files. */
+    reason: string;
+    /** The program's Java version. */
+    java: string;
+    /** It has applied Wirescry's current port and certificate. */
+    current: boolean;
+    /** Hooks and how each went, e.g. "trust:applied". */
+    hooks: string[];
+    /** It runs an agent from another version of Wirescry: restart the program to update it. */
+    outdated?: true;
+  };
+  /** What Wirescry is doing to it right now. */
+  busy?: 'attaching' | 'detaching';
+  /** What went wrong with the last thing Wirescry did to it. */
+  note?: string;
+}
+
+/** Docker setup, as the Setup page shows it. */
 export interface DockerStatus {
   /**
    * ready: Wirescry terminals point DOCKER_HOST at Wirescry, which sets up new containers.
@@ -472,6 +523,17 @@ export type ClientCommand =
   /** Turns setting up Docker containers on or off. Off, new terminals don't get DOCKER_HOST, and the relay passes containers on as written. */
   | { id: number; command: 'setDockerSetup'; enabled: boolean }
   | { id: number; command: 'setJavaAgentStartup'; enabled: boolean }
+  /** Looks for a JDK again, and lists running Java programs. Replies with the JavaAttachStatus. */
+  | { id: number; command: 'javaRefresh' }
+  /**
+   * Attaches the agent to a running program. Replies `{ needsConfirmation: 'java-warning' }` instead
+   * if the program runs Java 21 or later and the user hasn't agreed to its warning yet; send again
+   * with `confirmWarning` to go ahead (remembered). Replies `{ attached: true }` once loaded; the
+   * program's `agent` shows when it reports.
+   */
+  | { id: number; command: 'javaAttach'; pid: number; confirmWarning?: boolean }
+  /** Turns an attached agent off. It can't be unloaded: it stops and puts back what it changed. */
+  | { id: number; command: 'javaDetach'; pid: number }
   /** Looks for the ADB server again, starting it with the user's adb if none runs. Only while Android setup is on. */
   | { id: number; command: 'androidRefresh' }
   /**

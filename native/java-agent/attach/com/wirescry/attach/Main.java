@@ -14,12 +14,19 @@ import java.util.Properties;
 
 /**
  * Wirescry's attacher: lists running JVMs and loads Wirescry's agent into one. Run by Wirescry
- * with a JDK 11 or later (it needs the jdk.attach module); the target can be Java 8 or later.
+ * with a JDK 17 or later (11 on Windows; it needs the jdk.attach module); the target can be Java 8
+ * or later.
  *
  * <pre>
  *   list                       one JSON line per JVM: {"pid":"…","name":"…"}
- *   load PID STUB_JAR ARGS     one JSON line: {"ok":true,…} or {"ok":false,"reason":"…",…}
+ *   load PID STUB_JAR ARGS [ask|warn-ok]
+ *                              one JSON line: {"ok":true,…} or {"ok":false,"reason":"…",…}
  * </pre>
+ *
+ * With {@code ask}, a load into Java 21 or later stops before loading and answers
+ * {"ok":false,"reason":"needs-confirmation",…}: those JVMs print a warning on the program's
+ * standard error when an agent is loaded while they run. {@code warn-ok}, or no fifth argument,
+ * loads anyway.
  *
  * Names are the main class or the jar's file name only. A JVM's display name also holds its
  * command-line arguments, which often hold passwords and tokens, so those never leave here.
@@ -31,9 +38,12 @@ public final class Main {
     int code;
     try {
       if (args.length == 1 && args[0].equals("list")) code = list();
-      else if (args.length == 4 && args[0].equals("load")) code = load(args[1], args[2], args[3]);
+      else if (args.length == 4 && args[0].equals("load")) code = load(args[1], args[2], args[3], false);
+      else if (args.length == 5 && args[0].equals("load") && (args[4].equals("ask") || args[4].equals("warn-ok"))) {
+        code = load(args[1], args[2], args[3], args[4].equals("ask"));
+      }
       else {
-        System.out.println(failure("usage", "list | load PID STUB_JAR ARGS"));
+        System.out.println(failure("usage", "list | load PID STUB_JAR ARGS [ask|warn-ok]"));
         code = 2;
       }
     } catch (Throwable t) {
@@ -65,7 +75,7 @@ public final class Main {
     return first.length() > 200 ? first.substring(0, 200) : first;
   }
 
-  private static int load(String pid, String jar, String agentArgs) {
+  private static int load(String pid, String jar, String agentArgs, boolean ask) {
     if (!pid.matches("[0-9]{1,18}")) {
       System.out.println(failure("bad-pid", pid));
       return 2;
@@ -73,6 +83,25 @@ public final class Main {
     if (!new File(jar).isAbsolute()) {
       System.out.println(failure("bad-jar", "The agent's path must be absolute."));
       return 2;
+    }
+    // Before 17, attaching on Linux and macOS sends SIGQUIT without first checking that the process
+    // catches it (as a JVM does): a pid a crashed JVM left listed, now another program's, would be
+    // ended. Windows sends no signal.
+    boolean windows = System.getProperty("os.name", "").startsWith("Windows");
+    if (!windows && Runtime.version().feature() < 17) {
+      System.out.println(failure("attacher-too-old", "Attaching here needs a JDK 17 or later."));
+      return 2;
+    }
+    // Only a JVM that lists itself. On Linux and macOS, attaching to a process that isn't one can
+    // send it SIGQUIT (how HotSpot is asked to start listening), which ends most programs.
+    boolean listed = false;
+    for (VirtualMachineDescriptor vm : VirtualMachine.list()) {
+      if (vm.id().equals(pid)) listed = true;
+    }
+    if (!listed) {
+      System.out.println(
+          failure("not-a-jvm", "No Java program that can be attached to runs with this process id."));
+      return 1;
     }
     VirtualMachine vm;
     try {
@@ -90,6 +119,12 @@ public final class Main {
       Properties props = vm.getSystemProperties();
       javaVersion = props.getProperty("java.version", "");
       javaHome = props.getProperty("java.home", "");
+      if (ask && major(javaVersion) >= 21) {
+        System.out.println(
+            "{\"ok\":false,\"reason\":\"needs-confirmation\",\"java\":" + json(javaVersion)
+                + ",\"javaHome\":" + json(javaHome) + "}");
+        return 3;
+      }
       vm.loadAgent(jar, agentArgs);
       System.out.println(
           "{\"ok\":true,\"java\":" + json(javaVersion) + ",\"javaHome\":" + json(javaHome) + "}");
@@ -132,6 +167,14 @@ public final class Main {
     if (!javaVersion.startsWith("1.")) return false;
     String m = message.trim();
     return m.equals("0") || m.endsWith(": 0");
+  }
+
+  /** The major version in a java.version ("1.8.0_412" is 8, "21.0.2" is 21), or 0 if unknown. */
+  static int major(String javaVersion) {
+    String v = javaVersion.startsWith("1.") ? javaVersion.substring(2) : javaVersion;
+    int end = 0;
+    while (end < v.length() && end < 9 && Character.isDigit(v.charAt(end))) end++;
+    return end == 0 ? 0 : Integer.parseInt(v.substring(0, end));
   }
 
   private static String failure(String reason, String message) {
