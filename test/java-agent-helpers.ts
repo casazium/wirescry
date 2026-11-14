@@ -86,9 +86,12 @@ export function setUpJavaAgentTests(more?: () => Promise<void>) {
     );
   });
 
+  // The folder holds the agent's build, Byte Buddy unpacked among it: thousands of files, which take
+  // Windows well over 10 s to delete. A folder left behind in the temp folder isn't a test failure.
   afterAll(async () => {
-    if (shared.work) await rm(shared.work, { recursive: true, force: true, maxRetries: 5 });
-  });
+    if (shared.work)
+      await rm(shared.work, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
+  }, 120_000);
 }
 
 /** Compiles Java sources for `release` into `out`; throws with javac's message if it fails. */
