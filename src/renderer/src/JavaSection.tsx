@@ -29,8 +29,8 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
       <h2>Java programs</h2>
       <p className="muted">
         Wirescry&apos;s Java agent sends a Java program&apos;s HTTP and HTTPS traffic through Wirescry, and
-        trusts its certificate: HttpURLConnection, Java&apos;s HttpClient, OkHttp and libraries built on them,
-        even when the program chose its own trust store. Java 8 and later.
+        trusts its certificate: HttpURLConnection, Java&apos;s HttpClient, OkHttp, Apache HttpClient 4 and 5,
+        and libraries built on them, even when the program chose its own trust store. Java 8 and later.
       </p>
       {send && (
         <label className="checkbox">

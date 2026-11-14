@@ -142,6 +142,99 @@ public final class Proxies {
     return host.equals(middle);
   }
 
+  /** Apache's planners whose determineProxy the advice reaches; subclasses aren't asked. */
+  static final String APACHE_4 = "org.apache.http.impl.conn.DefaultRoutePlanner";
+
+  static final String APACHE_5 = "org.apache.hc.client5.http.impl.routing.DefaultRoutePlanner";
+
+  /** Wirescry's proxy as an Apache HttpHost, for the last class loader and port. */
+  private static volatile Object[] lastApache;
+
+  /**
+   * Wirescry's proxy as the HttpHost Apache HttpClient's DefaultRoutePlanner.determineProxy
+   * returns, instead of its null (connect directly), or null to keep that. Called by the code the
+   * weaver puts there (com.wirescry.agent.weaver.ApacheAdvice), only when the answer was null.
+   *
+   * <p>Only for the planner itself, not a subclass: the fixed-proxy planner and the one that asks
+   * the JDK's proxy selector (and that one already gets Wirescry's proxy from it) are
+   * subclasses, as is any of the program's own. The same rules as {@link #select} decide: the
+   * agent on, http or https, not this computer, not in the program's `http.nonProxyHosts`
+   * (Apache doesn't read it itself, so this applies the program's own setting; the JDK's
+   * net.properties default isn't read here).
+   *
+   * <p>`target` is Apache's HttpHost. The answer is made with the planner's own class loader, so it
+   * is the HttpHost class the program uses.
+   */
+  public static Object apache(Object planner, Object target) {
+    try {
+      if (planner == null || target == null || !Agent.isOn()) return null;
+      Class<?> type = planner.getClass();
+      boolean v4 = APACHE_4.equals(type.getName());
+      if (!v4 && !APACHE_5.equals(type.getName())) return null;
+      Control control = Agent.settings();
+      if (control == null || !control.enabled) return null;
+      Class<?> hostType = target.getClass();
+      String scheme = (String) hostType.getMethod("getSchemeName").invoke(target);
+      if (!"http".equalsIgnoreCase(scheme) && !"https".equalsIgnoreCase(scheme)) return null;
+      String host = (String) hostType.getMethod("getHostName").invoke(target);
+      if (host == null || host.isEmpty()) return null;
+      host = host.toLowerCase(Locale.ROOT);
+      // A bare IPv6 address, as Apache keeps it: bracketed, as a URI names it.
+      if (host.indexOf(':') >= 0 && !host.startsWith("[")) host = "[" + host + "]";
+      if (thisComputer(host) || excluded(System.getProperty("http.nonProxyHosts"), host)) return null;
+      if (!v4 && fromH2OnlyClient()) return null;
+      return apacheHost(hostType, v4, control.proxyPort);
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
+  /**
+   * Whether 5.x's HTTP/2-only async client (H2AsyncClientBuilder) is asking. It uses this planner
+   * too, but can't go through a proxy: its https requests would fail ("HTTP/2 tunneling not
+   * supported") where they'd work without the agent. Its plain http ignores a proxy anyway. Read
+   * from the caller's stack, only when the answer would otherwise be Wirescry's proxy.
+   */
+  static boolean fromH2OnlyClient() {
+    for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+      if (H2_ONLY_CLIENT.equals(frame.getClassName())) return true;
+    }
+    return false;
+  }
+
+  static final String H2_ONLY_CLIENT = "org.apache.hc.client5.http.impl.async.InternalH2AsyncClient";
+
+  /**
+   * 127.0.0.1 at `port`, as `hostType` (the program's HttpHost), named by its address so nothing
+   * is looked up. 4.x takes (InetAddress, String, int, String) from 4.4, (String, int, String)
+   * before; 5.x takes (String scheme, InetAddress, String, int).
+   */
+  private static Object apacheHost(Class<?> hostType, boolean v4, int port) throws Exception {
+    Object[] last = lastApache;
+    if (last != null && last[0] == hostType && (Integer) last[1] == port) return last[2];
+    InetAddress loopback = InetAddress.getByAddress("127.0.0.1", new byte[] {127, 0, 0, 1});
+    Object host;
+    if (v4) {
+      Object made;
+      try {
+        made =
+            hostType
+                .getConstructor(InetAddress.class, String.class, int.class, String.class)
+                .newInstance(loopback, "127.0.0.1", port, "http");
+      } catch (NoSuchMethodException e) {
+        made = hostType.getConstructor(String.class, int.class, String.class).newInstance("127.0.0.1", port, "http");
+      }
+      host = made;
+    } else {
+      host =
+          hostType
+              .getConstructor(String.class, InetAddress.class, String.class, int.class)
+              .newInstance("http", loopback, "127.0.0.1", port);
+    }
+    lastApache = new Object[] {hostType, port, host};
+    return host;
+  }
+
   private static Proxy proxy(int port) throws Exception {
     Proxy p = last;
     if (p != null && ((InetSocketAddress) p.address()).getPort() == port) return p;

@@ -59,6 +59,19 @@ Not covered:
 - On Java 8, `http.nonProxyHosts` is matched with the rules of Java 9 and later, which match more hosts. So a host Java 8 would send to a proxy can be left alone.
 - Anything that asks the default selector with an `http` or `https` address is sent to Wirescry, not only HTTP clients. gRPC's default proxy detection may be one; release B checks.
 
+**Apache HttpClient (`Hooks`, `Proxies.apache`, `weaver/ProgramWeaver`, `weaver/ApacheAdvice`).** Code at the end of `DefaultRoutePlanner.determineProxy`, in 4.x (`org.apache.http.impl.conn`) and 5.x (`org.apache.hc.client5.http.impl.routing`), in whichever class loaders the program loads them. That planner is what 4.x and 5.x (up to 5.6) clients use unless the program chose a proxy or the system's settings, and it never asks the JDK's selector. HttpClient asks it only when the request's own `RequestConfig` names no proxy, and it answers null: connect directly.
+
+It answers Wirescry's proxy instead, as an `HttpHost` made with the planner's own class loader, under the same rules as the JDK hook: the agent on, `http` or `https`, not this computer, not in the program's `http.nonProxyHosts` (the program's own setting; Apache doesn't read it, and the JDK's `net.properties` default isn't read here). The status file says `apache:ok`, `apache:failed` or `apache:jdk-too-new` once the program loads a planner, and nothing before.
+
+What it leaves alone:
+
+- A request's own proxy (`RequestConfig`), and a builder's (`setProxy`, `DefaultProxyRoutePlanner`).
+- `useSystemProperties()` and `setProxySelector` (`SystemDefaultRoutePlanner`), which ask the JDK's selector, so the JDK hook decides there. So does 5.7's default.
+- Any planner of the program's own, a subclass of `DefaultRoutePlanner` included: only that exact class is changed.
+- 5.x's HTTP/2-only async client (`H2AsyncClientBuilder`), which can't go through a proxy: its HTTPS would fail ("HTTP/2 tunneling not supported"). It's recognized by `InternalH2AsyncClient` on the caller's stack.
+
+Tested with 4.5.14 and 5.6.5 (classic and async). Not tested: 4.x's separate async client (`httpasyncclient`), which uses the same 4.x planner.
+
 ## Startup
 
 With the **Java programs** setting on (Setup), Wirescry's terminals add the agent to `JAVA_TOOL_OPTIONS`, after the proxy and trust-store properties they already set:

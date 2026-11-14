@@ -59,32 +59,116 @@ export const byteBuddy = {
 
 const sha256Of = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 
-/** Byte Buddy's jar: the one in deps/ if its SHA-256 matches, else fetched and checked. */
-export async function fetchByteBuddy() {
-  if (existsSync(byteBuddy.file) && sha256Of(byteBuddy.file) === byteBuddy.sha256) return byteBuddy.file;
-  mkdirSync(path.dirname(byteBuddy.file), { recursive: true });
+/**
+ * A pinned jar: the one at `jar.file` if its SHA-256 matches, else fetched from `jar.url` and
+ * checked. A file that doesn't match is never used.
+ */
+async function fetchPinned(jar, what) {
+  if (existsSync(jar.file) && sha256Of(jar.file) === jar.sha256) return jar.file;
+  mkdirSync(path.dirname(jar.file), { recursive: true });
   let response;
   for (let attempt = 1; ; attempt++) {
     try {
-      response = await fetch(byteBuddy.url, { signal: AbortSignal.timeout(60_000) });
+      response = await fetch(jar.url, { signal: AbortSignal.timeout(60_000) });
       if (response.ok) break;
       throw new Error(`HTTP ${response.status}`);
     } catch (error) {
       if (attempt >= 2) {
-        throw new Error(`Fetching Byte Buddy from ${byteBuddy.url}: ${error.message}`, { cause: error });
+        throw new Error(`Fetching ${what} from ${jar.url}: ${error.message}`, { cause: error });
       }
     }
   }
   // Its own name: builds running at once (test files in parallel) each write their own.
-  const temp = `${byteBuddy.file}.${process.pid}.${randomUUID()}.download`;
+  const temp = `${jar.file}.${process.pid}.${randomUUID()}.download`;
   writeFileSync(temp, Buffer.from(await response.arrayBuffer()));
   const got = sha256Of(temp);
-  if (got !== byteBuddy.sha256) {
+  if (got !== jar.sha256) {
     rmSync(temp, { force: true });
-    throw new Error(`Byte Buddy's SHA-256 is ${got}, not the pinned ${byteBuddy.sha256}. Not used.`);
+    throw new Error(`${what}'s SHA-256 is ${got}, not the pinned ${jar.sha256}. Not used.`);
   }
-  renameSync(temp, byteBuddy.file);
-  return byteBuddy.file;
+  renameSync(temp, jar.file);
+  return jar.file;
+}
+
+/** Byte Buddy's jar: the one in deps/ if its SHA-256 matches, else fetched and checked. */
+export function fetchByteBuddy() {
+  return fetchPinned(byteBuddy, 'Byte Buddy');
+}
+
+const central = (group, artifact, version) =>
+  `https://repo1.maven.org/maven2/${group.replace(/\./g, '/')}/${artifact}/${version}/${artifact}-${version}.jar`;
+const testJar = (group, artifact, version, sha256) => ({
+  name: `${artifact}-${version}`,
+  url: central(group, artifact, version),
+  sha256,
+  file: path.join(source, 'deps', 'test', `${artifact}-${version}.jar`),
+});
+
+/**
+ * Libraries the tests run the agent against, never shipped: Apache HttpClient 4.x and 5.x with
+ * what they need at run time. Pinned like Byte Buddy; each matched Maven Central's published
+ * SHA-1 when chosen.
+ */
+export const testJars = {
+  apache4: [
+    testJar(
+      'org.apache.httpcomponents',
+      'httpclient',
+      '4.5.14',
+      'c8bc7e1c51a6d4ce72f40d2ebbabf1c4b68bfe76e732104b04381b493478e9d6',
+    ),
+    testJar(
+      'org.apache.httpcomponents',
+      'httpcore',
+      '4.4.16',
+      '6c9b3dd142a09dc468e23ad39aad6f75a0f2b85125104469f026e52a474e464f',
+    ),
+    testJar(
+      'commons-logging',
+      'commons-logging',
+      '1.2',
+      'daddea1ea0be0f56978ab3006b8ac92834afeefbd9b7e4e6316fca57df0fa636',
+    ),
+    testJar(
+      'commons-codec',
+      'commons-codec',
+      '1.11',
+      'e599d5318e97aa48f42136a2927e6dfa4e8881dff0e6c8e3109ddbbff51d7b7d',
+    ),
+  ],
+  apache5: [
+    testJar(
+      'org.apache.httpcomponents.client5',
+      'httpclient5',
+      '5.6.5',
+      'a10b555f7c85a720d1011a086d679d854b155816cde91a40198cc98c2b0867e8',
+    ),
+    testJar(
+      'org.apache.httpcomponents.core5',
+      'httpcore5',
+      '5.4.4',
+      'b08e3c3a440fec2029e89980134c7c787dd6796454641ad1eafb81478d7e8b0b',
+    ),
+    testJar(
+      'org.apache.httpcomponents.core5',
+      'httpcore5-h2',
+      '5.4.4',
+      '9a61441889f9b222ce99581977cc549b4dfca7ac9d2841582c1e57a31fa65b48',
+    ),
+    testJar(
+      'org.slf4j',
+      'slf4j-api',
+      '1.7.36',
+      'd3ef575e3e4979678dc01bf1dcce51021493b4d11fb7f1be8ad982877c16a1c0',
+    ),
+  ],
+};
+
+/** The jars of `set` (a key of testJars), fetched and checked as needed: their paths. */
+export async function fetchTestJars(set) {
+  const files = [];
+  for (const jar of testJars[set]) files.push(await fetchPinned(jar, jar.name));
+  return files;
 }
 
 /** Every entry's timestamp: the jars are the same bytes for the same sources. */
