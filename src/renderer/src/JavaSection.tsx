@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { ProxyStatus } from '../../shared/api';
 import { jvmOptionForms } from '../../shared/terminal-env';
 import type { Command } from './api-client';
+import { JavaPrograms } from './JavaPrograms';
 
 interface Props {
   status: ProxyStatus;
@@ -10,7 +11,10 @@ interface Props {
   CopyButton?: (props: { text: string; label?: string }) => React.JSX.Element;
 }
 
-/** Java programs started with Wirescry's agent: the setting, and the option to copy. */
+/**
+ * Java programs and Wirescry's agent: the setting for programs started with it, the option to copy,
+ * and attaching to programs already running.
+ */
 export function JavaSection({ status, connected = true, send, CopyButton }: Props): React.JSX.Element | null {
   const java = status.javaAgent;
   const [error, setError] = useState<string>();
@@ -77,6 +81,10 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
           </div>
         </>
       )}
+      {/* With a problem (the agent missing, or a path Java can't take), attaching can't work either. */}
+      {send && !java.problem && (
+        <JavaPrograms attach={java.attach} platform={status.platform} connected={connected} send={send} />
+      )}
       <details className="coverage">
         <summary>How it works</summary>
         <ul>
@@ -106,6 +114,18 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
             can&apos;t load it: those refuse to start with the agent. Remove the option for them. In a
             Wirescry terminal, start one with <code>JAVA_TOOL_OPTIONS=</code> in front of its command, or turn
             this setting off and open a new terminal.
+          </li>
+          <li>
+            Attaching runs a short Java program from a JDK on this computer (17 or later; 11 on Windows),
+            which asks Java to load the agent into the running program. It works for programs run by you, with
+            HotSpot-based Java (OpenJDK, Temurin, Oracle and most others) 8 and later. It doesn&apos;t work
+            for programs in containers, run as administrator or by another user, GraalVM native images, or
+            OpenJ9. Security software on Windows may flag it, since it acts on another program.
+          </li>
+          <li>
+            An agent can&apos;t be removed from a running program: Detach turns it off, and it puts back what
+            it changed. Programs stay detached when Wirescry restarts. An attached program goes on sending its
+            traffic through Wirescry whenever Wirescry runs, until you detach it or it ends.
           </li>
           <li>
             When Wirescry quits, the agent turns off within a second (about 15 on Java 8), and programs
