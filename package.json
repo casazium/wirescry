@@ -34,7 +34,7 @@
     "electron-updater": "^6.8.9",
     "http-encoding": "^2.2.0",
     "js-beautify": "^2.0.3",
-    "mockttp": "^4.6.4",
+    "mockttp": "^4.6.5",
     "ws": "^8.22.0",
     "xml-formatter": "^3.7.0"
   },
