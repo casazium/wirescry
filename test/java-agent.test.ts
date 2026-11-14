@@ -96,7 +96,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
       { encoding: 'utf8' },
     );
     expect(result.stdout).not.toContain('FAIL');
-    expect(result.stdout.match(/^ok /gm)).toHaveLength(12);
+    expect(result.stdout.match(/^ok /gm)).toHaveLength(17);
     expect(result.status).toBe(0);
   });
 

@@ -109,6 +109,23 @@ describe('setUpContainer', () => {
     expect(env.get('PHP_INI_SCAN_DIR')).toBe(`/usr/local/etc/php/conf.d:${MOUNT_POINT}/php`);
   });
 
+  it('leaves out the host’s Java agent, whose jar isn’t in the container, and keeps the rest', () => {
+    const stub = '/Users/me/Library/Application Support/Wirescry/java-agent/wirescry-agent.jar';
+    for (const agent of [
+      `-javaagent:"${stub}=terminalPort=8000"`,
+      `-javaagent:/home/me/.config/Wirescry/java-agent/wirescry-agent.jar`,
+    ]) {
+      const { body } = setUp({
+        Env: [`JAVA_TOOL_OPTIONS=-Xmx512m ${agent} -javaagent:/otel/opentelemetry-javaagent.jar`],
+      });
+      const value = envOf(body).get('JAVA_TOOL_OPTIONS')!;
+      expect(value).not.toContain('wirescry-agent.jar');
+      expect(value).toMatch(
+        /^-Xmx512m -javaagent:\/otel\/opentelemetry-javaagent\.jar -Dhttp\.proxyHost=host\.docker\.internal /,
+      );
+    }
+  });
+
   it('ignores an empty JAVA_TOOL_OPTIONS', () => {
     const { body } = setUp({ Env: ['JAVA_TOOL_OPTIONS='] });
     expect(envOf(body).get('JAVA_TOOL_OPTIONS')).toMatch(/^-Dhttp\.proxyHost/);

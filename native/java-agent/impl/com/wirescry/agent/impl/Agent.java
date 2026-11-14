@@ -42,6 +42,8 @@ public final class Agent {
   private final Liveness liveness = new Liveness();
   private volatile Control lastGood;
   private final Hooks hooks = new Hooks();
+  /** Wirescry's proxy properties, cleared while off; startup agents only (see ProxyProperties). */
+  private final ProxyProperties properties;
   private final Instrumentation inst;
   private boolean retransformed;
   /**
@@ -55,11 +57,12 @@ public final class Agent {
   private String reason = "starting";
   private Status status;
 
-  private Agent(String route, String id, File dir, Instrumentation inst) {
+  private Agent(String route, String id, File dir, Instrumentation inst, ProxyProperties properties) {
     this.route = route;
     this.id = id;
     this.dir = dir;
     this.inst = inst;
+    this.properties = properties;
   }
 
   /**
@@ -71,7 +74,9 @@ public final class Agent {
     if (running != null || dir == null) return;
     String id = "attach".equals(route) ? attachId(args) : randomId();
     if (id == null) return;
-    final Agent agent = new Agent(route, id, dir, inst);
+    boolean attach = "attach".equals(route);
+    final Agent agent =
+        new Agent(route, id, dir, inst, attach ? null : new ProxyProperties(ProxyProperties.terminalPort(args)));
     // Only compares class names until a class it changes loads: cheap before main.
     inst.addTransformer(agent.hooks, true);
     agent.poll(true);
@@ -156,7 +161,11 @@ public final class Agent {
         } else {
           read = Control.parse(text);
           if (read == null) badRead();
-          else accept(read, !first);
+          else {
+            // 0 when the system can't say: then the age is unknown, not old.
+            long modified = control.lastModified();
+            accept(read, !first, modified > 0 ? System.currentTimeMillis() - modified : -1);
+          }
         }
       } catch (NoSuchFileException e) {
         off("no-control");
@@ -164,6 +173,7 @@ public final class Agent {
         badRead();
       }
     }
+    if (properties != null) properties.apply(wirescry(), lastGood == null ? 0 : lastGood.proxyPort);
     if (!first && !retransformed) {
       // Classes the agent changes that loaded before its transformer: once, from this thread. For
       // an attach, those the program loaded; at startup, those an agent named before this one
@@ -187,11 +197,24 @@ public final class Agent {
     // Otherwise keep the last good settings: a scanner or a slow write may hold the file briefly.
   }
 
-  private void accept(Control control, boolean checkProcess) {
+  /**
+   * Whether Wirescry is running, for ProxyProperties: gone after a quit (`enabled=false`), a crash,
+   * or with its control file deleted; running while it says on, or only that startup agents are
+   * off (its setting); unknown otherwise (files refused, or unreadable), where nothing changes.
+   */
+  private int wirescry() {
+    if ("off".equals(reason) || "wirescry-gone".equals(reason) || "no-control".equals(reason)) {
+      return ProxyProperties.GONE;
+    }
+    if ("on".equals(reason) || "startup-off".equals(reason)) return ProxyProperties.RUNNING;
+    return ProxyProperties.UNKNOWN;
+  }
+
+  private void accept(Control control, boolean checkProcess, long ageMs) {
     badReads = 0;
     lastGood = control;
     statusDelayMs = control.statusDelayMs;
-    if (!liveness.alive(control, checkProcess)) off("wirescry-gone");
+    if (!liveness.alive(control, checkProcess, ageMs)) off("wirescry-gone");
     else if (!control.enabled) off("off");
     else if (!"attach".equals(route) && !control.startup) off("startup-off");
     else if (control.detached.contains(id)) off("detached");

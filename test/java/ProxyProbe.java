@@ -29,6 +29,8 @@ import java.util.List;
  *   via PORT URL      the same with an HTTP proxy at 127.0.0.1:PORT
  *   own               replaces the default selector with one that always says DIRECT
  *   clear NAME        clears a system property (macOS sets http.nonProxyHosts in every JVM)
+ *   set NAME VALUE    sets a system property
+ *   prop NAME         a system property's value, or "null"
  * </pre>
  */
 public class ProxyProbe {
@@ -71,6 +73,11 @@ public class ProxyProbe {
     if (c[0].equals("via")) {
       Proxy proxy = new Proxy(Proxy.Type.HTTP, new InetSocketAddress("127.0.0.1", Integer.parseInt(c[1])));
       return get((HttpURLConnection) new URL(c[2]).openConnection(proxy));
+    }
+    if (c[0].equals("prop")) return String.valueOf(System.getProperty(c[1]));
+    if (c[0].equals("set")) {
+      System.setProperty(c[1], c[2]);
+      return "set";
     }
     if (c[0].equals("clear")) {
       System.clearProperty(c[1]);

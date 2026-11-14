@@ -4,7 +4,7 @@ import { constants } from 'node:fs';
 import { access, chmod, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { TerminalInfo } from '../shared/api';
-import { shellSnippet } from '../shared/terminal-env';
+import { shellSnippet, withUserJavaOptions } from '../shared/terminal-env';
 
 /** A terminal Wirescry can open on this machine. */
 export interface DetectedTerminal extends TerminalInfo {
@@ -83,7 +83,11 @@ export async function detectTerminals(
 }
 
 /** The environment for a new terminal: the backend's own, minus Electron's, plus `extra`. */
-export function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>): NodeJS.ProcessEnv {
+export function childEnv(
+  base: NodeJS.ProcessEnv,
+  extra: Record<string, string>,
+  windows = process.platform === 'win32',
+): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(base)) {
     if (!key.startsWith('ELECTRON_') && key !== 'NODE_CHANNEL_FD') env[key] = value;
@@ -92,7 +96,18 @@ export function childEnv(base: NodeJS.ProcessEnv, extra: Record<string, string>)
   // its own relay's pipe. Don't pass it on as it is: Docker setup adds it when the relay is
   // running, and without the relay (Docker not found, or setup failed) it would lead nowhere.
   if (/^npipe:\/\/.*\/pipe\/wirescry-docker-[0-9a-f]+$/i.test(env.DOCKER_HOST ?? '')) delete env.DOCKER_HOST;
-  return { ...env, ...extra };
+  const result = { ...env, ...extra };
+  // Java options: the user's own kept in front of Wirescry's, if they all fit. Windows names ignore
+  // case, so the user's may be spelled otherwise; one spelling is kept.
+  if (extra.JAVA_TOOL_OPTIONS !== undefined) {
+    const own = Object.keys(env).find(
+      (key) => key.toUpperCase() === 'JAVA_TOOL_OPTIONS' && key !== 'JAVA_TOOL_OPTIONS',
+    );
+    const user = env.JAVA_TOOL_OPTIONS ?? (own && windows ? env[own] : undefined);
+    if (own && windows) delete result[own];
+    result.JAVA_TOOL_OPTIONS = withUserJavaOptions(user, extra.JAVA_TOOL_OPTIONS);
+  }
+  return result;
 }
 
 /** A shell script that sets `env`, says what it did, deletes itself and starts the user's login shell. */

@@ -411,6 +411,137 @@ describe('the backend and the Java agent', () => {
     expect((await control(dir)).enabled).toBe('false');
   });
 
+  it('turns the startup setting off and on, for agents, new terminals and the next start', async () => {
+    const dir = await startWith({ jars, heartbeatMs: 20 });
+    const api = await apiClient(backend!.apiPort);
+    const latest = () => {
+      const statuses = api.messages.flatMap((m) =>
+        m.type === 'status' || m.type === 'hello' ? [m.status] : [],
+      );
+      return statuses.at(-1)!;
+    };
+    await expect.poll(() => latest().javaAgent?.stubPath).toBe(path.join(dir, 'wirescry-agent.jar'));
+    expect(latest().javaAgent).toEqual({ startup: true, stubPath: path.join(dir, 'wirescry-agent.jar') });
+    expect(latest().terminalEnv.JAVA_TOOL_OPTIONS).toContain(
+      `-javaagent:"${path.join(dir, 'wirescry-agent.jar')}=terminalPort=${backend!.proxyPort}"`,
+    );
+    const script = latest().terminalScripts.posix!;
+    expect(await readFile(script, 'utf8')).toContain('-javaagent:');
+
+    await api.send({ command: 'setJavaAgentStartup', enabled: false });
+    expect((await control(dir)).startup).toBe('false');
+    expect((await control(dir)).enabled).toBe('true');
+    expect(latest().javaAgent?.startup).toBe(false);
+    expect(latest().terminalEnv.JAVA_TOOL_OPTIONS).not.toContain('-javaagent:');
+    expect(await readFile(script, 'utf8')).not.toContain('-javaagent:');
+    expect(
+      JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')).javaAgentStartup,
+    ).toBeUndefined();
+
+    await api.send({ command: 'setJavaAgentStartup', enabled: true });
+    expect((await control(dir)).startup).toBe('true');
+    expect(latest().terminalEnv.JAVA_TOOL_OPTIONS).toContain('-javaagent:');
+    expect(JSON.parse(await readFile(path.join(dataDir, 'settings.json'), 'utf8')).javaAgentStartup).toBe(
+      true,
+    );
+    api.close();
+  });
+
+  it('starts the agent when the setting is turned on, and says why when it can’t', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const missing = { ...jars, weaver: path.join(work, 'gone.jar') };
+    const dir = await startWith({ jars: missing });
+    const api = await apiClient(backend!.apiPort);
+    const latest = () =>
+      api.messages.flatMap((m) => (m.type === 'status' || m.type === 'hello' ? [m.status] : [])).at(-1)!;
+    await expect
+      .poll(() => latest().javaAgent?.problem)
+      .toMatch(/^Wirescry couldn't set up its Java agent: .*ENOENT/);
+    expect(latest().javaAgent?.stubPath).toBeUndefined();
+    expect(latest().terminalEnv.JAVA_TOOL_OPTIONS).not.toContain('-javaagent:');
+    expect(errors).toHaveBeenCalled();
+    // Turning it on again tries again.
+    await api.send({ command: 'setJavaAgentStartup', enabled: false });
+    await api.send({ command: 'setJavaAgentStartup', enabled: true });
+    await expect
+      .poll(() => errors.mock.calls.filter(([m]) => String(m).includes('java agent not set up')).length)
+      .toBe(2);
+    await expect(readFile(path.join(dir, 'control.properties'))).rejects.toThrow(/ENOENT/);
+    api.close();
+  });
+
+  it('refuses the setting without the agent, and says nothing of it', async () => {
+    await startWith(undefined);
+    const api = await apiClient(backend!.apiPort);
+    await expect(api.send({ command: 'setJavaAgentStartup', enabled: true })).rejects.toThrow(
+      'Java setup is off.',
+    );
+    const first = api.messages.find((m) => m.type === 'status' || m.type === 'hello');
+    expect(first && 'status' in first ? first.status.javaAgent : 'none').toBeUndefined();
+    api.close();
+  });
+
+  describe('following the setting', () => {
+    const startIn = async (dir: string) => {
+      dataDir = dir;
+      backend = await startBackendOnPickedPort({
+        dataDir,
+        token: TOKEN,
+        allowedOrigins: [UI_ORIGIN],
+        docker: false,
+        javaAgent: { jars, heartbeatMs: 20, followSetting: true },
+      });
+      return path.join(dataDir, 'java-agent');
+    };
+
+    it('starts nothing while it’s off and the agent was never used', async () => {
+      const agentDir = await startIn(await mkdtemp(path.join(work, 'backend ')));
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      await expect(readdir(agentDir)).rejects.toThrow(/ENOENT/);
+    });
+
+    it('starts the agent with the setting on', async () => {
+      const dir = await mkdtemp(path.join(work, 'backend '));
+      await writeFile(path.join(dir, 'settings.json'), JSON.stringify({ javaAgentStartup: true }));
+      const agentDir = await startIn(dir);
+      await expect
+        .poll(() =>
+          control(agentDir).then(
+            (c) => c.startup,
+            () => undefined,
+          ),
+        )
+        .toBe('true');
+    });
+
+    it('keeps the heartbeat going with it off, once the agent was used: older terminals still carry it', async () => {
+      const dir = await mkdtemp(path.join(work, 'backend '));
+      // A past session's file: Wirescry quit cleanly.
+      await mkdir(path.join(dir, 'java-agent'), { recursive: true });
+      await writeFile(path.join(dir, 'java-agent', 'control.properties'), 'enabled=false\nend=1\n', {
+        mode: 0o600,
+      });
+      const agentDir = await startIn(dir);
+      await expect
+        .poll(() =>
+          control(agentDir).then(
+            (c) => c.enabled,
+            () => undefined,
+          ),
+        )
+        .toBe('true');
+      const c = await control(agentDir);
+      expect(c).toMatchObject({ startup: 'false', wirescryPid: String(process.pid) });
+      await expect.poll(async () => (await control(agentDir)).seq).not.toBe(c.seq);
+      const api = await apiClient(backend!.apiPort);
+      const first = api.messages.find((m) => m.type === 'status' || m.type === 'hello');
+      const status = first && 'status' in first ? first.status : undefined;
+      expect(status?.javaAgent?.startup).toBe(false);
+      expect(status?.terminalEnv.JAVA_TOOL_OPTIONS).not.toContain('-javaagent:');
+      api.close();
+    });
+  });
+
   it('writes nothing without the option', async () => {
     const dir = await startWith(undefined);
     await new Promise((resolve) => setTimeout(resolve, 200));

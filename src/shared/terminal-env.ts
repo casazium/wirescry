@@ -37,15 +37,145 @@ export function javaToolOptions(proxyPort: number, trustStore: string, proxyHost
   ].join(' ');
 }
 
+/**
+ * JDK 8 reads JAVA_TOOL_OPTIONS into a 1,024-byte buffer and ignores a longer value whole, with no
+ * message, and stops after 64 options. Wirescry keeps what it writes under both.
+ */
+export const JAVA_OPTIONS_MAX_BYTES = 1000;
+export const JAVA_OPTIONS_MAX_COUNT = 64;
+
+/**
+ * What shows that a JAVA_TOOL_OPTIONS value already holds Wirescry's options: their trust store
+ * option, which names a file in Wirescry's data folder. (The proxy host alone would also match
+ * a local company proxy such as cntlm.)
+ */
+function wirescryJavaMark(ours: string): string {
+  return /-Djavax\.net\.ssl\.trustStore="[^"]*"/.exec(ours)?.[0] ?? ours;
+}
+
+/** `ours` without its agent option, the last one, if it has one. */
+function withoutAgent(ours: string): string {
+  const agent = / -javaagent:"[^"]*"$/.exec(ours);
+  return agent ? ours.slice(0, agent.index) : ours;
+}
+
+const byteLength = (value: string): number => new TextEncoder().encode(value).length;
+
+/** How Wirescry's options start (javaToolOptions). */
+const WIRESCRY_JAVA_START = '-Dhttp.proxyHost=127.0.0.1 -Dhttp.proxyPort=';
+
+/** How many options a JAVA_TOOL_OPTIONS value holds, as the JVM splits it: on spaces outside quotes. */
+export function javaOptionCount(value: string): number {
+  let count = 0;
+  let inOption = false;
+  let quote: string | undefined;
+  for (const c of value) {
+    if (quote) {
+      if (c === quote) quote = undefined;
+    } else if (c === ' ' || c === '\t' || c === '\n' || c === '\r') {
+      inOption = false;
+    } else {
+      if (!inOption) count++;
+      inOption = true;
+      if (c === '"' || c === "'") quote = c;
+    }
+  }
+  return count;
+}
+
+/** Whether JDK 8 reads all of `value`. */
+export function javaOptionsFit(value: string): boolean {
+  return byteLength(value) <= JAVA_OPTIONS_MAX_BYTES && javaOptionCount(value) <= JAVA_OPTIONS_MAX_COUNT;
+}
+
+/**
+ * Why the agent's jar can't go in a `-javaagent:` option, or undefined: the JVM splits the option
+ * at the first `=` and drops quotes, with no way to escape either. On Windows, a path outside ASCII
+ * may not survive the variable's trip through the system's code page, and a JVM whose agent jar
+ * isn't there doesn't start, so it's left out there until checked on a real system.
+ */
+export function javaAgentPathProblem(stub: string, platform?: TerminalPlatform): string | undefined {
+  if (/[="']/.test(stub)) {
+    return `Wirescry's data folder has = or a quote in its path (${stub}), which Java can't take in an agent option.`;
+  }
+  if (platform === 'win32' && !/^[\x20-\x7e]*$/.test(stub)) {
+    return `Wirescry's data folder has letters outside plain ASCII in its path (${stub}), which Java on Windows may not read in an agent option.`;
+  }
+  return undefined;
+}
+
+/**
+ * The `-javaagent:` option for Wirescry's agent. The path is quoted (spaces). `terminalPort` tells
+ * the agent which port the proxy properties beside it name, so it knows them as Wirescry's.
+ */
+export function javaAgentOption(stub: string, terminalPort?: number): string {
+  return `-javaagent:"${stub}${terminalPort ? `=terminalPort=${terminalPort}` : ''}"`;
+}
+
+/**
+ * The JVM option that loads Wirescry's agent, in two forms: one argument as it is (a Gradle or
+ * Maven setting, an IDE field that takes one option), and quoted for a command line or an IDE's
+ * VM options field. Double quotes work in every shell Wirescry sets up and in IDE fields, unless
+ * the path holds what a POSIX shell expands inside them. (A path with a quote can't be used at all:
+ * see javaAgentPathProblem.)
+ */
+export function jvmOptionForms(stubPath: string): { plain: string; quoted: string } {
+  const plain = `-javaagent:${stubPath}`;
+  const quoted = /[$`!]/.test(stubPath) ? `'${plain}'` : `"${plain}"`;
+  return { plain, quoted };
+}
+
+/**
+ * JAVA_TOOL_OPTIONS with the user's own value kept in front of Wirescry's (`ours`). If the user's
+ * already holds Wirescry's options (a terminal started from a Wirescry terminal), ours replace it.
+ * When the whole would be too long for JDK 8, the agent (ours' last option) is left out, then the
+ * user's value: Wirescry's properties always stay.
+ */
+export function withUserJavaOptions(user: string | undefined, ours: string): string {
+  let own = user?.trim();
+  const mark = wirescryJavaMark(ours);
+  // Wirescry's already (set up twice): the user's part is what comes before it.
+  const at = own ? own.indexOf(mark) : -1;
+  if (own && at >= 0) own = own.slice(0, Math.max(0, own.lastIndexOf(WIRESCRY_JAVA_START, at))).trim();
+  if (!own) return ours;
+  // Too long for JDK 8 already: the program runs on a later Java, which reads it all.
+  if (byteLength(own) > JAVA_OPTIONS_MAX_BYTES + 23) return `${own} ${ours}`;
+  for (const value of [`${own} ${ours}`, `${own} ${withoutAgent(ours)}`]) {
+    if (javaOptionsFit(value)) return value;
+  }
+  return ours;
+}
+
+/**
+ * `value` without Wirescry's agent option, wherever it came from: for a container, which can't
+ * reach the host's file (a JVM whose agent jar isn't there doesn't start).
+ */
+export function withoutWirescryAgent(value: string): string {
+  return value
+    .replace(
+      /(^|\s)-javaagent:(?:"[^"]*[\\/]wirescry-agent\.jar(?:=[^"]*)?"|\S*[\\/]wirescry-agent\.jar(?:=\S*)?)(?=\s|$)/g,
+      '$1',
+    )
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 export type TerminalPlatform = 'darwin' | 'win32' | 'linux' | 'other';
 
 export function terminalEnv(
   proxyPort: number,
   { caPath, bundlePath, phpIniDir, curlHome, javaTrustStore }: TerminalEnvPaths,
   platform: TerminalPlatform,
+  /** Wirescry's Java agent, when its startup setting is on: the stub's path. */
+  javaAgent?: string,
 ): Record<string, string> {
   const proxy = `http://127.0.0.1:${proxyPort}`;
   const windows = platform === 'win32';
+  const javaProperties = javaToolOptions(proxyPort, javaTrustStore);
+  const withAgent =
+    javaAgent && !javaAgentPathProblem(javaAgent, platform)
+      ? `${javaProperties} ${javaAgentOption(javaAgent, proxyPort)}`
+      : javaProperties;
   return {
     // Most tools read one case or the other (curl reads only lowercase http_proxy).
     HTTP_PROXY: proxy,
@@ -71,8 +201,9 @@ export function terminalEnv(
     PHP_INI_SCAN_DIR: `${windows ? ';' : ':'}${phpIniDir}`,
     // curl.exe on Windows ignores CURL_CA_BUNDLE and reads its CA from a config file instead.
     ...(windows ? { CURL_HOME: curlHome } : {}),
-    // Java ignores the proxy variables; JVMs read these options at startup.
-    JAVA_TOOL_OPTIONS: javaToolOptions(proxyPort, javaTrustStore),
+    // Java ignores the proxy variables; JVMs read these options at startup. The agent comes last,
+    // and only if JDK 8 would read it all; the properties work without it.
+    JAVA_TOOL_OPTIONS: javaOptionsFit(withAgent) ? withAgent : javaProperties,
     WIRESCRY_PROXY: proxy,
   };
 }
@@ -117,16 +248,72 @@ const posixQuote = (value: string): string => `'${value.replace(/'/g, `'\\''`)}'
 const fishQuote = (value: string): string => `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
 const powershellQuote = (value: string): string => `'${value.replace(/'/g, "''")}'`;
 
-/** Lines that set `env` in the given shell. */
+const regexEscape = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Lines that set `env` in the given shell. JAVA_TOOL_OPTIONS keeps the terminal's own value in
+ * front of Wirescry's, as withUserJavaOptions does: set up twice, only the part before Wirescry's
+ * is kept. The length checks count the terminal's value in characters, not bytes, and not its
+ * options. Fish's line has no length check, and replaces a value that holds Wirescry's. Command
+ * Prompt sets it outright.
+ */
 export function shellSnippet(env: Record<string, string>, shell: ShellKind): string {
   const entries = Object.entries(env);
+  const line = (
+    key: string,
+    value: string,
+    plain: (k: string, v: string) => string,
+    java: (v: string) => string,
+  ) => (key === 'JAVA_TOOL_OPTIONS' ? java(value) : plain(key, value));
   switch (shell) {
     case 'posix':
-      return entries.map(([key, value]) => `export ${key}=${posixQuote(value)}`).join('\n');
+      return entries
+        .map(([key, value]) =>
+          line(
+            key,
+            value,
+            (k, v) => `export ${k}=${posixQuote(v)}`,
+            (v) =>
+              // __w: the terminal's own part (before Wirescry's, if it's set up twice).
+              `__w=\${JAVA_TOOL_OPTIONS-}; case "$__w" in *${posixQuote(wirescryJavaMark(v))}*) ` +
+              `__w=\${__w%%${posixQuote(WIRESCRY_JAVA_START)}*' -Dhttps.proxyHost=127.0.0.1 -Dhttps.proxyPort='*${posixQuote(wirescryJavaMark(v))}*}; ` +
+              `__w=\${__w%"\${__w##*[! ]}"} ;; esac; ` +
+              `if [ -z "$__w" ]; then export JAVA_TOOL_OPTIONS=${posixQuote(v)}; ` +
+              `elif [ $((\${#__w} + ${byteLength(v) + 1})) -le ${JAVA_OPTIONS_MAX_BYTES} ] || [ \${#__w} -gt ${JAVA_OPTIONS_MAX_BYTES + 23} ]; then export JAVA_TOOL_OPTIONS="$__w "${posixQuote(v)}; ` +
+              `elif [ $((\${#__w} + ${byteLength(withoutAgent(v)) + 1})) -le ${JAVA_OPTIONS_MAX_BYTES} ]; then export JAVA_TOOL_OPTIONS="$__w "${posixQuote(withoutAgent(v))}; ` +
+              `else export JAVA_TOOL_OPTIONS=${posixQuote(v)}; fi; unset __w`,
+          ),
+        )
+        .join('\n');
     case 'fish':
-      return entries.map(([key, value]) => `set -gx ${key} ${fishQuote(value)}`).join('\n');
+      return entries
+        .map(([key, value]) =>
+          line(
+            key,
+            value,
+            (k, v) => `set -gx ${k} ${fishQuote(v)}`,
+            (v) =>
+              `if test -z "$JAVA_TOOL_OPTIONS"; or string match -q -r -- ${fishQuote(regexEscape(wirescryJavaMark(v)))} "$JAVA_TOOL_OPTIONS"; set -gx JAVA_TOOL_OPTIONS ${fishQuote(v)}; else; set -gx JAVA_TOOL_OPTIONS "$JAVA_TOOL_OPTIONS "${fishQuote(v)}; end`,
+          ),
+        )
+        .join('\n');
     case 'powershell':
-      return entries.map(([key, value]) => `$env:${key} = ${powershellQuote(value)}`).join('\n');
+      return entries
+        .map(([key, value]) =>
+          line(
+            key,
+            value,
+            (k, v) => `$env:${k} = ${powershellQuote(v)}`,
+            (v) =>
+              `$__w = $env:JAVA_TOOL_OPTIONS; $__m = ${powershellQuote(wirescryJavaMark(v))}; ` +
+              `if ($__w -and $__w.Contains($__m)) { $__w = $__w.Substring(0, [Math]::Max(0, $__w.LastIndexOf(${powershellQuote(WIRESCRY_JAVA_START)}, $__w.IndexOf($__m)))).Trim() }; ` +
+              `$env:JAVA_TOOL_OPTIONS = if (-not $__w) { ${powershellQuote(v)} } ` +
+              `elseif ($__w.Length + ${byteLength(v) + 1} -le ${JAVA_OPTIONS_MAX_BYTES} -or $__w.Length -gt ${JAVA_OPTIONS_MAX_BYTES + 23}) { $__w + ' ' + ${powershellQuote(v)} } ` +
+              `elseif ($__w.Length + ${byteLength(withoutAgent(v)) + 1} -le ${JAVA_OPTIONS_MAX_BYTES}) { $__w + ' ' + ${powershellQuote(withoutAgent(v))} } ` +
+              `else { ${powershellQuote(v)} }; Remove-Variable __w, __m`,
+          ),
+        )
+        .join('\n');
     case 'cmd':
       // Windows variable names ignore case, so set each name once.
       return entries
