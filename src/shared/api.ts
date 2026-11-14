@@ -306,6 +306,8 @@ export interface ProxyStatus {
   plugins: PluginStatus[];
   /** Whether containers started from Wirescry terminals are set up. */
   docker: DockerStatus;
+  /** Java programs' agent, loaded at startup. Missing where the backend runs without it (tests). */
+  javaAgent?: JavaAgentStatus;
   /** Android devices over ADB. Missing while Android setup is off (androidSetup: false). */
   android?: AndroidStatus;
   /**
@@ -400,6 +402,15 @@ export interface RefusedConnections {
 }
 
 /** Docker setup, as the Setup page shows it. */
+export interface JavaAgentStatus {
+  /** The setting: Java programs started from Wirescry's terminals, or with its option, load the agent. */
+  startup: boolean;
+  /** The agent's jar, once installed in the data folder: what `-javaagent:` names. */
+  stubPath?: string;
+  /** Why the agent can't be used, if it can't. */
+  problem?: string;
+}
+
 export interface DockerStatus {
   /**
    * ready: Wirescry terminals point DOCKER_HOST at Wirescry, which sets up new containers.
@@ -460,6 +471,7 @@ export type ClientCommand =
   | { id: number; command: 'setProxyPort'; port: number | null }
   /** Turns setting up Docker containers on or off. Off, new terminals don't get DOCKER_HOST, and the relay passes containers on as written. */
   | { id: number; command: 'setDockerSetup'; enabled: boolean }
+  | { id: number; command: 'setJavaAgentStartup'; enabled: boolean }
   /** Looks for the ADB server again, starting it with the user's adb if none runs. Only while Android setup is on. */
   | { id: number; command: 'androidRefresh' }
   /**

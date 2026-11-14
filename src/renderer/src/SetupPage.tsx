@@ -4,6 +4,7 @@ import type { Command } from './api-client';
 import { CertificateTrust } from './CertificateTrust';
 import { AndroidSection } from './AndroidSection';
 import { DockerSection } from './DockerSection';
+import { JavaSection } from './JavaSection';
 import { TerminalSection } from './TerminalSection';
 
 interface Props {
@@ -182,6 +183,8 @@ export function SetupPage({ status, connected, send, onLaunched, onShowTraffic }
         onLaunched={onLaunched}
         CopyButton={CopyButton}
       />
+
+      <JavaSection status={status} connected={connected} send={send} CopyButton={CopyButton} />
 
       <DockerSection status={status} connected={connected} send={send} CopyButton={CopyButton} />
 

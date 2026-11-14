@@ -41,6 +41,15 @@ final class Liveness {
   private int staleReads;
   private long notedPid;
   private Object notedStart;
+  /** The read before main found the file older than STALE_AT_START_MS: gone until the heartbeat moves. */
+  private boolean staleAtStart;
+
+  /**
+   * A control file this old at the read before main means Wirescry is gone (its heartbeat writes
+   * it every 5 s), so a short program started after a crash goes direct from its first request.
+   * Later reads use the heartbeat and the process, as before.
+   */
+  static final long STALE_AT_START_MS = 20_000;
 
   Liveness() {
     this(Real.INSTANCE);
@@ -50,11 +59,24 @@ final class Liveness {
     this.processes = processes;
   }
 
-  /** `checkProcess` is false for the read before main, which uses the heartbeat rule only. */
   boolean alive(Control control, boolean checkProcess) {
+    return alive(control, checkProcess, -1);
+  }
+
+  /**
+   * `checkProcess` is false for the read before main, which uses the heartbeat rule and the file's
+   * age (`ageMs`, the time since it was written; -1 if not known) only.
+   */
+  boolean alive(Control control, boolean checkProcess, long ageMs) {
     boolean moved = control.seq != lastSeq;
     staleReads = moved ? 0 : staleReads + 1;
+    boolean firstRead = lastSeq == -1;
     lastSeq = control.seq;
+    if (!checkProcess && firstRead && ageMs > STALE_AT_START_MS) staleAtStart = true;
+    if (staleAtStart) {
+      if (!moved || firstRead) return false;
+      staleAtStart = false;
+    }
     if (staleReads >= Agent.STALE_READS_OFF) return false;
     if (!checkProcess || control.wirescryPid == 0) return true;
     Object handle = processes.handle(control.wirescryPid);

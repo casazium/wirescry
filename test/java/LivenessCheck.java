@@ -68,6 +68,17 @@ public final class LivenessCheck {
     Liveness unknownStart = new Liveness(noStart);
     unknownStart.alive(control(1), true);
     check("alive when the system gives no start time", unknownStart.alive(control(1), true));
+
+    long old = Liveness.STALE_AT_START_MS + 1;
+    Liveness crashed = new Liveness(new Fake());
+    check("gone before main when the file is old: Wirescry stopped writing it", !crashed.alive(control(7), false, old));
+    check("still gone while the heartbeat stays", !crashed.alive(control(7), true, old));
+    check("back once the heartbeat moves", crashed.alive(control(8), true, old));
+    Liveness fresh = new Liveness(new Fake());
+    check("alive before main when the file is recent", fresh.alive(control(7), false, Liveness.STALE_AT_START_MS));
+    Liveness later = new Liveness(new Fake());
+    later.alive(control(7), false, 0);
+    check("an old file only counts before main", later.alive(control(7), true, old));
     System.exit(failures == 0 ? 0 : 1);
   }
 }

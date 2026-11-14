@@ -1,4 +1,4 @@
-import { javaToolOptions } from '../../shared/terminal-env';
+import { javaToolOptions, withoutWirescryAgent } from '../../shared/terminal-env';
 
 /** Where a set-up container sees Wirescry's certificates and config files (a read-only bind mount). */
 export const MOUNT_POINT = '/run/wirescry';
@@ -275,7 +275,10 @@ export function setUpContainer(input: unknown, options: SetUpOptions): SetUpResu
   // Java ignores NO_PROXY: give it the same names, or calls between containers go to the proxy.
   // The JVM takes the last of a repeated option, so names the container gives Java itself are
   // kept by merging them into Wirescry's.
-  const javaOptions = valueOf('JAVA_TOOL_OPTIONS');
+  // Not the host's agent, which a container passing a Wirescry terminal's value through would get:
+  // its jar isn't in the container, and a JVM whose agent jar is missing doesn't start.
+  const given = valueOf('JAVA_TOOL_OPTIONS');
+  const javaOptions = given === undefined ? undefined : withoutWirescryAgent(given);
   const theirHosts = /(?:^|\s)-Dhttp\.nonProxyHosts=(\S+)/
     .exec(javaOptions ?? '')?.[1]
     ?.replace(/^["']|["']$/g, '');

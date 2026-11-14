@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { open, readFile, rename, rm, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
 import type {
@@ -38,7 +39,7 @@ import { findAdb } from './android/adb-server';
 import { certificateSha256 } from './android/certificates';
 import { ANDROID_RECORDS_DIR } from '../shared/ipc';
 import { Composer } from './composer';
-import { terminalEnv } from '../shared/terminal-env';
+import { javaAgentPathProblem, terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
 import {
   deleteFirefoxProfile,
@@ -136,10 +137,10 @@ export interface BackendOptions {
   /**
    * Java programs' agent (native/java-agent). true: find its jars, and run it while the
    * javaAgentStartup setting is on (the app passes this). Jars given here run it whatever the
-   * setting (tests). Left out or false, it's off, so tests never write a control file that real
-   * JVMs read.
+   * setting (tests), unless `followSetting`. Left out or false, it's off, so tests never write a
+   * control file that real JVMs read.
    */
-  javaAgent?: boolean | { jars: AgentJars; heartbeatMs?: number; ops?: FileOps };
+  javaAgent?: boolean | { jars: AgentJars; heartbeatMs?: number; ops?: FileOps; followSetting?: boolean };
 }
 
 export interface HarImportCounts {
@@ -236,8 +237,17 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   // Written once the proxy is up; status() can be asked for before that (Docker's callbacks).
   let terminalScripts: Awaited<ReturnType<typeof writeShellScripts>> = {};
   let javaAgent: JavaAgentHost | undefined;
-  // eslint-disable-next-line prefer-const -- assigned later, once the proxy is up
   let agentStarting: Promise<void> | undefined;
+  /** Why the agent couldn't be set up, for Setup. */
+  let agentProblem: string | undefined;
+  /** Whether the agent follows the javaAgentStartup setting: the app's, or a test's that asks. */
+  const agentFollowsSetting =
+    options.javaAgent === true ||
+    (typeof options.javaAgent === 'object' && options.javaAgent.followSetting === true);
+  /** The javaAgentStartup setting (always on for tests that give the jars, unless they follow it). */
+  let agentStartup = agentFollowsSetting
+    ? settings.javaAgentStartup === true
+    : options.javaAgent !== undefined && options.javaAgent !== false;
   /** Says off to Java agents, within JAVA_AGENT_STOP_MS (on Windows a rename can wait on readers). */
   const stopJavaAgent = async (): Promise<void> => {
     const stopped = (async () => {
@@ -314,12 +324,26 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     terminalScripts,
     plugins: pluginHost.statuses(),
     docker: docker.status(),
+    ...(options.javaAgent
+      ? {
+          javaAgent: {
+            startup: agentStartup,
+            ...(javaAgent ? { stubPath: javaAgent.stubPath } : {}),
+            ...(agentProblem ? { problem: agentProblem } : {}),
+          },
+        }
+      : {}),
     ...(android ? { android: android.status() } : {}),
     ...(refused() ? { refused: refused() } : {}),
   });
 
   const currentTerminalEnv = (): Record<string, string> => ({
-    ...terminalEnv(proxy.port, { caPath: ca.certPath, ...terminalConfig }, platform),
+    ...terminalEnv(
+      proxy.port,
+      { caPath: ca.certPath, ...terminalConfig },
+      platform,
+      javaAgent && agentStartup ? javaAgent.stubPath : undefined,
+    ),
     ...docker.terminalEnv(),
   });
 
@@ -539,40 +563,56 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   step('docker');
   // Java programs' agent: its jars installed and its control file written, in the background (it
   // reads and hashes a few MB). Nothing else waits for it; see agentStarting.
-  const agentJars = !options.javaAgent
-    ? undefined
-    : options.javaAgent === true
-      ? settings.javaAgentStartup === true
-        ? (findAgentJars() ?? noAgentJars())
-        : undefined
-      : options.javaAgent.jars;
+  const agentOptions = typeof options.javaAgent === 'object' ? options.javaAgent : undefined;
   const agentSettings = () => ({
     proxyPort: proxy.port,
     caPath: ca.certPath,
     caPem: ca.cert,
-    startup: options.javaAgent === true ? settings.javaAgentStartup === true : true,
+    startup: agentStartup,
   });
-  const agentOptions = typeof options.javaAgent === 'object' ? options.javaAgent : undefined;
-  agentStarting = agentJars
-    ? JavaAgentHost.start(
-        {
-          dir: path.join(dataDir, JAVA_AGENT_DIR),
-          jars: agentJars,
-          version: options.app?.version ?? '0.0.0',
-          heartbeatMs: agentOptions?.heartbeatMs,
-          ops: agentOptions?.ops,
-        },
-        agentSettings(),
-      ).then(
-        async (host) => {
-          javaAgent = host;
-          // The port or the certificate may have changed while it started.
-          await host.update(agentSettings());
-          // A quit while it started is done by stopJavaAgent, which waits for this.
-        },
-        (error: unknown) => console.error('[wirescry] java agent not set up:', error),
-      )
-    : undefined;
+  /** Starts the agent's host, unless it's running or starting. Once started, it runs until quit. */
+  const startJavaAgent = (): void => {
+    if (javaAgent || agentStarting || !options.javaAgent) return;
+    const jars = agentOptions ? agentOptions.jars : (findAgentJars() ?? noAgentJars());
+    if (!jars) {
+      agentProblem = "This copy of Wirescry doesn't include its Java agent.";
+      return;
+    }
+    agentProblem = undefined;
+    agentStarting = JavaAgentHost.start(
+      {
+        dir: path.join(dataDir, JAVA_AGENT_DIR),
+        jars,
+        version: options.app?.version ?? '0.0.0',
+        heartbeatMs: agentOptions?.heartbeatMs,
+        ops: agentOptions?.ops,
+      },
+      agentSettings(),
+    ).then(
+      async (host) => {
+        javaAgent = host;
+        agentProblem = javaAgentPathProblem(host.stubPath, platform);
+        // The port or the certificate may have changed while it started, and terminals now get it.
+        // A quit while it started is done by stopJavaAgent, which waits for this.
+        await refreshSetup();
+        broadcast({ type: 'status', status: status() });
+      },
+      (error: unknown) => {
+        console.error('[wirescry] java agent not set up:', error);
+        agentProblem = `Wirescry couldn't set up its Java agent: ${(error as Error).message}`;
+        agentStarting = undefined;
+        broadcast({ type: 'status', status: status() });
+      },
+    );
+  };
+  // Also with the setting off, if it was ever on: terminals from then still carry the agent, and
+  // without a heartbeat it would take Wirescry for gone and send them direct.
+  if (
+    agentStartup ||
+    (agentFollowsSetting && existsSync(path.join(dataDir, JAVA_AGENT_DIR, 'control.properties')))
+  ) {
+    startJavaAgent();
+  }
   // Rewritten whenever the port or certificate changes, so the one-line setup stays current.
   await refreshSetup();
   // Android devices over the user's ADB server. Started in the background: finding or starting
@@ -963,6 +1003,19 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         if (!android) throw new Error('Android setup is off.');
         android.setLocalAccess(String(command.deviceId), command.allowed === true);
         return undefined;
+      case 'setJavaAgentStartup': {
+        if (!options.javaAgent) throw new Error('Java setup is off.');
+        const enabled = command.enabled === true;
+        const next = { ...settings, javaAgentStartup: enabled ? true : undefined };
+        await saveSettings(dataDir, next);
+        settings = next;
+        agentStartup = enabled;
+        // Once running, the host stays until quit: turned off, it tells agents so.
+        if (agentStartup) startJavaAgent();
+        await refreshSetup();
+        broadcast({ type: 'status', status: status() });
+        return undefined;
+      }
       case 'setDockerSetup': {
         docker.setActive(command.enabled === true);
         settings = { ...settings, dockerSetup: command.enabled === true ? undefined : false };
