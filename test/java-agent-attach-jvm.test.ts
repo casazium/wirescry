@@ -140,16 +140,32 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
         expect(await ask(r, 'clear http.nonProxyHosts')).toBe('cleared');
         const pid = r.child.pid!;
 
-        const listed = await api!.send<JavaAttachStatus>({ command: 'javaRefresh' });
+        // Wirescry's own JVM options never reach the attacher: these print to standard output, where
+        // its answer goes.
+        const before = process.env.JAVA_TOOL_OPTIONS;
+        process.env.JAVA_TOOL_OPTIONS = '-verbose:class -XX:+PrintFlagsFinal';
+        let listed: JavaAttachStatus;
+        try {
+          listed = await api!.send<JavaAttachStatus>({ command: 'javaRefresh' });
+        } finally {
+          if (before === undefined) delete process.env.JAVA_TOOL_OPTIONS;
+          else process.env.JAVA_TOOL_OPTIONS = before;
+        }
         expect(listed.state).toBe('ready');
         expect(listed.programs).toContainEqual({ pid, name: 'ProxyProbe' });
         expect(JSON.stringify(listed)).not.toContain('hunter2');
         // Nothing runs before an attach: the setting is off.
         expect(await ask(r, 'select http://example.test/')).toBe('DIRECT');
 
-        expect(await api!.send({ command: 'javaAttach', pid, confirmWarning: true })).toEqual({
-          attached: true,
-        });
+        // Only Java 21 and later print a warning, so only they ask first.
+        expect(await api!.send({ command: 'javaAttach', pid })).toEqual(
+          major >= 21 ? { needsConfirmation: 'java-warning' } : { attached: true },
+        );
+        if (major >= 21) {
+          expect(await api!.send({ command: 'javaAttach', pid, confirmWarning: true })).toEqual({
+            attached: true,
+          });
+        }
         await expect
           .poll(() => programOf(pid)?.agent, { timeout: 20_000 })
           .toMatchObject({ route: 'attach', on: true, reason: 'on', current: true });

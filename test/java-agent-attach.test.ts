@@ -849,11 +849,18 @@ describe('attaching, from Setup', () => {
     t.manager.stop();
   });
 
-  it('looks for a JDK once for refreshes asked together', async () => {
-    const t = await setUp(() => ({ ok: true, java: '17', javaHome: '/j' }));
+  it('looks for a JDK, and lists, once for refreshes asked together', async () => {
+    let lists = 0;
+    const t = await setUp(() => ({ ok: true, java: '17', javaHome: '/j' }), true, {
+      list: async () => {
+        lists++;
+        return [{ pid: 4242, name: 'Main' }];
+      },
+    });
     const [a, b] = await Promise.all([t.manager.refresh(), t.manager.refresh()]);
     expect(a).toEqual(b);
     expect(t.finds.count).toBe(1);
+    expect(lists).toBe(1);
     expect(a.state).toBe('ready');
     await t.manager.refresh();
     expect(t.finds.count).toBe(2);
