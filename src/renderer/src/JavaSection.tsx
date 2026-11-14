@@ -116,6 +116,11 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
             this setting off and open a new terminal.
           </li>
           <li>
+            Apache HttpClient goes through Wirescry unless the program chose a proxy of its own. A connection
+            limit the program set for one host doesn&apos;t apply while its requests go through Wirescry; the
+            client&apos;s default limit per host does.
+          </li>
+          <li>
             Attaching runs a short Java program from a JDK on this computer (17 or later; 11 on Windows),
             which asks Java to load the agent into the running program. It works for programs run by you, with
             HotSpot-based Java (OpenJDK, Temurin, Oracle and most others) 8 and later. It doesn&apos;t work

@@ -13,7 +13,10 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.security.ProtectionDomain;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
@@ -51,6 +54,14 @@ final class Hooks implements ClassFileTransformer {
    */
   private volatile String apache;
 
+  /**
+   * Each Apache planner this transformer wove, by class loader (weakly: a loader the program
+   * drops is freed) and name: its woven bytes. A planner woven as it loaded isn't woven again at
+   * the first poll; and when a later retransform (another agent's) can't weave it again, say
+   * because its loader no longer serves the Apache classes the weave reads, these keep the hook.
+   */
+  private final Map<ClassLoader, Map<String, byte[]>> apacheBytes = new WeakHashMap<ClassLoader, Map<String, byte[]>>();
+
   private BiFunction<String, byte[], byte[]> weaver;
   private Function<Object[], byte[]> programWeaver;
   private boolean weaverFailed;
@@ -81,8 +92,32 @@ final class Hooks implements ClassFileTransformer {
     }
     if (TRUST_MANAGER.equals(className)) trust = state;
     else if (PROXY_SELECTOR.equals(className)) proxy = state;
-    else apache(state);
+    else woven = apacheWoven(loader, className, woven, state);
     return woven;
+  }
+
+  /**
+   * Records an Apache planner woven (`bytes`), or not. When not, but it was before (a
+   * retransform), the bytes from before stand and so does its "ok". Returns the bytes to use.
+   */
+  private synchronized byte[] apacheWoven(ClassLoader loader, String className, byte[] bytes, String state) {
+    Map<String, byte[]> byName = apacheBytes.get(loader);
+    if (bytes != null) {
+      if (byName == null) apacheBytes.put(loader, byName = new HashMap<String, byte[]>(2));
+      byName.put(className, bytes);
+      apache(state);
+      return bytes;
+    }
+    byte[] before = byName == null ? null : byName.get(className);
+    if (before != null) return before;
+    apache(state);
+    return null;
+  }
+
+  /** Whether this transformer already wove the Apache planner `c`. */
+  private synchronized boolean apacheWoven(Class<?> c) {
+    Map<String, byte[]> byName = apacheBytes.get(c.getClassLoader());
+    return byName != null && byName.containsKey(c.getName().replace('.', '/'));
   }
 
   /** One more Apache planner woven, or not: one that failed stays reported. */
@@ -92,9 +127,8 @@ final class Hooks implements ClassFileTransformer {
 
   /**
    * Changes the hooked classes that were loaded before the agent: for an attach, those the program
-   * loaded; at startup, those an agent named before this one loaded. Apache's planners are changed
-   * again even if this agent already did (a retransform starts from the class's own bytes, so
-   * nothing is added twice).
+   * loaded; at startup, those an agent named before this one loaded. Apache's planners this agent
+   * already wove are left as they are.
    */
   void retransformLoaded(Instrumentation inst) {
     List<Class<?>> loaded = new ArrayList<Class<?>>();
@@ -103,7 +137,8 @@ final class Hooks implements ClassFileTransformer {
         String name = c.getName().replace('.', '/');
         boolean isTrust = c.getClassLoader() == null && TRUST_MANAGER.equals(name) && "waiting".equals(trust);
         boolean isProxy = c.getClassLoader() == null && PROXY_SELECTOR.equals(name) && "waiting".equals(proxy);
-        boolean isApache = isApache(name);
+        // Not again if woven as it loaded: nothing to gain, and a weave can fail later.
+        boolean isApache = isApache(name) && !apacheWoven(c);
         if (!isTrust && !isProxy && !isApache) continue;
         if (inst.isModifiableClass(c)) loaded.add(c);
         else if (isTrust) trust = "failed";
@@ -122,6 +157,8 @@ final class Hooks implements ClassFileTransformer {
         }
       }
     } catch (Throwable t) {
+      // Which classes were loaded can't be known: the JDK hooks still waiting can't be done
+      // now, and say so. Apache planners not woven yet can't be named, so `apache` stays as it is.
       if ("waiting".equals(trust)) trust = "failed";
       if ("waiting".equals(proxy)) proxy = "failed";
     }

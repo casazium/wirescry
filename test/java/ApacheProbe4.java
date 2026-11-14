@@ -30,6 +30,8 @@ import org.apache.http.util.EntityUtils;
  *   own PORT URL        GET with the request's own proxy, 127.0.0.1:PORT
  *   fixed PORT URL      GET with the builder's proxy, 127.0.0.1:PORT (DefaultProxyRoutePlanner)
  *   subclass URL        GET with a subclass of DefaultRoutePlanner that overrides nothing
+ *   host SCHEME HOST PORT  what a plain DefaultRoutePlanner chooses for an HttpHost made by hand
+ *   async URL           GET with httpasyncclient's HttpAsyncClients.createDefault()
  *   set NAME VALUE      sets a system property
  * </pre>
  */
@@ -95,6 +97,25 @@ public class ApacheProbe4 {
                     new DefaultRoutePlanner(DefaultSchemePortResolver.INSTANCE) {})
                 .build()) {
           return get(c, new HttpGet(p[1]));
+        }
+      case "host":
+        {
+          HttpHost target = new HttpHost(p[2], Integer.parseInt(p[3]), p[1]);
+          HttpRoute route =
+              new DefaultRoutePlanner(DefaultSchemePortResolver.INSTANCE)
+                  .determineRoute(target, new HttpGet("/"), HttpClientContext.create());
+          HttpHost proxy = route.getProxyHost();
+          return proxy == null ? "DIRECT" : "PROXY " + proxy.getHostName() + ":" + proxy.getPort();
+        }
+      case "async":
+        try (org.apache.http.impl.nio.client.CloseableHttpAsyncClient c =
+            org.apache.http.impl.nio.client.HttpAsyncClients.createDefault()) {
+          c.start();
+          org.apache.http.HttpResponse response =
+              c.execute(new HttpGet(p[1]), null).get(15, java.util.concurrent.TimeUnit.SECONDS);
+          return "OK " + EntityUtils.toString(response.getEntity());
+        } catch (java.util.concurrent.ExecutionException e) {
+          throw (Exception) e.getCause();
         }
       case "set":
         System.setProperty(p[1], p.length > 2 ? p[2] : "");

@@ -136,6 +136,21 @@ export const testJars = {
       'e599d5318e97aa48f42136a2927e6dfa4e8881dff0e6c8e3109ddbbff51d7b7d',
     ),
   ],
+  // 4.x's async client, beside the 4.x jars above.
+  apache4async: [
+    testJar(
+      'org.apache.httpcomponents',
+      'httpasyncclient',
+      '4.1.5',
+      '0c1877489a9d1ba4fa50f6cfcab11d1123618858cb31d56afaab5afdd5064d99',
+    ),
+    testJar(
+      'org.apache.httpcomponents',
+      'httpcore-nio',
+      '4.4.16',
+      '4018736ede2d321034e8517ea90baefb31831a8608afccc446d8a699fb1d00d4',
+    ),
+  ],
   apache5: [
     testJar(
       'org.apache.httpcomponents.client5',

@@ -25,14 +25,15 @@ public final class ApacheAdvice {
   @Advice.OnMethodExit(suppress = Throwable.class)
   static void exit(
       @Advice.This Object planner,
-      @Advice.Argument(0) Object target,
+      @Advice.AllArguments Object[] arguments,
       @Advice.Return(readOnly = false, typing = Assigner.Typing.DYNAMIC) Object proxy)
       throws Exception {
-    if (proxy != null || target == null) return;
+    if (proxy != null || arguments.length == 0 || arguments[0] == null) return;
+    // The target first; the HttpContext last (4.x passes the request between them).
     Object mine =
         Class.forName("com.wirescry.agent.impl.Proxies", false, ClassLoader.getSystemClassLoader())
-            .getMethod("apache", Object.class, Object.class)
-            .invoke(null, planner, target);
+            .getMethod("apache", Object.class, Object.class, Object.class)
+            .invoke(null, planner, arguments[0], arguments[arguments.length - 1]);
     // Last: if anything above throws, the suppression keeps HttpClient's own answer.
     if (mine != null) proxy = mine;
   }

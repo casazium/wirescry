@@ -17,11 +17,11 @@ export declare function jdkTool(name: string): string | undefined;
 export declare function fetchByteBuddy(): Promise<string>;
 /** Libraries the tests run the agent against (never shipped), pinned by SHA-256. */
 export declare const testJars: Record<
-  'apache4' | 'apache5',
+  'apache4' | 'apache4async' | 'apache5',
   Array<{ name: string; url: string; sha256: string; file: string }>
 >;
 /** The jars of `set`, fetched and checked as needed: their paths. */
-export declare function fetchTestJars(set: 'apache4' | 'apache5'): Promise<string[]>;
+export declare function fetchTestJars(set: 'apache4' | 'apache4async' | 'apache5'): Promise<string[]>;
 /** Builds the jars into `outDir` (default native/java-agent/build/). Returns paths and SHA-256s. */
 export declare function buildJavaAgent(
   outDir?: string,

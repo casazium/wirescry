@@ -143,12 +143,9 @@ public final class Proxies {
   }
 
   /** Apache's planners whose determineProxy the advice reaches; subclasses aren't asked. */
-  static final String APACHE_4 = "org.apache.http.impl.conn.DefaultRoutePlanner";
+  static final String APACHE_4 = Hooks.APACHE_4.replace('/', '.');
 
-  static final String APACHE_5 = "org.apache.hc.client5.http.impl.routing.DefaultRoutePlanner";
-
-  /** Wirescry's proxy as an Apache HttpHost, for the last class loader and port. */
-  private static volatile Object[] lastApache;
+  static final String APACHE_5 = Hooks.APACHE_5.replace('/', '.');
 
   /**
    * Wirescry's proxy as the HttpHost Apache HttpClient's DefaultRoutePlanner.determineProxy
@@ -160,12 +157,13 @@ public final class Proxies {
    * subclasses, as is any of the program's own. The same rules as {@link #select} decide: the
    * agent on, http or https, not this computer, not in the program's `http.nonProxyHosts`
    * (Apache doesn't read it itself, so this applies the program's own setting; the JDK's
-   * net.properties default isn't read here).
+   * net.properties default isn't read here). And never for a request over a Unix domain socket
+   * (5.6 and later), nor from 5.x's HTTP/2-only client: neither can go through a proxy.
    *
-   * <p>`target` is Apache's HttpHost. The answer is made with the planner's own class loader, so it
-   * is the HttpHost class the program uses.
+   * <p>`target` is Apache's HttpHost, `context` its HttpContext. The answer is an HttpHost of the
+   * class `target` is, so the one the program uses.
    */
-  public static Object apache(Object planner, Object target) {
+  public static Object apache(Object planner, Object target, Object context) {
     try {
       if (planner == null || target == null || !Agent.isOn()) return null;
       Class<?> type = planner.getClass();
@@ -182,7 +180,7 @@ public final class Proxies {
       // A bare IPv6 address, as Apache keeps it: bracketed, as a URI names it.
       if (host.indexOf(':') >= 0 && !host.startsWith("[")) host = "[" + host + "]";
       if (thisComputer(host) || excluded(System.getProperty("http.nonProxyHosts"), host)) return null;
-      if (!v4 && fromH2OnlyClient()) return null;
+      if (!v4 && (overUnixSocket(type, context) || fromH2OnlyClient())) return null;
       return apacheHost(hostType, v4, control.proxyPort);
     } catch (Throwable t) {
       return null;
@@ -190,49 +188,142 @@ public final class Proxies {
   }
 
   /**
+   * Whether a 5.x request goes over a Unix domain socket (RequestConfig.getUnixDomainSocket, 5.6
+   * and later). DefaultRoutePlanner asks for a proxy before it checks, and refuses one there
+   * ("Proxies are not supported over Unix domain sockets"). Read as the planner reads it:
+   * HttpClientContext.cast(context).getRequestConfigOrDefault(). A version without the setting
+   * has no sockets. One with it whose request can't be read: yes, better direct than broken.
+   */
+  static boolean overUnixSocket(Class<?> plannerType, Object context) {
+    ClassLoader loader = plannerType.getClassLoader();
+    boolean hasSockets;
+    try {
+      Class.forName("org.apache.hc.client5.http.config.RequestConfig", false, loader).getMethod("getUnixDomainSocket");
+      hasSockets = true;
+    } catch (Throwable t) {
+      hasSockets = false;
+    }
+    if (!hasSockets) return false;
+    // No context: the planner reads the default settings, which name no socket.
+    if (context == null) return false;
+    Object config;
+    try {
+      Class<?> contexts =
+          Class.forName("org.apache.hc.client5.http.protocol.HttpClientContext", false, plannerType.getClassLoader());
+      Class<?> httpContext =
+          Class.forName("org.apache.hc.core5.http.protocol.HttpContext", false, plannerType.getClassLoader());
+      Object client;
+      try {
+        client = contexts.getMethod("cast", httpContext).invoke(null, context);
+      } catch (NoSuchMethodException e) {
+        client = contexts.getMethod("adapt", httpContext).invoke(null, context);
+      }
+      try {
+        config = contexts.getMethod("getRequestConfigOrDefault").invoke(client);
+      } catch (NoSuchMethodException e) {
+        config = contexts.getMethod("getRequestConfig").invoke(client);
+      }
+      if (config == null) return false;
+      return config.getClass().getMethod("getUnixDomainSocket").invoke(config) != null;
+    } catch (Throwable t) {
+      return true;
+    }
+  }
+
+  static final String H2_ONLY_CLIENT = "org.apache.hc.client5.http.impl.async.InternalH2AsyncClient";
+
+  /**
    * Whether 5.x's HTTP/2-only async client (H2AsyncClientBuilder) is asking. It uses this planner
    * too, but can't go through a proxy: its https requests would fail ("HTTP/2 tunneling not
    * supported") where they'd work without the agent. Its plain http ignores a proxy anyway. Read
-   * from the caller's stack, only when the answer would otherwise be Wirescry's proxy.
+   * from the caller's stack, only when the answer would otherwise be Wirescry's proxy: with Java
+   * 9's StackWalker where there is one (it stops at the first match, and reads no line numbers),
+   * else the whole stack.
    */
   static boolean fromH2OnlyClient() {
+    Boolean walked = H2Walker.walk();
+    if (walked != null) return walked;
     for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
       if (H2_ONLY_CLIENT.equals(frame.getClassName())) return true;
     }
     return false;
   }
 
-  static final String H2_ONLY_CLIENT = "org.apache.hc.client5.http.impl.async.InternalH2AsyncClient";
+  /** The StackWalker route (Java 9+), by reflection: the agent is built for Java 8. */
+  static final class H2Walker {
+    private static final Object WALKER;
+    private static final java.lang.reflect.Method WALK;
+    private static final java.lang.reflect.Method CLASS_NAME;
+
+    static {
+      Object walker = null;
+      java.lang.reflect.Method walk = null;
+      java.lang.reflect.Method className = null;
+      try {
+        Class<?> type = Class.forName("java.lang.StackWalker");
+        walker = type.getMethod("getInstance").invoke(null);
+        walk = type.getMethod("walk", java.util.function.Function.class);
+        className = Class.forName("java.lang.StackWalker$StackFrame").getMethod("getClassName");
+      } catch (Throwable t) {
+        walker = null;
+      }
+      WALKER = walker;
+      WALK = walk;
+      CLASS_NAME = className;
+    }
+
+    private H2Walker() {}
+
+    /** Whether the client is on the stack, or null without a StackWalker. */
+    static Boolean walk() {
+      if (WALKER == null) return null;
+      try {
+        return (Boolean)
+            WALK.invoke(
+                WALKER,
+                new java.util.function.Function<java.util.stream.Stream<?>, Boolean>() {
+                  @Override
+                  public Boolean apply(java.util.stream.Stream<?> frames) {
+                    return frames.anyMatch(
+                        new java.util.function.Predicate<Object>() {
+                          @Override
+                          public boolean test(Object frame) {
+                            try {
+                              return H2_ONLY_CLIENT.equals(CLASS_NAME.invoke(frame));
+                            } catch (Exception e) {
+                              return false;
+                            }
+                          }
+                        });
+                  }
+                });
+      } catch (Throwable t) {
+        return null;
+      }
+    }
+  }
 
   /**
-   * 127.0.0.1 at `port`, as `hostType` (the program's HttpHost), named by its address so nothing
-   * is looked up. 4.x takes (InetAddress, String, int, String) from 4.4, (String, int, String)
-   * before; 5.x takes (String scheme, InetAddress, String, int).
+   * 127.0.0.1 at `port`, as `hostType` (the program's HttpHost), with its address given so nothing
+   * is looked up. 4.x takes (InetAddress, String, int, String) from 4.4, (InetAddress, int,
+   * String) before (the address's name is the one given here, so it isn't looked up either);
+   * 5.x takes (String scheme, InetAddress, String, int). Made each time: kept, it would keep the
+   * program's class loader from ever being freed.
    */
   private static Object apacheHost(Class<?> hostType, boolean v4, int port) throws Exception {
-    Object[] last = lastApache;
-    if (last != null && last[0] == hostType && (Integer) last[1] == port) return last[2];
     InetAddress loopback = InetAddress.getByAddress("127.0.0.1", new byte[] {127, 0, 0, 1});
-    Object host;
-    if (v4) {
-      Object made;
-      try {
-        made =
-            hostType
-                .getConstructor(InetAddress.class, String.class, int.class, String.class)
-                .newInstance(loopback, "127.0.0.1", port, "http");
-      } catch (NoSuchMethodException e) {
-        made = hostType.getConstructor(String.class, int.class, String.class).newInstance("127.0.0.1", port, "http");
-      }
-      host = made;
-    } else {
-      host =
-          hostType
-              .getConstructor(String.class, InetAddress.class, String.class, int.class)
-              .newInstance("http", loopback, "127.0.0.1", port);
+    if (!v4) {
+      return hostType
+          .getConstructor(String.class, InetAddress.class, String.class, int.class)
+          .newInstance("http", loopback, "127.0.0.1", port);
     }
-    lastApache = new Object[] {hostType, port, host};
-    return host;
+    try {
+      return hostType
+          .getConstructor(InetAddress.class, String.class, int.class, String.class)
+          .newInstance(loopback, "127.0.0.1", port, "http");
+    } catch (NoSuchMethodException e) {
+      return hostType.getConstructor(InetAddress.class, int.class, String.class).newInstance(loopback, port, "http");
+    }
   }
 
   private static Proxy proxy(int port) throws Exception {

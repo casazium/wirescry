@@ -39,6 +39,8 @@ import org.apache.hc.core5.http.io.entity.EntityUtils;
  *   subclass URL        GET with a subclass of DefaultRoutePlanner that overrides nothing
  *   async URL           GET with HttpAsyncClients.createDefault()
  *   h2 URL              GET with the HTTP/2-only async client (H2AsyncClientBuilder)
+ *   unix PATH URL       GET over the Unix domain socket at PATH (5.6+, on Java 16+)
+ *   host SCHEME HOST PORT  what a plain DefaultRoutePlanner chooses for an HttpHost made by hand
  *   set NAME VALUE      sets a system property
  * </pre>
  */
@@ -113,6 +115,20 @@ public class ApacheProbe5 {
         try (CloseableHttpAsyncClient c = H2AsyncClientBuilder.create().build()) {
           c.start();
           return async(c, p[1]);
+        }
+      case "host":
+        {
+          HttpRoute route =
+              new DefaultRoutePlanner(DefaultSchemePortResolver.INSTANCE)
+                  .determineRoute(new HttpHost(p[1], p[2], Integer.parseInt(p[3])), HttpClientContext.create());
+          HttpHost proxy = route.getProxyHost();
+          return proxy == null ? "DIRECT" : "PROXY " + proxy.getHostName() + ":" + proxy.getPort();
+        }
+      case "unix":
+        try (CloseableHttpClient c = HttpClients.createDefault()) {
+          HttpGet get = new HttpGet(p[2]);
+          get.setConfig(RequestConfig.custom().setUnixDomainSocket(java.nio.file.Paths.get(p[1])).build());
+          return get(c, get);
         }
       case "set":
         System.setProperty(p[1], p.length > 2 ? p[2] : "");

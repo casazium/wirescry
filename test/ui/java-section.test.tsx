@@ -266,7 +266,8 @@ describe('Java section, running programs', () => {
     expect(row('New').textContent).toContain('newer than Wirescry’s agent supports');
     expect(row('Broken').textContent).toContain('couldn’t set itself up');
     expect(row('ApacheBroken').textContent).toContain('couldn’t set itself up');
-    expect(row('ApacheNew').textContent).toContain('newer than Wirescry’s agent supports');
+    expect(row('ApacheNew').textContent).toContain('couldn’t set itself up');
+    expect(row('ApacheNew').textContent).not.toContain('newer');
     expect(row('ApacheFine').textContent).toContain('Sending its traffic through Wirescry.');
     expect(row('Own').textContent).toContain('chooses its own proxy');
     expect(row('Cert').textContent).toContain('can’t use Wirescry’s certificate');
