@@ -246,6 +246,17 @@ describe('Java section, running programs', () => {
         programs: [
           { pid: 1, name: 'New', agent: agent({ hooks: ['trust:jdk-too-new', 'proxy:jdk-too-new'] }) },
           { pid: 2, name: 'Broken', agent: agent({ hooks: ['trust:ok', 'proxy:failed'] }) },
+          {
+            pid: 6,
+            name: 'ApacheBroken',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'apache:failed'] }),
+          },
+          {
+            pid: 7,
+            name: 'ApacheNew',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'apache:jdk-too-new'] }),
+          },
+          { pid: 8, name: 'ApacheFine', agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'apache:ok'] }) },
           { pid: 3, name: 'Own', agent: agent({ hooks: ['trust:ok', 'proxy:app-selector'] }) },
           { pid: 4, name: 'Cert', agent: agent({ hooks: ['trust:ca-mismatch', 'proxy:ok'] }) },
           { pid: 5, name: 'Early', agent: agent({ hooks: ['trust:waiting', 'proxy:waiting'] }) },
@@ -254,9 +265,13 @@ describe('Java section, running programs', () => {
     );
     expect(row('New').textContent).toContain('newer than Wirescry’s agent supports');
     expect(row('Broken').textContent).toContain('couldn’t set itself up');
+    expect(row('ApacheBroken').textContent).toContain('couldn’t set itself up');
+    expect(row('ApacheNew').textContent).toContain('couldn’t set itself up');
+    expect(row('ApacheNew').textContent).not.toContain('newer');
+    expect(row('ApacheFine').textContent).toContain('Sending its traffic through Wirescry.');
     expect(row('Own').textContent).toContain('chooses its own proxy');
     expect(row('Cert').textContent).toContain('can’t use Wirescry’s certificate');
-    for (const name of ['New', 'Broken', 'Own', 'Cert']) {
+    for (const name of ['New', 'Broken', 'Own', 'Cert', 'ApacheBroken', 'ApacheNew']) {
       expect(row(name).textContent).not.toContain('Sending its traffic');
       // Still on, so it can be turned off.
       expect(buttonIn(name)?.textContent).toBe('Detach');

@@ -33,6 +33,8 @@ import net.bytebuddy.pool.TypePool;
  *   <li>The JDK's default proxy selector: its public select(URI). See ProxyAdvice.
  * </ul>
  *
+ * <p>Classes of the program's own (Apache HttpClient's) are woven by ProgramWeaver.
+ *
  * <p>Each method it changes must be there: a JDK without one fails the hook, which the status file
  * then reports, rather than quietly changing nothing.
  *
@@ -74,7 +76,7 @@ public final class Weaver implements BiFunction<String, byte[], byte[]> {
     return builder.make(pool).getBytes();
   }
 
-  private static Advice advice(TypePool pool, ClassFileLocator locator, Class<?> type) {
+  static Advice advice(TypePool pool, ClassFileLocator locator, Class<?> type) {
     return Advice.to(pool.describe(type.getName()).resolve(), locator);
   }
 

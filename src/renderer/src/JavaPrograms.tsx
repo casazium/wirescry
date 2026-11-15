@@ -20,10 +20,12 @@ const hook = (agent: Agent, name: string): string | undefined =>
 function onText(agent: Agent): string {
   const trust = hook(agent, 'trust');
   const proxy = hook(agent, 'proxy');
+  const apache = hook(agent, 'apache');
+  // Apache's classes are old bytecode: a weave it can't read isn't about the program's Java.
   if (trust === 'jdk-too-new' || proxy === 'jdk-too-new') {
     return 'This program’s Java is newer than Wirescry’s agent supports: its traffic may not reach Wirescry.';
   }
-  if (trust === 'failed' || proxy === 'failed') {
+  if (trust === 'failed' || proxy === 'failed' || apache === 'failed' || apache === 'jdk-too-new') {
     return 'The agent couldn’t set itself up in this program: its traffic may not reach Wirescry.';
   }
   if (proxy === 'app-selector') {

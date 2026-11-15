@@ -29,8 +29,8 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
       <h2>Java programs</h2>
       <p className="muted">
         Wirescry&apos;s Java agent sends a Java program&apos;s HTTP and HTTPS traffic through Wirescry, and
-        trusts its certificate: HttpURLConnection, Java&apos;s HttpClient, OkHttp and libraries built on them,
-        even when the program chose its own trust store. Java 8 and later.
+        trusts its certificate: HttpURLConnection, Java&apos;s HttpClient, OkHttp, Apache HttpClient 4 and 5,
+        and libraries built on them, even when the program chose its own trust store. Java 8 and later.
       </p>
       {send && (
         <label className="checkbox">
@@ -114,6 +114,11 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
             can&apos;t load it: those refuse to start with the agent. Remove the option for them. In a
             Wirescry terminal, start one with <code>JAVA_TOOL_OPTIONS=</code> in front of its command, or turn
             this setting off and open a new terminal.
+          </li>
+          <li>
+            Apache HttpClient goes through Wirescry unless the program chose a proxy of its own. A connection
+            limit the program set for one host doesn&apos;t apply while its requests go through Wirescry; the
+            client&apos;s default limit per host does.
           </li>
           <li>
             Attaching runs a short Java program from a JDK on this computer (17 or later; 11 on Windows),
