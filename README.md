@@ -2,7 +2,7 @@
 
 A desktop tool for seeing, debugging and rewriting HTTP traffic. Built with Electron, TypeScript and React, with [Mockttp](https://github.com/httptoolkit/mockttp) as the proxy engine.
 
-This is an early Stage 1 skeleton. See [FEATURES.md](FEATURES.md) for the full plan.
+For using Wirescry, see the [documentation](https://docs.casazium.com/docs/wirescry/intro). This README is for building and working on it. [FEATURES.md](FEATURES.md) has the plan.
 
 ## Requirements
 
@@ -32,6 +32,9 @@ To send traffic through it:
 - **Chrome, Chromium, Edge or Brave:** click **Launch** to open the browser with a fresh temporary profile that uses the proxy and trusts Wirescry's certificate. The profile is deleted when the browser closes.
 - **Firefox:** Firefox can't be told to trust a certificate from the command line, so Wirescry keeps its own Firefox profile in the user data folder. The first launch opens a setup page at `http://wirescry.internal/` (answered by the proxy itself) where you trust the certificate once. Later launches go straight to browsing.
 - **Terminals:** **Setup → Terminals** opens Terminal or iTerm (macOS), PowerShell or Command Prompt (Windows), or your terminal (Linux) with variables that send Node.js, Python, Ruby, Go, PHP, Java, curl and git through Wirescry. The same variables are shown for bash, zsh, fish, PowerShell and cmd, to paste into a terminal that's already open. They point tools at a CA bundle (`ca-bundle.pem` in the user data folder) holding Wirescry's CA plus the usual public and system roots. Java gets `JAVA_TOOL_OPTIONS` with proxy settings and a JKS trust store holding the same certificates (Java can't read PEM bundles). PHP gets an extra `.ini` (through `PHP_INI_SCAN_DIR`) that points its curl and OpenSSL settings at the bundle. On Windows, `curl.exe` ignores `CURL_CA_BUNDLE`, so terminals there point `CURL_HOME` at a Wirescry curl config that sets the CA and turns off revocation checks (a local CA has nowhere to publish revocation lists); your own `_curlrc` isn't read in those terminals. Known gaps: the Python and Ruby built into macOS ignore the certificate setting, and Go on Windows reads only the Windows certificate store.
+- **Java programs:** **Setup → Java programs** turns on Wirescry's Java agent ([native/java-agent](native/java-agent/README.md)) for programs started from Wirescry terminals, or with a `-javaagent` option it shows for programs started elsewhere, and, with a JDK 17 or later (11 on Windows) on the computer, attaches it to programs already running. The agent sends HTTP and HTTPS through Wirescry and trusts its certificate, even in programs with their own trust store, for `HttpURLConnection`, Java's `HttpClient`, OkHttp and Apache HttpClient 4 and 5. Java 8 and later. See [Java programs](https://docs.casazium.com/docs/wirescry/java).
+- **Docker containers:** with Docker Desktop on macOS or Linux, or Docker Engine on Linux, containers started with `docker run` or `docker compose up` in a Wirescry terminal are set up too, through a relay for the Docker API, with no changes to images or compose files. Off on Windows for now. See [Docker containers](https://docs.casazium.com/docs/wirescry/docker).
+- **Android devices:** **Setup → Android** sets the proxy of a phone or emulator connected for debugging, over USB or Wi-Fi (Android 7 and later, with adb), and puts it back when you stop. See [Android devices](https://docs.casazium.com/docs/wirescry/android).
 - **Anything else:** the **Setup** view shows the proxy address and a **Save certificate…** button.
 - **curl:**
 
@@ -91,10 +94,11 @@ The backend tests start the real proxy and API, push an HTTPS request through th
 
 ```bash
 node scripts/build-java-agent.mjs
+node scripts/build-docker-pipe.mjs --windows   # for Windows installers only
 npm run package
 ```
 
-The first line builds the Java agent, which every installer carries. It needs a JDK 17 or later; see [native/java-agent/README.md](native/java-agent/README.md). The second builds unsigned installers for the current platform into `release/`. Use `package:mac`, `package:win` or `package:linux` for a specific one.
+The first line builds the Java agent, which every installer carries. It needs a JDK 17 or later; see [native/java-agent/README.md](native/java-agent/README.md). The second builds the Docker pipe helper that Windows installers carry; it needs Go 1.21 or later, and builds on any computer. The last builds unsigned installers for the current platform into `release/`. Use `package:mac`, `package:win` or `package:linux` for a specific one.
 
 Signed releases, notarization and auto-update are handled by the release workflow; see [docs/RELEASING.md](docs/RELEASING.md).
 
@@ -127,13 +131,15 @@ With `WIRESCRY_PRO_DIR` set:
 
 ## How it fits together
 
-| Part         | Folder         | Job                                                                                       |
-| ------------ | -------------- | ----------------------------------------------------------------------------------------- |
-| Main process | `src/main`     | Window, menu, app protocol, and starting and restarting the backend                       |
-| Backend      | `src/backend`  | Runs in its own Electron utility process: CA, Mockttp proxy, local API, browser launching |
-| Preload      | `src/preload`  | Gives the UI one thing: how to reach the backend                                          |
-| UI           | `src/renderer` | React app (Vite) that talks to the backend over a WebSocket                               |
-| Shared       | `src/shared`   | Types used by more than one part                                                          |
+| Part         | Folder               | Job                                                                                                                           |
+| ------------ | -------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| Main process | `src/main`           | Window, menu, app protocol, and starting and restarting the backend                                                           |
+| Backend      | `src/backend`        | Runs in its own Electron utility process: CA, Mockttp proxy, local API, browser launching                                     |
+| Preload      | `src/preload`        | Gives the UI one thing: how to reach the backend                                                                              |
+| UI           | `src/renderer`       | React app (Vite) that talks to the backend over a WebSocket                                                                   |
+| Shared       | `src/shared`         | Types used by more than one part                                                                                              |
+| Java agent   | `native/java-agent`  | The agent Java programs load: stub, implementation, weaver (Byte Buddy) and attacher. Built by `scripts/build-java-agent.mjs` |
+| Docker pipe  | `native/docker-pipe` | A small Go helper for Docker's named pipes on Windows. Built by `scripts/build-docker-pipe.mjs`                               |
 
 Security basics:
 
@@ -151,6 +157,7 @@ The UI fetches headers and bodies only for the exchange you select. Bodies are d
 
 ## Notes
 
+- Mockttp is patched after install by `scripts/patch-mockttp.mjs` (run by `npm install`'s `postinstall`), until the fixes are in a Mockttp release: HTTP/2 responses that end with their headers (gRPC's Trailers-Only), and plain-http requests that offer an upgrade other than WebSocket. Packaging refuses an unpatched install, for example one made with `--ignore-scripts`.
 - `tls-impersonate`, an optional Mockttp dependency for TLS fingerprint mirroring, is not built and not packaged. Mockttp works without it, and Wirescry doesn't use that feature.
 
 ## License
