@@ -12,7 +12,7 @@ import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { BodyContent, ExchangeDetail } from '../src/shared/api';
 import {
   apiClient,
-  exchangesIn,
+  latestExchange,
   localhostCertificate,
   requestViaProxy,
   TOKEN,
@@ -213,7 +213,8 @@ describe('requests offering an upgrade other than WebSocket, through Wirescry', 
     const api = await apiClient(backend.apiPort);
     await viaWirescry('/recorded?n=1', { upgrade: 'TLS/1.2', connection: 'Upgrade' });
     const id = await api.completed('/recorded?n=1');
-    const summary = exchangesIn(api.messages).find((e) => e.id === id)!;
+    // The newest copy: the first can come before the response.
+    const summary = latestExchange(api.messages, (e) => e.id === id)!;
     expect(summary.websocket).toBeFalsy();
     expect(summary.status).toBe(200);
     const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: id });
@@ -327,7 +328,7 @@ describe('requests offering an upgrade other than WebSocket, through Wirescry', 
     expect(reply).toBe('echo hi');
     ws.close();
     expect(upgradesSeen.slice(before)).toEqual(['websocket']);
-    await expect.poll(() => exchangesIn(api.messages).find((e) => e.path === '/ws')?.websocket).toBe(true);
+    await expect.poll(() => latestExchange(api.messages, (e) => e.path === '/ws')?.websocket).toBe(true);
   });
 
   it('takes the word WebSocket in any case, as the standard says', async () => {
