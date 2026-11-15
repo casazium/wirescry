@@ -143,6 +143,15 @@ export async function agentFolder(change: Partial<AgentControl> = {}) {
       control = { ...control, ...next, config: next.config ?? control.config + 1 };
       await writeControl(dir, control);
     },
+    /**
+     * Moves the heartbeat, as Wirescry does while it runs: without it the agent takes Wirescry as
+     * gone after about 15 s and turns off. For tests that run longer than that, called at least that
+     * often.
+     */
+    async heartbeat() {
+      control = { ...control, seq: control.seq + 1 };
+      await writeControl(dir, control);
+    },
   };
 }
 

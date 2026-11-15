@@ -1020,17 +1020,49 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
           let before = Infinity;
           let after = Infinity;
           for (let round = 0; round < 5; round++) {
+            await agent.heartbeat();
             before = Math.min(before, await ns(plain));
             after = Math.min(after, await ns(r));
+            // Still on after each round (no heartbeat during one): timed with the agent off, a round
+            // would pass for any hook.
+            expect(await ask(r, `route ${n} http://proxied.test/`)).toBe(`PROXY 127.0.0.1:${proxy.port}`);
           }
-          // Under 1 µs on 4.x, about 2 µs on 5.x and about 6 µs on 5s where measured (Java 11 to
-          // 27); a request costs far more. Java 8 reads the whole stack, without StackWalker.
+          // Under 1 µs on 4.x, about 2 µs on 5.x and about 6 µs on 5s on a fast machine (Java 11 to
+          // 27); 5s takes about three times as long on GitHub's runners. A request costs far more.
+          // Java 8 reads the whole stack, without StackWalker. The test below checks 5s's walk.
           expect(
             after - before,
             `Apache ${v === '5s' ? '5.x (system planner)' : `${v}.x`}: a route ${before} ns, with the agent ${after} ns`,
-          ).toBeLessThan(major < 9 ? 40_000 : 15_000);
+          ).toBeLessThan(major < 9 || (v === '5s' && process.env['CI']) ? 40_000 : 15_000);
         }
       });
+
+      // StackWalker exists from Java 9; Java 8 reads the whole stack.
+      it.skipIf(major < 9)(
+        'reads only the nearest frames for the HTTP/2-only client, however deep the stack',
+        async () => {
+          const proxy = await standIn();
+          const agent = await on(proxy);
+          const r = await loaderProbeRun([`-javaagent:${agent.stub}`]);
+          expect(await ask(r, 'load 5s')).toBe('loaded 0');
+          const ns = async (depth: number) =>
+            Number((await ask(r, `bench 0 20000 https://proxied.test/ ${depth}`)).split(' ')[1]);
+          let shallow = Infinity;
+          let deep = Infinity;
+          for (let round = 0; round < 5; round++) {
+            await agent.heartbeat();
+            shallow = Math.min(shallow, await ns(200));
+            deep = Math.min(deep, await ns(2000));
+            // Still on after each round (no heartbeat during one): timed with the agent off, a round
+            // would pass for any walk.
+            expect(await ask(r, 'route 0 http://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
+          }
+          // The same with the walk capped; read whole, 2,000 frames cost about seven times 200.
+          expect(deep, `200 frames down ${shallow} ns, 2,000 down ${deep} ns`).toBeLessThan(
+            2 * shallow + 5_000,
+          );
+        },
+      );
 
       it('leaves a renamed (shaded) copy of Apache alone, and says nothing of it', async () => {
         const proxy = await standIn();
