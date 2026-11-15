@@ -32,8 +32,10 @@ import java.util.List;
  *                 its own route(host) answers
  *   bench N COUNT URL [DEPTH]  times COUNT routes by loader N's planner, after as many to warm
  *                 up, DEPTH calls deep (default 0) on the stack: "NS <nanoseconds per route>"
- *   storm N THREADS MILLIS URL  THREADS threads route by loader N's planner at once, again and
- *                 again for MILLIS: "ANSWERS <each distinct answer, sorted, |-separated> ERRORS
+ *   storm N THREADS MILLIS URL [change]  THREADS threads route by loader N's planner at once,
+ *                 again and again for MILLIS (pausing a moment every 50, so the agent's own
+ *                 thread still runs on a small machine), or with "change", only until a second
+ *                 answer appears: "ANSWERS <each distinct answer, sorted, |-separated> ERRORS
  *                 <how many threw>"
  *   close N       closes loader N: it serves no more classes or resources: "closed"
  *   drop N        drops every reference to loader N and its planner: "dropped"
@@ -126,6 +128,7 @@ public class LoaderProbe {
           final Router router = router(Integer.parseInt(p[1]), p[4]);
           int threads = Integer.parseInt(p[2]);
           final long until = System.nanoTime() + Long.parseLong(p[3]) * 1000000L;
+          final boolean change = p.length > 5 && p[5].equals("change");
           final java.util.Set<String> answers = java.util.Collections.synchronizedSet(new java.util.TreeSet<String>());
           final java.util.concurrent.atomic.AtomicInteger errors = new java.util.concurrent.atomic.AtomicInteger();
           final java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
@@ -139,11 +142,19 @@ public class LoaderProbe {
                     } catch (InterruptedException e) {
                       return;
                     }
-                    while (System.nanoTime() - until < 0) {
+                    int n = 0;
+                    while (System.nanoTime() - until < 0 && !(change && answers.size() > 1)) {
                       try {
                         answers.add(router.route());
                       } catch (Throwable e) {
                         errors.incrementAndGet();
+                      }
+                      if (++n % 50 == 0) {
+                        try {
+                          Thread.sleep(1);
+                        } catch (InterruptedException e) {
+                          return;
+                        }
                       }
                     }
                   }

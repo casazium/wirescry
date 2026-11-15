@@ -980,10 +980,9 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
             `ANSWERS PROXY 127.0.0.1:${proxy.port} ERRORS 0`,
           );
         }
-        // The port changes while the threads run, for long enough that the agent reads it (once
-        // a second): every thread keeps answering, with the old port and then the new, and only
-        // those.
-        const answer = ask(r, 'storm 0 8 4000 http://proxied.test/');
+        // The port changes while the threads run, until the agent reads it (once a second): every
+        // thread keeps answering, with the old port and then the new, and only those.
+        const answer = ask(r, 'storm 0 8 15000 http://proxied.test/ change');
         await new Promise((resolve) => setTimeout(resolve, 300));
         await agent.update({ proxyPort: moved.port, seq: 2 });
         const both = [`PROXY 127.0.0.1:${proxy.port}`, `PROXY 127.0.0.1:${moved.port}`].sort().join('|');
