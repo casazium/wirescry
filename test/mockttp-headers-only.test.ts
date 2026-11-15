@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import http from 'node:http';
 import http2 from 'node:http2';
@@ -9,7 +9,20 @@ import tls from 'node:tls';
 import { createRequire } from 'node:module';
 import { generateCACertificate } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CALLBACK_MARKER, EDITS, MARKER, MARKERS, patchText, TARGET } from '../scripts/patch-mockttp.mjs';
+import {
+  CALLBACK_MARKER,
+  EDITS,
+  MARKER,
+  MARKERS,
+  patchMockttp,
+  patchText,
+  SERVER_EDITS,
+  SERVER_MARKERS,
+  SERVER_TARGET,
+  TARGET,
+  UPGRADE_HELPER,
+  UPGRADE_MARKER,
+} from '../scripts/patch-mockttp.mjs';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { ExchangeDetail } from '../src/shared/api';
 import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
@@ -26,7 +39,14 @@ describe('the Mockttp patch script', () => {
     const out = patchText(pristine);
     expect(out).toContain(MARKER);
     expect(out).toContain(CALLBACK_MARKER);
-    expect(EDITS.map((edit) => edit.name)).toEqual(['helper', 'detect', 'callback-check', 'callback']);
+    expect(EDITS.map((edit) => edit.name)).toEqual([
+      'helper',
+      'detect',
+      'callback-check',
+      'callback',
+      'upgrade-helper',
+      'upgrade-forward',
+    ]);
     for (const edit of EDITS) expect(out).toContain(edit.replace);
     expect(out).toContain('before\n');
   });
@@ -93,14 +113,19 @@ describe('the Mockttp patch script', () => {
     expect(() => patchText(twice)).toThrow(/"detect" part of the patch matches 2 places/);
   });
 
-  it('is checked again before packaging, by the same marker', () => {
+  it('is checked again before packaging, by the same markers', () => {
     const require = createRequire(import.meta.url);
-    const root = path.dirname(path.dirname(require.resolve('mockttp')));
-    const builder = readFileSync(path.join(root, '..', '..', 'electron-builder.cjs'), 'utf8');
-    expect(MARKERS).toEqual([MARKER, CALLBACK_MARKER]);
-    for (const marker of MARKERS) expect(builder).toContain(`'${marker}'`);
-    // All of them, not any: an install patched by an older script has the first one only.
-    expect(builder).toMatch(/markers\.every\(\(marker\) => mockttpText\.includes\(marker\)\)/);
+    const { MOCKTTP_PATCHED_FILES } = require('../scripts/check-mockttp-patched.cjs') as {
+      MOCKTTP_PATCHED_FILES: Record<string, string[]>;
+    };
+    expect(MARKERS).toEqual([MARKER, CALLBACK_MARKER, UPGRADE_MARKER]);
+    expect(SERVER_MARKERS).toEqual([UPGRADE_MARKER]);
+    expect(MOCKTTP_PATCHED_FILES).toEqual({ [TARGET]: MARKERS, [SERVER_TARGET]: SERVER_MARKERS });
+    const builder = readFileSync(
+      path.resolve(path.dirname(require.resolve('mockttp')), '../../../electron-builder.cjs'),
+      'utf8',
+    );
+    expect(builder).toContain("checkMockttpPatched(path.join(__dirname, 'node_modules/mockttp'));");
     const config = require('../electron-builder.cjs') as { beforePack: (context: object) => void };
     // With the installed (patched) Mockttp, this check passes (later checks may fail: no build here).
     expect(() => config.beforePack({ electronPlatformName: 'darwin', arch: 3 })).not.toThrow(
@@ -108,14 +133,50 @@ describe('the Mockttp patch script', () => {
     );
   });
 
+  it('refuses to package when either file lacks any of its markers', async () => {
+    const require = createRequire(import.meta.url);
+    const { checkMockttpPatched } = require('../scripts/check-mockttp-patched.cjs') as {
+      checkMockttpPatched: (packageDir: string) => void;
+    };
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-check-'));
+    const write = (target: string, markers: readonly string[]) => {
+      mkdirSync(path.dirname(path.join(dir, target)), { recursive: true });
+      writeFileSync(path.join(dir, target), markers.join('\n'));
+    };
+    try {
+      write(TARGET, MARKERS);
+      write(SERVER_TARGET, SERVER_MARKERS);
+      expect(() => checkMockttpPatched(dir)).not.toThrow();
+      // The server file unpatched, as before this part of the patch.
+      write(SERVER_TARGET, []);
+      expect(() => checkMockttpPatched(dir)).toThrow(/Mockttp is not patched/);
+      write(SERVER_TARGET, SERVER_MARKERS);
+      // All of them, not any: an install patched by an older script has the first ones only.
+      for (const missing of MARKERS) {
+        write(
+          TARGET,
+          MARKERS.filter((marker) => marker !== missing),
+        );
+        expect(() => checkMockttpPatched(dir)).toThrow(/Mockttp is not patched/);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("fits Mockttp's real file: undoing it gives text the script patches to the same", () => {
     const require = createRequire(import.meta.url);
     const packageDir = path.dirname(path.dirname(require.resolve('mockttp')));
-    const installed = readFileSync(path.join(packageDir, TARGET), 'utf8');
-    let original = installed;
-    for (const edit of [...EDITS].reverse()) original = original.replace(edit.replace, () => edit.find);
-    expect(original).not.toContain('Wirescry patch');
-    expect(patchText(original)).toBe(installed);
+    for (const [target, edits] of [
+      [TARGET, EDITS],
+      [SERVER_TARGET, SERVER_EDITS],
+    ] as const) {
+      const installed = readFileSync(path.join(packageDir, target), 'utf8');
+      let original = installed;
+      for (const edit of [...edits].reverse()) original = original.replace(edit.replace, () => edit.find);
+      expect(original).not.toContain('Wirescry patch');
+      expect(patchText(original, edits, target)).toBe(installed);
+    }
   });
 
   it('has been applied to the installed Mockttp', () => {
@@ -124,6 +185,123 @@ describe('the Mockttp patch script', () => {
     const packageDir = path.dirname(path.dirname(require.resolve('mockttp')));
     const installed = readFileSync(path.join(packageDir, TARGET), 'utf8');
     for (const marker of MARKERS) expect(installed).toContain(marker);
+    const server = readFileSync(path.join(packageDir, SERVER_TARGET), 'utf8');
+    for (const marker of SERVER_MARKERS) expect(server).toContain(marker);
+  });
+});
+
+describe('the Mockttp patch script, for upgrade offers', () => {
+  const pristineServer = SERVER_EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
+  const drop = new Function(`${UPGRADE_HELPER}\nreturn wirescryDropUpgradeOffer;`)() as (
+    headers: [string, string][],
+  ) => [string, string][];
+
+  it('applies its server part once, and leaves it alone after', () => {
+    const once = patchText(pristineServer, SERVER_EDITS, SERVER_TARGET);
+    expect(once).toContain(UPGRADE_MARKER);
+    expect(once).toContain('shouldUpgradeCallback');
+    expect(patchText(once, SERVER_EDITS, SERVER_TARGET)).toBe(once);
+  });
+
+  it("refuses when Mockttp's server setup has changed, naming the file", () => {
+    expect(() => patchText('nothing here\n', SERVER_EDITS, SERVER_TARGET)).toThrow(
+      /http-combo-server\.js has changed: the "upgrade-websocket-only" part of the patch matches 0 places/,
+    );
+    const tagged = patchText(pristineServer, SERVER_EDITS, SERVER_TARGET).replace(
+      SERVER_EDITS[0]!.replace,
+      `${SERVER_EDITS[0]!.tag} (an older wording)\n${SERVER_EDITS[0]!.find}`,
+    );
+    expect(() => patchText(tagged, SERVER_EDITS, SERVER_TARGET)).toThrow(/part of another version/);
+  });
+
+  it('changes neither file when one no longer fits', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-patch-'));
+    try {
+      const pristine = EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
+      for (const [target, text] of [
+        [TARGET, pristine],
+        [SERVER_TARGET, 'a different Mockttp\n'],
+      ]) {
+        mkdirSync(path.dirname(path.join(dir, target!)), { recursive: true });
+        writeFileSync(path.join(dir, target!), text!);
+      }
+      expect(() => patchMockttp(dir)).toThrow(/upgrade-websocket-only/);
+      expect(readFileSync(path.join(dir, TARGET), 'utf8')).toBe(pristine);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("takes out an h2c offer's headers, and only those, keeping the rest of Connection", () => {
+    expect(
+      drop([
+        ['Host', 'example.com'],
+        ['Connection', 'keep-alive, Upgrade, HTTP2-Settings'],
+        ['Upgrade', 'h2c'],
+        ['HTTP2-Settings', 'AAMAAABk'],
+        ['X-Other', 'kept'],
+      ]),
+    ).toEqual([
+      ['Host', 'example.com'],
+      ['Connection', 'keep-alive'],
+      ['X-Other', 'kept'],
+    ]);
+  });
+
+  it('drops Connection when the offer was all it named, in any case', () => {
+    expect(
+      drop([
+        ['connection', 'UPGRADE'],
+        ['upgrade', 'TLS/1.2'],
+      ]),
+    ).toEqual([]);
+  });
+
+  it('reads every Connection header, as one list', () => {
+    expect(
+      drop([
+        ['Connection', 'keep-alive'],
+        ['Connection', 'upgrade'],
+        ['Upgrade', 'h2c'],
+      ]),
+    ).toEqual([['Connection', 'keep-alive']]);
+  });
+
+  it("keeps HTTP2-Settings that Connection doesn't name", () => {
+    expect(
+      drop([
+        ['Connection', 'Upgrade'],
+        ['Upgrade', 'TLS/1.2'],
+        ['HTTP2-Settings', 'x'],
+      ]),
+    ).toEqual([['HTTP2-Settings', 'x']]);
+  });
+
+  it('takes the offer out of Connection: close, Upgrade, and names in any case', () => {
+    expect(
+      drop([
+        ['Connection', 'close, Upgrade, http2-settings'],
+        ['upgrade', 'h2c'],
+        ['http2-settings', 'x'],
+        ['Content-Length', 5 as unknown as string],
+      ]),
+    ).toEqual([
+      ['Connection', 'close'],
+      ['Content-Length', 5],
+    ]);
+  });
+
+  it('takes "upgrade" out of Connection even with no Upgrade header', () => {
+    expect(drop([['Connection', 'keep-alive, upgrade']])).toEqual([['Connection', 'keep-alive']]);
+  });
+
+  it('leaves a request with no offer exactly as it was', () => {
+    const headers: [string, string][] = [
+      ['Connection', 'keep-alive'],
+      ['Upgrade', 'TLS/1.2'],
+    ];
+    expect(drop(headers)).toBe(headers);
+    expect(drop([])).toEqual([]);
   });
 });
 
