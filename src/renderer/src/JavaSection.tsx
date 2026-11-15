@@ -134,8 +134,9 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
             traffic through Wirescry whenever Wirescry runs, until you detach it or it ends.
           </li>
           <li>
-            When Wirescry quits, the agent turns off within a second (about 15 on Java 8), and programs
-            started from its terminals connect directly instead of to the closed proxy.
+            When Wirescry quits, the agent turns off within a second, and programs started from its terminals
+            connect directly instead of to the closed proxy. If Wirescry stops any other way, such as a crash
+            or an update, programs on Java 8 take about 15 seconds to notice.
           </li>
         </ul>
       </details>
