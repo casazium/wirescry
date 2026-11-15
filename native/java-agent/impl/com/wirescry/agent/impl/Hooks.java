@@ -32,8 +32,9 @@ import java.util.function.Function;
  * transformer runs again and must weave again, or the hook would be lost.
  *
  * <p>Two JDK classes: the default X.509 trust manager (see Trust) and the default proxy selector
- * (see Proxies). And Apache HttpClient's DefaultRoutePlanner, 4.x and 5.x, in whichever class
- * loaders the program loads it (see Proxies.apache). An attached agent retransforms those loaded
+ * (see Proxies). And Apache HttpClient's DefaultRoutePlanner, 4.x and 5.x, and 5.x's
+ * SystemDefaultRoutePlanner, in whichever class loaders the program loads them (see
+ * Proxies.apache and Proxies.apacheSystem). An attached agent retransforms those loaded
  * before it, from the control thread ({@link #retransformLoaded}).
  */
 final class Hooks implements ClassFileTransformer {
@@ -41,6 +42,7 @@ final class Hooks implements ClassFileTransformer {
   static final String PROXY_SELECTOR = "sun/net/spi/DefaultProxySelector";
   static final String APACHE_4 = "org/apache/http/impl/conn/DefaultRoutePlanner";
   static final String APACHE_5 = "org/apache/hc/client5/http/impl/routing/DefaultRoutePlanner";
+  static final String APACHE_5_SYSTEM = "org/apache/hc/client5/http/impl/routing/SystemDefaultRoutePlanner";
 
   /** Each hook: "waiting" (class not loaded yet), "ok", "jdk-too-new" or "failed". */
   private volatile String trust = "waiting";
@@ -67,7 +69,7 @@ final class Hooks implements ClassFileTransformer {
   private boolean weaverFailed;
 
   static boolean isApache(String className) {
-    return APACHE_4.equals(className) || APACHE_5.equals(className);
+    return APACHE_4.equals(className) || APACHE_5.equals(className) || APACHE_5_SYSTEM.equals(className);
   }
 
   @Override
@@ -83,6 +85,9 @@ final class Hooks implements ClassFileTransformer {
       } else {
         woven =
             jdk ? weaver.apply(className, bytes) : programWeaver.apply(new Object[] {className, bytes, loader});
+        // 5.x's SystemDefaultRoutePlanner without the method its small hook needs: nothing to do,
+        // and nothing to report (see ProgramWeaver).
+        if (woven == null && APACHE_5_SYSTEM.equals(className)) return null;
         state = woven == null ? "failed" : "ok";
       }
     } catch (Throwable t) {

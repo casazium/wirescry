@@ -105,10 +105,37 @@ const testJar = (group, artifact, version, sha256) => ({
 });
 
 /**
- * Libraries the tests run the agent against, never shipped: Apache HttpClient 4.x and 5.x with
- * what they need at run time. Pinned like Byte Buddy; each matched Maven Central's published
- * SHA-1 when chosen.
+ * Libraries the tests run the agent against, never shipped: Apache HttpClient 4.x and 5.x across
+ * releases, Spring's RestTemplate and Spring Boot's launcher, with what they need at run time.
+ * Pinned like Byte Buddy; each matched Maven Central's published SHA-1 when chosen.
  */
+const commonsLogging = testJar(
+  'commons-logging',
+  'commons-logging',
+  '1.2',
+  'daddea1ea0be0f56978ab3006b8ac92834afeefbd9b7e4e6316fca57df0fa636',
+);
+const commonsCodec = testJar(
+  'commons-codec',
+  'commons-codec',
+  '1.11',
+  'e599d5318e97aa48f42136a2927e6dfa4e8881dff0e6c8e3109ddbbff51d7b7d',
+);
+const slf4j = testJar(
+  'org.slf4j',
+  'slf4j-api',
+  '1.7.36',
+  'd3ef575e3e4979678dc01bf1dcce51021493b4d11fb7f1be8ad982877c16a1c0',
+);
+const core5 = 'org.apache.httpcomponents.core5';
+/** HttpClient 5.x `client` with HttpCore 5.x `core`, its HTTP/2 module, and SLF4J. */
+const apache5 = (client, clientSha, core, coreSha, h2Sha) => [
+  testJar('org.apache.httpcomponents.client5', 'httpclient5', client, clientSha),
+  testJar(core5, 'httpcore5', core, coreSha),
+  testJar(core5, 'httpcore5-h2', core, h2Sha),
+  slf4j,
+];
+
 export const testJars = {
   apache4: [
     testJar(
@@ -123,18 +150,8 @@ export const testJars = {
       '4.4.16',
       '6c9b3dd142a09dc468e23ad39aad6f75a0f2b85125104469f026e52a474e464f',
     ),
-    testJar(
-      'commons-logging',
-      'commons-logging',
-      '1.2',
-      'daddea1ea0be0f56978ab3006b8ac92834afeefbd9b7e4e6316fca57df0fa636',
-    ),
-    testJar(
-      'commons-codec',
-      'commons-codec',
-      '1.11',
-      'e599d5318e97aa48f42136a2927e6dfa4e8881dff0e6c8e3109ddbbff51d7b7d',
-    ),
+    commonsLogging,
+    commonsCodec,
   ],
   // 4.x's async client, beside the 4.x jars above.
   apache4async: [
@@ -170,11 +187,116 @@ export const testJars = {
       '5.4.4',
       '9a61441889f9b222ce99581977cc549b4dfca7ac9d2841582c1e57a31fa65b48',
     ),
+    slf4j,
+  ],
+  // Older and newer releases, for the version matrix: the oldest with DefaultRoutePlanner (4.3)
+  // and httpcore's older HttpHost constructors (4.3), and 5.x across its minor releases and the
+  // 5.7 beta, whose builders no longer use DefaultRoutePlanner.
+  'apache4.3': [
     testJar(
-      'org.slf4j',
-      'slf4j-api',
-      '1.7.36',
-      'd3ef575e3e4979678dc01bf1dcce51021493b4d11fb7f1be8ad982877c16a1c0',
+      'org.apache.httpcomponents',
+      'httpclient',
+      '4.3.6',
+      '79838d9eaef73d4f852c63a480830c3a2d4b590f0ab3ae815a489463e4714004',
+    ),
+    testJar(
+      'org.apache.httpcomponents',
+      'httpcore',
+      '4.3.3',
+      '5285de80af1651c489313b91a9f40c65a4cdcb6b3bde716fcc028d16869a5a93',
+    ),
+    commonsLogging,
+    commonsCodec,
+  ],
+  'apache4.4': [
+    testJar(
+      'org.apache.httpcomponents',
+      'httpclient',
+      '4.4.1',
+      'b2958ffb74f691e108abe69af0002ccff90ba326420596b1aab5bb0f63c31ef9',
+    ),
+    testJar(
+      'org.apache.httpcomponents',
+      'httpcore',
+      '4.4.1',
+      'dd1390c17d40f760f7e51bb20523a8d63deb69e94babeaf567eb76ecd2cad422',
+    ),
+    commonsLogging,
+    commonsCodec,
+  ],
+  'apache5.0': apache5(
+    '5.0.4',
+    'bbfa79fef1473fe85cabff39ce370c986820034e146f335cc9093f70eddb8b8c',
+    '5.0.4',
+    '4e0157d6f9ae2de749f3caa221dadfd08d63117b0fc8d4b13cf9c8fd96dc3219',
+    'bfb1786db3001410dba29e82df72aa2cbfdae224bd5d76211ffe9c4b6afab315',
+  ),
+  'apache5.2': apache5(
+    '5.2.3',
+    '7cf4c7e60338aa334e8699f2423af1c93bdc3a3121f2df22378d61222fa5910c',
+    '5.2.4',
+    'a7f62496113f66f9e27c26b84c44f5ce4555c6270083cdf2d45f255336cd52af',
+    'dc1a95e73eb04db93451533d390ce02c53b301a10dc343d08c862f2934b3d30e',
+  ),
+  'apache5.4': apache5(
+    '5.4.4',
+    '3f8657eab91b7533e5cf232d4e268253c4ff9f99f1e4bcd67841618bed67f2de',
+    '5.3.4',
+    'f2b2fd7a0164e8c3120cd8437bc9fea439239e165c17262b3e907daa7e979f80',
+    '1fb4f34e4b612e7c127ad693335583587850b17ce9b1c366f9de1ca49fe2c781',
+  ),
+  'apache5.7': apache5(
+    '5.7-beta1',
+    'e3bbadbf2096e610271318dfd9f5bbdf6d07c4b68ce6ab092c285393200ec2c4',
+    '5.5-beta4',
+    '51d25499f6a8e1f1804a27414b844701fd9420c99497626971cc356c11d87964',
+    'c3d8eba8b0052106f7a5cd86b77b5749b2d629d37d9cb20dee80cffea811adee',
+  ),
+  // Spring's RestTemplate (Java 17+), beside apache5, and Spring Boot's launcher for a fat jar.
+  spring: [
+    testJar(
+      'org.springframework',
+      'spring-web',
+      '6.2.19',
+      'ca88e364ecebee61163e2260e8a20584138eca74e28a050d6a2ef6302bad2f2d',
+    ),
+    testJar(
+      'org.springframework',
+      'spring-core',
+      '6.2.19',
+      '52146689e71a911c92bac26677d73c692512a739893a57710cc233591756bff6',
+    ),
+    testJar(
+      'org.springframework',
+      'spring-beans',
+      '6.2.19',
+      '846dc8f30a639a36eb551ee99a30469be4d11bd285ca9daf164d98321571b404',
+    ),
+    testJar(
+      'org.springframework',
+      'spring-jcl',
+      '6.2.19',
+      '9994478bcea1423b8892d4eb0db942c94da0090167c3c684050c1eaef04491d0',
+    ),
+    testJar(
+      'io.micrometer',
+      'micrometer-observation',
+      '1.15.12',
+      '54483e68ed44af1bb0c36d1df2235d36f233e459d52f5a3be3e69813827a6300',
+    ),
+    testJar(
+      'io.micrometer',
+      'micrometer-commons',
+      '1.15.12',
+      '4b779cf7acb0534bb1f8e964f25200037ecb3944368f859a630fa637d6d5d7c0',
+    ),
+  ],
+  springBootLoader: [
+    testJar(
+      'org.springframework.boot',
+      'spring-boot-loader',
+      '3.5.16',
+      'b62a856794f4b05b2f44a3dda573204d7f07cd3c32923bfb970bdccd15dedc0f',
     ),
   ],
 };

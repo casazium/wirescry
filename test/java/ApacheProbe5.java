@@ -19,6 +19,7 @@ import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
 import org.apache.hc.client5.http.impl.classic.HttpClientBuilder;
 import org.apache.hc.client5.http.impl.classic.HttpClients;
 import org.apache.hc.client5.http.impl.routing.DefaultRoutePlanner;
+import org.apache.hc.client5.http.impl.routing.SystemDefaultRoutePlanner;
 import org.apache.hc.client5.http.protocol.HttpClientContext;
 import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.core5.http.HttpHost;
@@ -40,6 +41,14 @@ import org.apache.hc.core5.http.io.entity.EntityUtils;
  *   async URL           GET with HttpAsyncClients.createDefault()
  *   h2 URL              GET with the HTTP/2-only async client (H2AsyncClientBuilder)
  *   unix PATH URL       GET over the Unix domain socket at PATH (5.6+, on Java 16+)
+ *   sysunix PATH URL [sub]  the same with useSystemProperties() (SystemDefaultRoutePlanner), or
+ *                       with "sub", on a subclass of it that overrides nothing
+ *   sysproxy [HOST:]PORT URL [PATH]  GET with SystemDefaultRoutePlanner on a selector of the
+ *                       program's own, answering HOST (an address, default 127.0.0.1) at PORT;
+ *                       over the Unix domain socket at PATH if given
+ *   h2system URL        GET with the HTTP/2-only client on SystemDefaultRoutePlanner
+ *   sysover PORT URL PATH  GET over the Unix domain socket at PATH with a subclass of
+ *                       SystemDefaultRoutePlanner whose own determineProxy answers 127.0.0.1:PORT
  *   host SCHEME HOST PORT  what a plain DefaultRoutePlanner chooses for an HttpHost made by hand
  *   set NAME VALUE      sets a system property
  * </pre>
@@ -129,6 +138,69 @@ public class ApacheProbe5 {
           HttpGet get = new HttpGet(p[2]);
           get.setConfig(RequestConfig.custom().setUnixDomainSocket(java.nio.file.Paths.get(p[1])).build());
           return get(c, get);
+        }
+      case "sysunix":
+        try (CloseableHttpClient c =
+            p.length > 3
+                ? HttpClientBuilder.create()
+                    .setRoutePlanner(new SystemDefaultRoutePlanner(java.net.ProxySelector.getDefault()) {})
+                    .build()
+                : HttpClientBuilder.create().useSystemProperties().build()) {
+          HttpGet get = new HttpGet(p[2]);
+          get.setConfig(RequestConfig.custom().setUnixDomainSocket(java.nio.file.Paths.get(p[1])).build());
+          return get(c, get);
+        }
+      case "sysproxy":
+        {
+          final java.net.Proxy fixed =
+              new java.net.Proxy(
+                  java.net.Proxy.Type.HTTP,
+                  p[1].contains(":")
+                      ? new java.net.InetSocketAddress(
+                          p[1].substring(0, p[1].lastIndexOf(':')), Integer.parseInt(p[1].substring(p[1].lastIndexOf(':') + 1)))
+                      : new java.net.InetSocketAddress("127.0.0.1", Integer.parseInt(p[1])));
+          java.net.ProxySelector own =
+              new java.net.ProxySelector() {
+                public java.util.List<java.net.Proxy> select(URI uri) {
+                  return java.util.Collections.singletonList(fixed);
+                }
+
+                public void connectFailed(URI uri, java.net.SocketAddress address, java.io.IOException e) {}
+              };
+          try (CloseableHttpClient c =
+              HttpClientBuilder.create().setRoutePlanner(new SystemDefaultRoutePlanner(own)).build()) {
+            HttpGet get = new HttpGet(p[2]);
+            if (p.length > 3) {
+              get.setConfig(RequestConfig.custom().setUnixDomainSocket(java.nio.file.Paths.get(p[3])).build());
+            }
+            return get(c, get);
+          }
+        }
+      case "sysover":
+        {
+          final int port = Integer.parseInt(p[1]);
+          try (CloseableHttpClient c =
+              HttpClientBuilder.create()
+                  .setRoutePlanner(
+                      new SystemDefaultRoutePlanner(java.net.ProxySelector.getDefault()) {
+                        @Override
+                        protected HttpHost determineProxy(HttpHost target, org.apache.hc.core5.http.protocol.HttpContext context) {
+                          return new HttpHost("http", java.net.InetAddress.getLoopbackAddress(), "127.0.0.1", port);
+                        }
+                      })
+                  .build()) {
+            HttpGet get = new HttpGet(p[2]);
+            get.setConfig(RequestConfig.custom().setUnixDomainSocket(java.nio.file.Paths.get(p[3])).build());
+            return get(c, get);
+          }
+        }
+      case "h2system":
+        try (CloseableHttpAsyncClient c =
+            H2AsyncClientBuilder.create()
+                .setRoutePlanner(new SystemDefaultRoutePlanner(java.net.ProxySelector.getDefault()))
+                .build()) {
+          c.start();
+          return async(c, p[1]);
         }
       case "set":
         System.setProperty(p[1], p.length > 2 ? p[2] : "");

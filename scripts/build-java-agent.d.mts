@@ -15,13 +15,26 @@ export declare const byteBuddy: { version: string; url: string; sha256: string; 
 export declare function jdkTool(name: string): string | undefined;
 /** Byte Buddy's jar: the one in deps/ if its SHA-256 matches, else fetched and checked. */
 export declare function fetchByteBuddy(): Promise<string>;
+/** A set of test jars: a key of testJars. */
+export type TestJarSet =
+  | 'apache4'
+  | 'apache4async'
+  | 'apache5'
+  | 'apache4.3'
+  | 'apache4.4'
+  | 'apache5.0'
+  | 'apache5.2'
+  | 'apache5.4'
+  | 'apache5.7'
+  | 'spring'
+  | 'springBootLoader';
 /** Libraries the tests run the agent against (never shipped), pinned by SHA-256. */
 export declare const testJars: Record<
-  'apache4' | 'apache4async' | 'apache5',
+  TestJarSet,
   Array<{ name: string; url: string; sha256: string; file: string }>
 >;
 /** The jars of `set`, fetched and checked as needed: their paths. */
-export declare function fetchTestJars(set: 'apache4' | 'apache4async' | 'apache5'): Promise<string[]>;
+export declare function fetchTestJars(set: TestJarSet): Promise<string[]>;
 /** Builds the jars into `outDir` (default native/java-agent/build/). Returns paths and SHA-256s. */
 export declare function buildJavaAgent(
   outDir?: string,
