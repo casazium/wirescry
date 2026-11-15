@@ -257,6 +257,32 @@ describe('Java section, running programs', () => {
             agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'apache:jdk-too-new'] }),
           },
           { pid: 8, name: 'ApacheFine', agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'apache:ok'] }) },
+          {
+            pid: 9,
+            name: 'JettyBroken',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'jetty:failed'] }),
+          },
+          {
+            pid: 10,
+            name: 'JettyNew',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'jetty:jdk-too-new'] }),
+          },
+          {
+            pid: 11,
+            name: 'JettyOld',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'jetty:not-covered'] }),
+          },
+          {
+            pid: 12,
+            name: 'JettySome',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'jetty:ok', 'jetty-skipped:2'] }),
+          },
+          { pid: 13, name: 'JettyFine', agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'jetty:ok'] }) },
+          {
+            pid: 14,
+            name: 'JettyOldCert',
+            agent: agent({ hooks: ['trust:ca-mismatch', 'proxy:ok', 'jetty:not-covered'] }),
+          },
           { pid: 3, name: 'Own', agent: agent({ hooks: ['trust:ok', 'proxy:app-selector'] }) },
           { pid: 4, name: 'Cert', agent: agent({ hooks: ['trust:ca-mismatch', 'proxy:ok'] }) },
           { pid: 5, name: 'Early', agent: agent({ hooks: ['trust:waiting', 'proxy:waiting'] }) },
@@ -269,9 +295,29 @@ describe('Java section, running programs', () => {
     expect(row('ApacheNew').textContent).toContain('couldn’t set itself up');
     expect(row('ApacheNew').textContent).not.toContain('newer');
     expect(row('ApacheFine').textContent).toContain('Sending its traffic through Wirescry.');
+    expect(row('JettyBroken').textContent).toContain('couldn’t set itself up');
+    expect(row('JettyNew').textContent).toContain('couldn’t set itself up');
+    expect(row('JettyNew').textContent).not.toContain('newer');
+    expect(row('JettyOld').textContent).toContain('older than the agent covers');
+    expect(row('JettySome').textContent).toContain('Sending its traffic through Wirescry.');
+    expect(row('JettySome').textContent).toContain('Some of its Jetty clients can’t go through a proxy');
+    expect(row('JettyFine').textContent).toContain('Sending its traffic through Wirescry.');
+    expect(row('JettyFine').textContent).not.toContain('Some of its Jetty clients');
+    // A certificate problem says more than an old Jetty does.
+    expect(row('JettyOldCert').textContent).toContain('can’t use Wirescry’s certificate');
     expect(row('Own').textContent).toContain('chooses its own proxy');
     expect(row('Cert').textContent).toContain('can’t use Wirescry’s certificate');
-    for (const name of ['New', 'Broken', 'Own', 'Cert', 'ApacheBroken', 'ApacheNew']) {
+    for (const name of [
+      'New',
+      'Broken',
+      'Own',
+      'Cert',
+      'ApacheBroken',
+      'ApacheNew',
+      'JettyBroken',
+      'JettyNew',
+      'JettyOld',
+    ]) {
       expect(row(name).textContent).not.toContain('Sending its traffic');
       // Still on, so it can be turned off.
       expect(buttonIn(name)?.textContent).toBe('Detach');

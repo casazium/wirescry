@@ -27,7 +27,18 @@ export type TestJarSet =
   | 'apache5.4'
   | 'apache5.7'
   | 'spring'
-  | 'springBootLoader';
+  | 'springBootLoader'
+  | 'jetty9.4.0'
+  | 'jetty9.4.25'
+  | 'jetty9.4'
+  | 'jetty10.0.0'
+  | 'jetty10'
+  | 'jetty11.0.0'
+  | 'jetty11'
+  | 'jetty12.0.0'
+  | 'jetty12.0'
+  | 'jetty12.1.0'
+  | 'jetty12.1';
 /** Libraries the tests run the agent against (never shipped), pinned by SHA-256. */
 export declare const testJars: Record<
   TestJarSet,
