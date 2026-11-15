@@ -1029,11 +1029,18 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
           }
           // Under 1 µs on 4.x, about 2 µs on 5.x and about 6 µs on 5s on a fast machine (Java 11 to
           // 27); 5s takes about three times as long on GitHub's runners. A request costs far more.
-          // Java 8 reads the whole stack, without StackWalker. The test below checks 5s's walk.
+          // Java 8 reads the whole stack, without StackWalker: 5s there is 70 to 80 µs on GitHub's
+          // runners, 200 calls deep. The test below checks 5s's walk on Java 9 and later.
           expect(
             after - before,
             `Apache ${v === '5s' ? '5.x (system planner)' : `${v}.x`}: a route ${before} ns, with the agent ${after} ns`,
-          ).toBeLessThan(major < 9 || (v === '5s' && process.env['CI']) ? 40_000 : 15_000);
+          ).toBeLessThan(
+            v === '5s' && major < 9
+              ? 200_000
+              : major < 9 || (v === '5s' && process.env['CI'])
+                ? 40_000
+                : 15_000,
+          );
         }
       });
 
