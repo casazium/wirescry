@@ -16,14 +16,14 @@ import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import os from 'node:os';
-import { readdir, writeFile } from 'node:fs/promises';
+import { copyFile, cp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import https from 'node:https';
 import net, { type AddressInfo } from 'node:net';
 import path from 'node:path';
 import { generateCACertificate } from 'mockttp';
 import { afterAll, afterEach, describe, expect, it } from 'vitest';
-import { fetchTestJars, jdkTool } from '../scripts/build-java-agent.mjs';
+import { fetchTestJars, jdkTool, type TestJarSet } from '../scripts/build-java-agent.mjs';
 import { caSha256 } from '../src/backend/java/agent-files';
 import {
   agentFolder,
@@ -57,6 +57,23 @@ let isolated: string;
 let loaderProbe: string;
 const fakes: Record<string, string> = {};
 let retransformer: string;
+
+/**
+ * The version matrix: older and newer releases than the probes above are built for, each run
+ * with ApacheBasic4 or ApacheBasic5 (built against the oldest, 4.3 and 5.0).
+ */
+const MATRIX: Array<{ set: TestJarSet; v: 4 | 5; label: string }> = [
+  { set: 'apache4.3', v: 4, label: '4.3.6 (httpcore 4.3.3)' },
+  { set: 'apache4.4', v: 4, label: '4.4.1' },
+  { set: 'apache5.0', v: 5, label: '5.0.4' },
+  { set: 'apache5.2', v: 5, label: '5.2.3' },
+  { set: 'apache5.4', v: 5, label: '5.4.4' },
+  { set: 'apache5.7', v: 5, label: '5.7-beta1' },
+];
+const matrixClasspath: Partial<Record<TestJarSet, string>> = {};
+/** SpringProbe on a plain class path, and the same in a Spring Boot fat jar. */
+let springClasspath: string;
+let fatJar: string;
 
 async function listen<T extends net.Server>(server: T): Promise<number> {
   servers.push(server);
@@ -95,6 +112,46 @@ async function standIn(answer = 'proxied', redirects: Record<string, string> = {
   return { port: await listen(server), seen };
 }
 
+/** Runs the JDK's jar tool, throwing on failure. */
+function jarTool(args: string[], cwd?: string) {
+  const result = spawnSync(jdkTool('jar')!, args, { encoding: 'utf8', cwd });
+  if (result.status !== 0) throw new Error(result.stderr);
+}
+
+/**
+ * SpringProbe (Java 17+) on Spring's RestTemplate and HttpClient 5.6, on a class path and as a
+ * Spring Boot fat jar laid out as Spring Boot's build plugins make one: the launcher's classes at
+ * the root, the application in BOOT-INF/classes, its libraries stored whole in BOOT-INF/lib.
+ */
+async function buildSpring(sources: string) {
+  const libs = [...(await fetchTestJars('spring')), ...(await fetchTestJars('apache5'))];
+  const classes = path.join(shared.work, 'spring-probe');
+  compileJava(17, classes, [path.join(sources, 'SpringProbe.java')], libs.join(path.delimiter));
+  springClasspath = [classes, ...libs].join(path.delimiter);
+  const root = path.join(shared.work, 'fat-jar');
+  await rm(root, { recursive: true, force: true });
+  await mkdir(path.join(root, 'BOOT-INF', 'lib'), { recursive: true });
+  const [loader] = await fetchTestJars('springBootLoader');
+  jarTool(['xf', loader!], root);
+  await rm(path.join(root, 'META-INF', 'MANIFEST.MF'), { force: true });
+  await cp(classes, path.join(root, 'BOOT-INF', 'classes'), { recursive: true });
+  for (const lib of libs) await copyFile(lib, path.join(root, 'BOOT-INF', 'lib', path.basename(lib)));
+  const manifest = path.join(shared.work, 'fat-jar.mf');
+  await writeFile(
+    manifest,
+    [
+      'Main-Class: org.springframework.boot.loader.launch.JarLauncher',
+      'Start-Class: SpringProbe',
+      'Spring-Boot-Classes: BOOT-INF/classes/',
+      'Spring-Boot-Lib: BOOT-INF/lib/',
+      '',
+    ].join('\n'),
+  );
+  fatJar = path.join(shared.work, 'spring-probe-fat.jar');
+  // Stored, not compressed: Spring Boot reads the jars inside in place.
+  jarTool(['--create', '--file', fatJar, '--manifest', manifest, '--no-compress', '-C', root, '.']);
+}
+
 setUpJavaAgentTests(async () => {
   const { key, cert } = await generateCACertificate({ subject: { commonName: 'Test proxy CA' } });
   const file = path.join(shared.work, 'apache-ca.pem');
@@ -119,12 +176,25 @@ setUpJavaAgentTests(async () => {
     compileJava(8, out, [path.join(sources, `ApacheProbe${v}.java`)], jars.join(path.delimiter));
     classpath[v] = [out, ...jars].join(path.delimiter);
   }
+  for (const v of [4, 5] as const) {
+    const out = path.join(shared.work, `apache${v}-basic`);
+    compileJava(
+      8,
+      out,
+      [path.join(sources, `ApacheBasic${v}.java`)],
+      (await fetchTestJars(v === 4 ? 'apache4.3' : 'apache5.0')).join(path.delimiter),
+    );
+    for (const m of MATRIX.filter((m) => m.v === v)) {
+      matrixClasspath[m.set] = [out, ...(await fetchTestJars(m.set))].join(path.delimiter);
+    }
+  }
+  if (javas.some((java) => majorOf(java) >= 17)) await buildSpring(sources);
   isolated = path.join(shared.work, 'isolated');
   compileJava(8, isolated, [path.join(sources, 'Isolated.java')]);
   loaderProbe = path.join(shared.work, 'loader-probe');
   compileJava(8, loaderProbe, [path.join(sources, 'LoaderProbe.java')]);
   // Stand-in Apache classes (test/java/fake-apache/README.md).
-  for (const kind of ['no-method', 'bad-host']) {
+  for (const kind of ['no-method', 'bad-host', 'shaded', 'system-no-method', 'system-bad-host']) {
     const dir = path.join(sources, 'fake-apache', kind);
     const files = (await readdir(dir, { recursive: true }))
       .filter((f) => f.endsWith('.java'))
@@ -427,6 +497,140 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
             },
           );
 
+          it.skipIf(major < 16 || process.platform === 'win32')(
+            'leaves a Unix domain socket alone on the system planner too, and only takes out its own proxy',
+            async () => {
+              const socketPath = path.join(os.tmpdir(), `wsx-${randomBytes(4).toString('hex')}.sock`);
+              const unix = http.createServer((req, res) => res.end(`socket ${req.url}`));
+              await new Promise<void>((resolve) => unix.listen(socketPath, resolve));
+              servers.push(unix);
+              const proxy = await standIn();
+              const other = await standIn('other');
+              const agent = await on(proxy);
+              const r = await probe(java, v, [`-javaagent:${agent.stub}`]);
+              expect(await ask(r, 'set http.nonProxyHosts')).toBe('set');
+              // The JDK's selector answers Wirescry's proxy; for the socket, it's taken back out.
+              expect(await ask(r, `sysunix ${socketPath} http://docker.example/v1/info`)).toBe(
+                'OK socket /v1/info',
+              );
+              // On a subclass of it that overrides nothing too.
+              expect(await ask(r, `sysunix ${socketPath} http://docker.example/v1/sub sub`)).toBe(
+                'OK socket /v1/sub',
+              );
+              // Over TCP, the same planner still goes through Wirescry.
+              expect(await ask(r, 'system http://proxied.test/tcp')).toBe(
+                'OK proxied http://proxied.test/tcp',
+              );
+              // A proxy the program's own selector chose stands, socket or not, as without the agent.
+              expect(await ask(r, `sysproxy ${other.port} http://proxied.test/own`)).toBe(
+                'OK other http://proxied.test/own',
+              );
+              const refused = await ask(
+                r,
+                `sysproxy ${other.port} http://docker.example/v1/info ${socketPath}`,
+              );
+              expect(refused).toMatch(/Proxies are not supported over Unix domain sockets/);
+              const plain = await probe(java, v);
+              expect(
+                await ask(plain, `sysproxy ${other.port} http://docker.example/v1/info ${socketPath}`),
+              ).toBe(refused);
+              expect(proxy.seen).toEqual(['GET http://proxied.test/tcp']);
+              expect(other.seen).toEqual(['GET http://proxied.test/own']);
+              await expect
+                .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 15_000 })
+                .toMatchObject({ hooks: expect.arrayContaining(['apache:ok']) });
+            },
+          );
+
+          it.skipIf(major < 16 || process.platform === 'win32')(
+            'takes out only Wirescry’s own proxy, and only while on, on the system planner',
+            async () => {
+              const socketPath = path.join(os.tmpdir(), `wsx-${randomBytes(4).toString('hex')}.sock`);
+              const unix = http.createServer((req, res) => res.end(`socket ${req.url}`));
+              await new Promise<void>((resolve) => unix.listen(socketPath, resolve));
+              servers.push(unix);
+              const proxy = await standIn();
+              const agent = await on(proxy);
+              const r = await probe(java, v, [`-javaagent:${agent.stub}`]);
+              const refused = /Proxies are not supported over Unix domain sockets/;
+              const url = 'http://docker.example/v1/info';
+              // The program's own selector answering Wirescry's port at another address (a
+              // documentation address, never reached: HttpClient refuses first): its own, it stands.
+              expect(await ask(r, `sysproxy 192.0.2.1:${proxy.port} ${url} ${socketPath}`)).toMatch(refused);
+              // Wirescry's address and port, from the program's own selector, while the agent is
+              // on: indistinguishable from the JDK hook's answer, so taken out.
+              expect(await ask(r, `sysproxy ${proxy.port} ${url} ${socketPath}`)).toBe('OK socket /v1/info');
+              // While the agent is off, nothing is changed.
+              await agent.update({ enabled: false, seq: 2 });
+              expect(await askUntil(r, 'route http://proxied.test/', 'DIRECT')).toBe('DIRECT');
+              expect(await ask(r, `sysproxy ${proxy.port} ${url} ${socketPath}`)).toMatch(refused);
+              // Nor while it's detached.
+              await agent.update({ enabled: true, seq: 3 });
+              expect(await askUntil(r, 'route http://proxied.test/', `PROXY 127.0.0.1:${proxy.port}`)).toBe(
+                `PROXY 127.0.0.1:${proxy.port}`,
+              );
+              const id = (await statusOf(agent.dir, r.child.pid))!.id;
+              await agent.update({ detached: [id], seq: 4 });
+              expect(await askUntil(r, 'route http://proxied.test/', 'DIRECT')).toBe('DIRECT');
+              expect(await ask(r, `sysproxy ${proxy.port} ${url} ${socketPath}`)).toMatch(refused);
+              // A subclass with a determineProxy of its own answering Wirescry's address and port:
+              // the program's, and it stands, on or off.
+              await agent.update({ detached: [], seq: 5 });
+              expect(await askUntil(r, 'route http://proxied.test/', `PROXY 127.0.0.1:${proxy.port}`)).toBe(
+                `PROXY 127.0.0.1:${proxy.port}`,
+              );
+              expect(await ask(r, `sysover ${proxy.port} ${url} ${socketPath}`)).toMatch(refused);
+              expect(proxy.seen).toEqual([]);
+            },
+          );
+
+          it.skipIf(major < 16 || process.platform === 'win32')(
+            'takes its proxy back out on the system planner after an attach, and in a class loader of the program’s own',
+            async () => {
+              const socketPath = path.join(os.tmpdir(), `wsx-${randomBytes(4).toString('hex')}.sock`);
+              const unix = http.createServer((req, res) => res.end(`socket ${req.url}`));
+              await new Promise<void>((resolve) => unix.listen(socketPath, resolve));
+              servers.push(unix);
+              const proxy = await standIn();
+              const agent = await on(proxy, { startup: false });
+              for (const isolate of [false, true]) {
+                const r = await probe(java, v, [], isolate);
+                expect(await ask(r, 'set http.nonProxyHosts')).toBe('set');
+                // The planner loaded, and a request made, before the agent arrives.
+                expect(await ask(r, `sysunix ${socketPath} http://docker.example/before`)).toBe(
+                  'OK socket /before',
+                );
+                expectAttached(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
+                expect(
+                  await askUntil(r, 'system http://proxied.test/s', 'OK proxied http://proxied.test/s'),
+                  `isolated: ${isolate}`,
+                ).toBe('OK proxied http://proxied.test/s');
+                expect(
+                  await ask(r, `sysunix ${socketPath} http://docker.example/after`),
+                  `isolated: ${isolate}`,
+                ).toBe('OK socket /after');
+              }
+              expect(proxy.seen).toEqual(['GET http://proxied.test/s', 'GET http://proxied.test/s']);
+            },
+          );
+
+          it('leaves the HTTP/2-only client alone on the system planner too', async () => {
+            const proxy = await standIn();
+            const agent = await on(proxy);
+            const r = await probe(java, v, [`-javaagent:${agent.stub}`]);
+            const plain = await probe(java, v);
+            for (const run of [r, plain]) expect(await ask(run, 'set http.nonProxyHosts')).toBe('set');
+            for (const url of ['http://proxied.test/h2', 'https://proxied.test/h2s']) {
+              const withAgent = await ask(r, `h2system ${url}`);
+              expect(withAgent, url).toMatch(UNKNOWN_HOST);
+              expect(withAgent, url).toBe(await ask(plain, `h2system ${url}`));
+            }
+            expect(proxy.seen).toEqual([]);
+            expect(await ask(r, 'system http://proxied.test/after')).toBe(
+              'OK proxied http://proxied.test/after',
+            );
+          });
+
           it('leaves the HTTP/2-only client alone: it can’t go through a proxy', async () => {
             const proxy = await standIn();
             const agent = await on(proxy);
@@ -448,6 +652,183 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
         }
       });
     }
+
+    for (const m of MATRIX) {
+      describe(`Apache ${m.label} on Java ${major}`, () => {
+        const on = async (proxy: StandIn, change = {}) =>
+          agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+        async function basic(jvm: string[] = []): Promise<Run> {
+          const r = run(java, [...VERIFY, ...jvm, '-cp', matrixClasspath[m.set]!, `ApacheBasic${m.v}`], {
+            stdin: true,
+          });
+          await expect.poll(r.stdout, { timeout: 20_000 }).toContain('ready');
+          // macOS sets http.nonProxyHosts in every JVM; the 5.7 builders use the JDK's selector.
+          expect(await ask(r, 'set http.nonProxyHosts')).toBe('set');
+          return r;
+        }
+
+        it('sends a default client’s http and https through Wirescry’s proxy, and says so', async () => {
+          const proxy = await standIn();
+          const agent = await on(proxy);
+          const r = await basic([`-javaagent:${agent.stub}`]);
+          expect(await ask(r, 'route http://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
+          expect(await ask(r, 'route https://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
+          expect(await ask(r, 'get http://proxied.test/m')).toBe('OK proxied http://proxied.test/m');
+          expect(await ask(r, 'get https://proxied.test/t')).toBe('OK tunneled');
+          expect(await ask(r, 'system http://proxied.test/s')).toBe('OK proxied http://proxied.test/s');
+          const seen = ['GET http://proxied.test/m', 'CONNECT proxied.test:443', 'GET http://proxied.test/s'];
+          if (m.v === 5) {
+            expect(await ask(r, 'async http://proxied.test/a')).toBe('OK proxied http://proxied.test/a');
+            expect(await ask(r, 'async https://proxied.test/at')).toBe('OK tunneled');
+            seen.push('GET http://proxied.test/a', 'CONNECT proxied.test:443');
+          }
+          expect(proxy.seen).toEqual(seen);
+          await expect
+            .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 15_000 })
+            .toMatchObject({ enabled: true, hooks: expect.arrayContaining(['apache:ok']) });
+        });
+
+        it('changes nothing without the agent, and leaves this computer and exclusions alone with it', async () => {
+          const proxy = await standIn();
+          const plain = await basic();
+          expect(await ask(plain, 'route http://proxied.test/')).toBe('DIRECT');
+          expect(await ask(plain, 'get http://proxied.test/')).toMatch(UNKNOWN_HOST);
+          const agent = await on(proxy);
+          const r = await basic([`-javaagent:${agent.stub}`]);
+          expect(await ask(r, 'set http.nonProxyHosts *.skip.test')).toBe('set');
+          for (const url of [
+            'http://localhost/',
+            'http://127.0.0.1:8080/',
+            'http://[::1]/',
+            'http://a.skip.test/',
+          ]) {
+            expect(await ask(r, `route ${url}`), url).toBe('DIRECT');
+          }
+          expect(await ask(r, 'get http://a.skip.test/')).toMatch(UNKNOWN_HOST);
+          expect(proxy.seen).toEqual([]);
+        });
+
+        it('keeps a request’s own proxy', async () => {
+          const proxy = await standIn();
+          const other = await standIn('other');
+          const agent = await on(proxy);
+          const r = await basic([`-javaagent:${agent.stub}`]);
+          expect(await ask(r, `own ${other.port} http://proxied.test/own`)).toBe(
+            'OK other http://proxied.test/own',
+          );
+          expect(proxy.seen).toEqual([]);
+          expect(other.seen).toEqual(['GET http://proxied.test/own']);
+        });
+
+        it('goes direct while the agent is off', async () => {
+          const proxy = await standIn();
+          const agent = await on(proxy);
+          const r = await basic([`-javaagent:${agent.stub}`]);
+          expect(await ask(r, 'route http://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
+          await agent.update({ enabled: false, seq: 2 });
+          expect(await askUntil(r, 'route http://proxied.test/', 'DIRECT')).toBe('DIRECT');
+          expect(await ask(r, 'get http://proxied.test/off')).toMatch(UNKNOWN_HOST);
+          expect(proxy.seen).toEqual([]);
+        });
+
+        if (m.v === 5) {
+          it.skipIf(m.set !== 'apache5.7' || major < 16 || process.platform === 'win32')(
+            'leaves a request over a Unix domain socket alone',
+            async () => {
+              const socketPath = path.join(os.tmpdir(), `wsx-${randomBytes(4).toString('hex')}.sock`);
+              const unix = http.createServer((req, res) => res.end(`socket ${req.url}`));
+              await new Promise<void>((resolve) => unix.listen(socketPath, resolve));
+              servers.push(unix);
+              const proxy = await standIn();
+              const agent = await on(proxy);
+              const r = await basic([`-javaagent:${agent.stub}`]);
+              expect(await ask(r, `unix ${socketPath} http://docker.example/v1/info`)).toBe(
+                'OK socket /v1/info',
+              );
+              expect(proxy.seen).toEqual([]);
+            },
+          );
+
+          it('leaves the HTTP/2-only client alone', async () => {
+            const proxy = await standIn();
+            const agent = await on(proxy);
+            const r = await basic([`-javaagent:${agent.stub}`]);
+            const plain = await basic();
+            for (const url of ['http://proxied.test/h2', 'https://proxied.test/h2s']) {
+              const withAgent = await ask(r, `h2 ${url}`);
+              expect(withAgent, url).toMatch(UNKNOWN_HOST);
+              expect(withAgent, url).toBe(await ask(plain, `h2 ${url}`));
+            }
+            expect(proxy.seen).toEqual([]);
+          });
+        }
+      });
+    }
+
+    describe.skipIf(major < 17)(`Spring’s RestTemplate on Apache 5.x, on Java ${major}`, () => {
+      const on = async (proxy: StandIn, change = {}) =>
+        agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+      /** SpringProbe on its class path, or from the fat jar. */
+      async function spring(fat: boolean, jvm: string[] = []): Promise<Run> {
+        const where = fat ? ['-jar', fatJar] : ['-cp', springClasspath, 'SpringProbe'];
+        const r = run(java, [...VERIFY, ...jvm, ...where], { stdin: true });
+        await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+        expect(await ask(r, 'set http.nonProxyHosts')).toBe('set');
+        return r;
+      }
+
+      for (const fat of [false, true]) {
+        const how = fat ? 'in a Spring Boot fat jar' : 'on a class path';
+        it(`sends RestTemplate’s requests through Wirescry’s proxy, ${how}`, async () => {
+          const proxy = await standIn();
+          const agent = await on(proxy);
+          const r = await spring(fat, [`-javaagent:${agent.stub}`]);
+          // Where Apache's classes came from: Spring Boot's own loader in the fat jar.
+          expect(await ask(r, 'loader')).toBe(
+            fat
+              ? 'org.springframework.boot.loader.launch.LaunchedClassLoader'
+              : 'jdk.internal.loader.ClassLoaders$AppClassLoader',
+          );
+          // As Spring makes it (the JDK's selector), and on a default client (DefaultRoutePlanner).
+          expect(await ask(r, 'rest http://proxied.test/r')).toBe('OK proxied http://proxied.test/r');
+          expect(await ask(r, 'rest https://proxied.test/rs')).toBe('OK tunneled');
+          expect(await ask(r, 'default http://proxied.test/d')).toBe('OK proxied http://proxied.test/d');
+          expect(await ask(r, 'default https://proxied.test/ds')).toBe('OK tunneled');
+          // This computer, direct, by each hook's rules: nothing listens on port 1.
+          expect(await ask(r, 'rest http://localhost:1/')).toMatch(/^FAIL .*Connect/);
+          expect(await ask(r, 'default http://localhost:1/')).toMatch(/^FAIL .*Connect/);
+          expect(proxy.seen).toEqual([
+            'GET http://proxied.test/r',
+            'CONNECT proxied.test:443',
+            'GET http://proxied.test/d',
+            'CONNECT proxied.test:443',
+          ]);
+          await expect
+            .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 15_000 })
+            .toMatchObject({ enabled: true, hooks: expect.arrayContaining(['apache:ok']) });
+        });
+
+        it(`reaches RestTemplate when attached later, ${how}`, async () => {
+          const proxy = await standIn();
+          const agent = await on(proxy, { startup: false });
+          const r = await spring(fat);
+          expect(await ask(r, 'default http://proxied.test/before')).toMatch(UNKNOWN_HOST);
+          expectAttached(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
+          expect(
+            await askUntil(r, 'default http://proxied.test/after', 'OK proxied http://proxied.test/after'),
+          ).toBe('OK proxied http://proxied.test/after');
+          expect(await ask(r, 'rest http://proxied.test/r')).toBe('OK proxied http://proxied.test/r');
+        });
+      }
+
+      it('changes nothing without the agent, in a Spring Boot fat jar', async () => {
+        const proxy = await standIn();
+        const r = await spring(true);
+        expect(await ask(r, 'rest http://proxied.test/')).toMatch(UNKNOWN_HOST);
+        expect(await ask(r, 'default http://proxied.test/')).toMatch(UNKNOWN_HOST);
+        expect(proxy.seen).toEqual([]);
+      });
+    });
 
     describe(`Apache in class loaders of the program’s own, on Java ${major}`, () => {
       const on = async (proxy: StandIn, change = {}) =>
@@ -582,6 +963,124 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
         expect(await ask(r, 'load 5')).toBe('loaded 1');
         expect(await ask(r, 'route 1 http://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
         expect(await ask(r, 'route 0 http://proxied.test/')).toBe('DIRECT');
+        await expect
+          .poll(async () => (await statusOf(agent.dir, r.child.pid))?.hooks, { timeout: 15_000 })
+          .toContain('apache:ok');
+      });
+
+      it('answers the same from many threads at once, through a port change', async () => {
+        const proxy = await standIn();
+        const moved = await standIn('moved');
+        const agent = await on(proxy);
+        const r = await loaderProbeRun([`-javaagent:${agent.stub}`]);
+        expect(await ask(r, 'load 5')).toBe('loaded 0');
+        expect(await ask(r, 'load 4')).toBe('loaded 1');
+        for (const n of [0, 1]) {
+          expect(await ask(r, `storm ${n} 16 300 http://proxied.test/`), `loader ${n}`).toBe(
+            `ANSWERS PROXY 127.0.0.1:${proxy.port} ERRORS 0`,
+          );
+        }
+        // The port changes while the threads run, for long enough that the agent reads it (once
+        // a second): every thread keeps answering, with the old port and then the new, and only
+        // those.
+        const answer = ask(r, 'storm 0 8 4000 http://proxied.test/');
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await agent.update({ proxyPort: moved.port, seq: 2 });
+        const both = [`PROXY 127.0.0.1:${proxy.port}`, `PROXY 127.0.0.1:${moved.port}`].sort().join('|');
+        expect(await answer).toBe(`ANSWERS ${both} ERRORS 0`);
+        // And then only the new, from every thread.
+        expect(await ask(r, 'storm 0 16 300 http://proxied.test/')).toBe(
+          `ANSWERS PROXY 127.0.0.1:${moved.port} ERRORS 0`,
+        );
+      });
+
+      it('adds little to each request', async () => {
+        const proxy = await standIn();
+        const agent = await on(proxy);
+        const plain = await loaderProbeRun();
+        const r = await loaderProbeRun([`-javaagent:${agent.stub}`]);
+        // 5s: 5.x's SystemDefaultRoutePlanner, which the JDK hook answers and its own small hook
+        // checks, for https (the most it does) 200 calls down the stack.
+        for (const v of ['5', '4', '5s'] as const) {
+          const n = { '5': 0, '4': 1, '5s': 2 }[v];
+          expect(await ask(plain, `load ${v}`)).toBe(`loaded ${n}`);
+          expect(await ask(r, `load ${v}`)).toBe(`loaded ${n}`);
+          expect(await ask(r, `route ${n} http://proxied.test/`)).toBe(`PROXY 127.0.0.1:${proxy.port}`);
+          const ns = async (run: Run) =>
+            Number(
+              (
+                await ask(
+                  run,
+                  v === '5s'
+                    ? `bench ${n} 20000 https://proxied.test/ 200`
+                    : `bench ${n} 20000 http://proxied.test/`,
+                )
+              ).split(' ')[1],
+            );
+          // The best of several rounds each, in turn, so one busy moment on the machine doesn't count.
+          let before = Infinity;
+          let after = Infinity;
+          for (let round = 0; round < 5; round++) {
+            before = Math.min(before, await ns(plain));
+            after = Math.min(after, await ns(r));
+          }
+          // Under 1 µs on 4.x, about 2 µs on 5.x and about 6 µs on 5s where measured (Java 11 to
+          // 27); a request costs far more. Java 8 reads the whole stack, without StackWalker.
+          expect(
+            after - before,
+            `Apache ${v === '5s' ? '5.x (system planner)' : `${v}.x`}: a route ${before} ns, with the agent ${after} ns`,
+          ).toBeLessThan(major < 9 ? 40_000 : 15_000);
+        }
+      });
+
+      it('leaves a renamed (shaded) copy of Apache alone, and says nothing of it', async () => {
+        const proxy = await standIn();
+        const agent = await on(proxy);
+        const r = await loaderProbeRun([`-javaagent:${agent.stub}`]);
+        expect(await ask(r, `shaded ${fakes['shaded']}`)).toBe('loaded 0');
+        expect(await ask(r, 'route 0 http://proxied.test/')).toBe('DIRECT');
+        await expect.poll(() => statusOf(agent.dir, r.child.pid), { timeout: 15_000 }).toBeDefined();
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        expect(
+          (await statusOf(agent.dir, r.child.pid))!.hooks.filter((h) => h.startsWith('apache:')),
+        ).toEqual([]);
+        // The real one beside it is still reached.
+        expect(await ask(r, 'load 5')).toBe('loaded 1');
+        expect(await ask(r, 'route 1 http://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
+        expect(await ask(r, 'route 0 http://proxied.test/')).toBe('DIRECT');
+      });
+
+      it('reports nothing for a system planner it has nothing to hook in', async () => {
+        const proxy = await standIn();
+        const agent = await on(proxy);
+        const r = await loaderProbeRun([`-javaagent:${agent.stub}`]);
+        expect(await ask(r, `fakesys ${fakes['system-no-method']}`)).toBe('loaded 0');
+        await expect.poll(() => statusOf(agent.dir, r.child.pid), { timeout: 15_000 }).toBeDefined();
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        expect(
+          (await statusOf(agent.dir, r.child.pid))!.hooks.filter((h) => h.startsWith('apache:')),
+        ).toEqual([]);
+        // A real one after it: only "ok".
+        expect(await ask(r, 'load 5')).toBe('loaded 1');
+        expect(await ask(r, 'route 1 http://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
+        await expect
+          .poll(
+            async () =>
+              (await statusOf(agent.dir, r.child.pid))?.hooks.filter((h) => h.startsWith('apache:')),
+            {
+              timeout: 15_000,
+            },
+          )
+          .toEqual(['apache:ok']);
+      });
+
+      it('keeps the system planner’s own answer when its hook throws', async () => {
+        const proxy = await standIn();
+        const agent = await on(proxy);
+        const r = await loaderProbeRun([`-javaagent:${agent.stub}`]);
+        // Wirescry's address and port, as an HttpHost the hook can't read: the answer stands.
+        expect(await ask(r, `fakesys ${fakes['system-bad-host']}`)).toBe('loaded 0');
+        expect(await ask(r, `route 0 http://p${proxy.port}/`)).toBe(`PROXY 127.0.0.1:${proxy.port}`);
         await expect
           .poll(async () => (await statusOf(agent.dir, r.child.pid))?.hooks, { timeout: 15_000 })
           .toContain('apache:ok');

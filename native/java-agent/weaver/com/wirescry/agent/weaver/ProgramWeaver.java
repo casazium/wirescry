@@ -17,15 +17,19 @@ import net.bytebuddy.pool.TypePool;
 /**
  * Weaves classes of the program's own, in whatever class loader the program loaded them, as Weaver
  * does the JDK's: Apache HttpClient's DefaultRoutePlanner, 4.x and 5.x, its determineProxy (see
- * ApacheAdvice). The class loader is given too, to read the Apache classes it names.
+ * ApacheAdvice), and 5.x's SystemDefaultRoutePlanner, its determineProxy (see
+ * ApacheSystemAdvice). The class loader is given too, to read the Apache classes it names.
  */
 public final class ProgramWeaver implements Function<Object[], byte[]> {
   public static final String APACHE_4 = "org/apache/http/impl/conn/DefaultRoutePlanner";
   public static final String APACHE_5 = "org/apache/hc/client5/http/impl/routing/DefaultRoutePlanner";
+  public static final String APACHE_5_SYSTEM = "org/apache/hc/client5/http/impl/routing/SystemDefaultRoutePlanner";
 
   /**
    * Weaves a class of the program's: `{internal name, bytes, class loader}`, the loader null for
-   * the boot loader. Returns null for a class it doesn't change.
+   * the boot loader. Returns null for a class it doesn't change, including a SystemDefaultRoutePlanner
+   * without the determineProxy it hooks (nothing is broken without that hook: see
+   * ApacheSystemAdvice). A DefaultRoutePlanner without one throws: Apache's main hook is lost.
    */
   @Override
   public byte[] apply(Object[] request) {
@@ -34,8 +38,9 @@ public final class ProgramWeaver implements Function<Object[], byte[]> {
     ClassLoader loader = (ClassLoader) request[2];
     String host;
     if (APACHE_4.equals(internalName)) host = "org.apache.http.HttpHost";
-    else if (APACHE_5.equals(internalName)) host = "org.apache.hc.core5.http.HttpHost";
+    else if (APACHE_5.equals(internalName) || APACHE_5_SYSTEM.equals(internalName)) host = "org.apache.hc.core5.http.HttpHost";
     else return null;
+    Class<?> advice = APACHE_5_SYSTEM.equals(internalName) ? ApacheSystemAdvice.class : ApacheAdvice.class;
     String name = internalName.replace('/', '.');
     ClassFileLocator target = ClassFileLocator.Simple.of(name, bytes);
     ClassFileLocator mine = ClassFileLocator.ForClassLoader.of(Weaver.class.getClassLoader());
@@ -51,15 +56,17 @@ public final class ProgramWeaver implements Function<Object[], byte[]> {
             .and(ElementMatchers.not(ElementMatchers.isStatic()))
             .and(ElementMatchers.returns(ElementMatchers.named(host)))
             .and(ElementMatchers.takesArgument(0, ElementMatchers.named(host)));
-    // Each version has one; a later one could add an overload that calls it, which the advice
-    // leaves alone (it acts only on an answer of null).
+    // Each version has one; a later one could add an overload that calls it, which ApacheAdvice
+    // leaves alone (it acts only on an answer of null), and ApacheSystemAdvice too (it changes
+    // only Wirescry's own proxy, to null).
     if (type.getDeclaredMethods().filter(determineProxy).isEmpty()) {
+      if (advice == ApacheSystemAdvice.class) return null;
       throw new IllegalStateException(name + " has no determineProxy to hook");
     }
     return new ByteBuddy()
         .with(Implementation.Context.Disabled.Factory.INSTANCE)
         .redefine(type, target)
-        .visit(Weaver.advice(pool, mine, ApacheAdvice.class).on(determineProxy))
+        .visit(Weaver.advice(pool, mine, advice).on(determineProxy))
         .make(pool)
         .getBytes();
   }

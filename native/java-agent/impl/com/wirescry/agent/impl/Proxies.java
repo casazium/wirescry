@@ -147,6 +147,8 @@ public final class Proxies {
 
   static final String APACHE_5 = Hooks.APACHE_5.replace('/', '.');
 
+  static final String APACHE_5_SYSTEM = Hooks.APACHE_5_SYSTEM.replace('/', '.');
+
   /**
    * Wirescry's proxy as the HttpHost Apache HttpClient's DefaultRoutePlanner.determineProxy
    * returns, instead of its null (connect directly), or null to keep that. Called by the code the
@@ -180,10 +182,49 @@ public final class Proxies {
       // A bare IPv6 address, as Apache keeps it: bracketed, as a URI names it.
       if (host.indexOf(':') >= 0 && !host.startsWith("[")) host = "[" + host + "]";
       if (thisComputer(host) || excluded(System.getProperty("http.nonProxyHosts"), host)) return null;
-      if (!v4 && (overUnixSocket(type, context) || fromH2OnlyClient())) return null;
+      if (!v4 && (overUnixSocket(type, context) || ("https".equalsIgnoreCase(scheme) && fromH2OnlyClient()))) return null;
       return apacheHost(hostType, v4, control.proxyPort);
     } catch (Throwable t) {
       return null;
+    }
+  }
+
+  /**
+   * Whether Apache HttpClient 5.x's SystemDefaultRoutePlanner should answer direct instead of
+   * `answer`, the HttpHost it made from the JDK's proxy selector for `target`. Called by the code
+   * the weaver puts at the end of its determineProxy (com.wirescry.agent.weaver.ApacheSystemAdvice),
+   * only when the answer is a proxy.
+   *
+   * <p>The agent's JDK hook gives that planner Wirescry's proxy, as it gives any program asking
+   * the selector. But a request over a Unix domain socket (5.6 and later), or an https request
+   * from 5.x's HTTP/2-only client, can't go through a proxy: HttpClient refuses it, or the HTTPS
+   * fails (the HTTP/2-only client's plain http ignores a proxy anyway). So for those, and only
+   * when the answer is Wirescry's own proxy (a loopback address at its port) while the agent is
+   * on, this says direct, as it would be without the agent. A proxy the program's own selector
+   * chose stands, as does any answer while the agent is off or detached. A subclass that calls
+   * this planner's determineProxy gets the same. Where a 5.6+ request's settings can't be read,
+   * it's taken as over a socket (see overUnixSocket): such a request goes direct, unseen by
+   * Wirescry, rather than fail.
+   */
+  public static Boolean apacheSystem(Object planner, Object target, Object answer, Object context) {
+    try {
+      if (planner == null || target == null || answer == null || !Agent.isOn()) return Boolean.FALSE;
+      Control control = Agent.settings();
+      if (control == null || !control.enabled) return Boolean.FALSE;
+      Class<?> hostType = answer.getClass();
+      if (((Integer) hostType.getMethod("getPort").invoke(answer)).intValue() != control.proxyPort) return Boolean.FALSE;
+      InetAddress address = (InetAddress) hostType.getMethod("getAddress").invoke(answer);
+      boolean loopback =
+          address != null ? address.isLoopbackAddress() : "127.0.0.1".equals(hostType.getMethod("getHostName").invoke(answer));
+      if (!loopback) return Boolean.FALSE;
+      // The planner's own class, for the class loader its RequestConfig comes from: it or a superclass.
+      Class<?> type = planner.getClass();
+      while (!APACHE_5_SYSTEM.equals(type.getName())) type = type.getSuperclass();
+      if (overUnixSocket(type, context)) return Boolean.TRUE;
+      String scheme = (String) target.getClass().getMethod("getSchemeName").invoke(target);
+      return Boolean.valueOf("https".equalsIgnoreCase(scheme) && fromH2OnlyClient());
+    } catch (Throwable t) {
+      return Boolean.FALSE;
     }
   }
 
@@ -233,12 +274,19 @@ public final class Proxies {
   static final String H2_ONLY_CLIENT = "org.apache.hc.client5.http.impl.async.InternalH2AsyncClient";
 
   /**
+   * How far up the stack the HTTP/2-only client is looked for. It asks the planner directly: its
+   * frame is 7 to 9 up from here in 5.0 to 5.7 on Java 11 to 27, the agent's own and reflection's
+   * frames included. A deep stack would cost a few microseconds a request to walk whole.
+   */
+  static final int H2_DEPTH = 32;
+
+  /**
    * Whether 5.x's HTTP/2-only async client (H2AsyncClientBuilder) is asking. It uses this planner
    * too, but can't go through a proxy: its https requests would fail ("HTTP/2 tunneling not
-   * supported") where they'd work without the agent. Its plain http ignores a proxy anyway. Read
-   * from the caller's stack, only when the answer would otherwise be Wirescry's proxy: with Java
-   * 9's StackWalker where there is one (it stops at the first match, and reads no line numbers),
-   * else the whole stack.
+   * supported") where they'd work without the agent. Its plain http ignores a proxy anyway, so
+   * this is asked only for https, and only when the answer would otherwise be Wirescry's proxy.
+   * Read from the caller's stack: with Java 9's StackWalker where there is one, the nearest
+   * {@link #H2_DEPTH} frames only (it reads no line numbers); else the whole stack.
    */
   static boolean fromH2OnlyClient() {
     Boolean walked = H2Walker.walk();
@@ -284,7 +332,7 @@ public final class Proxies {
                 new java.util.function.Function<java.util.stream.Stream<?>, Boolean>() {
                   @Override
                   public Boolean apply(java.util.stream.Stream<?> frames) {
-                    return frames.anyMatch(
+                    return frames.limit(H2_DEPTH).anyMatch(
                         new java.util.function.Predicate<Object>() {
                           @Override
                           public boolean test(Object frame) {

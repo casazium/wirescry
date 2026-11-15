@@ -118,7 +118,8 @@ export function JavaSection({ status, connected = true, send, CopyButton }: Prop
           <li>
             Apache HttpClient goes through Wirescry unless the program chose a proxy of its own. A connection
             limit the program set for one host doesn&apos;t apply while its requests go through Wirescry; the
-            client&apos;s default limit per host does.
+            client&apos;s default limit per host does. A library that bundles its own renamed copy of Apache
+            HttpClient may not be reached.
           </li>
           <li>
             Attaching runs a short Java program from a JDK on this computer (17 or later; 11 on Windows),
