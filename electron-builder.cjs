@@ -18,6 +18,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Arch } = require('electron-builder');
 const { JAVA_AGENT_JARS, checkJavaAgent } = require('./scripts/check-java-agent.cjs');
+const { checkMockttpPatched } = require('./scripts/check-mockttp-patched.cjs');
 
 const env = process.env;
 
@@ -49,18 +50,7 @@ const javaAgent = { from: 'native/java-agent/build', to: 'java-agent', filter: J
  * @param {import('electron-builder').BeforePackContext} context
  */
 function checkBuild(context) {
-  // Mockttp is patched after install (scripts/patch-mockttp.mjs); an install with
-  // --ignore-scripts would skip that silently.
-  const mockttpFile = path.join(__dirname, 'node_modules/mockttp/dist/rules/requests/request-step-impls.js');
-  // Every part's marker (MARKERS in scripts/patch-mockttp.mjs).
-  const mockttpText = fs.readFileSync(mockttpFile, 'utf8');
-  const markers = [
-    'Wirescry patch: headers-only HTTP/2 responses',
-    'Wirescry patch: headers-only HTTP/2 callback replies',
-  ];
-  if (!markers.every((marker) => mockttpText.includes(marker))) {
-    throw new Error('Mockttp is not patched. Run `node scripts/patch-mockttp.mjs` (npm install runs it).');
-  }
+  checkMockttpPatched(path.join(__dirname, 'node_modules/mockttp'));
   const out = path.join(__dirname, 'out');
   const notices = path.join(out, 'licenses/THIRD_PARTY_NOTICES.txt');
   const built = path.join(out, 'main/backend.js');
