@@ -119,9 +119,21 @@ describe('A client that closes its side after its request', () => {
       expect(answer.closed).toBe(true);
       expect(answer.text).not.toContain('plain answer');
       // Recorded a moment later on a slow runner (Windows CI was over a second).
-      await expect
-        .poll(() => exchangesIn(api.messages).find((e) => e.url === url)?.failure?.code, { timeout: 10_000 })
-        .toBe('CLIENT_CLOSED');
+      try {
+        await expect
+          .poll(() => exchangesIn(api.messages).find((e) => e.url === url)?.failure?.code, {
+            timeout: 10_000,
+          })
+          .toBe('CLIENT_CLOSED');
+      } catch (error) {
+        // Say what was recorded instead: this has failed only on Windows CI, where it can't be watched.
+        const seen = exchangesIn(api.messages).map((e) => ({
+          url: e.url,
+          failure: e.failure,
+          status: e.status,
+        }));
+        throw new Error(`no CLIENT_CLOSED for ${url}; recorded: ${JSON.stringify(seen)}`, { cause: error });
+      }
     } finally {
       api.close();
       await slow.stop();
