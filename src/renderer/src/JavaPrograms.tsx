@@ -21,11 +21,19 @@ function onText(agent: Agent): string {
   const trust = hook(agent, 'trust');
   const proxy = hook(agent, 'proxy');
   const apache = hook(agent, 'apache');
-  // Apache's classes are old bytecode: a weave it can't read isn't about the program's Java.
+  const jetty = hook(agent, 'jetty');
+  // Apache's and Jetty's classes are old bytecode: a weave it can't read isn't about the program's Java.
   if (trust === 'jdk-too-new' || proxy === 'jdk-too-new') {
     return 'This program’s Java is newer than Wirescry’s agent supports: its traffic may not reach Wirescry.';
   }
-  if (trust === 'failed' || proxy === 'failed' || apache === 'failed' || apache === 'jdk-too-new') {
+  if (
+    trust === 'failed' ||
+    proxy === 'failed' ||
+    apache === 'failed' ||
+    apache === 'jdk-too-new' ||
+    jetty === 'failed' ||
+    jetty === 'jdk-too-new'
+  ) {
     return 'The agent couldn’t set itself up in this program: its traffic may not reach Wirescry.';
   }
   if (proxy === 'app-selector') {
@@ -34,8 +42,16 @@ function onText(agent: Agent): string {
   if (trust && trust !== 'ok' && trust !== 'waiting') {
     return 'The agent can’t use Wirescry’s certificate yet, so this program may refuse its HTTPS.';
   }
+  if (jetty === 'not-covered') {
+    return 'This program’s Jetty is older than the agent covers: its Jetty requests may not reach Wirescry.';
+  }
   if (!agent.current) return 'Updating to Wirescry’s current settings…';
-  return `Sending its traffic through Wirescry${agent.route === 'startup' ? ' (started with the agent)' : ''}.`;
+  const sending = `Sending its traffic through Wirescry${agent.route === 'startup' ? ' (started with the agent)' : ''}.`;
+  // Clients whose transport can't use a proxy (HTTP/2 only, PROXY protocol, a Unix socket): left alone.
+  if (hook(agent, 'jetty-skipped')) {
+    return `${sending} Some of its Jetty clients can’t go through a proxy, and connect directly.`;
+  }
+  return sending;
 }
 
 /** What a program's agent is doing, in words. */

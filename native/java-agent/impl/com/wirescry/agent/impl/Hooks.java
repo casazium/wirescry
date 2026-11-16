@@ -32,10 +32,10 @@ import java.util.function.Function;
  * transformer runs again and must weave again, or the hook would be lost.
  *
  * <p>Two JDK classes: the default X.509 trust manager (see Trust) and the default proxy selector
- * (see Proxies). And Apache HttpClient's DefaultRoutePlanner, 4.x and 5.x, and 5.x's
- * SystemDefaultRoutePlanner, in whichever class loaders the program loads them (see
- * Proxies.apache and Proxies.apacheSystem). An attached agent retransforms those loaded
- * before it, from the control thread ({@link #retransformLoaded}).
+ * (see Proxies). And, in whichever class loaders the program loads them: Apache HttpClient's
+ * DefaultRoutePlanner, 4.x and 5.x, and 5.x's SystemDefaultRoutePlanner (see Proxies.apache and
+ * Proxies.apacheSystem); and Jetty's HttpClient and ProxyConfiguration (see Jetty). An attached
+ * agent retransforms those loaded before it, from the control thread ({@link #retransformLoaded}).
  */
 final class Hooks implements ClassFileTransformer {
   static final String TRUST_MANAGER = "sun/security/ssl/X509TrustManagerImpl";
@@ -43,8 +43,10 @@ final class Hooks implements ClassFileTransformer {
   static final String APACHE_4 = "org/apache/http/impl/conn/DefaultRoutePlanner";
   static final String APACHE_5 = "org/apache/hc/client5/http/impl/routing/DefaultRoutePlanner";
   static final String APACHE_5_SYSTEM = "org/apache/hc/client5/http/impl/routing/SystemDefaultRoutePlanner";
+  static final String JETTY_CLIENT = "org/eclipse/jetty/client/HttpClient";
+  static final String JETTY_PROXY_CONFIGURATION = "org/eclipse/jetty/client/ProxyConfiguration";
 
-  /** Each hook: "waiting" (class not loaded yet), "ok", "jdk-too-new" or "failed". */
+  /** Each JDK hook: "waiting" (class not loaded yet), "ok", "jdk-too-new" or "failed". */
   private volatile String trust = "waiting";
 
   private volatile String proxy = "waiting";
@@ -57,12 +59,30 @@ final class Hooks implements ClassFileTransformer {
   private volatile String apache;
 
   /**
-   * Each Apache planner this transformer wove, by class loader (weakly: a loader the program
-   * drops is freed) and name: its woven bytes. A planner woven as it loaded isn't woven again at
-   * the first poll; and when a later retransform (another agent's) can't weave it again, say
-   * because its loader no longer serves the Apache classes the weave reads, these keep the hook.
+   * Jetty's two classes, as `apache`: null until the program loads one, then "ok" once one is
+   * woven (the Origin hook tags nothing until the other is in: see jettyMatchInstalled), "failed",
+   * "jdk-too-new", or "not-covered" for 9.4 before 9.4.25. A failure or "not-covered" stays,
+   * whichever comes first.
    */
-  private final Map<ClassLoader, Map<String, byte[]>> apacheBytes = new WeakHashMap<ClassLoader, Map<String, byte[]>>();
+  private volatile String jetty;
+
+  /**
+   * Each class of the program's this transformer wove, by class loader (weakly: a loader the
+   * program drops is freed) and name: its woven bytes. A class woven as it loaded isn't woven again
+   * at the first poll; and when a later retransform (another agent's) can't weave it again, say
+   * because its loader no longer serves the classes the weave reads, these keep the hook.
+   */
+  private final Map<ClassLoader, Map<String, byte[]>> programBytes = new WeakHashMap<ClassLoader, Map<String, byte[]>>();
+
+  /**
+   * The class loaders whose Jetty ProxyConfiguration has its hook installed, weakly. Jetty's
+   * Origin hook tags a request for Wirescry only once this hook is in, or the destination it makes
+   * would be tagged but direct, and stay so for the client's life (see Jetty.origin). Marked when
+   * the class is woven as it loads (the hook's caller then holds the class, so its woven bytes are
+   * the ones the JVM installed), or after retransformClasses returns for it; never merely because
+   * this transformer made the bytes.
+   */
+  private static final Map<ClassLoader, Boolean> jettyMatchInstalled = new WeakHashMap<ClassLoader, Boolean>();
 
   private BiFunction<String, byte[], byte[]> weaver;
   private Function<Object[], byte[]> programWeaver;
@@ -72,11 +92,33 @@ final class Hooks implements ClassFileTransformer {
     return APACHE_4.equals(className) || APACHE_5.equals(className) || APACHE_5_SYSTEM.equals(className);
   }
 
+  static boolean isJetty(String className) {
+    return JETTY_CLIENT.equals(className) || JETTY_PROXY_CONFIGURATION.equals(className);
+  }
+
+  /** A class of the program's that ProgramWeaver changes. */
+  static boolean isProgram(String className) {
+    return isApache(className) || isJetty(className);
+  }
+
+  /** Whether `configuration`, a Jetty ProxyConfiguration class, has its hook installed. */
+  static boolean jettyMatchInstalled(Class<?> configuration) {
+    synchronized (jettyMatchInstalled) {
+      return jettyMatchInstalled.containsKey(configuration.getClassLoader());
+    }
+  }
+
+  private static void markJettyMatchInstalled(ClassLoader loader) {
+    synchronized (jettyMatchInstalled) {
+      jettyMatchInstalled.put(loader, Boolean.TRUE);
+    }
+  }
+
   @Override
   public byte[] transform(
       ClassLoader loader, String className, Class<?> redefined, ProtectionDomain domain, byte[] bytes) {
     boolean jdk = loader == null && (TRUST_MANAGER.equals(className) || PROXY_SELECTOR.equals(className));
-    if (!jdk && !isApache(className)) return null;
+    if (!jdk && !isProgram(className)) return null;
     String state;
     byte[] woven = null;
     try {
@@ -93,47 +135,60 @@ final class Hooks implements ClassFileTransformer {
     } catch (Throwable t) {
       // Byte Buddy refuses class files newer than it knows.
       String message = String.valueOf(t.getMessage());
-      state = message.contains("not supported") || message.contains("Unsupported class file") ? "jdk-too-new" : "failed";
+      // ProgramWeaver.NOT_COVERED: a release the hooks don't cover.
+      if (message.startsWith("not-covered: ")) state = "not-covered";
+      else state = message.contains("not supported") || message.contains("Unsupported class file") ? "jdk-too-new" : "failed";
     }
     if (TRUST_MANAGER.equals(className)) trust = state;
     else if (PROXY_SELECTOR.equals(className)) proxy = state;
-    else woven = apacheWoven(loader, className, woven, state);
+    else {
+      woven = programWoven(loader, className, woven, state);
+      // As it loads: the class that comes of these bytes is the one the hook's caller will hold.
+      if (woven != null && redefined == null && JETTY_PROXY_CONFIGURATION.equals(className)) {
+        markJettyMatchInstalled(loader);
+      }
+    }
     return woven;
   }
 
   /**
-   * Records an Apache planner woven (`bytes`), or not. When not, but it was before (a
+   * Records a class of the program's woven (`bytes`), or not. When not, but it was before (a
    * retransform), the bytes from before stand and so does its "ok". Returns the bytes to use.
    */
-  private synchronized byte[] apacheWoven(ClassLoader loader, String className, byte[] bytes, String state) {
-    Map<String, byte[]> byName = apacheBytes.get(loader);
+  private synchronized byte[] programWoven(ClassLoader loader, String className, byte[] bytes, String state) {
+    Map<String, byte[]> byName = programBytes.get(loader);
     if (bytes != null) {
-      if (byName == null) apacheBytes.put(loader, byName = new HashMap<String, byte[]>(2));
+      if (byName == null) programBytes.put(loader, byName = new HashMap<String, byte[]>(2));
       byName.put(className, bytes);
-      apache(state);
+      library(className, state);
       return bytes;
     }
     byte[] before = byName == null ? null : byName.get(className);
     if (before != null) return before;
-    apache(state);
+    library(className, state);
     return null;
   }
 
-  /** Whether this transformer already wove the Apache planner `c`. */
-  private synchronized boolean apacheWoven(Class<?> c) {
-    Map<String, byte[]> byName = apacheBytes.get(c.getClassLoader());
+  /** Whether this transformer already wove the program's class `c`. */
+  private synchronized boolean programWoven(Class<?> c) {
+    Map<String, byte[]> byName = programBytes.get(c.getClassLoader());
     return byName != null && byName.containsKey(c.getName().replace('.', '/'));
   }
 
-  /** One more Apache planner woven, or not: one that failed stays reported. */
-  private synchronized void apache(String state) {
-    if (apache == null || "ok".equals(apache)) apache = state;
+  /** One more of a library's classes woven, or not: one that failed stays reported. */
+  private synchronized void library(String className, String state) {
+    if (isJetty(className)) {
+      if (jetty == null || "ok".equals(jetty)) jetty = state;
+    } else if (apache == null || "ok".equals(apache)) {
+      apache = state;
+    }
   }
 
   /**
    * Changes the hooked classes that were loaded before the agent: for an attach, those the program
-   * loaded; at startup, those an agent named before this one loaded. Apache's planners this agent
-   * already wove are left as they are.
+   * loaded; at startup, those an agent named before this one loaded. Classes of the program's this
+   * agent already wove are left as they are. Jetty's ProxyConfiguration goes before its HttpClient,
+   * so no request is tagged for a proxy the other hook can't yet give (see jettyMatchInstalled).
    */
   void retransformLoaded(Instrumentation inst) {
     List<Class<?>> loaded = new ArrayList<Class<?>>();
@@ -143,27 +198,32 @@ final class Hooks implements ClassFileTransformer {
         boolean isTrust = c.getClassLoader() == null && TRUST_MANAGER.equals(name) && "waiting".equals(trust);
         boolean isProxy = c.getClassLoader() == null && PROXY_SELECTOR.equals(name) && "waiting".equals(proxy);
         // Not again if woven as it loaded: nothing to gain, and a weave can fail later.
-        boolean isApache = isApache(name) && !apacheWoven(c);
-        if (!isTrust && !isProxy && !isApache) continue;
-        if (inst.isModifiableClass(c)) loaded.add(c);
+        // Jetty's ProxyConfiguration: again unless its hook is known to be in. Another agent's
+        // retransform may have woven it before this runs, without telling whether the JVM took it.
+        boolean program =
+            isProgram(name)
+                && (JETTY_PROXY_CONFIGURATION.equals(name) ? !jettyMatchInstalled(c) : !programWoven(c));
+        if (!isTrust && !isProxy && !program) continue;
+        if (inst.isModifiableClass(c)) loaded.add(JETTY_PROXY_CONFIGURATION.equals(name) ? 0 : loaded.size(), c);
         else if (isTrust) trust = "failed";
         else if (isProxy) proxy = "failed";
-        else apache("failed");
+        else library(name, "failed");
       }
       // One at a time, so one that fails leaves the others.
       for (Class<?> c : loaded) {
+        String name = c.getName().replace('.', '/');
         try {
           inst.retransformClasses(c);
+          if (JETTY_PROXY_CONFIGURATION.equals(name) && programWoven(c)) markJettyMatchInstalled(c.getClassLoader());
         } catch (Throwable t) {
-          String name = c.getName().replace('.', '/');
           if (TRUST_MANAGER.equals(name)) trust = "failed";
           else if (PROXY_SELECTOR.equals(name)) proxy = "failed";
-          else apache("failed");
+          else library(name, "failed");
         }
       }
     } catch (Throwable t) {
       // Which classes were loaded can't be known: the JDK hooks still waiting can't be done
-      // now, and say so. Apache planners not woven yet can't be named, so `apache` stays as it is.
+      // now, and say so. Library classes not woven yet can't be named, so their states stay.
       if ("waiting".equals(trust)) trust = "failed";
       if ("waiting".equals(proxy)) proxy = "failed";
     }
@@ -180,6 +240,13 @@ final class Hooks implements ClassFileTransformer {
    *       the hook doesn't reach.
    *   <li>Once the program loads Apache HttpClient: `apache:ok`, `apache:failed` or
    *       `apache:jdk-too-new`.
+   *   <li>Once the program loads Jetty's HttpClient: `jetty:ok`, `jetty:failed` (also when a
+   *       hook ran but Jetty's classes weren't the shape it needs), `jetty:jdk-too-new`, or
+   *       `jetty:not-covered` for a release older than the hooks cover (9.4 before 9.4.25). And
+   *       `jetty-skipped:N` when N of the program's Jetty clients, since it started, were left
+   *       alone whole (see Jetty.client): a transport that can't go through Wirescry's proxy, PROXY
+   *       protocol, or a connector for a Unix socket. Requests left alone one by one (h2c first for
+   *       plain http, or a Unix socket or QUIC chosen per request in 12) aren't counted.
    * </ul>
    */
   String report(Control control) {
@@ -191,7 +258,11 @@ final class Hooks implements ClassFileTransformer {
     String p = proxy;
     if ("ok".equals(p) && !jdkSelector()) p = "app-selector";
     String a = apache;
-    return "trust:" + t + ",proxy:" + p + (a == null ? "" : ",apache:" + a);
+    String j = jetty;
+    if ("ok".equals(j) && Jetty.broken) j = "failed";
+    int skipped = Jetty.skipped();
+    return "trust:" + t + ",proxy:" + p + (a == null ? "" : ",apache:" + a) + (j == null ? "" : ",jetty:" + j)
+        + (j == null || skipped == 0 ? "" : ",jetty-skipped:" + skipped);
   }
 
   /** Whether the program's default proxy selector is still the JDK's. */

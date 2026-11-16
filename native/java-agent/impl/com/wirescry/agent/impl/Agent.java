@@ -179,6 +179,16 @@ public final class Agent {
       // an attach, those the program loaded; at startup, those an agent named before this one
       // loaded in its own premain (a monitoring agent sending its first report, say).
       retransformed = true;
+      // For tests only: a pause first, so a test can act in the window before it (as another
+      // agent's retransform might).
+      try {
+        long pause = Long.getLong("wirescry.agent.test.retransformDelayMs", 0L).longValue();
+        if (pause > 0) Thread.sleep(Math.min(pause, 60_000L));
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } catch (Throwable ignored) {
+        // A property refused (a SecurityManager): no pause.
+      }
       hooks.retransformLoaded(inst);
     }
     if (!first) writeStatusIfDue();

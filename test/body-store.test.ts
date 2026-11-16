@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { HybridBodyStore, MAX_BODY_RANGE } from '../src/backend/body-store';
+import { type BodyWriter, HybridBodyStore, MAX_BODY_RANGE } from '../src/backend/body-store';
 
 async function readAll(stream: Readable | undefined): Promise<string | undefined> {
   if (!stream) return undefined;
@@ -119,16 +119,13 @@ describe('reading part of a body, while it arrives or after', () => {
   let root: string;
   let store: HybridBodyStore;
   const text = (bytes: Uint8Array | undefined) => (bytes ? Buffer.from(bytes).toString() : undefined);
-  /** Waits until the body's file holds `size` bytes. */
-  const untilFlushed = async (id: string, size: number): Promise<void> => {
-    await expect
-      .poll(async () => {
-        const files = (await readdir(path.join(root, 'bodies'))).filter((f) =>
-          f.startsWith(`${id}.response.`),
-        );
-        return files.length === 1 ? (await stat(path.join(root, 'bodies', files[0]!))).size : -1;
-      })
-      .toBe(size);
+  /**
+   * Waits until the writer counts `size` bytes as flushed, so a read goes to the file (and waits).
+   * The file's own size isn't enough: in the moment between the file growing and the writer
+   * hearing of it, a read takes the bytes from memory and finishes before the next line runs.
+   */
+  const untilFlushed = async (writer: BodyWriter, size: number): Promise<void> => {
+    await expect.poll(() => (writer as unknown as { flushed: number }).flushed).toBe(size);
   };
 
   beforeEach(async () => {
@@ -242,7 +239,7 @@ describe('reading part of a body, while it arrives or after', () => {
     const writer = store.open('mid', 'response');
     writer.write(Buffer.from('a body long enough for the disk'));
     // Until it has all reached the file, so the read below goes to the file.
-    await untilFlushed('mid', 31);
+    await untilFlushed(writer, 31);
     const reading = store.readRange('mid', 'response', 0, 100);
     const deleting = store.delete('mid');
     expect(await reading).toBeUndefined();
@@ -252,7 +249,7 @@ describe('reading part of a body, while it arrives or after', () => {
   it('returns nothing for a body replaced while it was being read, then the new one', async () => {
     const first = store.open('swap', 'response');
     first.write(Buffer.from('the first body, on disk'));
-    await untilFlushed('swap', 23);
+    await untilFlushed(first, 23);
     const before = await store.readRange('swap', 'response', 0, 3);
     const reading = store.readRange('swap', 'response', 0, 100);
     const second = store.open('swap', 'response');

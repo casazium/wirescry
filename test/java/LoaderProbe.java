@@ -142,8 +142,10 @@ public class LoaderProbe {
                     } catch (InterruptedException e) {
                       return;
                     }
+                    // At least once each, so threads that start after the deadline (a slow machine
+                    // starting many) still answer.
                     int n = 0;
-                    while (System.nanoTime() - until < 0 && !(change && answers.size() > 1)) {
+                    do {
                       try {
                         answers.add(router.route());
                       } catch (Throwable e) {
@@ -156,7 +158,7 @@ public class LoaderProbe {
                           return;
                         }
                       }
-                    }
+                    } while (System.nanoTime() - until < 0 && !(change && answers.size() > 1));
                   }
                 };
             thread.start();
