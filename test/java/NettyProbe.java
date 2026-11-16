@@ -69,7 +69,7 @@ import reactor.netty.transport.TransportConfig;
  * proxy by name); `socks:PORT` (a SOCKS proxy of its own); `nopool` (no connection pool);
  * `sysrunon` and `sysresolver` (the same, with its own event loops, or its own resolver);
  * `address` (a remote address that's not a host and port); `insecure` (trusts any certificate);
- * `trust:FILE:PASS` (trusts only that PKCS12 store); `pinned` (a pinned certificate, by Netty's own
+ * `trust:PASS:FILE` (trusts only that PKCS12 store); `pinned` (a pinned certificate, by Netty's own
  * trust manager); `opensslclient` (Netty's OpenSSL engine).
  */
 public final class NettyProbe {
@@ -332,7 +332,8 @@ public final class NettyProbe {
 
   static HttpClient client(String kind, ConnectionProvider provider) throws Exception {
     HttpClient c = provider == null ? HttpClient.create() : HttpClient.create(provider);
-    String[] k = kind.split(":");
+    // At most three parts: the last may be a path, and a Windows path has a colon (C:\...).
+    String[] k = kind.split(":", 3);
     switch (k[0]) {
       case "default":
         return c;
@@ -414,8 +415,9 @@ public final class NettyProbe {
       case "trust":
         {
           KeyStore store = KeyStore.getInstance("PKCS12");
-          try (FileInputStream in = new FileInputStream(k[1])) {
-            store.load(in, k[2].toCharArray());
+          // trust:PASS:FILE
+          try (FileInputStream in = new FileInputStream(k[2])) {
+            store.load(in, k[1].toCharArray());
           }
           TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
           tmf.init(store);

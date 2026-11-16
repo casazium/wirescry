@@ -154,7 +154,7 @@ setUpJavaAgentTests(async () => {
   const other = await generateCACertificate({ subject: { commonName: 'Another CA' } });
   const otherPem = path.join(shared.work, 'other-ca.pem');
   await writeFile(otherPem, other.cert);
-  // No space or colon in its path: the probe's commands are split at spaces, kinds at colons.
+  // No space in its path: the probe's commands are split at spaces (a kind's path goes last).
   otherTrust = path.join(os.tmpdir(), `wsx-trust-${randomBytes(4).toString('hex')}.p12`);
   const keytool = spawnSync(
     jdkTool('keytool')!,
@@ -582,8 +582,8 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
           expect(await ask(r, 'get insecure https://wrong.test/')).toBe('OK tunneled');
           // A program's own trust store (another CA alone): the JDK's trust manager still, so
           // Wirescry's CA is trusted too, for the host it names.
-          expect(await ask(r, `get trust:${otherTrust}:changeit https://proxied.test/`)).toBe('OK tunneled');
-          expect(await ask(r, `get trust:${otherTrust}:changeit https://wrong.test/`)).toMatch(HANDSHAKE);
+          expect(await ask(r, `get trust:changeit:${otherTrust} https://proxied.test/`)).toBe('OK tunneled');
+          expect(await ask(r, `get trust:changeit:${otherTrust} https://wrong.test/`)).toMatch(HANDSHAKE);
           // A program that pins a certificate with a trust manager of its own: Wirescry's refused.
           expect(await ask(r, 'get pinned https://proxied.test/')).toMatch(HANDSHAKE);
         });
