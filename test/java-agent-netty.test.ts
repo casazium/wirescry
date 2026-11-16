@@ -233,11 +233,6 @@ const VERIFY = ['-XX:+UnlockDiagnosticVMOptions', '-XX:+BytecodeVerificationLoca
  */
 const UNKNOWN_HOST =
   /^FAIL ([\w.$]*UnknownHostException: |java\.lang\.IllegalStateException: Timeout on blocking read)/;
-/**
- * Direct to a host no one can look up, by a path where Reactor Netty itself didn't: the program's
- * proxy excluding the host leaves the address unresolved (Reactor Netty's own behavior).
- */
-const UNRESOLVED = /^FAIL [\w.$]*(UnknownHostException|UnresolvedAddressException)/;
 const HANDSHAKE = /^FAIL javax\.net\.ssl\.SSLHandshakeException: /;
 
 /** A NettyProbe for `set`, ready for commands, on `classpath` if given. */
@@ -390,10 +385,14 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
           const proxy = await standIn();
           const other = await standIn();
           const agent = await on(proxy);
+          const local = http.createServer((req, res) => res.end(`local ${req.url}`));
+          const localPort = await listen(local);
           const r = await probe(java, set, [`-javaagent:${agent.stub}`]);
           // Hosts of their own: Reactor Netty's pool takes the two proxies for the same, and a pool
-          // keeps the settings of the client that made it.
-          expect(await ask(r, `get ownskip:${other.port} http://proxied.test/skip`)).toMatch(UNRESOLVED);
+          // keeps the settings of the client that made it. The excluded host goes direct, reached.
+          expect(await ask(r, `get ownskip:${other.port} http://127.0.0.1:${localPort}/skip`)).toBe(
+            'OK local /skip',
+          );
           expect(await ask(r, `route own:${other.port} http://elsewhere.test/`)).toBe(via(other));
           expect(await ask(r, `get own:${other.port} http://elsewhere.test/own`)).toBe(
             'OK plain elsewhere.test/own',

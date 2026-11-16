@@ -62,7 +62,7 @@ import reactor.netty.transport.TransportConfig;
  *
  * Kinds: `default`; `h2` (H2 and HTTP/1.1), `h2only`, `h2c`, `h11h2c` and `h3` (HTTP/3, where the
  * release has it); `own:PORT` (the program's proxy at 127.0.0.1:PORT) and `ownskip:PORT` (the same,
- * excluding `proxied.test`); `sysprops` (proxyWithSystemProperties, made when first used); `resolver`
+ * excluding 127.0.0.1); `sysprops` (proxyWithSystemProperties, made when first used); `resolver`
  * (an AddressResolverGroup of its own, sending every host to 127.0.0.1) and `nameres` (a
  * customized DNS resolver); `runon` (its own event loops, which fills in the default resolver);
  * `hostsfile` (a hosts-file resolver of its own, 1.0.48 on); `ownhost:HOST:PORT` (the program's
@@ -355,7 +355,9 @@ public final class NettyProbe {
           return c.proxy(
               spec -> {
                 ProxyProvider.Builder b = spec.type(ProxyProvider.Proxy.HTTP).host("127.0.0.1").port(port);
-                if (skip) b.nonProxyHosts("proxied\\.test");
+                // An address, not a name: Reactor Netty looks an excluded name up on the caller's
+                // thread, which a runner's DNS can hold for longer than a test waits.
+                if (skip) b.nonProxyHosts("127\\.0\\.0\\.1");
               });
         }
       case "sysprops":
