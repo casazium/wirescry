@@ -82,7 +82,11 @@ jobs:
         with:
           path: native/java-agent/deps
           key: byte-buddy-${{ hashFiles('scripts/build-java-agent.mjs') }}
-      - run: npm test
+      # Apache's, Jetty's and Reactor Netty's agent tests run in java-agent.yml, on every Java and
+      # each on a runner of its own; here they'd only repeat one Java and push the job past its limit.
+      - run: >-
+          npm test -- --exclude test/java-agent-apache.test.ts --exclude test/java-agent-jetty.test.ts
+          --exclude test/java-agent-netty.test.ts
         env:
           # The Docker relay against the runner's real Docker, over named pipes (Windows only).
           WIRESCRY_WINDOWS_DOCKER_E2E: ${{ matrix.os == 'windows-latest' && '1' || '' }}

@@ -31,12 +31,15 @@ concurrency:
 
 jobs:
   versions:
-    name: Java versions (${{ matrix.os }}, attacher JDK ${{ matrix.attacher }})
+    name: Java versions (${{ matrix.os }}, attacher JDK ${{ matrix.attacher }}, ${{ matrix.suite }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         attacher: ${{ fromJSON(github.event_name == 'pull_request' && '["21"]' || '["17","21","25"]') }}
+        # Each library's tests on a runner of their own: together, on every Java, they overloaded
+        # macOS's 3-core runner (probes too slow to answer). `core` is every other agent test.
+        suite: [core, apache, jetty, netty]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -88,7 +91,11 @@ jobs:
           echo "JAVA_HOME=$build" >> "$GITHUB_ENV"
           echo "WIRESCRY_JAVA_TARGETS=$targets" >> "$GITHUB_ENV"
           echo "WIRESCRY_JAVA_ATTACHER=$attach_home/bin/$exe" >> "$GITHUB_ENV"
-      # Every test/java-agent*.test.ts file (vitest matches the path's start), so a new one can't be left out.
-      - run: npx vitest run test/java-agent
+      # Every test/java-agent*.test.ts file (vitest matches the path's start), across the suites:
+      # a new one lands in `core`, so it can't be left out.
+      - run: >-
+          npx vitest run ${{ matrix.suite == 'core'
+          && 'test/java-agent --exclude test/java-agent-apache.test.ts --exclude test/java-agent-jetty.test.ts --exclude test/java-agent-netty.test.ts'
+          || format('test/java-agent-{0}.test.ts', matrix.suite) }}
         env:
           WIRESCRY_REQUIRE_JAVA: '1'
