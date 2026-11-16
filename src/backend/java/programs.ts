@@ -86,10 +86,10 @@ export class StatusReader {
     let names: string[];
     try {
       names = await readdir(folder);
-    } catch (error) {
-      // No folder yet: no agents. Unreadable: nothing is known, so nothing is taken as gone.
-      const missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
-      return { live: [], running: [], present: missing ? new Set() : undefined };
+    } catch {
+      // No folder (none yet, or deleted while a detached program runs) or an unreadable one: no
+      // agents to show, and nothing known, so nothing is taken as gone (a detached agent stays off).
+      return { live: [], running: [], present: undefined };
     }
     const now = this.now();
     const live: AgentStatus[] = [];

@@ -375,7 +375,8 @@ describe('the status files', () => {
   it('knows nothing of a folder it can’t read, and no agents in one that isn’t there', async () => {
     await setUp();
     await rm(path.join(dir, 'status'), { recursive: true });
-    expect(await reader().read()).toEqual({ live: [], running: [], present: new Set() });
+    // Nothing known: a detached agent's id stays, though its file is gone with the folder.
+    expect(await reader().read()).toEqual({ live: [], running: [], present: undefined });
     if (posix && process.getuid?.() !== 0) {
       await mkdir(path.join(dir, 'status'));
       await write({ pid: 100, id: 'a1', beat: 1 });
@@ -631,15 +632,18 @@ describe('attaching, from Setup', () => {
     };
     const changed = vi.fn();
     const started = { count: 0 };
+    // As the backend: running once Wirescry's start or an attach started it.
+    let up = options.running !== false;
     const manager = new JavaAttach({
       dir,
       attachJar: '/res/wirescry-attach.jar',
       version: '1.0.0',
       host: async () => {
         started.count++;
+        up = true;
         return host;
       },
-      running: () => (options.running === false ? undefined : host),
+      running: () => (up ? host : undefined),
       warningOk: () => warningOk,
       saveWarningOk: async () => {
         warningOk = true;
@@ -675,6 +679,10 @@ describe('attaching, from Setup', () => {
       dir,
       finds,
       started,
+      /** The host starts on its own, as Wirescry's start does it after the list first read. */
+      startHost: () => {
+        up = true;
+      },
     };
   }
 
@@ -708,6 +716,27 @@ describe('attaching, from Setup', () => {
     t.manager.stop();
   });
 
+  it('follows the host once it runs, though nothing attached', async () => {
+    const alive = new Set([4242, 4343]);
+    const t = await setUp(() => ({ ok: true, java: '17', javaHome: '/j' }), true, { running: false, alive });
+    await t.writeStatus({ pid: 4242, id: 's1', beat: 1, route: 'startup', appliedConfig: 5 });
+    await t.writeStatus({ pid: 4343, id: 'a2', beat: 1 });
+    t.detached.add('a2');
+    await t.manager.refresh();
+    expect(t.manager.status()!.programs.find((p) => p.pid === 4242)?.agent?.current).toBe(false);
+    alive.delete(4343);
+    await t.manager.refresh();
+    // No host yet: its detached list isn't touched.
+    expect(t.calls).toEqual([]);
+    t.startHost();
+    await t.manager.refresh();
+    expect(t.manager.status()!.programs.find((p) => p.pid === 4242)?.agent?.current).toBe(true);
+    // And its detached list now loses the program that ended.
+    expect(t.calls).toContainEqual({ keep: new Set(['s1']) });
+    expect(t.started.count).toBe(0);
+    t.manager.stop();
+  });
+
   it('forgets ended programs’ detached ids from the start, before anything attaches', async () => {
     const alive = new Set([4242, 4343]);
     const t = await setUp(() => ({ ok: true, java: '17', javaHome: '/j' }), true, { realHost: true, alive });
@@ -717,6 +746,13 @@ describe('attaching, from Setup', () => {
     await t.manager.refresh();
     expect(await detachedIn(t.dir)).toBe('a1,a2');
     alive.delete(4343);
+    await t.manager.refresh();
+    expect(await detachedIn(t.dir)).toBe('a1');
+    // A live program whose file can't be read, then no status folder at all: still detached.
+    await writeFile(path.join(t.dir, 'status', '4242-a1.properties'), 'protocol=1\nid=a');
+    await t.manager.refresh();
+    expect(await detachedIn(t.dir)).toBe('a1');
+    await rm(path.join(t.dir, 'status'), { recursive: true });
     await t.manager.refresh();
     expect(await detachedIn(t.dir)).toBe('a1');
     expect(t.started.count).toBe(0);

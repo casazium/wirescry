@@ -426,6 +426,65 @@ describe('the backend and the Java agent', () => {
     expect((await control(dir)).enabled).toBe('false');
   });
 
+  it('shows an agent up to date with the host Wirescry started, before anything attaches', async () => {
+    const dir = await startWith({
+      jars,
+      heartbeatMs: 20,
+      attach: {
+        findJdk: async () => ({
+          jdk: { home: '/jdk', java: '/jdk/bin/java', version: '21', major: 21, from: 'JAVA_HOME' },
+          passed: [],
+        }),
+        attacher: () => ({
+          list: async () => [{ pid: process.pid, name: 'Main' }],
+          load: async () => ({ ok: false, reason: 'load-failed' }),
+        }),
+        pollMs: 50,
+      },
+    });
+    await expect
+      .poll(() =>
+        control(dir).then(
+          () => true,
+          () => false,
+        ),
+      )
+      .toBe(true);
+    // An agent started with Wirescry's option (this test's process stands in for its program)
+    // that applied the control file's settings.
+    const { config } = await control(dir);
+    await mkdir(path.join(dir, 'status'), { recursive: true });
+    await writeFile(
+      path.join(dir, 'status', `${process.pid}-s1.properties`),
+      [
+        'protocol=1',
+        'agentVersion=0.0.0',
+        'route=startup',
+        'id=s1',
+        `pid=${process.pid}`,
+        'java=21.0.2',
+        'enabled=true',
+        'reason=on',
+        `appliedConfig=${config}`,
+        `port=${backend!.proxyPort}`,
+        'hooks=trust:ok,proxy:ok',
+        'beat=1',
+        'end=1',
+        '',
+      ].join('\n'),
+    );
+    const api = await apiClient(backend!.apiPort);
+    await api.send({ command: 'javaRefresh' });
+    const program = () => {
+      const statuses = api.messages.flatMap((m) =>
+        m.type === 'status' || m.type === 'hello' ? [m.status] : [],
+      );
+      return statuses.at(-1)?.javaAgent?.attach?.programs.find((p) => p.pid === process.pid);
+    };
+    await expect.poll(() => program()?.agent).toMatchObject({ route: 'startup', on: true, current: true });
+    api.close();
+  });
+
   it('turns the startup setting off and on, for agents, new terminals and the next start', async () => {
     const dir = await startWith({ jars, heartbeatMs: 20 });
     const api = await apiClient(backend!.apiPort);
