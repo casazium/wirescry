@@ -139,8 +139,10 @@ export function TerminalSection({
           <li>
             <strong>Java</strong> 8 and later: HttpURLConnection, the java.net.http client, and libraries
             built on them such as OkHttp and Spring's RestTemplate. Apache HttpClient needs its
-            system-properties builder. Every <code>java</code> command prints a &quot;Picked up
-            JAVA_TOOL_OPTIONS&quot; line; that&apos;s the JVM confirming the setup.
+            system-properties builder. Jetty&apos;s HttpClient needs the Java agent (Java programs, below),
+            and so does Reactor Netty&apos;s unless it calls proxyWithSystemProperties(). Every{' '}
+            <code>java</code> command prints a &quot;Picked up JAVA_TOOL_OPTIONS&quot; line; that&apos;s the
+            JVM confirming the setup.
           </li>
           <li>
             <strong>curl</strong> and <strong>git</strong>.
