@@ -191,13 +191,14 @@ public class JettyProbe10 {
             all[i] =
                 new Thread(
                     () -> {
-                      while (System.currentTimeMillis() < until) {
+                      // At least once each, so threads that start after the deadline still answer.
+                      do {
                         try {
                           answers.add(ROUTE.apply(url));
                         } catch (Throwable t) {
                           errors.incrementAndGet();
                         }
-                      }
+                      } while (System.currentTimeMillis() < until);
                     });
             all[i].start();
           }
