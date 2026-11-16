@@ -646,6 +646,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       attachJar: jars.attach,
       version: options.app?.version ?? '0.0.0',
       host: agentHost,
+      running: () => javaAgent,
       warningOk: () => settings.javaAttachWarningOk === true,
       saveWarningOk: async () => {
         const next = { ...settings, javaAttachWarningOk: true };

@@ -22,6 +22,11 @@ export interface JavaAttachOptions {
   version: string;
   /** The running host, started if it isn't: attached agents follow its control file. */
   host: () => Promise<JavaAgentHost>;
+  /**
+   * The host if it runs now, without starting one: the list compares each agent with its settings,
+   * and ended programs leave its detached list, from Wirescry's start, not only after an attach.
+   */
+  running: () => JavaAgentHost | undefined;
   /** Whether the user agreed to Java 21's warning, and saving that they did. */
   warningOk: () => boolean;
   saveWarningOk: () => Promise<void>;
@@ -106,9 +111,9 @@ export class JavaAttach {
     const programs: JavaProgram[] = programsOf({
       listed: [...(this.listed ?? []), ...extra],
       statuses: this.statuses,
-      config: this.host?.currentConfig ?? -1,
+      config: this.runningHost()?.currentConfig ?? -1,
       version: this.options.version,
-      detached: this.host?.detachedIds ?? new Set(),
+      detached: this.runningHost()?.detachedIds ?? new Set(),
     }).map((program) => ({
       ...program,
       ...(this.busy.has(program.pid) ? { busy: this.busy.get(program.pid) } : {}),
@@ -220,6 +225,11 @@ export class JavaAttach {
     this.timer = undefined;
   }
 
+  /** The host attach or detach started, else the one running: never started just to show the list. */
+  private runningHost(): JavaAgentHost | undefined {
+    return this.host ?? this.options.running();
+  }
+
   private async ensureHost(): Promise<JavaAgentHost> {
     this.host = await this.options.host();
     return this.host;
@@ -263,7 +273,8 @@ export class JavaAttach {
     this.statuses = live;
     this.running = running;
     // Ids of agents whose program ended leave the control file's detached list.
-    if (this.host && present) await this.host.setDetached({ keep: present });
+    const host = this.runningHost();
+    if (host && present) await host.setDetached({ keep: present });
   }
 
   private startPolling(): void {

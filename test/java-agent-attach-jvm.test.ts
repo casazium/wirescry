@@ -190,6 +190,27 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
         expect(await ask(r, 'select http://example.test/')).toBe(`HTTP 127.0.0.1:${backend!.proxyPort}`);
       }, 90_000);
 
+      it('shows an attached program up to date after a restart, before anything attaches', async () => {
+        await start(false, 3000);
+        const r = await probe(java);
+        expect(await ask(r, 'clear http.nonProxyHosts')).toBe('cleared');
+        const pid = r.child.pid!;
+        await api!.send({ command: 'javaAttach', pid, confirmWarning: true });
+        await expect
+          .poll(() => programOf(pid)?.agent, { timeout: 20_000 })
+          .toMatchObject({ on: true, reason: 'on', current: true });
+
+        // Wirescry quits and starts again, with the same data folder; Setup only lists.
+        api!.close();
+        await backend!.stop();
+        await start(true, 3000);
+        await api!.send({ command: 'javaRefresh' });
+        await expect
+          .poll(() => programOf(pid)?.agent, { timeout: 20_000 })
+          .toMatchObject({ on: true, reason: 'on', current: true });
+        expect(await ask(r, 'select http://example.test/')).toBe(`HTTP 127.0.0.1:${backend!.proxyPort}`);
+      }, 120_000);
+
       it('keeps a detached program detached across a restart, and while it was paused', async () => {
         await start(false, 3000);
         const r = await probe(java);

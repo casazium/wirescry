@@ -573,6 +573,9 @@ describe('attaching, from Setup', () => {
     for (const host of realHosts.splice(0)) await host.stop().catch(() => undefined);
   });
 
+  const detachedIn = async (dir: string) =>
+    /^detached=(.*)$/m.exec(await readFile(path.join(dir, 'control.properties'), 'utf8'))?.[1];
+
   /** A stand-in host: what JavaAttach uses of one. */
   function fakeHost() {
     const detached = new Set<string>();
@@ -596,6 +599,8 @@ describe('attaching, from Setup', () => {
     list?: () => Promise<ListedJvm[] | string>;
     alive?: Set<number>;
     now?: () => number;
+    /** Whether the host runs before anything attaches (default yes), as when the setting is on. */
+    running?: boolean;
   }
 
   async function setUp(
@@ -625,11 +630,16 @@ describe('attaching, from Setup', () => {
       },
     };
     const changed = vi.fn();
+    const started = { count: 0 };
     const manager = new JavaAttach({
       dir,
       attachJar: '/res/wirescry-attach.jar',
       version: '1.0.0',
-      host: async () => host,
+      host: async () => {
+        started.count++;
+        return host;
+      },
+      running: () => (options.running === false ? undefined : host),
       warningOk: () => warningOk,
       saveWarningOk: async () => {
         warningOk = true;
@@ -664,8 +674,54 @@ describe('attaching, from Setup', () => {
       host,
       dir,
       finds,
+      started,
     };
   }
+
+  it('shows agents up to date with the running host before anything attaches, as after a restart', async () => {
+    const t = await setUp(() => ({ ok: true, java: '17', javaHome: '/j' }));
+    // The stand-in host's settings are number 5: one agent applied them, one hasn't yet.
+    await t.writeStatus({ pid: 4242, id: 's1', beat: 1, route: 'startup', appliedConfig: 5 });
+    await t.writeStatus({ pid: 4343, id: 'a2', beat: 1, appliedConfig: 4 });
+    // One the host turned off (a detach from before the restart) that hasn't read it yet.
+    t.detached.add('a3');
+    await t.writeStatus({ pid: 4444, id: 'a3', beat: 1 });
+    const programs = (await t.manager.refresh()).programs;
+    expect(programs.find((p) => p.pid === 4242)?.agent?.current).toBe(true);
+    expect(programs.find((p) => p.pid === 4343)?.agent?.current).toBe(false);
+    expect(programs.find((p) => p.pid === 4444)?.agent?.reason).toBe('detaching');
+    // Read from the host that runs: none started for the list.
+    expect(t.started.count).toBe(0);
+    t.manager.stop();
+  });
+
+  it('shows no agent up to date, and starts no host, while none runs', async () => {
+    const t = await setUp(() => ({ ok: true, java: '17', javaHome: '/j' }), true, { running: false });
+    await t.writeStatus({ pid: 4242, id: 's1', beat: 1, route: 'startup', appliedConfig: 5 });
+    const program = (await t.manager.refresh()).programs.find((p) => p.pid === 4242);
+    expect(program?.agent?.current).toBe(false);
+    expect(t.started.count).toBe(0);
+    // An attach starts it, and from then on the list follows it.
+    await t.manager.attach(4242, false);
+    expect(t.started.count).toBe(1);
+    expect(t.manager.status()!.programs.find((p) => p.pid === 4242)?.agent?.current).toBe(true);
+    t.manager.stop();
+  });
+
+  it('forgets ended programs’ detached ids from the start, before anything attaches', async () => {
+    const alive = new Set([4242, 4343]);
+    const t = await setUp(() => ({ ok: true, java: '17', javaHome: '/j' }), true, { realHost: true, alive });
+    await t.host.setDetached({ off: ['a1', 'a2'] });
+    await t.writeStatus({ pid: 4242, id: 'a1', beat: 1, enabled: false, reason: 'detached' });
+    await t.writeStatus({ pid: 4343, id: 'a2', beat: 1, enabled: false, reason: 'detached' });
+    await t.manager.refresh();
+    expect(await detachedIn(t.dir)).toBe('a1,a2');
+    alive.delete(4343);
+    await t.manager.refresh();
+    expect(await detachedIn(t.dir)).toBe('a1');
+    expect(t.started.count).toBe(0);
+    t.manager.stop();
+  });
 
   it('lists programs once asked, and says which JDK attaches', async () => {
     const t = await setUp(() => ({ ok: true, java: '17', javaHome: '/j' }));
@@ -759,9 +815,6 @@ describe('attaching, from Setup', () => {
     await expect(t.manager.detach(Number.NaN)).rejects.toThrow(/Not a process id/);
     t.manager.stop();
   });
-
-  const detachedIn = async (dir: string) =>
-    /^detached=(.*)$/m.exec(await readFile(path.join(dir, 'control.properties'), 'utf8'))?.[1];
 
   it('keeps a program detached through files it can’t read, until the program ends', async () => {
     const alive = new Set([4242]);
