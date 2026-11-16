@@ -34,7 +34,8 @@ import java.util.function.Function;
  * <p>Two JDK classes: the default X.509 trust manager (see Trust) and the default proxy selector
  * (see Proxies). And, in whichever class loaders the program loads them: Apache HttpClient's
  * DefaultRoutePlanner, 4.x and 5.x, and 5.x's SystemDefaultRoutePlanner (see Proxies.apache and
- * Proxies.apacheSystem); and Jetty's HttpClient and ProxyConfiguration (see Jetty). An attached
+ * Proxies.apacheSystem); Jetty's HttpClient and ProxyConfiguration (see Jetty); and Reactor Netty's
+ * HttpConnectionProvider (see ReactorNetty). An attached
  * agent retransforms those loaded before it, from the control thread ({@link #retransformLoaded}).
  */
 final class Hooks implements ClassFileTransformer {
@@ -45,6 +46,7 @@ final class Hooks implements ClassFileTransformer {
   static final String APACHE_5_SYSTEM = "org/apache/hc/client5/http/impl/routing/SystemDefaultRoutePlanner";
   static final String JETTY_CLIENT = "org/eclipse/jetty/client/HttpClient";
   static final String JETTY_PROXY_CONFIGURATION = "org/eclipse/jetty/client/ProxyConfiguration";
+  static final String REACTOR_NETTY = "reactor/netty/http/client/HttpConnectionProvider";
 
   /** Each JDK hook: "waiting" (class not loaded yet), "ok", "jdk-too-new" or "failed". */
   private volatile String trust = "waiting";
@@ -65,6 +67,12 @@ final class Hooks implements ClassFileTransformer {
    * whichever comes first.
    */
   private volatile String jetty;
+
+  /**
+   * Reactor Netty's HttpConnectionProvider, as `apache`: null until the program loads it, then
+   * "ok", "failed" or "jdk-too-new".
+   */
+  private volatile String reactorNetty;
 
   /**
    * Each class of the program's this transformer wove, by class loader (weakly: a loader the
@@ -98,7 +106,7 @@ final class Hooks implements ClassFileTransformer {
 
   /** A class of the program's that ProgramWeaver changes. */
   static boolean isProgram(String className) {
-    return isApache(className) || isJetty(className);
+    return isApache(className) || isJetty(className) || REACTOR_NETTY.equals(className);
   }
 
   /** Whether `configuration`, a Jetty ProxyConfiguration class, has its hook installed. */
@@ -179,6 +187,8 @@ final class Hooks implements ClassFileTransformer {
   private synchronized void library(String className, String state) {
     if (isJetty(className)) {
       if (jetty == null || "ok".equals(jetty)) jetty = state;
+    } else if (REACTOR_NETTY.equals(className)) {
+      if (reactorNetty == null || "ok".equals(reactorNetty)) reactorNetty = state;
     } else if (apache == null || "ok".equals(apache)) {
       apache = state;
     }
@@ -240,6 +250,10 @@ final class Hooks implements ClassFileTransformer {
    *       the hook doesn't reach.
    *   <li>Once the program loads Apache HttpClient: `apache:ok`, `apache:failed` or
    *       `apache:jdk-too-new`.
+   *   <li>Once the program loads Reactor Netty's HttpClient: `reactor-netty:ok`,
+   *       `reactor-netty:failed` (also when the hook ran but Reactor Netty's classes weren't the
+   *       shape it needs), `reactor-netty:jdk-too-new`, or `reactor-netty:no-proxy-handler` when the
+   *       program lacks Netty's proxy support (netty-handler-proxy), so its requests go direct.
    *   <li>Once the program loads Jetty's HttpClient: `jetty:ok`, `jetty:failed` (also when a
    *       hook ran but Jetty's classes weren't the shape it needs), `jetty:jdk-too-new`, or
    *       `jetty:not-covered` for a release older than the hooks cover (9.4 before 9.4.25). And
@@ -261,8 +275,12 @@ final class Hooks implements ClassFileTransformer {
     String j = jetty;
     if ("ok".equals(j) && Jetty.broken) j = "failed";
     int skipped = Jetty.skipped();
+    String r = reactorNetty;
+    if ("ok".equals(r) && ReactorNetty.broken) r = "failed";
+    else if ("ok".equals(r) && ReactorNetty.noProxyHandler) r = "no-proxy-handler";
     return "trust:" + t + ",proxy:" + p + (a == null ? "" : ",apache:" + a) + (j == null ? "" : ",jetty:" + j)
-        + (j == null || skipped == 0 ? "" : ",jetty-skipped:" + skipped);
+        + (j == null || skipped == 0 ? "" : ",jetty-skipped:" + skipped)
+        + (r == null ? "" : ",reactor-netty:" + r);
   }
 
   /** Whether the program's default proxy selector is still the JDK's. */

@@ -22,7 +22,8 @@ function onText(agent: Agent): string {
   const proxy = hook(agent, 'proxy');
   const apache = hook(agent, 'apache');
   const jetty = hook(agent, 'jetty');
-  // Apache's and Jetty's classes are old bytecode: a weave it can't read isn't about the program's Java.
+  const reactorNetty = hook(agent, 'reactor-netty');
+  // Apache's, Jetty's and Reactor Netty's classes are old bytecode: a weave it can't read isn't about the program's Java.
   if (trust === 'jdk-too-new' || proxy === 'jdk-too-new') {
     return 'This program’s Java is newer than Wirescry’s agent supports: its traffic may not reach Wirescry.';
   }
@@ -32,7 +33,9 @@ function onText(agent: Agent): string {
     apache === 'failed' ||
     apache === 'jdk-too-new' ||
     jetty === 'failed' ||
-    jetty === 'jdk-too-new'
+    jetty === 'jdk-too-new' ||
+    reactorNetty === 'failed' ||
+    reactorNetty === 'jdk-too-new'
   ) {
     return 'The agent couldn’t set itself up in this program: its traffic may not reach Wirescry.';
   }
@@ -48,10 +51,17 @@ function onText(agent: Agent): string {
   if (!agent.current) return 'Updating to Wirescry’s current settings…';
   const sending = `Sending its traffic through Wirescry${agent.route === 'startup' ? ' (started with the agent)' : ''}.`;
   // Clients whose transport can't use a proxy (HTTP/2 only, PROXY protocol, a Unix socket): left alone.
+  const notes: string[] = [];
   if (hook(agent, 'jetty-skipped')) {
-    return `${sending} Some of its Jetty clients can’t go through a proxy, and connect directly.`;
+    notes.push('Some of its Jetty clients can’t go through a proxy, and connect directly.');
   }
-  return sending;
+  // Netty's proxy support (netty-handler-proxy) is optional: without it the rest still comes.
+  if (reactorNetty === 'no-proxy-handler') {
+    notes.push(
+      'Its Reactor Netty requests connect directly: it lacks Netty’s proxy support (netty-handler-proxy).',
+    );
+  }
+  return [sending, ...notes].join(' ');
 }
 
 /** What a program's agent is doing, in words. */

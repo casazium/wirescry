@@ -35,6 +35,27 @@ public final class Agent {
 
   private static volatile Agent running;
 
+  /**
+   * The most control-file ports {@link #wirescryPort} remembers; the oldest go first. A client
+   * keeps the port it was built with for good (a terminal's, after ProxyProperties moved it to the
+   * control file's at startup), so this is large enough that no real session drops one: 4 KB.
+   */
+  static final int PORTS_KEPT = 1024;
+
+  /**
+   * The ports a live Wirescry has had while this agent ran, by its control file, oldest first:
+   * copied on write, read by hooks on any thread.
+   */
+  private static volatile int[] wirescryPorts = new int[0];
+
+  /**
+   * The port the terminal that started this program named (`terminalPort=`), or 0: kept apart, and
+   * never dropped. ProxyProperties moves the terminal's proxy properties to the control file's port
+   * before the program's main, so clients start on that; this one matters where it can't (a
+   * SecurityManager that refuses).
+   */
+  private static volatile int terminalPort;
+
   final String route;
   final String id;
   final File dir;
@@ -54,6 +75,8 @@ public final class Agent {
   private int badReads;
   /** Read by hooks on any thread, so volatile. */
   private volatile boolean on;
+  /** What the agent knows of Wirescry, as ProxyProperties takes it: read by hooks, so volatile. */
+  private volatile int wirescryState = ProxyProperties.UNKNOWN;
   private String reason = "starting";
   private Status status;
 
@@ -77,6 +100,7 @@ public final class Agent {
     boolean attach = "attach".equals(route);
     final Agent agent =
         new Agent(route, id, dir, inst, attach ? null : new ProxyProperties(ProxyProperties.terminalPort(args)));
+    if (!attach) rememberTerminalPort(ProxyProperties.terminalPort(args));
     // Only compares class names until a class it changes loads: cheap before main.
     inst.addTransformer(agent.hooks, true);
     agent.poll(true);
@@ -105,6 +129,40 @@ public final class Agent {
   static Control settings() {
     Agent agent = running;
     return agent == null ? null : agent.lastGood;
+  }
+
+  /** What the agent knows of Wirescry: ProxyProperties.GONE, RUNNING or UNKNOWN. */
+  static int wirescryState() {
+    Agent agent = running;
+    return agent == null ? ProxyProperties.UNKNOWN : agent.wirescryState;
+  }
+
+  /** Whether `port` has been Wirescry's while this agent ran: the terminal's, or a control file's. */
+  static boolean wirescryPort(int port) {
+    if (port <= 0) return false;
+    if (port == terminalPort) return true;
+    for (int p : wirescryPorts) {
+      if (p == port) return true;
+    }
+    return false;
+  }
+
+  static void rememberTerminalPort(int port) {
+    if (port > 0 && port <= 65535) terminalPort = port;
+  }
+
+  /** Adds `port` to {@link #wirescryPorts} if it's new, dropping the oldest past PORTS_KEPT. */
+  static synchronized void rememberPort(int port) {
+    if (port <= 0 || port > 65535 || port == terminalPort) return;
+    for (int p : wirescryPorts) {
+      if (p == port) return;
+    }
+    int[] before = wirescryPorts;
+    int drop = before.length >= PORTS_KEPT ? before.length - PORTS_KEPT + 1 : 0;
+    int[] after = new int[before.length - drop + 1];
+    System.arraycopy(before, drop, after, 0, before.length - drop);
+    after[after.length - 1] = port;
+    wirescryPorts = after;
   }
 
   /**
@@ -173,7 +231,8 @@ public final class Agent {
         badRead();
       }
     }
-    if (properties != null) properties.apply(wirescry(), lastGood == null ? 0 : lastGood.proxyPort);
+    wirescryState = wirescry();
+    if (properties != null) properties.apply(wirescryState, lastGood == null ? 0 : lastGood.proxyPort);
     if (!first && !retransformed) {
       // Classes the agent changes that loaded before its transformer: once, from this thread. For
       // an attach, those the program loaded; at startup, those an agent named before this one
@@ -224,8 +283,13 @@ public final class Agent {
     badReads = 0;
     lastGood = control;
     statusDelayMs = control.statusDelayMs;
-    if (!liveness.alive(control, checkProcess, ageMs)) off("wirescry-gone");
-    else if (!control.enabled) off("off");
+    if (!liveness.alive(control, checkProcess, ageMs)) {
+      off("wirescry-gone");
+      return;
+    }
+    // A port a live Wirescry had (not a stale file's), whatever it says of agents.
+    rememberPort(control.proxyPort);
+    if (!control.enabled) off("off");
     else if (!"attach".equals(route) && !control.startup) off("startup-off");
     else if (control.detached.contains(id)) off("detached");
     else {
