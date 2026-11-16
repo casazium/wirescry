@@ -38,6 +38,7 @@ import {
   setUpJavaAgentTests,
   shared,
   statusOf,
+  waitForAgent,
   type Run,
 } from './java-agent-helpers';
 
@@ -239,6 +240,7 @@ async function probe(java: string, v: 4 | 5, jvm: string[] = [], isolate = false
     : [...VERIFY, ...jvm, '-cp', classpath[v], `ApacheProbe${v}`];
   const r = run(java, args, { stdin: true });
   await expect.poll(r.stdout, { timeout: 20_000 }).toContain('ready');
+  await waitForAgent(r.child.spawnargs, r.child.pid);
   return r;
 }
 
@@ -277,7 +279,10 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
     for (const v of [4, 5] as const) {
       describe(`Apache ${v}.x on Java ${major}`, () => {
         const on = async (proxy: StandIn, change = {}) =>
-          agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+          agentFolder(
+            { proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change },
+            { beat: true },
+          );
 
         it('sends a default client’s http and https through Wirescry’s proxy, and says so', async () => {
           const proxy = await standIn();
@@ -656,12 +661,16 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
     for (const m of MATRIX) {
       describe(`Apache ${m.label} on Java ${major}`, () => {
         const on = async (proxy: StandIn, change = {}) =>
-          agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+          agentFolder(
+            { proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change },
+            { beat: true },
+          );
         async function basic(jvm: string[] = []): Promise<Run> {
           const r = run(java, [...VERIFY, ...jvm, '-cp', matrixClasspath[m.set]!, `ApacheBasic${m.v}`], {
             stdin: true,
           });
           await expect.poll(r.stdout, { timeout: 20_000 }).toContain('ready');
+          await waitForAgent(r.child.spawnargs, r.child.pid);
           // macOS sets http.nonProxyHosts in every JVM; the 5.7 builders use the JDK's selector.
           expect(await ask(r, 'set http.nonProxyHosts')).toBe('set');
           return r;
@@ -767,12 +776,16 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
 
     describe.skipIf(major < 17)(`Spring’s RestTemplate on Apache 5.x, on Java ${major}`, () => {
       const on = async (proxy: StandIn, change = {}) =>
-        agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+        agentFolder(
+          { proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change },
+          { beat: true },
+        );
       /** SpringProbe on its class path, or from the fat jar. */
       async function spring(fat: boolean, jvm: string[] = []): Promise<Run> {
         const where = fat ? ['-jar', fatJar] : ['-cp', springClasspath, 'SpringProbe'];
         const r = run(java, [...VERIFY, ...jvm, ...where], { stdin: true });
         await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+        await waitForAgent(r.child.spawnargs, r.child.pid);
         expect(await ask(r, 'set http.nonProxyHosts')).toBe('set');
         return r;
       }
@@ -832,7 +845,10 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
 
     describe(`Apache in class loaders of the program’s own, on Java ${major}`, () => {
       const on = async (proxy: StandIn, change = {}) =>
-        agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+        agentFolder(
+          { proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change },
+          { beat: true },
+        );
       const jars = (v: 4 | 5) => classpath[v].split(path.delimiter).slice(1).join(path.delimiter);
 
       /** A LoaderProbe, ready for commands. */
@@ -841,6 +857,7 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
           stdin: true,
         });
         await expect.poll(r.stdout, { timeout: 20_000 }).toContain('ready');
+        await waitForAgent(r.child.spawnargs, r.child.pid);
         return r;
       }
 

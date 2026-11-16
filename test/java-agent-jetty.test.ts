@@ -41,6 +41,7 @@ import {
   setUpJavaAgentTests,
   shared,
   statusOf,
+  waitForAgent,
   type Run,
 } from './java-agent-helpers';
 
@@ -274,6 +275,7 @@ async function probe(
       : [...VERIFY, ...jvm, '-cp', options.classpath ?? classpaths[set]!, main];
   const r = run(java, args, { stdin: true });
   await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+  await waitForAgent(r.child.spawnargs, r.child.pid);
   return r;
 }
 
@@ -318,7 +320,10 @@ describe.skipIf(!buildJava)('the Java agent’s Jetty hooks', { timeout: 180_000
       const { set } = line;
       describe(`Jetty ${line.label} on Java ${major}`, () => {
         const on = async (proxy: StandIn, change = {}) =>
-          agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+          agentFolder(
+            { proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change },
+            { beat: true },
+          );
 
         if (line.covered === false) {
           it('leaves a release it doesn’t cover alone, and says so', async () => {
@@ -714,7 +719,7 @@ describe.skipIf(!buildJava)('the Java agent’s Jetty hooks', { timeout: 180_000
     const java = javas.find((j) => majorOf(j) >= 17) ?? javas[0]!;
     const jettyClasspath = async () => (await fetchTestJars('jetty12.1')).join(path.delimiter);
     const on = async (proxy: StandIn, change = {}) =>
-      agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+      agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change }, { beat: true });
 
     async function loaderProbeRun(jvm: string[] = []): Promise<Run> {
       const r = run(
@@ -725,6 +730,7 @@ describe.skipIf(!buildJava)('the Java agent’s Jetty hooks', { timeout: 180_000
         },
       );
       await expect.poll(r.stdout, { timeout: 20_000 }).toContain('ready');
+      await waitForAgent(r.child.spawnargs, r.child.pid);
       return r;
     }
 

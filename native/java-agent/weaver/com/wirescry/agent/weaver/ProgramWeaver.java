@@ -24,6 +24,7 @@ import net.bytebuddy.pool.TypePool;
  *       ApacheSystemAdvice).
  *   <li>Jetty's HttpClient, its createOrigin (see JettyOriginAdvice), and its ProxyConfiguration,
  *       its match(Origin) (see JettyMatchAdvice), 9.4 to 12.1.
+ *   <li>Reactor Netty's HttpConnectionProvider, its acquire (see ReactorNettyAdvice), 1.0 to 1.3.
  * </ul>
  *
  * The class loader is given too, to read the classes the methods name.
@@ -35,6 +36,7 @@ public final class ProgramWeaver implements Function<Object[], byte[]> {
   public static final String JETTY_CLIENT = "org/eclipse/jetty/client/HttpClient";
   public static final String JETTY_PROXY_CONFIGURATION = "org/eclipse/jetty/client/ProxyConfiguration";
   private static final String JETTY_ORIGIN = "org.eclipse.jetty.client.Origin";
+  public static final String REACTOR_NETTY = "reactor/netty/http/client/HttpConnectionProvider";
   /** How an exception's message starts for a release of a library the hooks don't cover. */
   public static final String NOT_COVERED = "not-covered: ";
 
@@ -75,6 +77,16 @@ public final class ProgramWeaver implements Function<Object[], byte[]> {
               .and(ElementMatchers.not(ElementMatchers.isStatic()))
               .and(ElementMatchers.takesArguments(1))
               .and(ElementMatchers.takesArgument(0, ElementMatchers.named(JETTY_ORIGIN)));
+    } else if (REACTOR_NETTY.equals(internalName)) {
+      // acquire(TransportConfig, ConnectionObserver, Supplier, AddressResolverGroup), the same in
+      // every release from 1.0.0.
+      advice = ReactorNettyAdvice.class;
+      method =
+          ElementMatchers.<MethodDescription>named("acquire")
+              .and(ElementMatchers.not(ElementMatchers.isStatic()))
+              .and(ElementMatchers.takesArguments(4))
+              .and(ElementMatchers.takesArgument(0, ElementMatchers.named("reactor.netty.transport.TransportConfig")))
+              .and(ElementMatchers.takesArgument(3, ElementMatchers.named("io.netty.resolver.AddressResolverGroup")));
     } else {
       return null;
     }

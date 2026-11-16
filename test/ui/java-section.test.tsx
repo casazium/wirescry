@@ -283,6 +283,31 @@ describe('Java section, running programs', () => {
             name: 'JettyOldCert',
             agent: agent({ hooks: ['trust:ca-mismatch', 'proxy:ok', 'jetty:not-covered'] }),
           },
+          {
+            pid: 15,
+            name: 'NettyBroken',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'reactor-netty:failed'] }),
+          },
+          {
+            pid: 16,
+            name: 'NettyNew',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'reactor-netty:jdk-too-new'] }),
+          },
+          {
+            pid: 17,
+            name: 'NettyNoProxy',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'reactor-netty:no-proxy-handler'] }),
+          },
+          {
+            pid: 18,
+            name: 'NettyFine',
+            agent: agent({ hooks: ['trust:ok', 'proxy:ok', 'reactor-netty:ok'] }),
+          },
+          {
+            pid: 19,
+            name: 'NettyNoProxyCert',
+            agent: agent({ hooks: ['trust:ca-mismatch', 'proxy:ok', 'reactor-netty:no-proxy-handler'] }),
+          },
           { pid: 3, name: 'Own', agent: agent({ hooks: ['trust:ok', 'proxy:app-selector'] }) },
           { pid: 4, name: 'Cert', agent: agent({ hooks: ['trust:ca-mismatch', 'proxy:ok'] }) },
           { pid: 5, name: 'Early', agent: agent({ hooks: ['trust:waiting', 'proxy:waiting'] }) },
@@ -305,6 +330,18 @@ describe('Java section, running programs', () => {
     expect(row('JettyFine').textContent).not.toContain('Some of its Jetty clients');
     // A certificate problem says more than an old Jetty does.
     expect(row('JettyOldCert').textContent).toContain('can’t use Wirescry’s certificate');
+    expect(row('NettyBroken').textContent).toContain('couldn’t set itself up');
+    expect(row('NettyNew').textContent).toContain('couldn’t set itself up');
+    expect(row('NettyNew').textContent).not.toContain('newer');
+    // The program's other traffic still comes: said, with the note.
+    expect(row('NettyNoProxy').textContent).toContain('Sending its traffic through Wirescry.');
+    expect(row('NettyNoProxy').textContent).toContain(
+      'Its Reactor Netty requests connect directly: it lacks Netty’s proxy support (netty-handler-proxy).',
+    );
+    expect(row('NettyFine').textContent).not.toContain('Reactor Netty');
+    expect(row('NettyFine').textContent).toContain('Sending its traffic through Wirescry.');
+    // A certificate problem says more than missing proxy support does.
+    expect(row('NettyNoProxyCert').textContent).toContain('can’t use Wirescry’s certificate');
     expect(row('Own').textContent).toContain('chooses its own proxy');
     expect(row('Cert').textContent).toContain('can’t use Wirescry’s certificate');
     for (const name of [
@@ -317,6 +354,8 @@ describe('Java section, running programs', () => {
       'JettyBroken',
       'JettyNew',
       'JettyOld',
+      'NettyBroken',
+      'NettyNew',
     ]) {
       expect(row(name).textContent).not.toContain('Sending its traffic');
       // Still on, so it can be turned off.

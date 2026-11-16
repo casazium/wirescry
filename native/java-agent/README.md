@@ -100,6 +100,45 @@ Differences a program may notice: plain-http destinations through Wirescry use a
 
 Tested with Jetty 9.4.0 (not covered), 9.4.25 (the first covered), 9.4.58, 10.0.0, 10.0.26, 11.0.0, 11.0.26, 12.0.0, 12.0.41, 12.1.0 and 12.1.15 (the HTTP/1.1 transport; on 10 and later also the dynamic one, with HTTP/2 inside the tunnel on the newest of each line), on Java 8 (9.4, on GitHub's runners), 11 (9.4 to 11), 17, 21 and 27. The newest of each line is also tested with Jetty's own certificate checks (a wrong host refused, the program's own trust store, `validatePeerCerts`), with Jetty as named modules on the module path, and, for 12.1, under Spring's `RestClient`. Measured on Java 11 to 27, the hooks add 1 to 2 µs to each request (its destination lookup), on a fast machine; GitHub's hosted runners take about three times as long.
 
+**Reactor Netty (`Hooks`, `ReactorNetty`, `Agent`, `weaver/ProgramWeaver`, `weaver/ReactorNettyAdvice`).** Reactor Netty's `HttpClient` (1.0 to 1.3), and so Spring's `WebClient` on its default connector, asks no proxy selector: a client has a proxy only if the program gave it one. Every connection attempt, redirects and retries included, passes through `HttpConnectionProvider.acquire(config, observer, remote, resolver)`, with the request's own copy of the settings (TLS chosen, the program's proxy applied). Code at the start of that method (`ReactorNettyAdvice`, `ReactorNetty.acquire`) may hand it another config and resolver:
+
+- When the program chose no proxy, and the request can go through one: a copy of the config with Wirescry's proxy (`ProxyProvider`, HTTP, `127.0.0.1` on the control file's port, every host proxied: the decision was made here), and Netty's no-op resolver when the program chose none of its own, so the host name reaches Wirescry instead of being looked up here. The program's config is never written: Reactor Netty shares it between requests. The copy's proxy is part of the connection pool's key, so proxied and direct connections sit in separate pools: turning off sends the next attempt to the direct pool, and a new port to a new one.
+- When the program's proxy is Wirescry's own: see below.
+
+A request goes through Wirescry only when the agent is on; the program chose no proxy; its protocols can go through an HTTP proxy (with TLS, HTTP/1.1 or HTTP/2; plain http as HTTP/1.1 alone; never HTTP/3); its address is a host and port, not this computer and not in the program's `http.nonProxyHosts`; and the program has Netty's proxy support (`netty-handler-proxy`, which is optional). Reactor Netty sends every proxied request in a CONNECT tunnel, plain http included.
+
+"Chose no resolver" means the config's resolver is unset, or is the default DNS resolver that `runOn` fills in (told apart by identity: that one shared object, since before 1.3 a program's own hosts-file resolver makes a provider equal to the default). A resolver the program set itself, by either `.resolver` method, is kept, with its lookups.
+
+**Wirescry's own proxy from a terminal.** A terminal Wirescry set up gives the JDK's proxy properties, which `proxyWithSystemProperties()` reads once, when the client is built. Such a client would send every request to a closed port after Wirescry quits, and to the old port after it moves. So a proxy the program chose that is HTTP, at `127.0.0.1`, on a port Wirescry has had while this agent ran, follows Wirescry. Those ports (`Agent.wirescryPort`) are the terminal's, kept for good, and the 1,024 most recent a live Wirescry's control file named (not a stale file's):
+
+- Once Wirescry is gone (quit, crashed, or its files deleted), as for the proxy properties: the attempt goes without it, with the resolver Reactor Netty would use then (`proxyWithSystemProperties` set the no-op one when the program had none; a resolver of the program's, or `runOn`'s, stays).
+- While Wirescry runs on another port: the same proxy at that port, keeping the program's own exclusions (its `http.nonProxyHosts`, or Reactor Netty's default, `localhost|127.*|[::1]`), which Reactor Netty applies as it connects, so a host they exclude still goes direct.
+- Otherwise, including the agent switched off while Wirescry runs (startup agents off, say), it's left as it is: it still reaches Wirescry.
+
+The status file says `reactor-netty:ok`, `reactor-netty:failed` (also when the hook ran but Reactor Netty's classes weren't the shape it needs, found the first time it runs), `reactor-netty:jdk-too-new`, or `reactor-netty:no-proxy-handler` when the program lacks Netty's proxy support, once the program loads Reactor Netty's `HttpConnectionProvider`, and nothing before. What the hook reads of each copy of Reactor Netty is kept per class (a `ClassValue`), so it holds no class loader.
+
+What it leaves alone, and why:
+
+- A proxy the program chose (other than Wirescry's own, above), including a host its proxy excludes.
+- h2c (prior knowledge, or an upgrade from HTTP/1.1 for plain http) and HTTP/3: they can't go through an HTTP proxy's tunnel as Wirescry reads it.
+- An address that isn't a host and port, such as a Unix domain socket.
+- A program without `netty-handler-proxy`: its requests go direct.
+- A renamed ("shaded") copy of Reactor Netty: the hook knows only Reactor Netty's own class names.
+- Reactor Netty before 1.0 (0.9 and older), which has no `HttpConnectionProvider`: nothing is changed or reported.
+
+Not covered, and so captured: a client that says `.noProxy()`, a `proxyWhen` that decides on no proxy, and `proxyWithSystemProperties()` with no properties set all look like a client that chose no proxy.
+
+Other limits:
+
+- The hook asks the request's address once more than Reactor Netty does. For a relative URL that is the program's own `remoteAddress` supplier: one that answers differently each time (round robin) may be decided on one address and connected to the next.
+- A program's own proxy at `127.0.0.1` on a port that was Wirescry's earlier in the program's life is taken for Wirescry's: moved while Wirescry runs elsewhere, dropped once it's gone.
+- A terminal client with `.metrics(...)` loses its DNS metrics once Wirescry is gone (the resolver handed back is Reactor Netty's plain default).
+- Reactor Netty can't run without `netty-resolver-dns` (its `.resolver` methods need it), so the hook needs nothing of it either way.
+
+Differences a program may notice: connection metrics gain new series (the proxy's address) while the agent is on; and with the program's own `ConnectionProvider` pool limits, proxied and direct connections to a host are counted in separate pools.
+
+Tested with Reactor Netty 1.0.0, 1.0.48, 1.1.0, 1.1.24 (the last 1.1 before proxy suppliers), 1.1.31, 1.2.0, 1.2.18 and 1.3.8 (HTTP/1.1, HTTP/2 over TLS, h2c left alone, WebSocket; HTTP/3 isn't tested, since Reactor Netty needs a separate codec for it), each with the Netty its POM names (4.1.53 to 4.2.19), on Java 8 (on GitHub's runners), 11, 17, 21 and 27. The newest of 1.1, 1.2 and 1.3 are also tested with certificate checks (a wrong host refused, the program's own trust store, a pinned certificate refused, a program that trusts any certificate), with Netty's OpenSSL engine (`netty-tcnative-boringssl-static`), redirects, a class loader of the program's own, many threads at once, and, on 1.2.18, Spring's `WebClient` 6.2. Measured on Java 11 to 27, the hook adds under 1 µs to each request (0.3 to 0.7 µs: a copy of the config and a proxy setting), on a fast machine; GitHub's hosted runners take about three times as long.
+
 ## Startup
 
 With the **Java programs** setting on (Setup), Wirescry's terminals add the agent to `JAVA_TOOL_OPTIONS`, after the proxy and trust-store properties they already set:

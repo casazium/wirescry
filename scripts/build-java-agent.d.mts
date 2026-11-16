@@ -38,7 +38,17 @@ export type TestJarSet =
   | 'jetty12.0.0'
   | 'jetty12.0'
   | 'jetty12.1.0'
-  | 'jetty12.1';
+  | 'jetty12.1'
+  | 'reactorNetty1.0.0'
+  | 'reactorNetty1.0.48'
+  | 'reactorNetty1.1.0'
+  | 'reactorNetty1.1.24'
+  | 'reactorNetty1.1.31'
+  | 'reactorNetty1.2.0'
+  | 'reactorNetty1.2.18'
+  | 'reactorNetty1.3.8'
+  | 'tcnative'
+  | 'webflux';
 /** Libraries the tests run the agent against (never shipped), pinned by SHA-256. */
 export declare const testJars: Record<
   TestJarSet,
