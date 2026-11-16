@@ -13,7 +13,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, beforeAll, expect } from 'vitest';
+import { afterAll, afterEach, beforeAll, expect, onTestFinished } from 'vitest';
 import { buildJavaAgent, jdkTool } from '../scripts/build-java-agent.mjs';
 import {
   installAgentJars,
@@ -112,8 +112,16 @@ export function compileJava(release: number, out: string, sources: string[], cla
   if (result.status !== 0) throw new Error(result.stderr);
 }
 
-/** A fresh `<data folder>/java-agent` with the jars installed, and the control file written. */
-export async function agentFolder(change: Partial<AgentControl> = {}) {
+/** Agent folders whose heartbeat is moving ({@link agentFolder}'s `beat`), by their stub's path. */
+const beating = new Map<string, { dir: string; control: () => AgentControl }>();
+
+/**
+ * A fresh `<data folder>/java-agent` with the jars installed, and the control file written.
+ * With `beat`, the heartbeat moves every 2 s until the test ends, as while Wirescry runs: else a
+ * test that a slow machine stretches past about 15 s finds the agent off (Wirescry taken as gone),
+ * and one whose JVM took over 20 s to start finds it off from the start. Called inside a test.
+ */
+export async function agentFolder(change: Partial<AgentControl> = {}, options: { beat?: boolean } = {}) {
   const dir = path.join(await mkdtemp(path.join(shared.work, 'data ')), 'java-agent');
   const impl = await installAgentJars(dir, {
     stub: shared.built.stub.file,
@@ -133,26 +141,59 @@ export async function agentFolder(change: Partial<AgentControl> = {}) {
     detached: [],
     ...change,
   };
-  await writeControl(dir, control);
-  return {
+  // One write at a time, each with the settings of the moment it's made: a heartbeat never puts
+  // back settings a test has since changed.
+  let writing = Promise.resolve();
+  const write = (next: () => AgentControl) =>
+    (writing = writing.then(() => {
+      control = next();
+      return writeControl(dir, control);
+    }));
+  await write(() => control);
+  const folder = {
     dir,
     stub: path.join(dir, 'wirescry-agent.jar'),
     impl,
     control: () => control,
     async update(next: Partial<AgentControl>) {
-      control = { ...control, ...next, config: next.config ?? control.config + 1 };
-      await writeControl(dir, control);
+      await write(() => ({ ...control, ...next, config: next.config ?? control.config + 1 }));
     },
     /**
      * Moves the heartbeat, as Wirescry does while it runs: without it the agent takes Wirescry as
      * gone after about 15 s and turns off. For tests that run longer than that, called at least that
-     * often.
+     * often (or the folder made with `beat`).
      */
     async heartbeat() {
-      control = { ...control, seq: control.seq + 1 };
-      await writeControl(dir, control);
+      await write(() => ({ ...control, seq: control.seq + 1 }));
     },
   };
+  if (options.beat) {
+    const timer = setInterval(() => void folder.heartbeat().catch(() => undefined), 2000);
+    timer.unref();
+    beating.set(folder.stub, folder);
+    onTestFinished(() => {
+      clearInterval(timer);
+      beating.delete(folder.stub);
+    });
+  }
+  return folder;
+}
+
+/**
+ * For a JVM started with `jvm`, whose agent comes from a folder made with `beat` and should be on
+ * (enabled, startup agents on, not detached): waits until its status file says it's on. A JVM a
+ * slow machine took over 20 s to start finds the control file stale, and stays off until the next
+ * heartbeat; tests then don't start before it's on.
+ */
+export async function waitForAgent(jvm: string[], pid: number | undefined): Promise<void> {
+  for (const arg of jvm) {
+    const stub = /^-javaagent:([^=]+)/.exec(arg)?.[1];
+    const folder = stub ? beating.get(stub) : undefined;
+    if (!folder) continue;
+    const c = folder.control();
+    if (!c.enabled || !c.startup || c.detached.length > 0) return;
+    await expect.poll(async () => (await statusOf(folder.dir, pid))?.enabled, { timeout: 30_000 }).toBe(true);
+  }
 }
 
 export interface Run {

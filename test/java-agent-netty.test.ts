@@ -43,6 +43,7 @@ import {
   setUpJavaAgentTests,
   shared,
   statusOf,
+  waitForAgent,
   type Run,
 } from './java-agent-helpers';
 
@@ -241,6 +242,7 @@ async function probe(java: string, set: TestJarSet, jvm: string[] = [], classpat
     stdin: true,
   });
   await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+  await waitForAgent(r.child.spawnargs, r.child.pid);
   return r;
 }
 
@@ -276,7 +278,10 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
       const { set } = line;
       describe(`Reactor Netty ${line.label} on Java ${major}`, () => {
         const on = async (proxy: StandIn, change = {}) =>
-          agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change });
+          agentFolder(
+            { proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256, ...change },
+            { beat: true },
+          );
         const via = (proxy: StandIn, resolver = 'noop') => `PROXY 127.0.0.1:${proxy.port} ${resolver}`;
 
         it('sends http and https through Wirescry’s proxy, the host name unresolved, and says so', async () => {
@@ -647,6 +652,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
             { stdin: true },
           );
           await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+          await waitForAgent(r.child.spawnargs, r.child.pid);
           expect(await ask(r, 'route default http://proxied.test/')).toBe(via(proxy));
           expect(await ask(r, 'get default http://proxied.test/i')).toBe('OK plain proxied.test/i');
         });
@@ -717,7 +723,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
   describe('in class loaders of the program’s own, and with stand-in classes', () => {
     const java = javas.find((j) => majorOf(j) >= 8)!;
     const on = async (proxy: StandIn) =>
-      agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256 });
+      agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256 }, { beat: true });
     const loaders = async (agent: { stub: string }, classpath: string) => {
       const r = run(
         java,
@@ -727,6 +733,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
         },
       );
       await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+      await waitForAgent(r.child.spawnargs, r.child.pid);
       return r;
     };
 
