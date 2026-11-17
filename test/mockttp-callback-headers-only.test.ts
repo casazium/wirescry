@@ -51,6 +51,15 @@ const REPLIES: Record<string, () => Reply> = {
   '/bad-header-name': () => ({ statusCode: 200, headers: { ...NOT_FOUND, 'bad name': 'x' } }),
   '/bad-header-value': () => ({ statusCode: 200, headers: { ...NOT_FOUND, 'x-note': 'a\nb' } }),
   '/connection-header': () => ({ statusCode: 200, headers: { ...NOT_FOUND, connection: 'close' } }),
+  '/transfer-encoding': () => ({
+    statusCode: 200,
+    headers: { ...NOT_FOUND, 'Transfer-Encoding': 'chunked', 'keep-alive': 'timeout=5' },
+  }),
+  '/transfer-encoding-body': () => ({
+    statusCode: 200,
+    headers: { 'content-type': 'text/plain', 'Transfer-Encoding': 'chunked' },
+    body: 'all of it',
+  }),
   '/type-twice': () => ({
     statusCode: 200,
     // Mockttp's type allows one Content-Type, but a plugin's reply can still give two.
@@ -309,6 +318,21 @@ describe('HTTP/2 replies from plugin rules, through Wirescry', () => {
       if (dropped) expect(result.headers[dropped]).toBeUndefined();
       expect(result.body.length).toBe(0);
       expect(result.rstCode).toBe(http2.constants.NGHTTP2_NO_ERROR);
+    });
+
+    // HTTP/2 forbids these; Node refused them as it sent the head, and the reply never finished.
+    it('leaves out per-connection headers such as Transfer-Encoding, with or without a body', async () => {
+      const empty = await viaWirescry('/transfer-encoding');
+      expect(empty.headersEnded).toBe(true);
+      expect(empty.headers['grpc-status']).toBe('5');
+      expect(empty.headers['transfer-encoding']).toBeUndefined();
+      expect(empty.headers['keep-alive']).toBeUndefined();
+      expect(empty.rstCode).toBe(http2.constants.NGHTTP2_NO_ERROR);
+      const withBody = await viaWirescry('/transfer-encoding-body');
+      expect(withBody.headers[':status']).toBe(200);
+      expect(withBody.body.toString()).toBe('all of it');
+      expect(withBody.headers['transfer-encoding']).toBeUndefined();
+      expect(withBody.rstCode).toBe(http2.constants.NGHTTP2_NO_ERROR);
     });
 
     it.each(['/type-twice', '/vary-twice', '/raw-vary-twice'])(
