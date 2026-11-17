@@ -45,6 +45,8 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
       bodies: await HybridBodyStore.open(path.join(dir, 'bodies')),
       websockets: new WebSocketStore(),
       onExchange: (e) => recorded.push(e),
+      // As on Linux, where the proxy listens on all addresses: elsewhere it's on loopback only.
+      platform: 'linux',
       acceptConnection: (address) => {
         asked.push(address);
         return accept(address);
@@ -211,6 +213,7 @@ describe.skipIf(!lan)('Proxy: connections from other addresses', () => {
       bodies: await HybridBodyStore.open(path.join(dir, 'bodies-2')),
       websockets: new WebSocketStore(),
       onExchange: () => undefined,
+      platform: 'linux',
       acceptConnection: () => new Promise((resolve) => (answer = resolve)),
     });
     const socket = net.connect({ host: lan!, port: second.port, localAddress: lan! });

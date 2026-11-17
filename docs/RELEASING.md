@@ -32,6 +32,7 @@ CI starts each app and checks Pro loads, and on Windows installs the setup first
 - [ ] Click that page's HTML response, then a script or stylesheet: each opens in **Formatted** view, and **Traffic** keeps its requests. (Up to 0.1.3, opening a compressed or HTML body crashed the backend and emptied the list.)
 - [ ] Right-click in a text field shows **Cut**, **Copy**, **Paste**.
 - [ ] With Docker running (Docker Desktop with Linux containers on macOS and Windows): in a terminal opened from **Setup**, `docker run --rm busybox echo ok` prints `ok` and finishes. On Windows, the update installs while Docker setup is on (Wirescry runs `wirescry-docker-pipe.exe` from its install folder).
+- [ ] On Windows: no Windows Security (firewall) prompt at the first start (on a clean machine, or after removing Wirescry's entries under Windows Defender Firewall → Allowed apps), and the proxy listens on loopback only: in PowerShell, `Get-NetTCPConnection -State Listen -OwningProcess (Get-Process Wirescry).Id | Select LocalAddress, LocalPort` lists only `127.0.0.1` and `::1`.
 - [ ] **Check for Updates…** says up to date (or offers the right version).
 - [ ] With a Pro license: a mock rule changes the response, and the License tab says Active after quitting and reopening.
 

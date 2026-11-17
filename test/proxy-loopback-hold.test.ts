@@ -5,8 +5,9 @@
  * traffic users and devices send to 127.0.0.1 went to it. Device listeners hung up at random in
  * the full test run because other test files listen on picked ports.
  *
- * Only macOS shows the change: Linux refuses that listen anyway, so the checks there hold with or
- * without it. On Windows the outcome is logged, as it isn't measured yet.
+ * The hold is used on Linux only now: on Windows and macOS the proxy listens on 127.0.0.1 itself
+ * (see listensOnLoopbackOnly, and test/proxy-loopback-only.test.ts). The startProxy cases below
+ * run each system's own layout, and the holdLoopback checks cover the function on every system.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import http from 'node:http';
@@ -79,10 +80,11 @@ describe('The proxy’s port on 127.0.0.1', () => {
     ['a proxy on the lowest free port from 8000 (no port setting)', {}],
   ])('can’t be taken by another program after %s starts', async (_name, options) => {
     const running = await proxy(options);
-    const taken = [await listenAs(running.port, '127.0.0.1'), await listenAs(running.port, '0.0.0.0')];
-    if (process.platform === 'win32')
-      console.info(`Windows: another program listening beside the proxy: ${taken}`);
-    else expect(taken).toEqual(['EADDRINUSE', 'EADDRINUSE']);
+    expect(await listenAs(running.port, '127.0.0.1')).toBe('EADDRINUSE');
+    // On Windows and macOS the proxy listens on loopback only, so another program can listen on
+    // all addresses beside it; on Linux it can't. Either way, 127.0.0.1 stays Wirescry's.
+    const wildcard = await listenAs(running.port, '0.0.0.0');
+    if (process.platform === 'linux') expect(wildcard).toBe('EADDRINUSE');
     // And the proxy still answers there: Wirescry's own page.
     expect((await httpViaProxy(running.port, 'http://wirescry.internal/')).status).toBe(200);
   });
@@ -114,8 +116,9 @@ describe('The proxy’s port on 127.0.0.1', () => {
     expect(await listenAs(port, '127.0.0.1')).toBe('listening');
   });
 
-  // Mockttp's port search (get-port) checks 127.0.0.1 itself; this keeps it so. The retry for a
-  // port taken in the moment after that check is tested with onFreeLoopback below.
+  // On Linux, Mockttp's port search (get-port) checks 127.0.0.1 itself; on Windows and macOS,
+  // onFreePort's check does. The retry for a port taken in the moment after that check is tested
+  // with onFreeLoopback below.
   it('is skipped when another program already has 127.0.0.1 there and the proxy picks its port', async () => {
     // Another program on 127.0.0.1 only, on a port the proxy would otherwise pick first.
     const held = await onPickedPort(async (port) => {

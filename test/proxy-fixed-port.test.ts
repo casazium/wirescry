@@ -1,7 +1,9 @@
 /**
  * A fixed proxy port another program already listens on. Measured on macOS: Mockttp's listen on
  * all addresses (::) succeeds even when another program has 127.0.0.1 or 0.0.0.0 on that port,
- * and that program then answers 127.0.0.1, where Wirescry's users send their traffic.
+ * and that program then answers 127.0.0.1, where Wirescry's users send their traffic. That's the
+ * Linux layout; on Windows and macOS the proxy now listens on 127.0.0.1 and checks the port by
+ * connecting (test/proxy-loopback-only.test.ts). These run on each system's own layout.
  */
 import { mkdtemp, rm } from 'node:fs/promises';
 import net from 'node:net';

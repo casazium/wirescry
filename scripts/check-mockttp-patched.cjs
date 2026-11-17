@@ -20,6 +20,8 @@ const MOCKTTP_PATCHED_FILES = {
     'Wirescry patch: recorded response headers',
     'Wirescry patch: HTTP/2 per-connection headers',
   ],
+  // LISTEN_MARKERS.
+  'dist/server/mockttp-server.js': ['Wirescry patch: listening address'],
 };
 
 /** Throws unless every patched file in Mockttp's package folder holds all its markers. */

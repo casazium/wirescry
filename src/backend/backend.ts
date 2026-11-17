@@ -1083,7 +1083,12 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
             } catch (error) {
               const code = (error as NodeJS.ErrnoException).code;
               throw new Error(
-                code === 'EADDRINUSE' ? `Port ${port} is already in use.` : (error as Error).message,
+                code === 'EADDRINUSE'
+                  ? `Port ${port} is already in use.`
+                  : // Windows: another user's program has it, or the system reserved it (Hyper-V, WSL).
+                    code === 'EACCES'
+                    ? `Port ${port} is already in use, or reserved by the system.`
+                    : (error as Error).message,
                 { cause: error },
               );
             }
