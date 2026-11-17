@@ -595,7 +595,8 @@ async function startListener(
 ): Promise<RunningProxy> {
   const { ca, store, bodies, onExchange } = options;
   const loopbackOnly = listensOnLoopbackOnly(options.platform ?? process.platform);
-  // Before anything is set up, as a range may check many ports. 0 asks the system for any free
+  // Before anything is set up, as a range may check many ports (and again before listening,
+  // below). 0 asks the system for any free
   // port, as with listen(0): there's nothing to check first (measured on Windows: it never
   // picks a port another program has on all addresses).
   if (loopbackOnly) {
@@ -1178,7 +1179,12 @@ async function startListener(
   }
   await server.forAnyWebSocket().always().thenPassThrough(passThrough);
 
-  if (loopbackOnly) (server as unknown as { wirescryListenHost?: string }).wirescryListenHost = '127.0.0.1';
+  if (loopbackOnly) {
+    // Again, just before listening: setup takes a moment, in which another program may have
+    // started on the port, and listening beside it would take its traffic.
+    if (port !== 0) await assertNothingAnswersLoopback(port as number);
+    (server as unknown as { wirescryListenHost?: string }).wirescryListenHost = '127.0.0.1';
+  }
   await server.start(port);
   let restriction: { stop(): void } | undefined;
   let loopback: net.Server | undefined;
