@@ -12,7 +12,14 @@ import { generateCACertificate, getLocal, type Mockttp } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { RunningBackend } from '../src/backend/backend';
 import type { ServerMessage } from '../src/shared/api';
-import { apiClient, exchangesIn, startBackendOnPickedPort, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  latestExchange,
+  startBackendOnPickedPort,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 interface Answer {
   /** Everything the proxy sent back. */
@@ -85,7 +92,7 @@ describe('A client that closes its side after its request', () => {
       // The proxy closes the connection once it has answered.
       expect(answer.closed).toBe(true);
       // And it's in Traffic, as answered.
-      await expect.poll(() => exchangesIn(api.messages).find((e) => e.url === url)?.status).toBe(200);
+      await expect.poll(() => latestExchange(api.messages, (e) => e.url === url)?.status).toBe(200);
     } finally {
       api.close();
     }
@@ -118,21 +125,25 @@ describe('A client that closes its side after its request', () => {
       const answer = await send(backend.proxyPort, request(url, `localhost:${slow.port}`));
       expect(answer.closed).toBe(true);
       expect(answer.text).not.toContain('plain answer');
-      // Recorded a moment later on a slow runner (Windows CI was over a second).
+      // Checks the newest copy: the exchange is sent again once it fails, and the first copy may be
+      // from before that (on Windows CI, often). The timeout allows for a slow runner.
       try {
         await expect
-          .poll(() => exchangesIn(api.messages).find((e) => e.url === url)?.failure?.code, {
+          .poll(() => latestExchange(api.messages, (e) => e.url === url)?.failure?.code, {
             timeout: 10_000,
           })
           .toBe('CLIENT_CLOSED');
       } catch (error) {
-        // Say what was recorded instead: this has failed only on Windows CI, where it can't be watched.
+        // Say what was recorded instead, every copy, oldest first: this has failed only on Windows CI.
         const seen = exchangesIn(api.messages).map((e) => ({
           url: e.url,
           failure: e.failure,
           status: e.status,
         }));
-        throw new Error(`no CLIENT_CLOSED for ${url}; recorded: ${JSON.stringify(seen)}`, { cause: error });
+        throw new Error(
+          `no CLIENT_CLOSED for ${url}; copies recorded, oldest first: ${JSON.stringify(seen)}`,
+          { cause: error },
+        );
       }
     } finally {
       api.close();
