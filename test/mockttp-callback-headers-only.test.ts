@@ -60,6 +60,28 @@ const REPLIES: Record<string, () => Reply> = {
     } as unknown as Record<string, string>,
   }),
   '/vary-twice': () => ({ statusCode: 200, headers: { ...NOT_FOUND, vary: ['a', 'b'] } }),
+  '/raw-cookies': () => ({
+    statusCode: 200,
+    headers: [
+      ['content-type', 'application/grpc'],
+      ['Set-Cookie', 'a=1'],
+      ['grpc-status', '16'],
+      ['set-cookie', 'b=2'],
+    ] as unknown as Record<string, string>,
+  }),
+  '/raw-vary-twice': () => ({
+    statusCode: 200,
+    headers: [
+      ['content-type', 'application/grpc'],
+      ['Vary', 'a'],
+      ['grpc-status', '5'],
+      ['vary', 'b'],
+    ] as unknown as Record<string, string>,
+  }),
+  '/undefined-header': () => ({
+    statusCode: 200,
+    headers: { ...NOT_FOUND, 'x-unset': undefined } as unknown as Record<string, string>,
+  }),
   '/raw-headers': () => ({
     statusCode: 200,
     headers: [
@@ -229,6 +251,27 @@ describe('HTTP/2 replies from plugin rules, through Wirescry', () => {
       expect(result.headers['set-cookie']).toEqual(['a=1', 'b=2']);
     });
 
+    it('sends raw headers (name and value pairs) as one block too', async () => {
+      const result = await viaWirescry('/raw-headers');
+      expect(result.headersEnded).toBe(true);
+      expect(result.headers['grpc-status']).toBe('5');
+      expect(result.headers['grpc-message']).toBe('raw');
+    });
+
+    it('keeps raw Set-Cookie headers in any case together, in order', async () => {
+      const result = await viaWirescry('/raw-cookies');
+      expect(result.headersEnded).toBe(true);
+      expect(result.headers['grpc-status']).toBe('16');
+      expect(result.headers['set-cookie']).toEqual(['a=1', 'b=2']);
+    });
+
+    it('leaves out a header with no value', async () => {
+      const result = await viaWirescry('/undefined-header');
+      expect(result.headersEnded).toBe(true);
+      expect(result.headers['grpc-status']).toBe('5');
+      expect(result.headers['x-unset']).toBeUndefined();
+    });
+
     it("does it for a reply made before the request is sent on (a breakpoint's)", async () => {
       const result = await viaWirescry('/before-request');
       expect(result.headersEnded).toBe(true);
@@ -237,20 +280,16 @@ describe('HTTP/2 replies from plugin rules, through Wirescry', () => {
     });
   });
 
-  describe('a status or headers Node may refuse: the usual way, as before', () => {
-    it('sends raw headers (name and value pairs) as one block too', async () => {
-      const result = await viaWirescry('/raw-headers');
-      expect(result.headersEnded).toBe(true);
-      expect(result.headers['grpc-status']).toBe('5');
-      expect(result.headers['grpc-message']).toBe('raw');
-    });
-
+  // As Mockttp's fix does (httptoolkit/mockttp#232): the status and headers are set, so Node refuses
+  // a bad one there, as from writeHead, or changes it as it would anyway; only repeated headers it
+  // checks later, as it sends them, go the usual way.
+  describe('a status or headers Node refuses or changes', () => {
     it.each([
-      ['/status-101', 'Invalid status code: 101'],
-      ['/status-150', 'Invalid status code: 150'],
+      ['/status-101', 'Informational status codes cannot be used'],
+      ['/status-150', 'Informational status codes cannot be used'],
       ['/status-600', 'Invalid status code: 600'],
       ['/bad-header-name', 'Header name must be a valid HTTP token'],
-    ])("reports Node's refusal of %s as a 500, as before", async (urlPath, error) => {
+    ])("reports Node's refusal of %s as a 500", async (urlPath, error) => {
       const result = await viaWirescry(urlPath);
       expect(result.headersEnded).toBe(false);
       expect(result.headers[':status']).toBe(500);
@@ -258,8 +297,22 @@ describe('HTTP/2 replies from plugin rules, through Wirescry', () => {
       expect(result.rstCode).toBe(http2.constants.NGHTTP2_NO_ERROR);
     });
 
-    it.each(['/status-fraction', '/bad-header-value', '/connection-header', '/type-twice', '/vary-twice'])(
-      'sends %s with the headers first, as before',
+    it.each([
+      ['/status-fraction', undefined],
+      ['/bad-header-value', 'x-note'],
+      ['/connection-header', 'connection'],
+    ])('sends %s as one block, as Node changes it', async (urlPath, dropped) => {
+      const result = await viaWirescry(urlPath);
+      expect(result.headersEnded).toBe(true);
+      expect(result.headers[':status']).toBe(200);
+      expect(result.headers['grpc-status']).toBe('5');
+      if (dropped) expect(result.headers[dropped]).toBeUndefined();
+      expect(result.body.length).toBe(0);
+      expect(result.rstCode).toBe(http2.constants.NGHTTP2_NO_ERROR);
+    });
+
+    it.each(['/type-twice', '/vary-twice', '/raw-vary-twice'])(
+      'sends %s, with a header other than Set-Cookie repeated, with the headers first, as before',
       async (urlPath) => {
         const result = await viaWirescry(urlPath);
         expect(result.headersEnded).toBe(false);
@@ -299,6 +352,29 @@ describe('HTTP/2 replies from plugin rules, through Wirescry', () => {
       expect(summary.responding).toBeUndefined();
       const names = (detail.responseHeaders ?? []).map(([name]) => name.toLowerCase());
       expect(names).toEqual(expect.arrayContaining(['content-type', 'grpc-status', 'grpc-message']));
+    });
+
+    it('records repeated headers in the order sent, after :status', async () => {
+      const { detail } = await recorded('/cookies?listed');
+      const headers = detail.responseHeaders ?? [];
+      expect(headers[0]).toEqual([':status', '200']);
+      expect(headers.filter(([name]) => name === ':status')).toHaveLength(1);
+      expect(headers.map(([name]) => name)).toEqual([
+        ':status',
+        'content-type',
+        'grpc-status',
+        'set-cookie',
+        'set-cookie',
+      ]);
+      const cookies = headers.filter(([name]) => name.toLowerCase() === 'set-cookie');
+      expect(cookies.map(([, value]) => value)).toEqual(['a=1', 'b=2']);
+    });
+
+    it("doesn't record a Connection header that Node dropped", async () => {
+      const { detail } = await recorded('/connection-header?listed');
+      const names = (detail.responseHeaders ?? []).map(([name]) => name.toLowerCase());
+      expect(names).toContain('grpc-status');
+      expect(names).not.toContain('connection');
     });
 
     it('records a reply Node refused as finished, not still arriving', async () => {

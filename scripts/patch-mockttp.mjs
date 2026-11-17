@@ -6,7 +6,9 @@
 // errors exactly this way ("Trailers-Only"), and gRPC clients (Go, Node, Java) then ignore the
 // status and report INTERNAL instead. The patch sends the headers and the end together.
 // A reply made by a rule's callback (plugins' rules, a breakpoint's reply) with no body and no
-// trailers is split the same way, and is sent the same way too.
+// trailers is split the same way, and is sent the same way too, as Mockttp's fix for it does
+// (httptoolkit/mockttp#232): set the status and headers, then end(). That fix also records the
+// headers of such a reply correctly, which the parts for dist/util/request-utils.js do here.
 //
 // A second bug: Node marks a request with an Upgrade header and "upgrade" in Connection as an
 // upgrade, and Mockttp handles all of those as WebSockets. A plain-http request may offer another protocol, though:
@@ -32,6 +34,8 @@ export const MARKER = 'Wirescry patch: headers-only HTTP/2 responses';
 export const CALLBACK_MARKER = 'Wirescry patch: headers-only HTTP/2 callback replies';
 /** Marks the parts for requests offering an upgrade other than WebSocket, in both files. */
 export const UPGRADE_MARKER = 'Wirescry patch: non-WebSocket upgrade offers';
+/** Marks the parts that record a response's headers as Node sends them (TRACK_TARGET). */
+export const TRACK_MARKER = 'Wirescry patch: recorded response headers';
 
 export const UPGRADE_HELPER = `
 // ${UPGRADE_MARKER} (scripts/patch-mockttp.mjs in Wirescry).
@@ -73,32 +77,29 @@ function wirescryHeadOnly(response, status, statusMessage, headers) {
 }
 `;
 
-const CALLBACK_CHECK = `// ${CALLBACK_MARKER}: which replies may go out as headers alone.
-// Node checks the status and headers only when it sends them, which for these is inside end(), too
-// late for Mockttp to report a problem (the exchange would never finish). So only a status and
-// headers Node surely accepts go that way; anything else goes the usual way, as before.
-const wirescryHttp = require("http");
-function wirescryCanEndWithHead(status, headers) {
-    if (!Number.isInteger(status) || status < 200 || status > 599)
+const CALLBACK_CHECK = `// ${CALLBACK_MARKER}: sends a reply with no body as its head
+// alone, marked as the end of the stream, like writeHeadAndEnd in Mockttp's fix
+// (httptoolkit/mockttp#232). Returns false, having sent nothing, if a header other than Set-Cookie
+// is repeated: Node checks those only as it sends them, inside end(), too late to report a problem.
+// The reply then goes the usual way (ending with end(""), where #232 has end(); the same to clients).
+// A bad status or header name throws as it's set, so Mockttp reports it as before (1xx with Node's
+// own message); a bad value or a per-connection header is dropped by Node, as from writeHead.
+function wirescryHeadAndEnd(response, status, headers) {
+    const objectHeaders = headers === undefined
+        ? {}
+        : Array.isArray(headers)
+            ? (0, header_utils_1.rawHeadersToObject)(headers)
+            : headers;
+    const hasRepeatedHeaders = Object.entries(objectHeaders).some(([name, value]) => Array.isArray(value) && value.length > 1 && name.toLowerCase() !== 'set-cookie');
+    if (hasRepeatedHeaders)
         return false;
-    const pairs = headers === undefined ? [] : Array.isArray(headers) ? headers : Object.entries(headers);
-    const perConnection = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te'];
-    try {
-        for (const [name, value] of pairs) {
-            wirescryHttp.validateHeaderName(name);
-            if (perConnection.includes(name.toLowerCase()))
-                return false;
-            const values = Array.isArray(value) ? value : [value];
-            // Node allows some headers only once; of those given more than once, only cookies are surely fine.
-            if (values.length !== 1 && name.toLowerCase() !== 'set-cookie')
-                return false;
-            for (const one of values)
-                wirescryHttp.validateHeaderValue(name, one);
-        }
+    // HTTP/2 has no status message, so it's dropped here as in writeHead.
+    response.statusCode = status;
+    for (const [name, value] of Object.entries(objectHeaders)) {
+        if (value !== undefined)
+            response.setHeader(name, value);
     }
-    catch {
-        return false;
-    }
+    response.end();
     return true;
 }
 `;
@@ -133,7 +134,7 @@ export const EDITS = [
   },
   {
     name: 'callback-check',
-    tag: `// ${CALLBACK_MARKER}: which replies`,
+    tag: `// ${CALLBACK_MARKER}: sends a reply`,
     find: 'async function writeResponseFromCallback(result, response) {\n',
     replace: CALLBACK_CHECK + 'async function writeResponseFromCallback(result, response) {\n',
   },
@@ -151,9 +152,7 @@ export const EDITS = [
       ': with no body and no trailers, send the headers\n' +
       '    // marked as the end of the stream. end("") would send them first, then a separate end.\n' +
       '    if ((0, request_utils_1.isHttp2)(response) && !result.trailers && !(result.rawBody?.length > 0) &&\n' +
-      '        wirescryCanEndWithHead(result.statusCode || 200, result.headers)) {\n' +
-      '        wirescryHeadOnly(response, result.statusCode || 200, result.statusMessage, result.headers);\n' +
-      '        response.end();\n' +
+      '        wirescryHeadAndEnd(response, result.statusCode || 200, result.headers)) {\n' +
       '        return;\n' +
       '    }\n' +
       '    (0, request_utils_1.writeHead)(response, result.statusCode || 200, result.statusMessage, result.headers);\n' +
@@ -205,11 +204,63 @@ export const SERVER_EDITS = [
   },
 ];
 
+/** Where Mockttp records the headers each response is sent with. */
+export const TRACK_TARGET = 'dist/util/request-utils.js';
+
+/**
+ * The edits to TRACK_TARGET, from Mockttp's fix (httptoolkit/mockttp#232). A reply sent by
+ * wirescryHeadAndEnd has its headers set before Node's writeHead, so Mockttp records them from
+ * getHeaders(), which needs both: repeated values were reversed in place (so Node sent them reversed
+ * too), and :status came after them.
+ */
+export const TRACK_EDITS = [
+  {
+    name: 'track-status-later',
+    tag: `        // ${TRACK_MARKER}: :status`,
+    find:
+      '        writtenHeaders = getHeaderPairsFromArgument(headersArg);\n' +
+      '        if (isHttp2(trackedResponse)) {\n' +
+      "            writtenHeaders.unshift([':status', args[0].toString()]);\n" +
+      '        }\n',
+    replace:
+      '        writtenHeaders = getHeaderPairsFromArgument(headersArg);\n' +
+      '        // ' +
+      TRACK_MARKER +
+      ': :status is added below, after any headers set earlier, so it comes first.\n',
+  },
+  {
+    name: 'track-copy',
+    tag: `                    // ${TRACK_MARKER}: copied`,
+    find: '                    value.reverse().forEach(v => writtenHeaders?.unshift([key, v]));\n',
+    replace:
+      '                    // ' +
+      TRACK_MARKER +
+      ': copied first: reversing in place would change the headers Node sends.\n' +
+      '                    [...value].reverse().forEach(v => writtenHeaders?.unshift([key, v]));\n',
+  },
+  {
+    name: 'track-status-first',
+    tag: `        // ${TRACK_MARKER}: added last`,
+    find: '        return originalWriteHeader.apply(this, args);\n',
+    replace:
+      '        // ' +
+      TRACK_MARKER +
+      ': added last, so it comes first, before any headers set earlier.\n' +
+      '        if (isHttp2(trackedResponse)) {\n' +
+      "            writtenHeaders.unshift([':status', args[0].toString()]);\n" +
+      '        }\n' +
+      '        return originalWriteHeader.apply(this, args);\n',
+  },
+];
+
 /** The text the packaging check looks for in TARGET: every part of the patch is in place. */
 export const MARKERS = [MARKER, CALLBACK_MARKER, UPGRADE_MARKER];
 
 /** The same for SERVER_TARGET. */
 export const SERVER_MARKERS = [UPGRADE_MARKER];
+
+/** The same for TRACK_TARGET. */
+export const TRACK_MARKERS = [TRACK_MARKER];
 
 export const TARGET = 'dist/rules/requests/request-step-impls.js';
 
@@ -240,10 +291,11 @@ export function patchText(text, edits = EDITS, target = TARGET) {
 }
 
 export function patchMockttp(packageDir) {
-  // Both checked before either is written, so a part that no longer fits leaves Mockttp as it was.
+  // All checked before any is written, so a part that no longer fits leaves Mockttp as it was.
   const files = [
     [TARGET, EDITS],
     [SERVER_TARGET, SERVER_EDITS],
+    [TRACK_TARGET, TRACK_EDITS],
   ].map(([target, edits]) => {
     const file = path.join(packageDir, target);
     const text = readFileSync(file, 'utf8');
@@ -259,7 +311,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   const packageDir = process.argv[2] ?? path.join(root, 'node_modules', 'mockttp');
   try {
     const result = patchMockttp(packageDir);
-    console.log(`Mockttp: ${result} (headers-only HTTP/2 responses and callback replies, upgrade offers).`);
+    console.log(
+      `Mockttp: ${result} (headers-only HTTP/2 responses and callback replies, recorded response headers, upgrade offers).`,
+    );
   } catch (error) {
     console.error(`Mockttp patch failed. ${error instanceof Error ? error.message : error}`);
     console.error('See scripts/patch-mockttp.mjs for what to do.');

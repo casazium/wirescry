@@ -14,6 +14,8 @@ const MOCKTTP_PATCHED_FILES = {
   ],
   // SERVER_MARKERS.
   'dist/server/http-combo-server.js': ['Wirescry patch: non-WebSocket upgrade offers'],
+  // TRACK_MARKERS.
+  'dist/util/request-utils.js': ['Wirescry patch: recorded response headers'],
 };
 
 /** Throws unless every patched file in Mockttp's package folder holds all its markers. */
