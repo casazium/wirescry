@@ -31,6 +31,7 @@ CI starts each app and checks Pro loads, and on Windows installs the setup first
 - [ ] **Setup:** the browser launch opens a browser, and an HTTPS page loads without a certificate warning and appears in **Traffic**.
 - [ ] Click that page's HTML response, then a script or stylesheet: each opens in **Formatted** view, and **Traffic** keeps its requests. (Up to 0.1.3, opening a compressed or HTML body crashed the backend and emptied the list.)
 - [ ] Right-click in a text field shows **Cut**, **Copy**, **Paste**.
+- [ ] With Docker running (Docker Desktop with Linux containers on macOS and Windows): in a terminal opened from **Setup**, `docker run --rm busybox echo ok` prints `ok` and finishes. On Windows, the update installs while Docker setup is on (Wirescry runs `wirescry-docker-pipe.exe` from its install folder).
 - [ ] **Check for Updates…** says up to date (or offers the right version).
 - [ ] With a Pro license: a mock rule changes the response, and the License tab says Active after quitting and reopening.
 

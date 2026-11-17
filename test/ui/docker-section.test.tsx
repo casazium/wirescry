@@ -101,30 +101,19 @@ describe('Docker section', () => {
     expect(screen.getByText(/Docker wasn.t found/)).toBeTruthy();
   });
 
-  it('on Windows while Wirescry doesn’t set Docker up, says so, with no switch', () => {
-    const { rerender } = render(
+  it('on Windows, shows the switch for Docker Desktop, as elsewhere', () => {
+    const send = vi.fn().mockResolvedValue(undefined);
+    render(
       <DockerSection
-        status={withDocker(
-          {
-            state: 'unsupported',
-            daemon: 'npipe:////./pipe/dockerDesktopLinuxEngine',
-            error: 'Wirescry doesn’t set up Docker on Windows yet.',
-            windowsNotYet: true,
-          },
-          'win32',
-        )}
-        send={vi.fn()}
+        status={withDocker({ state: 'ready', daemon: 'npipe:////./pipe/dockerDesktopLinuxEngine' }, 'win32')}
+        send={send}
       />,
     );
-    expect(screen.queryByRole('checkbox')).toBeNull();
-    expect(
-      screen.getByText(/Wirescry doesn’t set up Docker on Windows yet\. Containers you start/),
-    ).toBeTruthy();
-    rerender(
-      <DockerSection status={withDocker({ state: 'none', windowsNotYet: true }, 'win32')} send={vi.fn()} />,
-    );
-    expect(screen.getByText('Wirescry doesn’t set up Docker on Windows yet.')).toBeTruthy();
-    expect(screen.queryByText(/Docker wasn.t found/)).toBeNull();
+    const box = screen.getByRole('checkbox');
+    expect((box as HTMLInputElement).checked).toBe(true);
+    expect(screen.queryByText(/doesn’t set up Docker on Windows/)).toBeNull();
+    fireEvent.click(box);
+    expect(send).toHaveBeenCalledWith({ command: 'setDockerSetup', enabled: false });
   });
 
   it('says when Docker is missing, remote, or could not be set up', () => {

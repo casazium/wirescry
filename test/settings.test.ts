@@ -18,14 +18,16 @@ async function load(raw: string): Promise<Awaited<ReturnType<typeof loadSettings
 }
 
 describe('settings.json', () => {
-  it('turns Docker setup on for Windows only with experimentalWindowsDocker: true', async () => {
-    expect(await load('{"experimentalWindowsDocker": true}')).toEqual({ experimentalWindowsDocker: true });
-    for (const value of ['false', '"true"', '1', 'null']) {
+  it('ignores experimentalWindowsDocker, which Docker setup on Windows no longer needs', async () => {
+    for (const value of ['true', 'false']) {
       expect(await load(`{"experimentalWindowsDocker": ${value}}`), value).toEqual({});
     }
+    expect(await load('{"experimentalWindowsDocker": true, "dockerSetup": false}')).toEqual({
+      dockerSetup: false,
+    });
   });
 
   it('ignores a damaged file', async () => {
-    expect(await load('{"experimentalWindowsDocker": tru')).toEqual({});
+    expect(await load('{"dockerSetup": fals')).toEqual({});
   });
 });

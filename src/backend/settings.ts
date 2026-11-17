@@ -8,11 +8,6 @@ export interface Settings {
   dockerSetup?: boolean;
   /** false: no Android setup (Setup's Android section and ADB). Unset means on. Set by hand. */
   androidSetup?: boolean;
-  /**
-   * true: set up Docker on Windows, which releases leave off until it's been tested hands-on with
-   * Docker Desktop. Set by hand in settings.json, for that test.
-   */
-  experimentalWindowsDocker?: boolean;
   /** The adb to start the ADB server with, if not found the usual way. An absolute path. */
   adbPath?: string;
   /**
@@ -41,7 +36,6 @@ export async function loadSettings(dir: string): Promise<Settings> {
       ...(isValidPort(raw.proxyPort) ? { proxyPort: raw.proxyPort } : {}),
       ...(raw.dockerSetup === false ? { dockerSetup: false } : {}),
       ...(raw.androidSetup === false ? { androidSetup: false } : {}),
-      ...(raw.experimentalWindowsDocker === true ? { experimentalWindowsDocker: true } : {}),
       ...(raw.javaAgentStartup === true ? { javaAgentStartup: true } : {}),
       ...(raw.javaAttachWarningOk === true ? { javaAttachWarningOk: true } : {}),
       ...(typeof raw.adbPath === 'string' && path.isAbsolute(raw.adbPath) && raw.adbPath.length < 1000
