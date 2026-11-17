@@ -19,6 +19,13 @@
 // shouldUpgradeCallback, from Node 24.9), so the rest are ordinary requests, recorded as sent;
 // and it doesn't pass their offer on, as a proxy shouldn't (it's for one connection only).
 //
+// A third bug: over HTTP/2 a rule's reply (a mock, a file, a plugin's or a breakpoint's reply) with
+// a header that applies to one connection only, such as Transfer-Encoding or Keep-Alive, never
+// finished. HTTP/2 forbids those (RFC 9113, section 8.2.2). Node takes them as they're set but
+// refuses them as it sends the head, and keeps them, so Mockttp's own error reply failed the same
+// way; in trailers, Node's refusal was an uncaught error, which stopped Wirescry's backend. The
+// patch leaves them out of HTTP/2 heads and trailers.
+//
 // Run by `postinstall`. Safe to run again. Fails the install if Mockttp's code has changed so the
 // patch no longer fits: check whether the new Mockttp already has the fix, and remove this script
 // (and the postinstall entry) if so; otherwise update the patch.
@@ -34,8 +41,10 @@ export const MARKER = 'Wirescry patch: headers-only HTTP/2 responses';
 export const CALLBACK_MARKER = 'Wirescry patch: headers-only HTTP/2 callback replies';
 /** Marks the parts for requests offering an upgrade other than WebSocket, in both files. */
 export const UPGRADE_MARKER = 'Wirescry patch: non-WebSocket upgrade offers';
-/** Marks the parts that record a response's headers as Node sends them (TRACK_TARGET). */
+/** Marks the parts that record a response's headers as Node sends them (UTILS_TARGET). */
 export const TRACK_MARKER = 'Wirescry patch: recorded response headers';
+/** Marks the parts that leave out per-connection headers over HTTP/2, in TARGET and UTILS_TARGET. */
+export const CONNECTION_MARKER = 'Wirescry patch: HTTP/2 per-connection headers';
 
 export const UPGRADE_HELPER = `
 // ${UPGRADE_MARKER} (scripts/patch-mockttp.mjs in Wirescry).
@@ -161,6 +170,22 @@ export const EDITS = [
       '    response.end(result.rawBody || "");\n',
   },
   {
+    name: 'connection-callback',
+    tag: `        // ${CONNECTION_MARKER}: left out`,
+    find: '        validateCustomHeaders({}, result.headers);\n',
+    replace:
+      '        validateCustomHeaders({}, result.headers);\n' +
+      '        // ' +
+      CONNECTION_MARKER +
+      ': left out over HTTP/2, here so that a reply\n' +
+      "        // with no body (wirescryHeadAndEnd) doesn't have them either. Raw headers become an object,\n" +
+      '        // as writeHead makes them over HTTP/2.\n' +
+      '        if ((0, request_utils_1.isHttp2)(response))\n' +
+      '            result.headers = (0, request_utils_1.wirescryDropConnectionHeaders)(Array.isArray(result.headers)\n' +
+      '                ? (0, header_utils_1.rawHeadersToObject)(result.headers)\n' +
+      '                : result.headers);\n',
+  },
+  {
     name: 'upgrade-helper',
     tag: `// ${UPGRADE_MARKER} (scripts/patch-mockttp.mjs in Wirescry).`,
     find: 'function isSerializedBuffer(obj) {\n',
@@ -204,16 +229,37 @@ export const SERVER_EDITS = [
   },
 ];
 
-/** Where Mockttp records the headers each response is sent with. */
-export const TRACK_TARGET = 'dist/util/request-utils.js';
+export const CONNECTION_HELPER = `
+// ${CONNECTION_MARKER} (scripts/patch-mockttp.mjs in Wirescry).
+// The headers (an object) without those HTTP/2 forbids, as applying to one connection only (RFC 9113,
+// section 8.2.2). Node refuses them only as it sends the head (or trailers), too late for Mockttp
+// to report it, and keeps them, so Mockttp's own error reply fails too. Names are matched as Node
+// stores them, trimmed and in any case. TE is kept only as Node allows it: one TE header, which is
+// "trailers". Anything else is passed on as it was; with nothing to leave out, the same object.
+function wirescryDropConnectionHeaders(headers) {
+    const perConnection = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'http2-settings'];
+    const key = (name) => String(name).trim().toLowerCase();
+    const te = Object.entries(headers).filter(([name, value]) => key(name) === 'te' && value !== undefined);
+    const keepTe = te.length === 0 || (te.length === 1 && [te[0][1]].flat().length === 1 && [te[0][1]].flat()[0] === 'trailers');
+    const dropped = (name) => perConnection.includes(key(name)) || (key(name) === 'te' && !keepTe);
+    if (!Object.keys(headers).some(dropped))
+        return headers;
+    return Object.fromEntries(Object.entries(headers).filter(([name]) => !dropped(name)));
+}
+exports.wirescryDropConnectionHeaders = wirescryDropConnectionHeaders;
+`;
+
+/** Mockttp's request utilities: where it writes and records the head of each response. */
+export const UTILS_TARGET = 'dist/util/request-utils.js';
 
 /**
- * The edits to TRACK_TARGET, from Mockttp's fix (httptoolkit/mockttp#232). A reply sent by
- * wirescryHeadAndEnd has its headers set before Node's writeHead, so Mockttp records them from
- * getHeaders(), which needs both: repeated values were reversed in place (so Node sent them reversed
- * too), and :status came after them.
+ * The edits to UTILS_TARGET. The first three are from Mockttp's fix (httptoolkit/mockttp#232). A
+ * reply sent by wirescryHeadAndEnd has its headers set before Node's writeHead, so Mockttp records
+ * them from getHeaders(), which needed fixing twice: repeated values were reversed in place (so Node
+ * sent them reversed too), and :status came after them. The others leave out per-connection
+ * headers and trailers over HTTP/2.
  */
-export const TRACK_EDITS = [
+export const UTILS_EDITS = [
   {
     name: 'track-status-later',
     tag: `        // ${TRACK_MARKER}: :status`,
@@ -251,16 +297,61 @@ export const TRACK_EDITS = [
       '        }\n' +
       '        return originalWriteHeader.apply(this, args);\n',
   },
+  {
+    name: 'connection-helper',
+    tag: `// ${CONNECTION_MARKER} (scripts/patch-mockttp.mjs in Wirescry).`,
+    find: 'exports.writeHead = writeHead;\n',
+    replace: 'exports.writeHead = writeHead;\n' + CONNECTION_HELPER,
+  },
+  {
+    name: 'connection-trailers',
+    tag: `        // ${CONNECTION_MARKER}: trailers`,
+    find: '        const trailersArg = args[0];\n',
+    replace:
+      '        // ' +
+      CONNECTION_MARKER +
+      ': trailers too. Node refuses them only as it\n' +
+      '        // sends the trailers, as an uncaught error. It takes trailers as an object over HTTP/2.\n' +
+      '        if (isHttp2(trackedResponse) && args[0])\n' +
+      '            args[0] = wirescryDropConnectionHeaders(Array.isArray(args[0])\n' +
+      '                ? (0, header_utils_1.rawHeadersToObject)(args[0])\n' +
+      '                : args[0]);\n' +
+      '        const trailersArg = args[0];\n',
+  },
+  {
+    name: 'connection-write-head',
+    tag: `    // ${CONNECTION_MARKER}: left out`,
+    find:
+      '    if (statusMessage === undefined) {\n' +
+      "        // Cast is required as Node H2 types don't know about raw headers:\n" +
+      '        response.writeHead(status, flatHeaders);\n' +
+      '    }\n' +
+      '    else {\n' +
+      '        response.writeHead(status, statusMessage, flatHeaders);\n' +
+      '    }\n',
+    replace:
+      '    // ' +
+      CONNECTION_MARKER +
+      ': left out over HTTP/2 (flatHeaders is an object there).\n' +
+      '    const wirescryHeaders = isHttp2(response) ? wirescryDropConnectionHeaders(flatHeaders) : flatHeaders;\n' +
+      '    if (statusMessage === undefined) {\n' +
+      "        // Cast is required as Node H2 types don't know about raw headers:\n" +
+      '        response.writeHead(status, wirescryHeaders);\n' +
+      '    }\n' +
+      '    else {\n' +
+      '        response.writeHead(status, statusMessage, wirescryHeaders);\n' +
+      '    }\n',
+  },
 ];
 
 /** The text the packaging check looks for in TARGET: every part of the patch is in place. */
-export const MARKERS = [MARKER, CALLBACK_MARKER, UPGRADE_MARKER];
+export const MARKERS = [MARKER, CALLBACK_MARKER, UPGRADE_MARKER, CONNECTION_MARKER];
 
 /** The same for SERVER_TARGET. */
 export const SERVER_MARKERS = [UPGRADE_MARKER];
 
-/** The same for TRACK_TARGET. */
-export const TRACK_MARKERS = [TRACK_MARKER];
+/** The same for UTILS_TARGET. */
+export const UTILS_MARKERS = [TRACK_MARKER, CONNECTION_MARKER];
 
 export const TARGET = 'dist/rules/requests/request-step-impls.js';
 
@@ -295,7 +386,7 @@ export function patchMockttp(packageDir) {
   const files = [
     [TARGET, EDITS],
     [SERVER_TARGET, SERVER_EDITS],
-    [TRACK_TARGET, TRACK_EDITS],
+    [UTILS_TARGET, UTILS_EDITS],
   ].map(([target, edits]) => {
     const file = path.join(packageDir, target);
     const text = readFileSync(file, 'utf8');
@@ -312,7 +403,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   try {
     const result = patchMockttp(packageDir);
     console.log(
-      `Mockttp: ${result} (headers-only HTTP/2 responses and callback replies, recorded response headers, upgrade offers).`,
+      `Mockttp: ${result} (headers-only HTTP/2 responses and callback replies, recorded response headers, upgrade offers, HTTP/2 per-connection headers).`,
     );
   } catch (error) {
     console.error(`Mockttp patch failed. ${error instanceof Error ? error.message : error}`);

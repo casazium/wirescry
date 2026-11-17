@@ -11,6 +11,7 @@ import { generateCACertificate } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   CALLBACK_MARKER,
+  CONNECTION_MARKER,
   EDITS,
   MARKER,
   MARKERS,
@@ -20,12 +21,12 @@ import {
   SERVER_MARKERS,
   SERVER_TARGET,
   TARGET,
-  TRACK_EDITS,
   TRACK_MARKER,
-  TRACK_MARKERS,
-  TRACK_TARGET,
   UPGRADE_HELPER,
   UPGRADE_MARKER,
+  UTILS_EDITS,
+  UTILS_MARKERS,
+  UTILS_TARGET,
 } from '../scripts/patch-mockttp.mjs';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { ExchangeDetail } from '../src/shared/api';
@@ -48,6 +49,7 @@ describe('the Mockttp patch script', () => {
       'detect',
       'callback-check',
       'callback',
+      'connection-callback',
       'upgrade-helper',
       'upgrade-forward',
     ]);
@@ -71,6 +73,23 @@ describe('the Mockttp patch script', () => {
     expect(out).toBe(patchText(pristine));
   });
 
+  it('adds the per-connection parts to an install patched before them, in both files', () => {
+    const isConnection = (edit: { tag: string }) => edit.tag.includes(CONNECTION_MARKER);
+    for (const [target, edits] of [
+      [TARGET, EDITS],
+      [UTILS_TARGET, UTILS_EDITS],
+    ] as const) {
+      const pristineText = edits.map((edit) => `before\n${edit.find}after\n`).join('');
+      const older = patchText(
+        pristineText,
+        edits.filter((edit) => !isConnection(edit)),
+        target,
+      );
+      expect(older).not.toContain(CONNECTION_MARKER);
+      expect(patchText(older, edits, target)).toBe(patchText(pristineText, edits, target));
+    }
+  });
+
   it("refuses an install patched by 0.1.31's script, rather than patch its callback part twice", async () => {
     // A computed path: the fixture has no type declarations, and needs none.
     const fixture = './fixtures/patch-mockttp-0.1.31.mjs';
@@ -85,19 +104,19 @@ describe('the Mockttp patch script', () => {
 
     const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-patch-'));
     try {
-      const pristineTrack = TRACK_EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
+      const pristineUtils = UTILS_EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
       const pristineServer = SERVER_EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
       for (const [target, text] of [
         [TARGET, older],
         [SERVER_TARGET, pristineServer],
-        [TRACK_TARGET, pristineTrack],
+        [UTILS_TARGET, pristineUtils],
       ] as const) {
         mkdirSync(path.dirname(path.join(dir, target)), { recursive: true });
         writeFileSync(path.join(dir, target), text);
       }
       expect(() => patchMockttp(dir)).toThrow(/"callback" part of another version/);
       expect(readFileSync(path.join(dir, TARGET), 'utf8')).toBe(older);
-      expect(readFileSync(path.join(dir, TRACK_TARGET), 'utf8')).toBe(pristineTrack);
+      expect(readFileSync(path.join(dir, UTILS_TARGET), 'utf8')).toBe(pristineUtils);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -158,13 +177,13 @@ describe('the Mockttp patch script', () => {
     const { MOCKTTP_PATCHED_FILES } = require('../scripts/check-mockttp-patched.cjs') as {
       MOCKTTP_PATCHED_FILES: Record<string, string[]>;
     };
-    expect(MARKERS).toEqual([MARKER, CALLBACK_MARKER, UPGRADE_MARKER]);
+    expect(MARKERS).toEqual([MARKER, CALLBACK_MARKER, UPGRADE_MARKER, CONNECTION_MARKER]);
     expect(SERVER_MARKERS).toEqual([UPGRADE_MARKER]);
-    expect(TRACK_MARKERS).toEqual([TRACK_MARKER]);
+    expect(UTILS_MARKERS).toEqual([TRACK_MARKER, CONNECTION_MARKER]);
     expect(MOCKTTP_PATCHED_FILES).toEqual({
       [TARGET]: MARKERS,
       [SERVER_TARGET]: SERVER_MARKERS,
-      [TRACK_TARGET]: TRACK_MARKERS,
+      [UTILS_TARGET]: UTILS_MARKERS,
     });
     const builder = readFileSync(
       path.resolve(path.dirname(require.resolve('mockttp')), '../../../electron-builder.cjs'),
@@ -191,16 +210,16 @@ describe('the Mockttp patch script', () => {
     try {
       write(TARGET, MARKERS);
       write(SERVER_TARGET, SERVER_MARKERS);
-      write(TRACK_TARGET, TRACK_MARKERS);
+      write(UTILS_TARGET, UTILS_MARKERS);
       expect(() => checkMockttpPatched(dir)).not.toThrow();
       // The server file unpatched, as before this part of the patch.
       write(SERVER_TARGET, []);
       expect(() => checkMockttpPatched(dir)).toThrow(/Mockttp is not patched/);
       write(SERVER_TARGET, SERVER_MARKERS);
       // The same for the file where responses' headers are recorded.
-      write(TRACK_TARGET, []);
+      write(UTILS_TARGET, []);
       expect(() => checkMockttpPatched(dir)).toThrow(/Mockttp is not patched/);
-      write(TRACK_TARGET, TRACK_MARKERS);
+      write(UTILS_TARGET, UTILS_MARKERS);
       // All of them, not any: an install patched by an older script has the first ones only.
       for (const missing of MARKERS) {
         write(
@@ -220,7 +239,7 @@ describe('the Mockttp patch script', () => {
     for (const [target, edits] of [
       [TARGET, EDITS],
       [SERVER_TARGET, SERVER_EDITS],
-      [TRACK_TARGET, TRACK_EDITS],
+      [UTILS_TARGET, UTILS_EDITS],
     ] as const) {
       const installed = readFileSync(path.join(packageDir, target), 'utf8');
       let original = installed;
@@ -238,26 +257,29 @@ describe('the Mockttp patch script', () => {
     for (const marker of MARKERS) expect(installed).toContain(marker);
     const server = readFileSync(path.join(packageDir, SERVER_TARGET), 'utf8');
     for (const marker of SERVER_MARKERS) expect(server).toContain(marker);
-    const track = readFileSync(path.join(packageDir, TRACK_TARGET), 'utf8');
-    for (const marker of TRACK_MARKERS) expect(track).toContain(marker);
+    const utils = readFileSync(path.join(packageDir, UTILS_TARGET), 'utf8');
+    for (const marker of UTILS_MARKERS) expect(utils).toContain(marker);
   });
 });
 
-describe('the Mockttp patch script, for recorded response headers', () => {
-  const pristineTrack = TRACK_EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
+describe("the Mockttp patch script, for Mockttp's request utilities", () => {
+  const pristineUtils = UTILS_EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
 
   it('applies its parts once, and leaves them alone after', () => {
-    const once = patchText(pristineTrack, TRACK_EDITS, TRACK_TARGET);
-    for (const edit of TRACK_EDITS) expect(once.split(edit.replace).length - 1).toBe(1);
-    expect(patchText(once, TRACK_EDITS, TRACK_TARGET)).toBe(once);
+    const once = patchText(pristineUtils, UTILS_EDITS, UTILS_TARGET);
+    for (const edit of UTILS_EDITS) expect(once.split(edit.replace).length - 1).toBe(1);
+    expect(patchText(once, UTILS_EDITS, UTILS_TARGET)).toBe(once);
   });
 
   it('adds :status last, so it comes first, and copies repeated values before reversing them', () => {
-    const [later, copy, first] = TRACK_EDITS;
-    expect(TRACK_EDITS.map((edit) => edit.name)).toEqual([
+    const [later, copy, first] = UTILS_EDITS;
+    expect(UTILS_EDITS.map((edit) => edit.name)).toEqual([
       'track-status-later',
       'track-copy',
       'track-status-first',
+      'connection-helper',
+      'connection-trailers',
+      'connection-write-head',
     ]);
     expect(later!.replace).not.toContain("unshift([':status'");
     expect(copy!.replace).toContain('[...value].reverse()');
@@ -266,24 +288,24 @@ describe('the Mockttp patch script, for recorded response headers', () => {
   });
 
   it('gives every part a tag of its own, and refuses another version of one', () => {
-    for (const edit of TRACK_EDITS) {
+    for (const edit of UTILS_EDITS) {
       expect(edit.replace).toContain(edit.tag);
       expect(edit.find).not.toContain(edit.tag);
-      for (const other of TRACK_EDITS.filter((o) => o !== edit))
+      for (const other of UTILS_EDITS.filter((o) => o !== edit))
         expect(other.replace).not.toContain(edit.tag);
-      const tagged = patchText(pristineTrack, TRACK_EDITS, TRACK_TARGET).replace(
+      const tagged = patchText(pristineUtils, UTILS_EDITS, UTILS_TARGET).replace(
         edit.replace,
         `${edit.tag} (an older wording)\n${edit.find}`,
       );
-      expect(() => patchText(tagged, TRACK_EDITS, TRACK_TARGET)).toThrow(
+      expect(() => patchText(tagged, UTILS_EDITS, UTILS_TARGET)).toThrow(
         new RegExp(`request-utils\\.js has the "${edit.name}" part of another version`),
       );
     }
   });
 
   it("refuses when Mockttp's recording has changed, naming the file", () => {
-    const missing = pristineTrack.replace(TRACK_EDITS[1]!.find, 'something else\n');
-    expect(() => patchText(missing, TRACK_EDITS, TRACK_TARGET)).toThrow(
+    const missing = pristineUtils.replace(UTILS_EDITS[1]!.find, 'something else\n');
+    expect(() => patchText(missing, UTILS_EDITS, UTILS_TARGET)).toThrow(
       /request-utils\.js has changed: the "track-copy" part of the patch matches 0 places/,
     );
   });
@@ -296,7 +318,7 @@ describe('the Mockttp patch script, for recorded response headers', () => {
       for (const [target, text] of [
         [TARGET, pristine],
         [SERVER_TARGET, pristineServer],
-        [TRACK_TARGET, 'a different Mockttp\n'],
+        [UTILS_TARGET, 'a different Mockttp\n'],
       ] as const) {
         mkdirSync(path.dirname(path.join(dir, target)), { recursive: true });
         writeFileSync(path.join(dir, target), text);

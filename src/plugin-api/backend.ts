@@ -95,8 +95,9 @@ export interface BackendPluginHost {
    * Over HTTP/2, a reply from a callback step (or from `beforeRequest`) with no body and no
    * trailers goes out as one block of headers marking the end of the stream: a gRPC
    * "Trailers-Only" reply, so `grpc-status` can go in its headers. With a body or trailers,
-   * the headers go first. A status below 200, or headers HTTP/2 doesn't allow or that are
-   * given more than once (other than Set-Cookie), also go the usual way.
+   * the headers go first. A status below 200, or headers given more than once (other than
+   * Set-Cookie), also go the usual way. Headers and trailers HTTP/2 doesn't allow, as they
+   * apply to one connection only (such as Transfer-Encoding or Keep-Alive), are left out.
    */
   setProxyRules(rules: PluginRule[]): Promise<void>;
   /**
