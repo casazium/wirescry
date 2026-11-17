@@ -45,6 +45,8 @@ export const UPGRADE_MARKER = 'Wirescry patch: non-WebSocket upgrade offers';
 export const TRACK_MARKER = 'Wirescry patch: recorded response headers';
 /** Marks the parts that leave out per-connection headers over HTTP/2, in TARGET and UTILS_TARGET. */
 export const CONNECTION_MARKER = 'Wirescry patch: HTTP/2 per-connection headers';
+/** Marks the part that lets Wirescry choose the proxy's listening address (LISTEN_TARGET). */
+export const LISTEN_MARKER = 'Wirescry patch: listening address';
 
 export const UPGRADE_HELPER = `
 // ${UPGRADE_MARKER} (scripts/patch-mockttp.mjs in Wirescry).
@@ -344,6 +346,28 @@ export const UTILS_EDITS = [
   },
 ];
 
+/** Mockttp's server, where it starts listening. */
+export const LISTEN_TARGET = 'dist/server/mockttp-server.js';
+
+/**
+ * The edits to LISTEN_TARGET. Mockttp listens on all addresses, with no option for another. On
+ * Windows and macOS, Wirescry sets `wirescryListenHost` to 127.0.0.1 on the server before starting
+ * it, with a fixed port: nothing listens on the network, so Windows doesn't ask to let Wirescry
+ * through its firewall. Unset, the listen is as before.
+ */
+export const LISTEN_EDITS = [
+  {
+    name: 'listen-host',
+    tag: `            // ${LISTEN_MARKER}:`,
+    find: '            this.server.listen(port);\n',
+    replace:
+      '            // ' +
+      LISTEN_MARKER +
+      ': the one Wirescry set, or all addresses as before.\n' +
+      '            this.server.listen(port, this.wirescryListenHost);\n',
+  },
+];
+
 /** The text the packaging check looks for in TARGET: every part of the patch is in place. */
 export const MARKERS = [MARKER, CALLBACK_MARKER, UPGRADE_MARKER, CONNECTION_MARKER];
 
@@ -352,6 +376,9 @@ export const SERVER_MARKERS = [UPGRADE_MARKER];
 
 /** The same for UTILS_TARGET. */
 export const UTILS_MARKERS = [TRACK_MARKER, CONNECTION_MARKER];
+
+/** The same for LISTEN_TARGET. */
+export const LISTEN_MARKERS = [LISTEN_MARKER];
 
 export const TARGET = 'dist/rules/requests/request-step-impls.js';
 
@@ -387,6 +414,7 @@ export function patchMockttp(packageDir) {
     [TARGET, EDITS],
     [SERVER_TARGET, SERVER_EDITS],
     [UTILS_TARGET, UTILS_EDITS],
+    [LISTEN_TARGET, LISTEN_EDITS],
   ].map(([target, edits]) => {
     const file = path.join(packageDir, target);
     const text = readFileSync(file, 'utf8');
@@ -403,7 +431,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.a
   try {
     const result = patchMockttp(packageDir);
     console.log(
-      `Mockttp: ${result} (headers-only HTTP/2 responses and callback replies, recorded response headers, upgrade offers, HTTP/2 per-connection headers).`,
+      `Mockttp: ${result} (headers-only HTTP/2 responses and callback replies, recorded response headers, upgrade offers, HTTP/2 per-connection headers, listening address).`,
     );
   } catch (error) {
     console.error(`Mockttp patch failed. ${error instanceof Error ? error.message : error}`);

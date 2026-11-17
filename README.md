@@ -144,7 +144,7 @@ With `WIRESCRY_PRO_DIR` set:
 Security basics:
 
 - **Certificate authority:** each install creates its own CA on first run, stored in the app's user data folder (`ca.key` is readable only by the user). No CA ships with the app.
-- **Proxy:** only accepts connections from this computer. Mockttp listens on every network interface and has no setting to change that, so Wirescry drops connections from other machines as they arrive. A fixed port is checked on `127.0.0.1` first, so another program already listening there can't silently receive the traffic.
+- **Proxy:** only accepts connections from this computer. On Windows and macOS it listens on `127.0.0.1` and `::1` only (a small Mockttp patch sets the address), so nothing listens on the network and Windows doesn't ask to let Wirescry through its firewall. On Linux it listens on every network interface, as Docker containers reach it at their bridge network's address, and Wirescry drops connections from other machines as they arrive. A fixed port, and each port of a range, is checked first, so another program already answering `127.0.0.1` there can't silently lose its traffic to Wirescry, or receive Wirescry's.
 - **Local API:** listens on `127.0.0.1` only. Each connection needs the secret token generated at launch, an allowed `Origin`, and a loopback `Host` header (which blocks DNS rebinding).
 - **Renderer:** `contextIsolation` and `sandbox` on, `nodeIntegration` off, a strict Content Security Policy, and no navigation, new windows or permission requests. Packaged builds serve the UI from `wirescry://app`.
 

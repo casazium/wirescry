@@ -8,12 +8,16 @@ export const UPGRADE_MARKER: string;
 export const TRACK_MARKER: string;
 /** Marks the parts that leave out per-connection headers over HTTP/2, in TARGET and UTILS_TARGET. */
 export const CONNECTION_MARKER: string;
+/** Marks the part that lets Wirescry choose the proxy's listening address (LISTEN_TARGET). */
+export const LISTEN_MARKER: string;
 /** Every part's marker in TARGET: the packaging check needs them all. */
 export const MARKERS: readonly string[];
 /** The same for SERVER_TARGET. */
 export const SERVER_MARKERS: readonly string[];
 /** The same for UTILS_TARGET. */
 export const UTILS_MARKERS: readonly string[];
+/** The same for LISTEN_TARGET. */
+export const LISTEN_MARKERS: readonly string[];
 /** One part of the patch: text found exactly once in Mockttp's file, what replaces it, and text only that part has. */
 export interface Edit {
   name: string;
@@ -27,10 +31,13 @@ export const EDITS: ReadonlyArray<Edit>;
 export const SERVER_EDITS: ReadonlyArray<Edit>;
 /** The parts for UTILS_TARGET. */
 export const UTILS_EDITS: ReadonlyArray<Edit>;
+/** The parts for LISTEN_TARGET. */
+export const LISTEN_EDITS: ReadonlyArray<Edit>;
 /** The patched files, relative to Mockttp's package folder. */
 export const TARGET: string;
 export const SERVER_TARGET: string;
 export const UTILS_TARGET: string;
+export const LISTEN_TARGET: string;
 /** The code of wirescryDropConnectionHeaders, as added to UTILS_TARGET. */
 export const CONNECTION_HELPER: string;
 /** The code of wirescryDropUpgradeOffer, as added to TARGET. */

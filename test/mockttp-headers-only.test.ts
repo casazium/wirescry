@@ -13,6 +13,10 @@ import {
   CALLBACK_MARKER,
   CONNECTION_MARKER,
   EDITS,
+  LISTEN_EDITS,
+  LISTEN_MARKER,
+  LISTEN_MARKERS,
+  LISTEN_TARGET,
   MARKER,
   MARKERS,
   patchMockttp,
@@ -180,10 +184,12 @@ describe('the Mockttp patch script', () => {
     expect(MARKERS).toEqual([MARKER, CALLBACK_MARKER, UPGRADE_MARKER, CONNECTION_MARKER]);
     expect(SERVER_MARKERS).toEqual([UPGRADE_MARKER]);
     expect(UTILS_MARKERS).toEqual([TRACK_MARKER, CONNECTION_MARKER]);
+    expect(LISTEN_MARKERS).toEqual([LISTEN_MARKER]);
     expect(MOCKTTP_PATCHED_FILES).toEqual({
       [TARGET]: MARKERS,
       [SERVER_TARGET]: SERVER_MARKERS,
       [UTILS_TARGET]: UTILS_MARKERS,
+      [LISTEN_TARGET]: LISTEN_MARKERS,
     });
     const builder = readFileSync(
       path.resolve(path.dirname(require.resolve('mockttp')), '../../../electron-builder.cjs'),
@@ -211,6 +217,7 @@ describe('the Mockttp patch script', () => {
       write(TARGET, MARKERS);
       write(SERVER_TARGET, SERVER_MARKERS);
       write(UTILS_TARGET, UTILS_MARKERS);
+      write(LISTEN_TARGET, LISTEN_MARKERS);
       expect(() => checkMockttpPatched(dir)).not.toThrow();
       // The server file unpatched, as before this part of the patch.
       write(SERVER_TARGET, []);
@@ -220,6 +227,10 @@ describe('the Mockttp patch script', () => {
       write(UTILS_TARGET, []);
       expect(() => checkMockttpPatched(dir)).toThrow(/Mockttp is not patched/);
       write(UTILS_TARGET, UTILS_MARKERS);
+      // And the server file where Mockttp listens.
+      write(LISTEN_TARGET, []);
+      expect(() => checkMockttpPatched(dir)).toThrow(/Mockttp is not patched/);
+      write(LISTEN_TARGET, LISTEN_MARKERS);
       // All of them, not any: an install patched by an older script has the first ones only.
       for (const missing of MARKERS) {
         write(
@@ -240,6 +251,7 @@ describe('the Mockttp patch script', () => {
       [TARGET, EDITS],
       [SERVER_TARGET, SERVER_EDITS],
       [UTILS_TARGET, UTILS_EDITS],
+      [LISTEN_TARGET, LISTEN_EDITS],
     ] as const) {
       const installed = readFileSync(path.join(packageDir, target), 'utf8');
       let original = installed;
@@ -259,6 +271,94 @@ describe('the Mockttp patch script', () => {
     for (const marker of SERVER_MARKERS) expect(server).toContain(marker);
     const utils = readFileSync(path.join(packageDir, UTILS_TARGET), 'utf8');
     for (const marker of UTILS_MARKERS) expect(utils).toContain(marker);
+    const listen = readFileSync(path.join(packageDir, LISTEN_TARGET), 'utf8');
+    for (const marker of LISTEN_MARKERS) expect(listen).toContain(marker);
+  });
+});
+
+describe('the Mockttp patch script, for the listening address', () => {
+  const pristineListen = LISTEN_EDITS.map((edit) => `before\n${edit.find}after\n`).join('');
+
+  it('applies its part once, and leaves it alone after', () => {
+    expect(LISTEN_EDITS.map((edit) => edit.name)).toEqual(['listen-host']);
+    const once = patchText(pristineListen, LISTEN_EDITS, LISTEN_TARGET);
+    expect(once).toContain('this.server.listen(port, this.wirescryListenHost);');
+    expect(once).not.toContain('this.server.listen(port);');
+    expect(patchText(once, LISTEN_EDITS, LISTEN_TARGET)).toBe(once);
+  });
+
+  it('is added to an install patched by the script before it, whose other files it leaves as they are', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-patch-'));
+    try {
+      const files = [
+        [TARGET, patchText(EDITS.map((edit) => `before\n${edit.find}after\n`).join(''))],
+        [
+          SERVER_TARGET,
+          patchText(
+            SERVER_EDITS.map((e) => `before\n${e.find}after\n`).join(''),
+            SERVER_EDITS,
+            SERVER_TARGET,
+          ),
+        ],
+        [
+          UTILS_TARGET,
+          patchText(UTILS_EDITS.map((e) => `before\n${e.find}after\n`).join(''), UTILS_EDITS, UTILS_TARGET),
+        ],
+        [LISTEN_TARGET, pristineListen],
+      ] as const;
+      for (const [target, text] of files) {
+        mkdirSync(path.dirname(path.join(dir, target)), { recursive: true });
+        writeFileSync(path.join(dir, target), text);
+      }
+      expect(patchMockttp(dir)).toBe('patched');
+      for (const [target, text] of files.slice(0, 3))
+        expect(readFileSync(path.join(dir, target), 'utf8')).toBe(text);
+      expect(readFileSync(path.join(dir, LISTEN_TARGET), 'utf8')).toBe(
+        patchText(pristineListen, LISTEN_EDITS, LISTEN_TARGET),
+      );
+      expect(patchMockttp(dir)).toBe('already patched');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses another version of its part, or a Mockttp that listens differently', () => {
+    const [edit] = LISTEN_EDITS;
+    expect(edit!.replace).toContain(edit!.tag);
+    const tagged = `before\n${edit!.tag} (an older wording)\n${edit!.find}after\n`;
+    expect(() => patchText(tagged, LISTEN_EDITS, LISTEN_TARGET)).toThrow(
+      /mockttp-server\.js has the "listen-host" part of another version/,
+    );
+    expect(() => patchText('this.server.listen(port, host);\n', LISTEN_EDITS, LISTEN_TARGET)).toThrow(
+      /mockttp-server\.js has changed: the "listen-host" part of the patch matches 0 places/,
+    );
+  });
+
+  it('listens on all addresses, as Mockttp did, when Wirescry sets no address', async () => {
+    const { getLocal } = await import('mockttp');
+    const server = getLocal();
+    await server.start(0);
+    try {
+      const address = ((server as unknown as { server: net.Server }).server.address() as net.AddressInfo)
+        .address;
+      expect(['::', '0.0.0.0']).toContain(address);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it('listens on the address Wirescry sets', async () => {
+    const { getLocal } = await import('mockttp');
+    const server = getLocal();
+    (server as unknown as { wirescryListenHost: string }).wirescryListenHost = '127.0.0.1';
+    await server.start(0);
+    try {
+      const address = ((server as unknown as { server: net.Server }).server.address() as net.AddressInfo)
+        .address;
+      expect(address).toBe('127.0.0.1');
+    } finally {
+      await server.stop();
+    }
   });
 });
 
