@@ -224,11 +224,16 @@ describe('Docker setup on Windows', () => {
         proxyPort: () => 8000,
         containerDir: () => dataDir,
         platform: 'win32',
-        findEndpoint: desktop,
+        // A Docker that isn't running: nothing answers, so the relay starts and nothing is unsupported.
+        findEndpoint: async () => ({
+          kind: 'local',
+          socketPath: `\\\\.\\pipe\\wirescry-test-absent-${process.pid}`,
+          host: `npipe:////./pipe/wirescry-test-absent-${process.pid}`,
+        }),
       });
       try {
         await setup.refresh();
-        expect(setup.status().state).not.toBe('failed');
+        expect(setup.status().state).toBe('ready');
         expect((setup as unknown as { relay?: unknown }).relay).toBeDefined();
         expect(setup.terminalEnv().DOCKER_HOST).toMatch(
           /^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]+$/,
@@ -238,6 +243,30 @@ describe('Docker setup on Windows', () => {
         expect(setup.terminalEnv()).toEqual({});
         setup.setActive(true);
         expect(setup.terminalEnv().DOCKER_HOST).toMatch(/wirescry-docker-/);
+      } finally {
+        await setup.stop();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.runIf(process.platform === 'win32')(
+    'with a helper that can’t start, fails, says so, and gives terminals nothing',
+    async () => {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-win-docker-'));
+      const setup = new DockerSetup({
+        dataDir,
+        enabled: true,
+        proxyPort: () => 8000,
+        containerDir: () => dataDir,
+        platform: 'win32',
+        pipeHelper: path.join(dataDir, 'missing', 'wirescry-docker-pipe.exe'),
+        findEndpoint: desktop,
+      });
+      try {
+        await setup.refresh();
+        expect(setup.status().state).toBe('failed');
+        expect(setup.terminalEnv()).toEqual({});
       } finally {
         await setup.stop();
         await rm(dataDir, { recursive: true, force: true });

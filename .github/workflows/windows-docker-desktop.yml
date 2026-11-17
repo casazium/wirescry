@@ -45,14 +45,12 @@ jobs:
 
       - run: npm ci
 
-      # The pipe helper Docker setup uses on Windows (casazium/wirescry#90), once it exists.
+      # The pipe helper Docker setup uses on Windows (casazium/wirescry#90).
       - uses: actions/setup-go@v7
-        if: hashFiles('native/docker-pipe/go.mod') != ''
         with:
           go-version-file: native/docker-pipe/go.mod
           cache-dependency-path: native/docker-pipe/go.sum
       - name: Build the Docker pipe helper
-        if: hashFiles('native/docker-pipe/go.mod') != ''
         run: node scripts/build-docker-pipe.mjs
 
       # At sign-in the runner can start before Docker Desktop's engine is up.
