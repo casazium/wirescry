@@ -1,4 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   firewallHint,
@@ -8,7 +10,7 @@ import {
   ufwAllowCommands,
   ufwEnabled,
 } from '../src/backend/docker/firewall';
-import { DockerSetup, NO_PIPE_HELPER, WINDOWS_NOT_YET } from '../src/backend/docker/setup';
+import { DockerSetup, NO_PIPE_HELPER } from '../src/backend/docker/setup';
 
 type Interfaces = ReturnType<typeof os.networkInterfaces>;
 const v4 = (address: string, prefix: number) =>
@@ -211,37 +213,39 @@ describe('Docker setup on Windows', () => {
       host: 'npipe:////./pipe/dockerDesktopLinuxEngine',
     }) as const;
 
-  it('is off by default, until tested with Docker Desktop: no relay, nothing for terminals', async () => {
-    const setup = new DockerSetup({
-      dataDir: os.tmpdir(),
-      enabled: true,
-      proxyPort: () => 8000,
-      containerDir: () => os.tmpdir(),
-      platform: 'win32',
-      findEndpoint: desktop,
-    });
-    await setup.refresh();
-    expect(setup.status()).toEqual({
-      state: 'unsupported',
-      daemon: 'npipe:////./pipe/dockerDesktopLinuxEngine',
-      error: WINDOWS_NOT_YET,
-      windowsNotYet: true,
-    });
-    expect(setup.terminalEnv()).toEqual({});
-    expect((setup as unknown as { relay?: unknown }).relay).toBeUndefined();
-    expect(setup.acceptsConnection('172.17.0.2')).toBe(false);
-    // The user's switch (hidden here, but the command still exists) can't turn it on.
-    const before = setup.status();
-    setup.setActive(false);
-    setup.setActive(true);
-    await setup.refresh();
-    expect(setup.status()).toEqual(before);
-    expect(setup.terminalEnv()).toEqual({});
-    expect((setup as unknown as { relay?: unknown }).relay).toBeUndefined();
-    await setup.stop();
-  });
+  // On Windows itself (CI), with the helper there to be found, as an install has it.
+  it.runIf(process.platform === 'win32')(
+    'is on by default: starts the relay through its pipe helper, and gives terminals DOCKER_HOST',
+    async () => {
+      const dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-win-docker-'));
+      const setup = new DockerSetup({
+        dataDir,
+        enabled: true,
+        proxyPort: () => 8000,
+        containerDir: () => dataDir,
+        platform: 'win32',
+        findEndpoint: desktop,
+      });
+      try {
+        await setup.refresh();
+        expect(setup.status().state).not.toBe('failed');
+        expect((setup as unknown as { relay?: unknown }).relay).toBeDefined();
+        expect(setup.terminalEnv().DOCKER_HOST).toMatch(
+          /^npipe:\/\/\/\/\.\/pipe\/wirescry-docker-[0-9a-f]+$/,
+        );
+        // The user's switch turns it off and on again.
+        setup.setActive(false);
+        expect(setup.terminalEnv()).toEqual({});
+        setup.setActive(true);
+        expect(setup.terminalEnv().DOCKER_HOST).toMatch(/wirescry-docker-/);
+      } finally {
+        await setup.stop();
+        await rm(dataDir, { recursive: true, force: true });
+      }
+    },
+  );
 
-  it('while off, still says when there is no Docker, or it is remote', async () => {
+  it('says when there is no Docker, or it is remote', async () => {
     const make = (findEndpoint: ConstructorParameters<typeof DockerSetup>[0]['findEndpoint']) =>
       new DockerSetup({
         dataDir: os.tmpdir(),
@@ -253,10 +257,12 @@ describe('Docker setup on Windows', () => {
       });
     const none = make(async () => ({ kind: 'none' }));
     await none.refresh();
-    expect(none.status()).toEqual({ state: 'none', windowsNotYet: true });
+    expect(none.status()).toEqual({ state: 'none' });
+    expect(none.terminalEnv()).toEqual({});
     const remote = make(async () => ({ kind: 'remote', host: 'tcp://build.example:2376' }) as never);
     await remote.refresh();
     expect(remote.status()).toEqual({ state: 'remote', daemon: 'tcp://build.example:2376' });
+    expect(remote.terminalEnv()).toEqual({});
   });
 
   it('leaves other systems alone', async () => {
@@ -283,7 +289,6 @@ describe('Docker setup on Windows', () => {
         proxyPort: () => 8000,
         containerDir: () => os.tmpdir(),
         platform: 'win32',
-        windows: true,
         findEndpoint: async () => ({
           kind: 'local',
           socketPath: '\\\\.\\pipe\\dockerDesktopLinuxEngine',
@@ -302,17 +307,4 @@ describe('Docker setup on Windows', () => {
       await setup.stop();
     },
   );
-  it('turned on for testing, still says when there is no Docker', async () => {
-    const none = new DockerSetup({
-      dataDir: os.tmpdir(),
-      enabled: true,
-      proxyPort: () => 8000,
-      containerDir: () => os.tmpdir(),
-      platform: 'win32',
-      windows: true,
-      findEndpoint: async () => ({ kind: 'none' }),
-    });
-    await none.refresh();
-    expect(none.status()).toEqual({ state: 'none' });
-  });
 });
