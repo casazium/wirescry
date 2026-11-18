@@ -21,7 +21,7 @@ import type {
   ServerMessage,
   WebSocketMessages,
 } from '../shared/api';
-import { startApiServer } from './api';
+import { startApiServer, type CommandContext } from './api';
 import { harEntry, harFrame, MAX_HAR_BODY_BYTES, MAX_HAR_IMPORT_BYTES, parseHar } from './har';
 import type { Encryptor } from './secure-store';
 import { headerValue, toBodyContent, writeBodyToFile, type WrittenBody } from './body-content';
@@ -64,7 +64,7 @@ import * as mockttp from 'mockttp';
 import { WebSocketStore } from './websocket-store';
 import { SseReader } from './sse-reader';
 import { upstreamTargetOf } from './upstream-target';
-import { matchExchanges } from './search';
+import { checkSearchId, matchExchanges, MAX_NAMED_SEARCHES, SearchStopped, type StopReason } from './search';
 
 /** How long quitting waits to put capturing Android devices back: the app kills the backend after 3 s. */
 const ANDROID_STOP_TIMEOUT_MS = 2000;
@@ -172,6 +172,8 @@ export interface RunningBackend {
    * show (the file may be a copy). `removed` counts older exchanges dropped to make room.
    */
   importHar(file: string, name?: string): Promise<HarImportCounts>;
+  /** How many searches (matchExchanges) are running. For tests. */
+  searchesRunning(): number;
   /** Writes one whole body of an exchange to a file, decoded where possible. */
   saveBody(file: string, exchangeId: string, side: BodySide): Promise<WrittenBody>;
   /** Proxy listeners for single devices (Android setup), besides the main proxy. */
@@ -922,7 +924,15 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     return { imported, skipped: parsed.skipped, problems: parsed.problems, removed };
   };
 
-  const handleCommand = async (command: ClientCommand): Promise<unknown> => {
+  // Searches running, so Clear, stop or their window closing can stop them; and those the window
+  // named, so it can cancel one it has replaced (the oldest goes past MAX_NAMED_SEARCHES).
+  const searches = new Set<AbortController>();
+  const namedSearches = new Map<string, AbortController>();
+  const stopSearches = (reason: StopReason): void => {
+    for (const search of searches) search.abort(new SearchStopped(reason));
+  };
+
+  const handleCommand = async (command: ClientCommand, context: CommandContext): Promise<unknown> => {
     switch (command.command) {
       case 'launchBrowser': {
         const browser = browsers.find((b) => b.id === command.browserId);
@@ -971,6 +981,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           return undefined;
         }
         clears += 1;
+        // First: a search reading what's about to go stops (on Windows, before its files are removed).
+        stopSearches('cleared');
         updates.reset();
         store.clear();
         completed.clear();
@@ -1125,7 +1137,44 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           throw new Error('ids must be a list of ids');
         // The UI sends at most a few thousand, and asks about all of them by leaving ids out.
         if (ids && ids.length > 10_000) throw new Error('Too many ids');
-        return { ids: await matchExchanges(store, command.query, ids) };
+        const { searchId } = command;
+        if (searchId !== undefined) checkSearchId(searchId);
+        const search = new AbortController();
+        const onClose = (): void => search.abort(new SearchStopped('closed'));
+        if (context.signal.aborted) onClose();
+        else context.signal.addEventListener('abort', onClose, { once: true });
+        searches.add(search);
+        if (searchId !== undefined) {
+          // The same name again replaces the earlier search.
+          namedSearches.get(searchId)?.abort(new SearchStopped('canceled'));
+          namedSearches.delete(searchId);
+          namedSearches.set(searchId, search);
+          if (namedSearches.size > MAX_NAMED_SEARCHES) {
+            const [oldest, controller] = namedSearches.entries().next().value!;
+            controller.abort(new SearchStopped('canceled'));
+            namedSearches.delete(oldest);
+          }
+        }
+        try {
+          return { ids: await matchExchanges(store, command.query, ids, { signal: search.signal }) };
+        } catch (error) {
+          if (!(error instanceof SearchStopped)) throw error;
+          // Only the window that replaced it sees this, and doesn't show it.
+          if (error.reason === 'canceled') throw new Error('Canceled', { cause: error });
+          // Cleared, closed or stopping: nothing to answer about.
+          return { ids: [] };
+        } finally {
+          searches.delete(search);
+          context.signal.removeEventListener('abort', onClose);
+          if (searchId !== undefined && namedSearches.get(searchId) === search)
+            namedSearches.delete(searchId);
+        }
+      }
+      case 'cancelMatch': {
+        checkSearchId(command.searchId);
+        namedSearches.get(command.searchId)?.abort(new SearchStopped('canceled'));
+        namedSearches.delete(command.searchId);
+        return undefined;
       }
       case 'getExchange': {
         const exchange: ExchangeDetail | undefined = store.get(command.exchangeId);
@@ -1234,6 +1283,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     exportHar,
     saveBody,
     importHar,
+    searchesRunning: () => searches.size,
     listeners,
     async stopAndroid(timeoutMs = ANDROID_STOP_TIMEOUT_MS) {
       await android?.stopAll(timeoutMs);

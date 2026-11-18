@@ -522,4 +522,143 @@ describe('DetailMatcher', () => {
       expect(matcher.state().error).toBeUndefined();
     });
   });
+
+  describe('canceling replaced searches', () => {
+    function withCancel() {
+      const asked: Array<{
+        query: string;
+        ids?: string[];
+        searchId?: string;
+        answer(ids: string[]): Promise<void>;
+        fail(message: string): Promise<void>;
+      }> = [];
+      const canceled: string[] = [];
+      const matcher = new DetailMatcher(() => undefined);
+      matcher.connect(
+        (query, ids, searchId) => {
+          const reply = deferred<string[]>();
+          asked.push({
+            query,
+            ...(ids ? { ids } : {}),
+            ...(searchId ? { searchId } : {}),
+            answer: async (matched) => {
+              reply.resolve(matched);
+              await Promise.resolve();
+              await Promise.resolve();
+            },
+            fail: async (message) => {
+              reply.reject(new Error(message));
+              await Promise.resolve();
+              await Promise.resolve();
+            },
+          });
+          return reply.promise;
+        },
+        (searchId) => canceled.push(searchId),
+      );
+      return { matcher, asked, canceled };
+    }
+    const big = Array.from({ length: MAX_BATCH_IDS + 1 }, (_, i) => `n${i}`);
+
+    it('names every full ask, uniquely, and never a batch ask', () => {
+      const { matcher, asked } = withCancel();
+      matcher.setQuery('header~a');
+      matcher.onBatch(['1'], []);
+      matcher.setQuery('header~b');
+      expect(asked[0]!.searchId).toMatch(/^[a-z0-9]+-\d+$/);
+      expect(asked[1]!.searchId).toBeUndefined();
+      expect(asked[2]!.searchId).toMatch(/^[a-z0-9]+-\d+$/);
+      expect(asked[2]!.searchId).not.toBe(asked[0]!.searchId);
+      // Another window's matcher names its own.
+      const other = withCancel();
+      other.matcher.setQuery('header~a');
+      expect(other.asked[0]!.searchId!.split('-')[0]).not.toBe(asked[0]!.searchId!.split('-')[0]);
+    });
+
+    it('cancels the full ask a new search replaces, while it’s unanswered', () => {
+      const { matcher, asked, canceled } = withCancel();
+      matcher.setQuery('header~a');
+      matcher.setQuery('header~b');
+      expect(canceled).toEqual([asked[0]!.searchId]);
+    });
+
+    it('cancels it when the search is cleared', () => {
+      const { matcher, asked, canceled } = withCancel();
+      matcher.setQuery('header~a');
+      matcher.setQuery(undefined);
+      expect(canceled).toEqual([asked[0]!.searchId]);
+    });
+
+    it('cancels the first full ask when a big batch starts a second', () => {
+      const { matcher, asked, canceled } = withCancel();
+      matcher.setQuery('header~a');
+      matcher.onBatch(big, []);
+      expect(asked[1]!.searchId).toBeDefined();
+      expect(canceled).toEqual([asked[0]!.searchId]);
+    });
+
+    it('cancels nothing once answered, or for the same search again', async () => {
+      const { matcher, asked, canceled } = withCancel();
+      matcher.setQuery('header~a');
+      await asked[0]!.answer([]);
+      matcher.setQuery('header~a');
+      matcher.setQuery('header~b');
+      matcher.onBatch(['1'], []);
+      await asked[1]!.answer([]);
+      matcher.onBatch(big, []);
+      expect(canceled).toEqual([]);
+    });
+
+    it('never shows "Canceled" as an error, and keeps the previous search shown', async () => {
+      const { matcher, asked } = withCancel();
+      matcher.setQuery('header~a');
+      await asked[0]!.answer(['1']);
+      matcher.setQuery('header~b');
+      await asked[1]!.fail('Canceled');
+      expect(matcher.state()).toMatchObject({ applied: 'header~a', pending: true });
+      expect(matcher.state().error).toBeUndefined();
+      expect([...matcher.state().matches]).toEqual(['1']);
+    });
+
+    it('drops a canceled search’s late answer', async () => {
+      const { matcher, asked } = withCancel();
+      matcher.setQuery('header~a');
+      matcher.setQuery('header~b');
+      await asked[0]!.answer(['stale']);
+      await asked[1]!.answer(['fresh']);
+      expect([...matcher.state().matches]).toEqual(['fresh']);
+    });
+
+    it('a restart doesn’t cancel by name: the old connection’s searches stopped with it', () => {
+      const { matcher, canceled } = withCancel();
+      matcher.setQuery('header~a');
+      matcher.restart();
+      expect(canceled).toEqual([]);
+    });
+
+    it('with no connection, there’s nothing to cancel through, and no error', () => {
+      const { matcher, canceled } = withCancel();
+      matcher.setQuery('header~a');
+      matcher.connect(undefined, (id) => canceled.push(id));
+      expect(() => matcher.setQuery('header~b')).not.toThrow();
+      expect(canceled).toEqual([]);
+    });
+
+    it('a cancel that throws doesn’t stop the new search', () => {
+      const matcher = new DetailMatcher(() => undefined);
+      const asked: string[] = [];
+      matcher.connect(
+        (query) => {
+          asked.push(query);
+          return new Promise(() => undefined);
+        },
+        () => {
+          throw new Error('Not connected');
+        },
+      );
+      matcher.setQuery('header~a');
+      expect(() => matcher.setQuery('header~b')).not.toThrow();
+      expect(asked).toEqual(['header~a', 'header~b']);
+    });
+  });
 });

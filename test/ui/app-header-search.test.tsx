@@ -597,4 +597,44 @@ describe('searching by header', () => {
       expect(shownPaths()).toEqual([]);
     });
   });
+
+  describe('canceling', () => {
+    const calls = () =>
+      client().send.mock.calls.map((c) => c[0] as { command: string; query?: string; searchId?: string });
+
+    it('cancels a header search it replaces before the answer, by its name', async () => {
+      await started([captured('alpha', 'red'), captured('beta', 'blue')]);
+      fake.held = [];
+      await search('header.x-team=red');
+      await search('header.x-team=blue');
+      const asks = calls().filter((c) => c.command === 'matchExchanges');
+      expect(asks.map((c) => c.query)).toEqual(['header.x-team=red', 'header.x-team=blue']);
+      expect(asks[0]!.searchId).toBeTruthy();
+      expect(calls().filter((c) => c.command === 'cancelMatch')).toEqual([
+        { command: 'cancelMatch', searchId: asks[0]!.searchId },
+      ]);
+      const held = fake.held;
+      fake.held = undefined;
+      await act(async () => held.forEach((r) => r()));
+      await settle();
+      expect(shownPaths()).toEqual(['/beta']);
+    });
+
+    it('cancels it when the search box is cleared', async () => {
+      await started([captured('alpha', 'red')]);
+      fake.held = [];
+      await search('header.x-team=red');
+      await search('');
+      expect(calls().filter((c) => c.command === 'cancelMatch')).toHaveLength(1);
+      expect(shownPaths()).toEqual(['/alpha']);
+    });
+
+    it('cancels nothing once a search is answered', async () => {
+      await started([captured('alpha', 'red')]);
+      await search('header.x-team=red');
+      await search('header.x-team=blue');
+      await search('');
+      expect(calls().filter((c) => c.command === 'cancelMatch')).toEqual([]);
+    });
+  });
 });

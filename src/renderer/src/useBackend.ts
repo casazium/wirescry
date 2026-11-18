@@ -253,12 +253,18 @@ export function useBackend(showView: (key: string) => void): BackendView {
       if (open) retry = setTimeout(() => setAttempt((n) => n + 1), 1000);
     });
     clientRef.current = client;
-    matcher.connect(async (query, ids) => {
-      const reply = (await client.send({ command: 'matchExchanges', query, ...(ids ? { ids } : {}) })) as {
-        ids: string[];
-      };
-      return reply.ids;
-    });
+    matcher.connect(
+      async (query, ids, searchId) => {
+        const reply = (await client.send({
+          command: 'matchExchanges',
+          query,
+          ...(ids ? { ids } : {}),
+          ...(searchId ? { searchId } : {}),
+        })) as { ids: string[] };
+        return reply.ids;
+      },
+      (searchId) => void client.send({ command: 'cancelMatch', searchId }).catch(() => undefined),
+    );
     return () => {
       open = false;
       clearTimeout(retry);

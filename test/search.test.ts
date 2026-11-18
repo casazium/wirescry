@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import type { ExchangeDetail, Header } from '../src/shared/api';
 import { MAX_QUERY_LENGTH } from '../src/shared/query';
-import { matchExchanges } from '../src/backend/search';
+import { checkSearchId, matchExchanges, SearchStopped } from '../src/backend/search';
 import { InMemoryRequestStore } from '../src/backend/store';
 
 function stored(id: string, request: Header[], response?: Header[], host = 'api.test'): ExchangeDetail {
@@ -213,5 +213,76 @@ describe('matchExchanges', () => {
     // Terms with errors are dropped, as in the list: what's left is empty.
     expect(await matchExchanges(store, 'header=x')).toEqual(['a', 'b', 'c', 'd']);
     expect(await matchExchanges(store, 'header=x host=cdn.*')).toEqual(['d']);
+  });
+
+  describe('stopping', () => {
+    const many = () => {
+      const target = new InMemoryRequestStore();
+      for (let i = 0; i < 30; i++) target.upsert(stored(`e${i}`, [['x-n', String(i)]]));
+      return target;
+    };
+
+    it('throws the reason when stopped before it starts', async () => {
+      const controller = new AbortController();
+      controller.abort(new SearchStopped('canceled'));
+      await expect(
+        matchExchanges(store, 'header~x', undefined, { signal: controller.signal }),
+      ).rejects.toMatchObject({
+        reason: 'canceled',
+      });
+    });
+
+    it('stops at the next exchange after a yield, with the reason given', async () => {
+      const controller = new AbortController();
+      let tick = 0;
+      let looked = 0;
+      const target = many();
+      const real = target.get.bind(target);
+      target.get = (id) => {
+        looked++;
+        return real(id);
+      };
+      const search = matchExchanges(target, 'header.x-n=*', undefined, {
+        signal: controller.signal,
+        sliceMs: 5,
+        now: () => tick++,
+        yieldNow: async () => {
+          controller.abort(new SearchStopped('cleared'));
+        },
+      });
+      await expect(search).rejects.toBeInstanceOf(SearchStopped);
+      await expect(search).rejects.toMatchObject({ reason: 'cleared' });
+      // It stopped soon after the first slice, not after reading all 30.
+      expect(looked).toBeLessThan(10);
+    });
+
+    it('stopped after its last exchange, it still throws rather than answer', async () => {
+      const controller = new AbortController();
+      let tick = 0;
+      const search = matchExchanges(storeOf(stored('a', [['x-t', '1']])), 'header~x', undefined, {
+        signal: controller.signal,
+        sliceMs: 1,
+        now: () => tick++,
+        yieldNow: async () => {
+          controller.abort(new SearchStopped('closed'));
+        },
+      });
+      await expect(search).rejects.toMatchObject({ reason: 'closed' });
+    });
+
+    it('a signal that never aborts changes nothing', async () => {
+      const controller = new AbortController();
+      expect(await matchExchanges(many(), 'header.x-n=2*', undefined, { signal: controller.signal })).toEqual(
+        ['e2', 'e20', 'e21', 'e22', 'e23', 'e24', 'e25', 'e26', 'e27', 'e28', 'e29'],
+      );
+    });
+  });
+
+  it('checkSearchId takes 1 to 64 characters of text, and nothing else', () => {
+    expect(() => checkSearchId('a')).not.toThrow();
+    expect(() => checkSearchId('x'.repeat(64))).not.toThrow();
+    for (const bad of ['', 'x'.repeat(65), 1, null, undefined, {}, ['a']]) {
+      expect(() => checkSearchId(bad)).toThrow('searchId must be text of 1 to 64 characters');
+    }
   });
 });
