@@ -490,6 +490,11 @@ export type ServerMessage =
   /** New or changed exchanges, batched. `removed` lists ids dropped to stay under the store's limit. */
   | { type: 'exchanges'; exchanges: ExchangeSummary[]; removed: string[] }
   | { type: 'cleared' }
+  /**
+   * How far a named search with body terms has got, to the window that asked: at most four times
+   * a second, and once at the end.
+   */
+  | { type: 'matchProgress'; searchId: string; done: number; total: number }
   | { type: 'paused'; paused: boolean }
   /** Sent when the port, certificate or Firefox setup changes. */
   | { type: 'status'; status: ProxyStatus }
@@ -583,6 +588,9 @@ export type ClientCommand =
       query: string;
       ids?: string[];
       /**
+       * Replies `{ ids, partial? }`: `partial` lists exchanges whose bodies were only partly
+       * searched for a body term (past the limit, not kept in full, or undecodable).
+       *
        * A name for this search, so `cancelMatch` can stop it. Names are per connection. A search
        * given a name already in use replaces (cancels) the earlier one. A canceled search's reply
        * is the error "Canceled"; one stopped by Clear or by the backend stopping replies

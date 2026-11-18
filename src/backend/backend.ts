@@ -65,7 +65,15 @@ import * as mockttp from 'mockttp';
 import { WebSocketStore } from './websocket-store';
 import { SseReader } from './sse-reader';
 import { upstreamTargetOf } from './upstream-target';
-import { checkSearchId, matchExchanges, MAX_NAMED_SEARCHES, SearchStopped, type StopReason } from './search';
+import {
+  checkSearchId,
+  matchExchanges,
+  MAX_NAMED_SEARCHES,
+  SearchStopped,
+  type BodyAccess,
+  type StopReason,
+} from './search';
+import { compileQuery } from '../shared/query';
 
 /** How long quitting waits to put capturing Android devices back: the app kills the backend after 3 s. */
 const ANDROID_STOP_TIMEOUT_MS = 2000;
@@ -947,6 +955,20 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     for (const search of searches.keys()) search.abort(new SearchStopped(reason));
   };
 
+  // Body search reads stored bodies piece by piece, decoded as the body view decodes them. A
+  // body that can't be read (removed meanwhile, or a file error) counts as gone.
+  const bodyAccess: BodyAccess = {
+    source: (exchange, side) => {
+      const info = side === 'request' ? exchange.requestBody : exchange.responseBody;
+      if (!info) return undefined;
+      const id = exchange.summary.id;
+      return {
+        read: (start, max) => bodies.readRange(id, side, start, max).catch(() => undefined),
+        encoding: headerValue(decodingHeaders(exchange, side), 'content-encoding'),
+      };
+    },
+  };
+
   const handleCommand = async (command: ClientCommand, context: CommandContext): Promise<unknown> => {
     switch (command.command) {
       case 'launchBrowser': {
@@ -1169,13 +1191,27 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
             names.delete(oldest);
           }
         }
-        const running = matchExchanges(store, command.query, ids, { signal: search.signal });
+        // Progress only for a whole search with body terms, which can take a while, to the
+        // window that asked.
+        const progress =
+          searchId !== undefined && ids === undefined && compileQuery(command.query).needsBody
+            ? (done: number, total: number): void =>
+                context.notify({ type: 'matchProgress', searchId, done, total })
+            : undefined;
+        const partial = new Set<string>();
+        const running = matchExchanges(store, command.query, ids, {
+          signal: search.signal,
+          bodies: bodyAccess,
+          partial,
+          ...(progress ? { onProgress: progress } : {}),
+        });
         searches.set(
           search,
           running.catch(() => undefined),
         );
         try {
-          return { ids: await running };
+          const matched = await running;
+          return partial.size > 0 ? { ids: matched, partial: [...partial] } : { ids: matched };
         } catch (error) {
           if (!(error instanceof SearchStopped)) throw error;
           // Only the window that replaced it sees this, and doesn't show it.

@@ -139,6 +139,12 @@ export function App(): React.JSX.Element {
   const shownSearch = !needsDetail ? deferredSearch : (detailMatch.applied ?? settledSearch);
   // Also after a restart or reconnect, while the same search is asked again.
   const searchingHeaders = needsDetail && (detailMatch.applied !== deferredSearch || detailMatch.pending);
+  // Bodies take longer: say so, and how far it has got.
+  const searchingLabel = !compiled.needsBody
+    ? 'Searching headers…'
+    : detailMatch.progress
+      ? `Searching bodies… ${detailMatch.progress.done.toLocaleString()} of ${detailMatch.progress.total.toLocaleString()}`
+      : 'Searching bodies…';
   const shown = useMemo(() => compileFilter(shownSearch, quickFilter), [shownSearch, quickFilter]);
   // Requests from before a backend restart come first, read-only (only their summaries are left).
   const staleIds = useMemo(() => new Set(previous.map((e) => e.id)), [previous]);
@@ -182,6 +188,8 @@ export function App(): React.JSX.Element {
     [shown, allExchanges, staleIds],
   );
   const detailError = shown.needsDetail ? detailMatch.error : undefined;
+  // Partly searched, among the rows the search could show: those it found, or might have.
+  const partlySearched = shown.needsBody ? detailMatch.partial.size : 0;
   const selected = selectedId ? allExchanges.find((e) => e.id === selectedId) : undefined;
   const exportable = useMemo(() => rows.filter((e) => !staleIds.has(e.id)), [rows, staleIds]);
 
@@ -764,7 +772,7 @@ export function App(): React.JSX.Element {
             <div className="filter-actions">
               <span className="muted count" data-testid="row-count">
                 {searchingHeaders
-                  ? 'Searching headers…'
+                  ? searchingLabel
                   : filtered
                     ? `${rows.length.toLocaleString()} of ${allExchanges.length.toLocaleString()}`
                     : `${allExchanges.length.toLocaleString()} ${allExchanges.length === 1 ? 'request' : 'requests'}`}
@@ -801,7 +809,11 @@ export function App(): React.JSX.Element {
               </button>
             </div>
           </div>
-          {(compiled.errors.length > 0 || compiled.hints.length > 0 || unsearchable > 0 || detailError) && (
+          {(compiled.errors.length > 0 ||
+            compiled.hints.length > 0 ||
+            unsearchable > 0 ||
+            partlySearched > 0 ||
+            detailError) && (
             <div className="filter-notes" role="status">
               {compiled.errors.map((e) => (
                 <span key={e} className="error">
@@ -814,10 +826,17 @@ export function App(): React.JSX.Element {
                   {h}
                 </span>
               ))}
+              {partlySearched > 0 && (
+                <span className="muted">
+                  {partlySearched.toLocaleString()}{' '}
+                  {partlySearched === 1 ? 'request wasn’t' : 'requests weren’t'} fully searched: their bodies
+                  are over 64 MB decoded, weren&apos;t kept in full, or couldn&apos;t be decoded.
+                </span>
+              )}
               {unsearchable > 0 && (
                 <span className="muted">
                   {unsearchable.toLocaleString()} {unsearchable === 1 ? 'request' : 'requests'} from before
-                  the restart can&apos;t be searched by header.
+                  the restart can&apos;t be searched by header or body.
                 </span>
               )}
             </div>
@@ -958,7 +977,7 @@ export function App(): React.JSX.Element {
                   for other ways to send traffic through 127.0.0.1:{status?.proxyPort}.
                 </>
               ) : searchingHeaders ? (
-                <>Searching headers…</>
+                <>{searchingLabel}</>
               ) : (
                 <>No requests match the current search or filter.</>
               )

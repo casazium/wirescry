@@ -4,7 +4,12 @@
  * back out of order, and starting over.
  */
 import { describe, expect, it } from 'vitest';
-import { DetailMatcher, MAX_BATCH_IDS, type DetailMatchState } from '../src/renderer/src/detail-matcher';
+import {
+  DetailMatcher,
+  MAX_BATCH_IDS,
+  type DetailMatchState,
+  type MatchReply,
+} from '../src/renderer/src/detail-matcher';
 import { deferred } from './ui/fixtures';
 
 interface Asked {
@@ -675,6 +680,134 @@ describe('DetailMatcher', () => {
       matcher.setQuery('header~a');
       expect(() => matcher.setQuery('header~b')).not.toThrow();
       expect(asked).toEqual(['header~a', 'header~b']);
+    });
+  });
+
+  describe('partly searched bodies and progress', () => {
+    function withReplies() {
+      const asked: Array<{
+        query: string;
+        ids?: string[];
+        searchId?: string;
+        answer(reply: MatchReply): Promise<void>;
+      }> = [];
+      const matcher = new DetailMatcher(() => undefined);
+      matcher.connect((query, ids, searchId) => {
+        const reply = deferred<MatchReply>();
+        asked.push({
+          query,
+          ...(ids ? { ids } : {}),
+          ...(searchId ? { searchId } : {}),
+          answer: async (r) => {
+            reply.resolve(r);
+            await Promise.resolve();
+            await Promise.resolve();
+          },
+        });
+        return reply.promise;
+      });
+      const partial = () => [...matcher.state().partial].sort();
+      return { matcher, asked, partial };
+    }
+
+    it('takes the partly searched ids from a full answer, with its search', async () => {
+      const { matcher, asked, partial } = withReplies();
+      matcher.setQuery('body~a');
+      await asked[0]!.answer({ ids: ['1'], partial: ['1', '2'] });
+      expect(partial()).toEqual(['1', '2']);
+      // A new search's answer replaces them, at the same moment as its matches.
+      matcher.setQuery('body~b');
+      expect(partial()).toEqual(['1', '2']);
+      await asked[1]!.answer({ ids: [] });
+      expect(partial()).toEqual([]);
+    });
+
+    it('a batch answer adds and removes only the ids it was asked about', async () => {
+      const { matcher, asked, partial } = withReplies();
+      matcher.setQuery('body~a');
+      await asked[0]!.answer({ ids: [], partial: ['1', '2'] });
+      matcher.onBatch(['2', '3'], []);
+      await asked[1]!.answer({ ids: ['3'], partial: ['3'] });
+      expect(partial()).toEqual(['1', '3']);
+    });
+
+    it('follows the same ordering rules as matches', async () => {
+      const { matcher, asked, partial } = withReplies();
+      matcher.setQuery('body~a');
+      matcher.onBatch(['1'], []);
+      // The batch's answer first; then the full one, computed before 1 changed.
+      await asked[1]!.answer({ ids: [], partial: [] });
+      await asked[0]!.answer({ ids: [], partial: ['1', '2'] });
+      expect(partial()).toEqual(['2']);
+      // A late, earlier batch answer doesn't override a later one.
+      matcher.onBatch(['2'], []);
+      matcher.onBatch(['2'], []);
+      await asked[3]!.answer({ ids: [], partial: ['2'] });
+      await asked[2]!.answer({ ids: [], partial: [] });
+      expect(partial()).toEqual(['2']);
+    });
+
+    it('drops removed and cleared ids, and a full answer’s ids gone since', async () => {
+      const { matcher, asked, partial } = withReplies();
+      matcher.setQuery('body~a');
+      await asked[0]!.answer({ ids: [], partial: ['1', '2'] });
+      matcher.onBatch([], ['1']);
+      expect(partial()).toEqual(['2']);
+      matcher.clear();
+      expect(partial()).toEqual([]);
+      matcher.setQuery('body~b');
+      matcher.onBatch([], ['5']);
+      await asked[1]!.answer({ ids: [], partial: ['5', '6'] });
+      expect(partial()).toEqual(['6']);
+    });
+
+    it('treats a plain list as an answer with nothing partly searched', async () => {
+      const { matcher, asked, partial } = withReplies();
+      matcher.setQuery('body~a');
+      await asked[0]!.answer({ ids: ['1'], partial: ['1'] });
+      matcher.onBatch(['1'], []);
+      await (asked[1]!.answer as unknown as (r: string[]) => Promise<void>)(['1']);
+      expect(partial()).toEqual([]);
+      expect([...matcher.state().matches]).toEqual(['1']);
+    });
+
+    it('shows progress for the search being asked, and only that one', async () => {
+      const { matcher, asked } = withReplies();
+      matcher.setQuery('body~a');
+      const id = asked[0]!.searchId!;
+      matcher.onProgress(id, 10, 100);
+      expect(matcher.state().progress).toEqual({ done: 10, total: 100 });
+      matcher.onProgress('someone-else', 90, 100);
+      expect(matcher.state().progress).toEqual({ done: 10, total: 100 });
+      await asked[0]!.answer({ ids: [] });
+      expect(matcher.state().progress).toBeUndefined();
+      // Late progress for an answered search is ignored.
+      matcher.onProgress(id, 100, 100);
+      expect(matcher.state().progress).toBeUndefined();
+    });
+
+    it('a new search starts with no progress, and ignores the old one’s', async () => {
+      const { matcher, asked } = withReplies();
+      matcher.setQuery('body~a');
+      matcher.onProgress(asked[0]!.searchId!, 5, 10);
+      matcher.setQuery('body~b');
+      expect(matcher.state().progress).toBeUndefined();
+      matcher.onProgress(asked[0]!.searchId!, 8, 10);
+      expect(matcher.state().progress).toBeUndefined();
+      matcher.onProgress(asked[1]!.searchId!, 1, 10);
+      expect(matcher.state().progress).toEqual({ done: 1, total: 10 });
+    });
+
+    it('a big batch’s second full ask shows no progress while a search is applied', async () => {
+      const { matcher, asked } = withReplies();
+      matcher.setQuery('body~a');
+      await asked[0]!.answer({ ids: [] });
+      matcher.onBatch(
+        Array.from({ length: MAX_BATCH_IDS + 1 }, (_, i) => `n${i}`),
+        [],
+      );
+      matcher.onProgress(asked[1]!.searchId!, 3, 10);
+      expect(matcher.state().progress).toBeUndefined();
     });
   });
 });

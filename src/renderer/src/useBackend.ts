@@ -114,6 +114,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
   const pluginListeners = useRef(new Map<string, Map<string, Set<PluginListener>>>());
   const [detailMatch, setDetailMatch] = useState<DetailMatchState>({
     matches: new Set(),
+    partial: new Set(),
     version: 0,
     pending: false,
   });
@@ -230,6 +231,9 @@ export function useBackend(showView: (key: string) => void): BackendView {
         case 'paused':
           setPaused(message.paused);
           break;
+        case 'matchProgress':
+          matcher.onProgress(message.searchId, message.done, message.total);
+          break;
         case 'status':
           setStatus(message.status);
           break;
@@ -260,8 +264,8 @@ export function useBackend(showView: (key: string) => void): BackendView {
           query,
           ...(ids ? { ids } : {}),
           ...(searchId ? { searchId } : {}),
-        })) as { ids: string[] };
-        return reply.ids;
+        })) as { ids: string[]; partial?: string[] };
+        return reply;
       },
       (searchId) => void client.send({ command: 'cancelMatch', searchId }).catch(() => undefined),
     );

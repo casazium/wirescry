@@ -17,6 +17,8 @@ const fake = vi.hoisted(() => ({
   details: new Map<string, unknown>(),
   /** While set, matchExchanges replies wait here instead of answering. */
   held: undefined as undefined | Array<() => void>,
+  /** Bodies, by exchange id: a body term matches when its text is in one. */
+  bodies: new Map<string, { request?: string; response?: string; partial?: boolean }>(),
 }));
 vi.mock('../../src/renderer/src/api-client', () => ({
   ApiClient: class {
@@ -26,12 +28,25 @@ vi.mock('../../src/renderer/src/api-client', () => ({
       const answer = () => {
         const q = compileQuery(command.query!);
         const ids = command.ids ?? [...fake.details.keys()];
-        return {
-          ids: ids.filter((id) => {
-            const d = fake.details.get(id) as ExchangeDetail | undefined;
-            return d !== undefined && q.matchesDetail(d);
-          }),
-        };
+        const partial: string[] = [];
+        const bodiesMatch = (id: string): boolean =>
+          q.bodyTerms.every((term) => {
+            const body = fake.bodies.get(id) ?? {};
+            const text = [
+              term.side !== 'response' ? body.request : '',
+              term.side !== 'request' ? body.response : '',
+            ]
+              .join(' ')
+              .toLowerCase();
+            const found = text.includes(term.needle);
+            if (!found && body.partial) partial.push(id);
+            return term.negated !== found;
+          });
+        const matched = ids.filter((id) => {
+          const d = fake.details.get(id) as ExchangeDetail | undefined;
+          return d !== undefined && q.matchesDetail(d) && bodiesMatch(id);
+        });
+        return partial.length > 0 ? { ids: matched, partial: [...new Set(partial)] } : { ids: matched };
       };
       if (!fake.held) return answer();
       await new Promise<void>((resolve) => fake.held!.push(resolve));
@@ -70,6 +85,7 @@ beforeEach(() => {
   })) as unknown as typeof window.matchMedia;
   fake.clients.length = 0;
   fake.details.clear();
+  fake.bodies.clear();
   fake.held = undefined;
   exportHar = vi.fn(async () => ({}));
   setMenuState = vi.fn();
@@ -217,7 +233,7 @@ describe('searching by header', () => {
     await settle();
     expect(shownPaths()).toEqual(['/newer']);
     expect(document.querySelector('.filter-notes')?.textContent).toContain(
-      "1 request from before the restart can't be searched by header.",
+      "1 request from before the restart can't be searched by header or body.",
     );
     // The new connection was asked in full.
     expect(matchCalls()).toHaveLength(1);
@@ -450,7 +466,9 @@ describe('searching by header', () => {
       await search('header.x-team=red');
       expect(shownPaths()).toEqual(['/alpha']);
       await search(`header.x-team=red path~a ${'x'.repeat(4096)}`);
-      expect(document.querySelector('.filter-notes')?.textContent).toContain('too long for header terms');
+      expect(document.querySelector('.filter-notes')?.textContent).toContain(
+        'too long for header and body terms',
+      );
       expect(matchCalls()).toHaveLength(1);
       // The other terms still filter: nothing has that long text.
       expect(shownPaths()).toEqual([]);
@@ -578,7 +596,7 @@ describe('searching by header', () => {
       await search('-header.nope=*');
       expect(shownPaths()).toEqual(['/newer']);
       expect(document.querySelector('.filter-notes')?.textContent).toContain(
-        "1 request from before the restart can't be searched by header.",
+        "1 request from before the restart can't be searched by header or body.",
       );
     });
   });
@@ -635,6 +653,106 @@ describe('searching by header', () => {
       await search('header.x-team=blue');
       await search('');
       expect(calls().filter((c) => c.command === 'cancelMatch')).toEqual([]);
+    });
+  });
+
+  describe('searching bodies', () => {
+    const notes = () => document.querySelector('.filter-notes')?.textContent ?? '';
+    const release = async () => {
+      const held = fake.held ?? [];
+      fake.held = undefined;
+      await act(async () => held.forEach((r) => r()));
+      await settle();
+    };
+
+    it('finds rows by body, says it’s searching bodies, and shows progress', async () => {
+      await started([captured('alpha', 'red'), captured('beta', 'red')]);
+      fake.bodies.set('alpha', { response: '{"error":"nope"}' });
+      fake.bodies.set('beta', { response: '{"ok":true}' });
+      fake.held = [];
+      await search('resbody~error');
+      expect(count()).toBe('Searching bodies…');
+      const ask = matchCalls().at(-1)!;
+      await act(async () =>
+        client().onMessage({
+          type: 'matchProgress',
+          searchId: (ask as { searchId?: string }).searchId,
+          done: 1,
+          total: 2,
+        }),
+      );
+      expect(count()).toBe('Searching bodies… 1 of 2');
+      // Another search's progress doesn't show.
+      await act(async () =>
+        client().onMessage({ type: 'matchProgress', searchId: 'other', done: 2, total: 2 }),
+      );
+      expect(count()).toBe('Searching bodies… 1 of 2');
+      await release();
+      expect(shownPaths()).toEqual(['/alpha']);
+      expect(count()).toBe('1 of 2');
+    });
+
+    it('a header-only search still says "Searching headers…"', async () => {
+      await started([captured('alpha', 'red')]);
+      fake.held = [];
+      await search('header.x-team=red');
+      expect(count()).toBe('Searching headers…');
+      await release();
+    });
+
+    it('says how many requests weren’t fully searched', async () => {
+      await started([captured('alpha', 'red'), captured('beta', 'red'), captured('gamma', 'red')]);
+      fake.bodies.set('alpha', { response: 'short', partial: true });
+      fake.bodies.set('beta', { response: 'also short', partial: true });
+      fake.bodies.set('gamma', { response: 'has the word' });
+      await search('resbody~word');
+      expect(shownPaths()).toEqual(['/gamma']);
+      expect(notes()).toContain(
+        "2 requests weren’t fully searched: their bodies are over 64 MB decoded, weren't kept in full, or couldn't be decoded.",
+      );
+      fake.bodies.set('gamma', { response: 'nothing', partial: true });
+      await search('resbody~zebra');
+      expect(notes()).toContain('3 requests weren’t fully searched');
+      // A search without body terms has no such note.
+      await search('header.x-team=red');
+      expect(notes()).not.toContain('fully searched');
+    });
+
+    it('the singular reads right', async () => {
+      await started([captured('alpha', 'red')]);
+      fake.bodies.set('alpha', { response: 'x', partial: true });
+      await search('body~zebra');
+      expect(notes()).toContain('1 request wasn’t fully searched');
+    });
+
+    it('rows from before a restart can’t be searched by body either', async () => {
+      await started([captured('alpha', 'red')]);
+      fake.bodies.set('alpha', { response: 'error' });
+      fake.details.clear();
+      await act(async () => changeState(ready(2)));
+      await act(async () => client().onMessage(hello([captured('newer', 'red')])));
+      await settle();
+      fake.bodies.set('newer', { response: 'error' });
+      await search('resbody~error');
+      expect(shownPaths()).toEqual(['/newer']);
+      expect(notes()).toContain("1 request from before the restart can't be searched by header or body.");
+    });
+
+    it('shows the error for a body term that isn’t ~, and asks nothing', async () => {
+      await started([captured('alpha', 'red')]);
+      await search('body=x');
+      expect(notes()).toContain("body= isn't supported: body terms take only ~, as in body~text");
+      expect(matchCalls()).toHaveLength(0);
+    });
+
+    it('the help’s body example searches bodies', async () => {
+      await started([captured('alpha', 'red')]);
+      fake.bodies.set('alpha', { response: 'an error here' });
+      fireEvent.click(screen.getByRole('button', { name: 'Search syntax' }));
+      fireEvent.click(screen.getByRole('button', { name: 'resbody~error' }));
+      await settle();
+      expect(matchCalls().map((c) => c.query)).toEqual(['resbody~error']);
+      expect(shownPaths()).toEqual(['/alpha']);
     });
   });
 });

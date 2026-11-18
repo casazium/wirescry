@@ -93,8 +93,12 @@ export interface CompiledQuery {
    * count as passing: they're for `matchesDetail`.
    */
   matches(e: ExchangeSummary): boolean;
-  /** True if the query has header terms, so only the backend can tell what matches. */
+  /** True if the query has header or body terms, so only the backend can tell what matches. */
   needsDetail: boolean;
+  /** True if it has body terms: searching reads bodies, which takes longer. */
+  needsBody: boolean;
+  /** The body terms, for the backend to check once everything else matches (matchesDetail). */
+  bodyTerms: BodyTerm[];
   /** Every term, header terms included, against an exchange's details. */
   matchesDetail(detail: ExchangeDetail): boolean;
   /** Problems with terms that were dropped, e.g. `status>abc`. */
@@ -276,8 +280,52 @@ const HEADER_START = /^(req|res)?header(?=[.~=!<>])/i;
 const HEADER_NAME = /^[a-z0-9_-]+$/i;
 const HEADER_OP = /^(>=|<=|!=|=|>|<|~)/;
 
-/** The longest value a header term takes. */
+/** The longest value a header or body term takes. */
 export const MAX_HEADER_VALUE = 256;
+
+/** A body term: `body~`, `reqbody~` or `resbody~`, perhaps negated. */
+export interface BodyTerm {
+  /** What to find, as foldText folds it. */
+  needle: string;
+  side: 'request' | 'response' | 'both';
+  negated: boolean;
+}
+
+/**
+ * Text as body search compares it: lowercased, with final sigma (ς) as σ. Lowercasing a
+ * capital Σ gives ς at the end of a word and σ elsewhere, so the same text could otherwise
+ * fold differently at the end of one chunk and in the middle of the search text.
+ */
+export function foldText(text: string): string {
+  return text.toLowerCase().replaceAll('ς', 'σ');
+}
+
+const BODY_START = /^(req|res)?body(?=[.~=!<>])/i;
+
+/**
+ * Parses a body term (the `-` already taken off): the term, or an error. Undefined when it isn't
+ * one, such as `body.css`, which stays plain text.
+ */
+function bodyTerm(term: string, negated: boolean): BodyTerm | string | undefined {
+  const start = BODY_START.exec(term);
+  if (!start) return undefined;
+  const rest = term.slice(start[0].length);
+  // No operator right after it (body.css): plain text, as it always was.
+  const opMatch = HEADER_OP.exec(rest);
+  if (!opMatch) return undefined;
+  const field = start[0].toLowerCase();
+  const op = opMatch[1]!;
+  if (op !== '~') return `${field}${op} isn't supported: body terms take only ~, as in ${field}~text`;
+  const value = rest.slice(1);
+  if (value === '') return `${field}~ needs a value`;
+  if (value.length > MAX_HEADER_VALUE) return `${field}~ takes at most ${MAX_HEADER_VALUE} characters`;
+  const which = start[1]?.toLowerCase();
+  return {
+    needle: foldText(value),
+    side: which === 'req' ? 'request' : which === 'res' ? 'response' : 'both',
+    negated,
+  };
+}
 
 /**
  * Parses a header term (the `-` already taken off): a predicate, an error, or a hint to show
@@ -389,6 +437,7 @@ function textHaystack(e: ExchangeSummary): string {
 export function compileQuery(input: string): CompiledQuery {
   const predicates: Predicate[] = [];
   const headerPredicates: HeaderPredicate[] = [];
+  const bodyTerms: BodyTerm[] = [];
   const errors: string[] = [];
   const hints: string[] = [];
   const tooLong = input.length > MAX_QUERY_LENGTH;
@@ -398,6 +447,17 @@ export function compileQuery(input: string): CompiledQuery {
     const negated = token.startsWith('-') && token.length > 1;
     const term = negated ? token.slice(1) : token;
     let predicate: Predicate | undefined;
+
+    const body = bodyTerm(term, negated);
+    if (typeof body === 'string') {
+      errors.push(body);
+      continue;
+    }
+    if (body) {
+      if (tooLong) droppedForLength = true;
+      else bodyTerms.push(body);
+      continue;
+    }
 
     const header = headerPredicate(term);
     if (typeof header === 'string') {
@@ -445,12 +505,14 @@ export function compileQuery(input: string): CompiledQuery {
 
   if (droppedForLength)
     errors.push(
-      `The search is too long for header terms: ${MAX_QUERY_LENGTH.toLocaleString('en-US')} characters at most.`,
+      `The search is too long for header and body terms: ${MAX_QUERY_LENGTH.toLocaleString('en-US')} characters at most.`,
     );
   const matches = (e: ExchangeSummary): boolean => predicates.every((p) => p(e));
   return {
     matches,
-    needsDetail: headerPredicates.length > 0,
+    needsDetail: headerPredicates.length > 0 || bodyTerms.length > 0,
+    needsBody: bodyTerms.length > 0,
+    bodyTerms,
     matchesDetail: (detail) => {
       if (!matches(detail.summary)) return false;
       if (headerPredicates.length === 0) return true;

@@ -23,6 +23,10 @@ export interface DetailMatchState {
   version: number;
   /** Why the backend couldn't answer the applied search, if it couldn't. */
   error?: string;
+  /** Exchanges in the applied search whose bodies were only partly searched for a body term. */
+  partial: ReadonlySet<string>;
+  /** How far the search being asked has got, while pending, if the backend has said. */
+  progress?: { done: number; total: number };
   /**
    * True while a search is being asked afresh and isn't answered yet: a new one, or the same
    * one again after the connection started over. The applied one stays shown meanwhile.
@@ -33,11 +37,20 @@ export interface DetailMatchState {
 /** Lost with the connection, not refused: the next connection asks again in full. */
 const NOT_REFUSED = new Set(['Disconnected', 'Not connected']);
 
+/** The backend's answer: the matching ids, and those whose bodies were only partly searched. */
+export interface MatchReply {
+  ids: string[];
+  partial?: string[];
+}
+
 /**
  * Asks the backend which of `ids` (or of all exchanges) match `query`. A full ask is named with
- * `searchId`, so it can be canceled.
+ * `searchId`, so it can be canceled. A plain list is an answer with nothing partial.
  */
-export type Ask = (query: string, ids?: string[], searchId?: string) => Promise<string[]>;
+export type Ask = (query: string, ids?: string[], searchId?: string) => Promise<string[] | MatchReply>;
+
+const reply = (answer: string[] | MatchReply): MatchReply =>
+  Array.isArray(answer) ? { ids: answer } : answer;
 /** Tells the backend to stop the search with this name. */
 export type Cancel = (searchId: string) => void;
 
@@ -45,6 +58,9 @@ interface Search {
   generation: number;
   query: string;
   matches: Set<string>;
+  /** Exchanges whose bodies were only partly searched; kept under the same rules as matches. */
+  partial: Set<string>;
+  progress?: { done: number; total: number };
   /** The latest request that asked about each id. */
   lastAsked: Map<string, number>;
   /** The latest full request. */
@@ -81,7 +97,7 @@ export class DetailMatcher {
     this.cancelSearch = ask ? cancel : undefined;
   }
 
-  private ask(query: string, ids?: string[], searchId?: string): Promise<string[]> {
+  private ask(query: string, ids?: string[], searchId?: string): Promise<string[] | MatchReply> {
     return this.connection
       ? this.connection(query, ids, searchId)
       : Promise.reject(new Error('Not connected'));
@@ -101,7 +117,11 @@ export class DetailMatcher {
     return {
       applied: this.applied?.query,
       matches: this.applied?.matches ?? new Set(),
+      partial: this.applied?.partial ?? new Set(),
       version: this.version,
+      ...(this.current && this.current !== this.applied && this.current.progress
+        ? { progress: this.current.progress }
+        : {}),
       ...(this.applied?.error ? { error: this.applied.error } : {}),
       pending: this.current !== undefined && this.current !== this.applied,
     };
@@ -142,9 +162,11 @@ export class DetailMatcher {
     if (removed.length > 0) {
       for (const id of removed) {
         search.matches.delete(id);
+        search.partial.delete(id);
         search.lastAsked.delete(id);
         if (search.awaitingFull && search.goneSince !== 'all') search.goneSince.add(id);
         this.applied?.matches.delete(id);
+        this.applied?.partial.delete(id);
       }
       if (this.applied) this.changed();
     }
@@ -157,7 +179,7 @@ export class DetailMatcher {
     const ids = [...changed];
     for (const id of ids) search.lastAsked.set(id, seq);
     this.ask(search.query, ids).then(
-      (matched) => this.onAnswer(search, seq, ids, matched),
+      (answer) => this.onAnswer(search, seq, ids, reply(answer)),
       // Lost with the connection; the next one asks again in full.
       () => undefined,
     );
@@ -167,10 +189,19 @@ export class DetailMatcher {
   clear(): void {
     for (const search of [this.current, this.applied]) {
       search?.matches.clear();
+      search?.partial.clear();
       search?.lastAsked.clear();
     }
     if (this.current?.awaitingFull) this.current.goneSince = 'all';
     if (this.applied) this.changed();
+  }
+
+  /** The backend says how far a named search has got: shown while the current one is asked. */
+  onProgress(searchId: string, done: number, total: number): void {
+    const search = this.current;
+    if (!search?.awaitingFull || search.fullId !== searchId) return;
+    search.progress = { done, total };
+    if (search !== this.applied) this.changed();
   }
 
   private newSearch(query: string): Search {
@@ -178,6 +209,7 @@ export class DetailMatcher {
       generation: this.generation,
       query,
       matches: new Set(),
+      partial: new Set(),
       lastAsked: new Map(),
       full: 0,
       awaitingFull: false,
@@ -195,24 +227,29 @@ export class DetailMatcher {
     search.full = seq;
     search.awaitingFull = true;
     search.fullId = `${this.idPrefix}-${seq}`;
+    search.progress = undefined;
     search.goneSince = new Set();
     this.ask(search.query, undefined, search.fullId).then(
-      (matched) => this.onFullAnswer(search, seq, matched),
+      (answer) => this.onFullAnswer(search, seq, reply(answer)),
       (error: unknown) => this.onFullError(search, seq, error),
     );
   }
 
-  private onFullAnswer(search: Search, seq: number, matched: string[]): void {
+  private onFullAnswer(search: Search, seq: number, answer: MatchReply): void {
     if (search !== this.current || seq !== search.full) return;
-    const next = new Set<string>();
-    // Exchanges asked about since: their own answer decides (it may already have come).
-    for (const id of search.matches) if ((search.lastAsked.get(id) ?? 0) > seq) next.add(id);
     const gone = search.goneSince;
-    // Answered for what the store held then; leave out what has gone since (all, after a Clear).
-    if (gone !== 'all') {
-      for (const id of matched) if ((search.lastAsked.get(id) ?? 0) <= seq && !gone.has(id)) next.add(id);
-    }
-    search.matches = next;
+    const settle = (now: Set<string>, answered: readonly string[]): Set<string> => {
+      const next = new Set<string>();
+      // Exchanges asked about since: their own answer decides (it may already have come).
+      for (const id of now) if ((search.lastAsked.get(id) ?? 0) > seq) next.add(id);
+      // Answered for what the store held then; leave out what has gone since (all, after a Clear).
+      if (gone !== 'all') {
+        for (const id of answered) if ((search.lastAsked.get(id) ?? 0) <= seq && !gone.has(id)) next.add(id);
+      }
+      return next;
+    };
+    search.matches = settle(search.matches, answer.ids);
+    search.partial = settle(search.partial, answer.partial ?? []);
     search.awaitingFull = false;
     search.goneSince = new Set();
     search.error = undefined;
@@ -241,17 +278,20 @@ export class DetailMatcher {
     this.changed();
   }
 
-  private onAnswer(search: Search, seq: number, asked: string[], matched: string[]): void {
+  private onAnswer(search: Search, seq: number, asked: string[], answer: MatchReply): void {
     // A full request sent since asked about every exchange: its answer decides.
     // After a refusal, only a full answer counts: no rows beside the error.
     if (search !== this.current || seq < search.full || search.error) return;
-    const hits = new Set(matched);
+    const hits = new Set(answer.ids);
+    const partly = new Set(answer.partial ?? []);
     let any = false;
     for (const id of asked) {
       if (search.lastAsked.get(id) !== seq) continue;
       any = true;
       if (hits.has(id)) search.matches.add(id);
       else search.matches.delete(id);
+      if (partly.has(id)) search.partial.add(id);
+      else search.partial.delete(id);
     }
     if (any && search.ready) this.changed();
   }
