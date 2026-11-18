@@ -294,7 +294,7 @@ describe('header term errors', () => {
   it('drops header terms from a search that is too long', () => {
     const long = `header~x ${'a'.repeat(MAX_QUERY_LENGTH)}`;
     const q = compileQuery(long);
-    expect(q.errors).toEqual(['The search is too long for header terms: 4,096 characters at most.']);
+    expect(q.errors).toEqual(['The search is too long for header and body terms: 4,096 characters at most.']);
     expect(q.needsDetail).toBe(false);
     // Exactly at the limit is fine.
     const atLimit = `header~x ${'a'.repeat(MAX_QUERY_LENGTH - 9)}`;
@@ -606,14 +606,14 @@ describe('a search over the length limit', () => {
   it('drops negated header terms too, with one length error for several', () => {
     const q = compileQuery(pad('-header.a=* header~b resheader.c=d'));
     expect(q.needsDetail).toBe(false);
-    expect(q.errors).toEqual(['The search is too long for header terms: 4,096 characters at most.']);
+    expect(q.errors).toEqual(['The search is too long for header and body terms: 4,096 characters at most.']);
   });
 
   it('reports a header term’s own error as well', () => {
     const q = compileQuery(pad('header=x header~y'));
     expect(q.errors).toEqual([
       'header= needs a header name: header.NAME=value, or header~text',
-      'The search is too long for header terms: 4,096 characters at most.',
+      'The search is too long for header and body terms: 4,096 characters at most.',
     ]);
   });
 });

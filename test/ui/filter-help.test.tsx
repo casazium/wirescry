@@ -35,7 +35,7 @@ describe('FilterHelp', () => {
   it('lists every field the search knows', () => {
     open();
     expect(dialog().textContent).toContain(
-      `Fields: ${QUERY_FIELDS.join(', ')}, header.NAME, reqheader.NAME, resheader.NAME.`,
+      `Fields: ${QUERY_FIELDS.join(', ')}, header.NAME, reqheader.NAME, resheader.NAME, body, reqbody, resbody.`,
     );
   });
 
@@ -44,7 +44,7 @@ describe('FilterHelp', () => {
     expect(dialog().textContent).toContain("Plain words don't search headers; use header~ for that.");
     // And the opening line agrees.
     expect(dialog().textContent).toContain(
-      'Plain words match the URL, method, status and more, but not headers.',
+      'Plain words match the URL, method, status and more, but not headers or bodies.',
     );
     expect(dialog().textContent).not.toContain('Plain words match anywhere');
     fireEvent.click(screen.getByRole('button', { name: 'header~bearer' }));

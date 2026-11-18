@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { QUERY_FIELDS } from '../../shared/query';
+import { MAX_SEARCHED_MB, QUERY_FIELDS } from '../../shared/query';
 
 const EXAMPLES: Array<[string, string]> = [
   ['status>=400', 'Errors from the server'],
@@ -14,6 +14,7 @@ const EXAMPLES: Array<[string, string]> = [
   ['grpc=NOT_FOUND', 'gRPC calls that failed with NOT_FOUND'],
   ['header~bearer', 'Any header containing bearer'],
   ['resheader.cache-control~no-store', 'Responses that must not be cached'],
+  ['resbody~error', 'Responses whose body contains error'],
   ['-host=*.google.com', 'Everything except Google hosts'],
 ];
 
@@ -72,10 +73,11 @@ export function FilterHelp({
         </button>
       </div>
       <p>
-        Plain words match the URL, method, status and more, but not headers. <code>field=value</code> filters
-        one field: <code>=</code> equals (with <code>*</code> wildcards), <code>!=</code> doesn&apos;t,{' '}
-        <code>~</code> contains, and <code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code>{' '}
-        compare numbers. Start a term with <code>-</code> to exclude it. All terms must match.
+        Plain words match the URL, method, status and more, but not headers or bodies.{' '}
+        <code>field=value</code> filters one field: <code>=</code> equals (with <code>*</code> wildcards),{' '}
+        <code>!=</code> doesn&apos;t, <code>~</code> contains, and <code>&gt;</code> <code>&gt;=</code>{' '}
+        <code>&lt;</code> <code>&lt;=</code> compare numbers. Start a term with <code>-</code> to exclude it.
+        All terms must match.
       </p>
       <ul>
         {EXAMPLES.map(([query, label]) => (
@@ -88,13 +90,17 @@ export function FilterHelp({
         ))}
       </ul>
       <p className="muted">
-        Fields: {QUERY_FIELDS.join(', ')}, header.NAME, reqheader.NAME, resheader.NAME. Sizes take kb or mb,
-        times ms or s.
+        Fields: {QUERY_FIELDS.join(', ')}, header.NAME, reqheader.NAME, resheader.NAME, body, reqbody,
+        resbody. Sizes take kb or mb, times ms or s.
       </p>
       <p className="muted">
         Plain words don&apos;t search headers; use <code>header~</code> for that. <code>header.NAME=*</code>{' '}
         means the header is present. Use <code>~</code> when a header&apos;s value has <code>*</code> or{' '}
         <code>?</code>.
+      </p>
+      <p className="muted">
+        <code>body~text</code>, <code>reqbody~</code> and <code>resbody~</code> search decoded bodies, up to{' '}
+        {MAX_SEARCHED_MB} MB each.
       </p>
     </div>
   );

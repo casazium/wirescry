@@ -45,6 +45,8 @@ describe('backend', () => {
       'content-type': 'application/json',
       'content-encoding': 'gzip',
     });
+    // Empty, but labelled gzip, as a 204 or a HEAD reply can be.
+    await upstream.forGet('/empty-gzip').thenReply(204, '', { 'content-encoding': 'gzip' });
     await upstream.forGet('/odd-encoding').thenReply(200, Buffer.from('raw bytes'), {
       'content-encoding': 'x-made-up',
     });
@@ -204,6 +206,156 @@ describe('backend', () => {
     await api.send({ command: 'clear', ids: [id] });
     expect((await match('reqheader.x-header-search=found-it')).ids).toEqual([]);
     api.close();
+  });
+
+  it('finds requests by their bodies: a POST body, and a gzip response decoded', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/echo?body-search`, ca, {
+      method: 'POST',
+      body: '{"name":"Body-Search-Post"}',
+      headers: { 'content-type': 'application/json' },
+    });
+    const posted = await api.completed('/echo?body-search');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/gzip`, ca);
+    const gzipped = await api.completed('/gzip');
+    const match = async (query: string, ids?: string[]) =>
+      api.send<{ ids: string[]; partial?: string[] }>({
+        command: 'matchExchanges',
+        query,
+        ...(ids ? { ids } : {}),
+      });
+
+    expect((await match('reqbody~body-search-post')).ids).toEqual([posted]);
+    // The echo sends it back: the response has it too.
+    expect((await match('resbody~body-search-post', [posted])).ids).toEqual([posted]);
+    expect((await match('body~"body-search-post"', [posted, gzipped])).ids).toEqual([posted]);
+    // gzip on the wire; found decoded.
+    expect((await match('resbody~compressed', [gzipped])).ids).toEqual([gzipped]);
+    // The negatives.
+    expect((await match('reqbody~compressed', [gzipped])).ids).toEqual([]);
+    expect(await match('resbody~not-in-any-body', [posted, gzipped])).toEqual({ ids: [] });
+    expect((await match('-resbody~compressed', [posted, gzipped])).ids).toEqual([posted]);
+    // A plain word doesn't search bodies.
+    expect((await match('body-search-post', [posted])).ids).toEqual([]);
+
+    // Errors are the parser's: nothing to search.
+    expect((await match('body=x', [posted])).ids).toEqual([posted]);
+    api.close();
+  });
+
+  it('reports a body that couldn’t be decoded as partly searched, unless found as stored', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/corrupt-gzip`, ca);
+    const id = await api.completed('/corrupt-gzip');
+    const match = (query: string) =>
+      api.send<{ ids: string[]; partial?: string[] }>({ command: 'matchExchanges', query, ids: [id] });
+    // Says it's gzip, but isn't: searched as stored.
+    expect(await match('resbody~"not gzip"')).toEqual({ ids: [id] });
+    expect(await match('resbody~nowhere-in-it')).toEqual({ ids: [], partial: [id] });
+    expect(await match('-resbody~nowhere-in-it')).toEqual({ ids: [id], partial: [id] });
+    // A body that decodes is never partly searched.
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/gzip`, ca);
+    const fine = await api.completed('/gzip');
+    expect(
+      await api.send({ command: 'matchExchanges', query: 'resbody~nowhere-in-it', ids: [fine] }),
+    ).toEqual({ ids: [] });
+    api.close();
+  });
+
+  it('doesn’t report an empty compressed reply as partly searched', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/empty-gzip`, ca);
+    const id = await api.completed('/empty-gzip');
+    const match = (query: string) =>
+      api.send<{ ids: string[]; partial?: string[] }>({ command: 'matchExchanges', query, ids: [id] });
+    expect(await match('resbody~anything')).toEqual({ ids: [] });
+    expect(await match('-resbody~anything')).toEqual({ ids: [id] });
+    api.close();
+  });
+
+  it('searches an imported body as stored, not decoded twice, even with a content-encoding header', async () => {
+    const api = await apiClient(backend.apiPort);
+    const file = path.join(dataDir, 'body-search.har');
+    await writeFile(
+      file,
+      JSON.stringify({
+        log: {
+          version: '1.2',
+          creator: { name: 'test', version: '1' },
+          entries: [
+            {
+              startedDateTime: '2026-11-18T00:00:00.000Z',
+              time: 5,
+              request: {
+                method: 'POST',
+                url: 'https://imported.test/body',
+                httpVersion: 'HTTP/1.1',
+                headers: [{ name: 'Content-Type', value: 'application/json' }],
+                queryString: [],
+                cookies: [],
+                headersSize: -1,
+                bodySize: 22,
+                postData: { mimeType: 'application/json', text: '{"q":"imported-request"}' },
+              },
+              response: {
+                status: 200,
+                statusText: 'OK',
+                httpVersion: 'HTTP/1.1',
+                headers: [
+                  { name: 'Content-Encoding', value: 'gzip' },
+                  { name: 'Content-Type', value: 'text/plain' },
+                ],
+                cookies: [],
+                content: { size: 26, mimeType: 'text/plain', text: 'imported-response decoded' },
+                redirectURL: '',
+                headersSize: -1,
+                bodySize: -1,
+              },
+              cache: {},
+              timings: { send: 0, wait: 5, receive: 0 },
+            },
+          ],
+        },
+      }),
+    );
+    expect(await backend.importHar(file)).toMatchObject({ imported: 1 });
+    const imported = () => exchangesIn(api.messages).find((e) => e.url === 'https://imported.test/body');
+    await expect.poll(imported).toBeTruthy();
+    const id = imported()!.id;
+    const match = async (query: string) =>
+      api.send<{ ids: string[]; partial?: string[] }>({ command: 'matchExchanges', query, ids: [id] });
+    expect(await match('resbody~imported-response')).toEqual({ ids: [id] });
+    expect(await match('reqbody~imported-request')).toEqual({ ids: [id] });
+    expect(await match('resbody~imported-request')).toEqual({ ids: [] });
+    api.close();
+  });
+
+  it('sends progress for a named body search, only to the window that asked', async () => {
+    const asking = await apiClient(backend.apiPort);
+    const other = await apiClient(backend.apiPort);
+    const searchId = 'progress-check';
+    await asking.send({ command: 'matchExchanges', query: 'body~anything', searchId });
+    const progress = (messages: ServerMessage[]) =>
+      messages.filter(
+        (m): m is Extract<ServerMessage, { type: 'matchProgress' }> => m.type === 'matchProgress',
+      );
+    await expect.poll(() => progress(asking.messages).length).toBeGreaterThan(0);
+    const last = progress(asking.messages).at(-1)!;
+    expect(last.searchId).toBe(searchId);
+    expect(last.done).toBe(last.total);
+    expect(last.total).toBeGreaterThan(0);
+    // None for a header-only search, an unnamed one, or one by id.
+    const before = progress(asking.messages).length;
+    await asking.send({ command: 'matchExchanges', query: 'header~x', searchId: 'headers-only' });
+    await asking.send({ command: 'matchExchanges', query: 'body~x' });
+    await asking.send({ command: 'matchExchanges', query: 'body~x', ids: ['a'], searchId: 'by-id' });
+    expect(progress(asking.messages)).toHaveLength(before);
+    expect(progress(other.messages)).toEqual([]);
+    asking.close();
+    other.close();
   });
 
   it('finds imported requests by their headers', async () => {
