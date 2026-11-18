@@ -2,6 +2,7 @@
  * Searching one stored body (src/backend/body-search.ts): decoding, case, chunk boundaries, the
  * limit, what counts as partly searched, bodies that fail to decode or go away, and stopping.
  */
+import { randomBytes } from 'node:crypto';
 import { zstdCompressSync } from 'node:zlib';
 import { encodeBuffer } from 'http-encoding';
 import { describe, expect, it } from 'vitest';
@@ -274,5 +275,102 @@ describe('searchBody', () => {
         if (++calls === 5) throw stop;
       }),
     ).rejects.toBe(stop);
+  });
+
+  describe('after code review', () => {
+    it('an empty compressed body (a HEAD or 304 reply) isn’t partly searched', async () => {
+      for (const encoding of ['gzip', 'deflate', 'br', 'zstd']) {
+        expect({ encoding, result: await find(fake(new Uint8Array(0), { encoding }), 'x') }).toEqual({
+          encoding,
+          result: { found: new Set(), partial: false },
+        });
+      }
+    });
+
+    it('a compressed body gone or replaced while read isn’t partly searched', async () => {
+      const encoded = await encodeBuffer(Buffer.from('z'.repeat(3 * MB)), 'gzip');
+      expect(await find(fake(encoded, { encoding: 'gzip', goneAtRead: 0 }), 'x')).toEqual({
+        found: new Set(),
+        partial: false,
+      });
+      const big = await encodeBuffer(randomBytes(2 * MB), 'gzip');
+      expect(big.length).toBeGreaterThan(MB);
+      expect(await find(fake(big, { encoding: 'gzip', replacedAtRead: 1 }), 'not-there')).toEqual({
+        found: new Set(),
+        partial: false,
+      });
+    });
+
+    it('a body replaced between the decoding pass and the stored-bytes pass isn’t read as this one', async () => {
+      const notGzip = text('plainly not gzip at all');
+      const source = fake(notGzip, { encoding: 'gzip', replacedAtRead: 1 });
+      expect(await find(source, 'plainly')).toEqual({ found: new Set(), partial: false });
+    });
+
+    it('a corrupt chained encoding is searched as stored, without an unhandled error', async () => {
+      const plain = text('labelled gzip and br, but plain');
+      expect(await find(fake(plain, { encoding: 'gzip, br' }), 'but plain')).toEqual({
+        found: new Set(['but plain']),
+        partial: false,
+      });
+      expect((await find(fake(plain, { encoding: 'gzip, br' }), 'elsewhere')).partial).toBe(true);
+    });
+
+    it('decodes chains however the header spaces them, and skips identity', async () => {
+      const plain = Buffer.from('ab'.repeat(20_000));
+      const needle = 'ab'.repeat(300);
+      const chained = await encodeBuffer(await encodeBuffer(plain, 'gzip'), 'br');
+      for (const encoding of ['gzip, br', 'gzip,br', ' gzip , br ', 'GZIP, BR', 'identity, gzip, br']) {
+        expect({ encoding, found: await foundIn(fake(chained, { encoding }), needle) }).toEqual({
+          encoding,
+          found: [needle],
+        });
+      }
+      expect(await foundIn(fake(plain, { encoding: 'identity' }), needle)).toEqual([needle]);
+    });
+
+    it('a body of exactly the limit isn’t partly searched; one byte more is', async () => {
+      const exact = Buffer.alloc(MB, 'e');
+      expect(await searchBody(fake(exact), ['absent'], noTick, MB)).toEqual({
+        found: new Set(),
+        partial: false,
+      });
+      const over = Buffer.alloc(MB + 1, 'e');
+      expect(await searchBody(fake(over), ['absent'], noTick, MB)).toEqual({
+        found: new Set(),
+        partial: true,
+      });
+      // The last byte inside the limit is searched.
+      const edge = Buffer.alloc(MB, 'e');
+      edge.write('end', MB - 3);
+      expect(await searchBody(fake(edge), ['end'], noTick, MB)).toEqual({
+        found: new Set(['end']),
+        partial: false,
+      });
+    });
+
+    it('the limit applies to the stored-bytes pass too', async () => {
+      const notGzip = Buffer.alloc(3 * MB, 'n');
+      notGzip.write('far-away', 2 * MB);
+      expect(await searchBody(fake(notGzip, { encoding: 'gzip' }), ['far-away'], noTick, MB)).toEqual({
+        found: new Set(),
+        partial: true,
+      });
+    });
+
+    it('stops with whatever the tick throws, even undefined, without searching the stored bytes', async () => {
+      const encoded = await encodeBuffer(Buffer.alloc(4 * MB, 'u'), 'gzip');
+      const source = fake(encoded, { encoding: 'gzip' });
+      let calls = 0;
+      await expect(
+        searchBody(source, ['absent'], async () => {
+          if (++calls === 2) throw undefined;
+        }),
+      ).rejects.toBeUndefined();
+      const readsWhenStopped = source.reads;
+      // No second pass started.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(source.reads).toBe(readsWhenStopped);
+    });
   });
 });

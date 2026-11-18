@@ -1,9 +1,9 @@
 import { createDecodeStream } from 'http-encoding';
 import type { StoredRange } from './body-store';
-import { foldText } from '../shared/query';
+import { foldText, MAX_SEARCHED_MB } from '../shared/query';
 
 /** At most this much of a body's decoded content is searched. */
-export const MAX_SEARCHED_BYTES = 64 * 1024 * 1024;
+export const MAX_SEARCHED_BYTES = MAX_SEARCHED_MB * 1024 * 1024;
 
 /** Stored bytes read at a time. */
 const RANGE_BYTES = 1024 * 1024;
@@ -52,13 +52,18 @@ export async function searchBody(
   let serial: number | undefined;
   let receiving = false;
   let notAllKept = false;
+  /** The body went away, or was replaced, while it was read. */
+  let gone = false;
+  let sawBytes = false;
   // Set when the search was stopped, so a stream error caused by it isn't taken for a bad body.
-  let stopped: unknown;
+  let wasStopped = false;
+  let stopError: unknown;
   const step = async (): Promise<void> => {
     try {
       await tick();
     } catch (error) {
-      stopped = error;
+      wasStopped = true;
+      stopError = error;
       throw error;
     }
   };
@@ -71,6 +76,7 @@ export async function searchBody(
         const range = await source.read(offset, RANGE_BYTES);
         if (!range || (serial !== undefined && range.serial !== serial)) {
           // Gone, or replaced by another body: nothing more of this one.
+          gone = true;
           controller.close();
           return;
         }
@@ -81,6 +87,7 @@ export async function searchBody(
           controller.close();
           return;
         }
+        sawBytes = true;
         offset += range.bytes.length;
         controller.enqueue(range.bytes);
       },
@@ -96,12 +103,8 @@ export async function searchBody(
     }
   };
 
-  /**
-   * Searches a stream's bytes as text; true if it stopped at the limit. `stop` ends a decoding
-   * stream early from its input side: canceling a decoder's output instead can leave a rejected
-   * promise inside Node's stream adapter, unhandled.
-   */
-  const scan = async (stream: ReadableStream<Uint8Array>, stop?: () => void): Promise<boolean> => {
+  /** Searches a stream's bytes as text; true if it stopped at the limit with more to come. */
+  const scan = async (stream: ReadableStream<Uint8Array>): Promise<boolean> => {
     const reader = stream.getReader();
     // Once stopped, the stream ends with an error nobody reads: that's expected.
     reader.closed.catch(() => undefined);
@@ -118,46 +121,56 @@ export async function searchBody(
           return false;
         }
         const room = limit - searched;
-        const chunk = value.length > room ? value.subarray(0, room) : value;
+        // Past the limit: what fits is searched, and the rest isn't. A body of exactly the
+        // limit ends with the next read, so it isn't cut short.
+        const over = value.length > room;
+        const chunk = over ? value.subarray(0, room) : value;
         searched += chunk.length;
-        const window = carry + foldText(text.decode(chunk, { stream: true }));
+        const window = carry + foldText(text.decode(chunk, { stream: !over }));
         check(window);
-        if (searched >= limit) return pending.size > 0;
+        if (over) return pending.size > 0;
         carry = overlap > 0 ? window.slice(-overlap) : '';
         await step();
       }
       return false;
     } finally {
       // Stops reading (and decoding) if it hasn't finished.
-      if (!ended) {
-        if (stop) {
-          stop();
-          reader.releaseLock();
-        } else void reader.cancel().catch(() => undefined);
-      }
+      if (!ended) void reader.cancel().catch(() => undefined);
     }
   };
 
-  let decoder: ReturnType<typeof createDecodeStream> | undefined;
-  try {
-    decoder = createDecodeStream(source.encoding);
-  } catch {
-    decoder = undefined; // An encoding Wirescry can't undo.
-  }
+  /** The decoding streams, in the order to apply them; undefined if an encoding can't be undone. */
+  const decoders = ((): Array<NonNullable<ReturnType<typeof createDecodeStream>>> | undefined => {
+    // Listed as applied, so undone last first. Each piped separately (rather than one chained
+    // stream), so an error inside the chain is never left unhandled.
+    const names = (source.encoding ?? '')
+      .split(',')
+      .map((name) => name.trim().toLowerCase())
+      .filter((name) => name !== '' && name !== 'identity')
+      .reverse();
+    try {
+      return names.map((name) => createDecodeStream(name)).filter((d) => d !== null);
+    } catch {
+      return undefined;
+    }
+  })();
+
+  // Each decoder piped on its own: an error anywhere in a chain then reaches the reader, and
+  // nothing is left unhandled (one chained stream can leave a decoder's error unhandled).
+  const decoded = (): ReadableStream<Uint8Array> =>
+    decoders!.reduce((stream, decoder) => stream.pipeThrough(decoder), stored());
 
   let atLimit = false;
-  let undecodable = decoder === undefined;
-  if (decoder !== undefined) {
+  let undecodable = decoders === undefined;
+  if (decoders !== undefined) {
     try {
-      if (decoder) {
-        const pipe = new AbortController();
-        atLimit = await scan(stored().pipeThrough(decoder, { signal: pipe.signal }), () => pipe.abort());
-      } else atLimit = await scan(stored());
+      atLimit = await scan(decoders.length > 0 ? decoded() : stored());
     } catch (error) {
-      if (stopped !== undefined) throw stopped;
-      if (error !== undefined && decoder === null) throw error;
-      // A body still arriving ends mid-stream: what decoded is what there is so far.
-      undecodable = !receiving;
+      if (wasStopped) throw stopError;
+      if (decoders.length === 0) throw error;
+      // Not a bad body: an empty one (decoders fail on no input), one gone or replaced meanwhile,
+      // or one still arriving (what decoded is what there is so far).
+      undecodable = !gone && !receiving;
     }
   }
   if (undecodable && pending.size > 0) {
@@ -165,10 +178,10 @@ export async function searchBody(
     try {
       atLimit = await scan(stored());
     } catch (error) {
-      if (stopped !== undefined) throw stopped;
+      if (wasStopped) throw stopError;
       throw error;
     }
   }
-  const partial = pending.size > 0 && (atLimit || notAllKept || undecodable);
+  const partial = pending.size > 0 && (atLimit || notAllKept || (undecodable && sawBytes));
   return { found, partial };
 }

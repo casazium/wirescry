@@ -708,21 +708,35 @@ describe('searching by header', () => {
       await search('resbody~word');
       expect(shownPaths()).toEqual(['/gamma']);
       expect(notes()).toContain(
-        "2 requests weren’t fully searched: their bodies are over 64 MB decoded, weren't kept in full, or couldn't be decoded.",
+        "2 requests weren't fully searched: their bodies are over 64 MB decoded, weren't kept in full, or couldn't be decoded.",
       );
       fake.bodies.set('gamma', { response: 'nothing', partial: true });
       await search('resbody~zebra');
-      expect(notes()).toContain('3 requests weren’t fully searched');
+      expect(notes()).toContain("3 requests weren't fully searched");
       // A search without body terms has no such note.
       await search('header.x-team=red');
       expect(notes()).not.toContain('fully searched');
+    });
+
+    it('counts only partly searched rows the quick filter shows', async () => {
+      await started([
+        captured('alpha', 'red'),
+        captured('beta', 'red', { contentType: 'text/html', url: 'https://api.test/beta' }),
+      ]);
+      fake.bodies.set('alpha', { response: 'x', partial: true });
+      fake.bodies.set('beta', { response: 'y', partial: true });
+      await search('body~zebra');
+      expect(notes()).toContain("2 requests weren't fully searched");
+      fireEvent.click(screen.getByRole('radio', { name: 'HTML' }));
+      await settle();
+      expect(notes()).toContain("1 request wasn't fully searched");
     });
 
     it('the singular reads right', async () => {
       await started([captured('alpha', 'red')]);
       fake.bodies.set('alpha', { response: 'x', partial: true });
       await search('body~zebra');
-      expect(notes()).toContain('1 request wasn’t fully searched');
+      expect(notes()).toContain("1 request wasn't fully searched");
     });
 
     it('rows from before a restart can’t be searched by body either', async () => {

@@ -280,6 +280,9 @@ const HEADER_START = /^(req|res)?header(?=[.~=!<>])/i;
 const HEADER_NAME = /^[a-z0-9_-]+$/i;
 const HEADER_OP = /^(>=|<=|!=|=|>|<|~)/;
 
+/** Megabytes of each body's decoded content that body terms search, at most. */
+export const MAX_SEARCHED_MB = 64;
+
 /** The longest value a header or body term takes. */
 export const MAX_HEADER_VALUE = 256;
 

@@ -45,6 +45,8 @@ describe('backend', () => {
       'content-type': 'application/json',
       'content-encoding': 'gzip',
     });
+    // Empty, but labelled gzip, as a 204 or a HEAD reply can be.
+    await upstream.forGet('/empty-gzip').thenReply(204, '', { 'content-encoding': 'gzip' });
     await upstream.forGet('/odd-encoding').thenReply(200, Buffer.from('raw bytes'), {
       'content-encoding': 'x-made-up',
     });
@@ -259,6 +261,18 @@ describe('backend', () => {
     expect(
       await api.send({ command: 'matchExchanges', query: 'resbody~nowhere-in-it', ids: [fine] }),
     ).toEqual({ ids: [] });
+    api.close();
+  });
+
+  it('doesn’t report an empty compressed reply as partly searched', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/empty-gzip`, ca);
+    const id = await api.completed('/empty-gzip');
+    const match = (query: string) =>
+      api.send<{ ids: string[]; partial?: string[] }>({ command: 'matchExchanges', query, ids: [id] });
+    expect(await match('resbody~anything')).toEqual({ ids: [] });
+    expect(await match('-resbody~anything')).toEqual({ ids: [id] });
     api.close();
   });
 

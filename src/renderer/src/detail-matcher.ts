@@ -270,6 +270,7 @@ export class DetailMatcher {
     }
     if (NOT_REFUSED.has(message)) return;
     search.matches = new Set();
+    search.partial = new Set();
     search.awaitingFull = false;
     search.goneSince = new Set();
     search.error = message;

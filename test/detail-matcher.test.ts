@@ -771,6 +771,27 @@ describe('DetailMatcher', () => {
       expect([...matcher.state().matches]).toEqual(['1']);
     });
 
+    it('a refused search keeps no partly searched ids', async () => {
+      const matcher = new DetailMatcher(() => undefined);
+      const replies: Array<{ resolve(r: MatchReply): void; reject(e: Error): void }> = [];
+      matcher.connect(
+        () =>
+          new Promise<MatchReply>((resolve, reject) => {
+            replies.push({ resolve, reject });
+          }),
+      );
+      matcher.setQuery('body~a');
+      matcher.onBatch(['1'], []);
+      replies[1]!.resolve({ ids: [], partial: ['1'] });
+      await Promise.resolve();
+      await Promise.resolve();
+      replies[0]!.reject(new Error('Something went wrong'));
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(matcher.state().error).toBe('Something went wrong');
+      expect([...matcher.state().partial]).toEqual([]);
+    });
+
     it('shows progress for the search being asked, and only that one', async () => {
       const { matcher, asked } = withReplies();
       matcher.setQuery('body~a');

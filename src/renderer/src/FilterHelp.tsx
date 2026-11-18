@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { QUERY_FIELDS } from '../../shared/query';
+import { MAX_SEARCHED_MB, QUERY_FIELDS } from '../../shared/query';
 
 const EXAMPLES: Array<[string, string]> = [
   ['status>=400', 'Errors from the server'],
@@ -99,8 +99,8 @@ export function FilterHelp({
         <code>?</code>.
       </p>
       <p className="muted">
-        <code>body~text</code>, <code>reqbody~</code> and <code>resbody~</code> search decoded bodies, up to
-        64 MB each.
+        <code>body~text</code>, <code>reqbody~</code> and <code>resbody~</code> search decoded bodies, up to{' '}
+        {MAX_SEARCHED_MB} MB each.
       </p>
     </div>
   );

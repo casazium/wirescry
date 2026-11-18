@@ -1,5 +1,6 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
+import { MAX_SEARCHED_MB } from '../../shared/query';
 import type {
   ComposerRequest,
   ExchangeDetail,
@@ -188,8 +189,16 @@ export function App(): React.JSX.Element {
     [shown, allExchanges, staleIds],
   );
   const detailError = shown.needsDetail ? detailMatch.error : undefined;
-  // Partly searched, among the rows the search could show: those it found, or might have.
-  const partlySearched = shown.needsBody ? detailMatch.partial.size : 0;
+  // Partly searched, among the rows the search could show (the quick filter and its other terms
+  // allowing): those it found, or might have.
+  const partlySearched = useMemo(
+    () =>
+      shown.needsBody
+        ? allExchanges.filter((e) => shown.matches(e) && !staleIds.has(e.id) && detailMatch.partial.has(e.id))
+            .length
+        : 0,
+    [shown, allExchanges, staleIds, detailMatch],
+  );
   const selected = selectedId ? allExchanges.find((e) => e.id === selectedId) : undefined;
   const exportable = useMemo(() => rows.filter((e) => !staleIds.has(e.id)), [rows, staleIds]);
 
@@ -829,8 +838,9 @@ export function App(): React.JSX.Element {
               {partlySearched > 0 && (
                 <span className="muted">
                   {partlySearched.toLocaleString()}{' '}
-                  {partlySearched === 1 ? 'request wasn’t' : 'requests weren’t'} fully searched: their bodies
-                  are over 64 MB decoded, weren&apos;t kept in full, or couldn&apos;t be decoded.
+                  {partlySearched === 1 ? "request wasn't" : "requests weren't"} fully searched: their bodies
+                  are over {MAX_SEARCHED_MB} MB decoded, weren&apos;t kept in full, or couldn&apos;t be
+                  decoded.
                 </span>
               )}
               {unsearchable > 0 && (
