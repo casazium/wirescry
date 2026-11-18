@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeBuffer } from 'http-encoding';
@@ -149,6 +149,122 @@ describe('backend', () => {
     const requestBody = await api.send<BodyContent>({ command: 'getBody', exchangeId: id, side: 'request' });
     expect(Buffer.from(requestBody.base64, 'base64').toString()).toBe('{"name":"wirescry"}');
     expect(requestBody.contentType).toBe('application/json');
+    api.close();
+  });
+
+  it('finds a captured request by its headers, and checks what it is asked', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/echo?header-search`, ca, {
+      method: 'POST',
+      body: '{}',
+      headers: { 'content-type': 'application/json', 'x-header-search': 'Found-It' },
+    });
+    const id = await api.completed('/echo?header-search');
+    const match = (query: string, ids?: string[]) =>
+      api.send<{ ids: string[] }>({ command: 'matchExchanges', query, ...(ids ? { ids } : {}) });
+
+    expect((await match('reqheader.x-header-search=found-it')).ids).toEqual([id]);
+    expect((await match('header~"x-header-search: found"')).ids).toEqual([id]);
+    expect((await match('reqheader.x-header-search=found-it', [id, 'not-an-id'])).ids).toEqual([id]);
+    // The negative cases: the other side, another value, and plain words.
+    expect((await match('resheader.x-header-search=*')).ids).toEqual([]);
+    expect((await match('reqheader.x-header-search=lost-it')).ids).toEqual([]);
+    expect((await match('found-it')).ids).not.toContain(id);
+    expect((await match('reqheader.x-header-search=found-it', ['not-an-id'])).ids).toEqual([]);
+
+    // What it's sent is checked.
+    const raw = (command: Record<string, unknown>) =>
+      api.send({ command: 'matchExchanges', ...command } as never);
+    await expect(raw({ query: 42 })).rejects.toThrow('query must be text');
+    await expect(raw({ query: 'header~x', ids: 'abc' })).rejects.toThrow('ids must be a list');
+    await expect(raw({ query: 'header~x', ids: [1, 2] })).rejects.toThrow('ids must be a list');
+    await expect(
+      raw({ query: 'header~x', ids: Array.from({ length: 10_001 }, (_, i) => `${i}`) }),
+    ).rejects.toThrow('Too many ids');
+    await expect(raw({ query: 'x'.repeat(5000) })).rejects.toThrow('too long');
+    await expect(raw({})).rejects.toThrow('query must be text');
+    await expect(raw({ query: 'header~x', ids: null })).rejects.toThrow('ids must be a list');
+    await expect(raw({ query: 'header~x', ids: [null] })).rejects.toThrow('ids must be a list');
+    await expect(raw({ query: 'header~x', ids: {} })).rejects.toThrow('ids must be a list');
+    // The limits themselves are accepted.
+    await expect(
+      raw({ query: 'header~x', ids: Array.from({ length: 10_000 }, (_, i) => `${i}`) }),
+    ).resolves.toEqual({
+      ids: [],
+    });
+    await expect(raw({ query: `header~x ${'a'.repeat(4096 - 9)}` })).resolves.toEqual({ ids: [] });
+    await expect(raw({ query: `header~x ${'a'.repeat(4096 - 8)}` })).rejects.toThrow('too long');
+    await expect(raw({ query: 'header~x', ids: [] })).resolves.toEqual({ ids: [] });
+
+    // Its response headers are found too, and a deleted request isn't any more.
+    expect((await match('resheader.date=*', [id])).ids).toEqual([id]);
+    expect((await match('reqheader.date=*', [id])).ids).toEqual([]);
+    expect((await match('reqheader.content-type=application/json', [id])).ids).toEqual([id]);
+    await api.send({ command: 'clear', ids: [id] });
+    expect((await match('reqheader.x-header-search=found-it')).ids).toEqual([]);
+    api.close();
+  });
+
+  it('finds imported requests by their headers', async () => {
+    const api = await apiClient(backend.apiPort);
+    const file = path.join(dataDir, 'header-search.har');
+    const entry = (url: string, team: string) => ({
+      startedDateTime: '2026-11-18T00:00:00.000Z',
+      time: 5,
+      request: {
+        method: 'GET',
+        url,
+        httpVersion: 'HTTP/1.1',
+        headers: [{ name: 'X-Imported-Team', value: team }],
+        queryString: [],
+        cookies: [],
+        headersSize: -1,
+        bodySize: 0,
+      },
+      response: {
+        status: 200,
+        statusText: 'OK',
+        httpVersion: 'HTTP/1.1',
+        headers: [{ name: 'X-Imported-Reply', value: 'yes' }],
+        cookies: [],
+        content: { size: 0, mimeType: 'text/plain' },
+        redirectURL: '',
+        headersSize: -1,
+        bodySize: 0,
+      },
+      cache: {},
+      timings: { send: 0, wait: 5, receive: 0 },
+    });
+    await writeFile(
+      file,
+      JSON.stringify({
+        log: {
+          version: '1.2',
+          creator: { name: 'test', version: '1' },
+          entries: [entry('https://imported.test/red', 'red'), entry('https://imported.test/blue', 'blue')],
+        },
+      }),
+    );
+    expect(await backend.importHar(file)).toMatchObject({ imported: 2 });
+    const red = () => exchangesIn(api.messages).find((e) => e.url === 'https://imported.test/red');
+    await expect.poll(red).toBeTruthy();
+    const match = async (query: string) =>
+      (await api.send<{ ids: string[] }>({ command: 'matchExchanges', query })).ids;
+    expect(await match('reqheader.x-imported-team=red')).toEqual([red()!.id]);
+    expect(await match('resheader.x-imported-reply=yes')).toHaveLength(2);
+    expect(await match('reqheader.x-imported-team=green')).toEqual([]);
+    // Answered in the order asked.
+    const blue = exchangesIn(api.messages).find((e) => e.url === 'https://imported.test/blue')!.id;
+    expect(
+      (
+        await api.send<{ ids: string[] }>({
+          command: 'matchExchanges',
+          query: 'header~x-imported',
+          ids: [blue, red()!.id],
+        })
+      ).ids,
+    ).toEqual([blue, red()!.id]);
     api.close();
   });
 

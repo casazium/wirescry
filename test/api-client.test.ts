@@ -118,4 +118,18 @@ describe('ApiClient', () => {
     await closed;
     await vi.waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
   });
+
+  it('refuses a command while still connecting, as disconnected, instead of throwing', async () => {
+    server.once('connection', () => undefined);
+    const client = new ApiClient({ apiUrl: url, token: 't' }, () => undefined, vi.fn());
+    await expect(client.send({ command: 'getExchange', exchangeId: 'a' })).rejects.toThrow('Disconnected');
+    client.close();
+  });
+
+  it('refuses a command once closed, as disconnected, instead of never answering', async () => {
+    const { client, onClose } = await connected();
+    socket.close();
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
+    await expect(client.send({ command: 'getExchange', exchangeId: 'a' })).rejects.toThrow('Disconnected');
+  });
 });

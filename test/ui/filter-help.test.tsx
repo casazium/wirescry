@@ -3,7 +3,7 @@ import { createRef } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { FilterHelp } from '../../src/renderer/src/FilterHelp';
-import { QUERY_FIELDS } from '../../src/shared/query';
+import { compileQuery, QUERY_FIELDS } from '../../src/shared/query';
 
 function open() {
   const onPick = vi.fn();
@@ -34,7 +34,16 @@ describe('FilterHelp', () => {
 
   it('lists every field the search knows', () => {
     open();
-    expect(dialog().textContent).toContain(`Fields: ${QUERY_FIELDS.join(', ')}.`);
+    expect(dialog().textContent).toContain(
+      `Fields: ${QUERY_FIELDS.join(', ')}, header.NAME, reqheader.NAME, resheader.NAME.`,
+    );
+  });
+
+  it('says plain words don’t search headers, and offers header examples', () => {
+    const { onPick } = open();
+    expect(dialog().textContent).toContain("Plain words don't search headers; use header~ for that.");
+    fireEvent.click(screen.getByRole('button', { name: 'header~bearer' }));
+    expect(onPick).toHaveBeenCalledWith('header~bearer');
   });
 
   it('closes with ×, giving focus back', () => {
@@ -90,5 +99,21 @@ describe('FilterHelp', () => {
     fireEvent.keyDown(document.body, { key: 'Escape' });
     fireEvent.pointerDown(document.body);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('offers the response header example too', () => {
+    const { onPick } = open();
+    fireEvent.click(screen.getByRole('button', { name: 'resheader.cache-control~no-store' }));
+    expect(onPick).toHaveBeenCalledWith('resheader.cache-control~no-store');
+  });
+
+  it('every example is a search with no errors or hints', () => {
+    open();
+    const examples = [...dialog().querySelectorAll('li button code')].map((c) => c.textContent ?? '');
+    expect(examples.length).toBeGreaterThan(10);
+    for (const example of examples) {
+      const q = compileQuery(example);
+      expect({ example, errors: q.errors, hints: q.hints }).toEqual({ example, errors: [], hints: [] });
+    }
   });
 });

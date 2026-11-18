@@ -1,4 +1,4 @@
-import type { ExchangeSummary } from './api';
+import type { ExchangeDetail, ExchangeSummary, Header } from './api';
 import { exchangeType } from './exchange-type';
 import { grpcClientSideStatus, grpcStatusName } from './grpc';
 
@@ -17,7 +17,17 @@ import { grpcClientSideStatus, grpcStatusName } from './grpc';
  * - Double quotes keep spaces together: `"not found"`, `path~"my file"`.
  *
  * A term whose field isn't known (like `page=2` from a URL) is searched as plain text.
+ *
+ * Header terms need the exchange's headers, which summaries don't carry, so the backend matches
+ * them (see `matchesDetail` and src/backend/search.ts):
+ * - `header~text`: any one header line, `name: value`, contains `text`.
+ * - `header.NAME=glob`, `header.NAME!=glob`, `header.NAME~text`: NAME's value. `=*` means present.
+ * - `reqheader…` and `resheader…`: the same, on one side only (headers and trailers).
+ * HTTP/2 pseudo-headers (`:path` etc.) are left out. Plain words don't search headers.
  */
+
+/** The longest search the box takes; the backend refuses longer ones. */
+export const MAX_QUERY_LENGTH = 4096;
 
 type Kind = 'text' | 'number' | 'status' | 'size' | 'time';
 
@@ -78,7 +88,15 @@ type Op = '=' | '!=' | '~' | '>' | '>=' | '<' | '<=';
 const TERM = /^([a-z]+)(>=|<=|!=|=|>|<|~)(.*)$/i;
 
 export interface CompiledQuery {
+  /**
+   * Whether the summary passes every term that can be checked on it. Header terms can't, and
+   * count as passing: they're for `matchesDetail`.
+   */
   matches(e: ExchangeSummary): boolean;
+  /** True if the query has header terms, so only the backend can tell what matches. */
+  needsDetail: boolean;
+  /** Every term, header terms included, against an exchange's details. */
+  matchesDetail(detail: ExchangeDetail): boolean;
   /** Problems with terms that were dropped, e.g. `status>abc`. */
   errors: string[];
   /** Notes about terms read as plain text that may have been meant as filters. */
@@ -157,6 +175,164 @@ function compare(actual: number, op: Op, expected: number): boolean {
 
 type Predicate = (e: ExchangeSummary) => boolean;
 
+/** Whether `piece` (with `?` for any one character) matches `text` at `at`. */
+function matchesAt(text: string, at: number, piece: string): boolean {
+  if (at < 0 || at + piece.length > text.length) return false;
+  for (let i = 0; i < piece.length; i++) {
+    if (piece[i] !== '?' && piece[i] !== text[at + i]) return false;
+  }
+  return true;
+}
+
+/** Where `piece` first matches in `text` from `from`, ending by `end`; -1 if nowhere. */
+function findPiece(text: string, piece: string, from: number, end: number): number {
+  if (!piece.includes('?')) {
+    const at = text.indexOf(piece, from);
+    return at !== -1 && at + piece.length <= end ? at : -1;
+  }
+  // With ? in it: a bit-parallel search (shift-and), one pass over the text whatever the piece,
+  // where checking the piece at every position would take text × piece on a long value.
+  const length = piece.length;
+  const words = Math.ceil(length / 32);
+  const anyChar = new Uint32Array(words);
+  for (let i = 0; i < length; i++) if (piece[i] === '?') anyChar[i >> 5]! |= 1 << (i & 31);
+  const masks = new Map<string, Uint32Array>();
+  for (let i = 0; i < length; i++) {
+    const char = piece[i]!;
+    if (char === '?') continue;
+    let mask = masks.get(char);
+    if (!mask) masks.set(char, (mask = Uint32Array.from(anyChar)));
+    mask[i >> 5]! |= 1 << (i & 31);
+  }
+  const state = new Uint32Array(words);
+  const lastWord = (length - 1) >> 5;
+  const lastBit = (1 << ((length - 1) & 31)) >>> 0;
+  for (let t = from; t < end; t++) {
+    const mask = masks.get(text[t]!) ?? anyChar;
+    let carry = 1;
+    for (let w = 0; w < words; w++) {
+      const value = state[w]!;
+      state[w] = ((value << 1) | carry) & mask[w]!;
+      carry = value >>> 31;
+    }
+    if ((state[lastWord]! & lastBit) >>> 0 !== 0) return t - length + 1;
+  }
+  return -1;
+}
+
+/**
+ * Whether `text` equals `pattern`, where `*` stands for any run of characters and `?` for any
+ * one. Both are lowercased by the caller. The pieces between `*`s are found left to right, each
+ * at its first place, which is enough for a glob: no backtracking, unlike a regular expression
+ * of `.*`s, which can take minutes on a long header value. Header values are matched in the
+ * backend, where that would stop the proxy.
+ */
+export function wildcardMatch(text: string, pattern: string): boolean {
+  const pieces = pattern.split('*');
+  if (pieces.length === 1) return text.length === pattern.length && matchesAt(text, 0, pattern);
+  const first = pieces[0]!;
+  const last = pieces[pieces.length - 1]!;
+  if (text.length < first.length + last.length) return false;
+  if (!matchesAt(text, 0, first) || !matchesAt(text, text.length - last.length, last)) return false;
+  let pos = first.length;
+  const end = text.length - last.length;
+  for (const piece of pieces.slice(1, -1)) {
+    if (piece === '') continue;
+    const at = findPiece(text, piece, pos, end);
+    if (at === -1) return false;
+    pos = at + piece.length;
+  }
+  return true;
+}
+
+/** An exchange's headers, lowercased, without pseudo-headers, by side; trailers included. */
+export interface HeaderView {
+  request: Header[];
+  response: Header[];
+}
+
+function lowered(...lists: Array<Header[] | undefined>): Header[] {
+  const out: Header[] = [];
+  for (const list of lists) {
+    for (const [name, value] of list ?? []) {
+      // HTTP/2's :method, :path and so on repeat fields the query already has.
+      if (name.startsWith(':')) continue;
+      out.push([name.toLowerCase(), value.toLowerCase()]);
+    }
+  }
+  return out;
+}
+
+export function headerView(detail: ExchangeDetail): HeaderView {
+  return {
+    request: lowered(detail.requestHeaders, detail.requestTrailers),
+    response: lowered(detail.responseHeaders, detail.responseTrailers),
+  };
+}
+
+type HeaderPredicate = (view: HeaderView) => boolean;
+
+const HEADER_START = /^(req|res)?header(?=[.~=!<>])/i;
+const HEADER_NAME = /^[a-z0-9_-]+$/i;
+const HEADER_OP = /^(>=|<=|!=|=|>|<|~)/;
+
+/** The longest value a header term takes. */
+export const MAX_HEADER_VALUE = 256;
+
+/**
+ * Parses a header term (the `-` already taken off): a predicate, an error, or a hint to show
+ * while searching it as plain text. Undefined when it isn't a header term after all, such as
+ * `header.css` (no operator), which stays plain text as before.
+ */
+function headerPredicate(term: string): HeaderPredicate | string | { hint: string } | undefined {
+  const start = HEADER_START.exec(term);
+  if (!start) return undefined;
+  const field = start[0].toLowerCase();
+  const side = start[1]?.toLowerCase() as 'req' | 'res' | undefined;
+  let rest = term.slice(start[0].length);
+  let name: string | undefined;
+  if (rest.startsWith('.')) {
+    const end = rest.slice(1).search(/[=!<>~]/);
+    // No operator: `header.css` is a plain word, as it always was.
+    if (end === -1) return undefined;
+    name = rest.slice(1, end + 1);
+    rest = rest.slice(end + 1);
+  }
+  const opMatch = HEADER_OP.exec(rest);
+  if (!opMatch) return undefined;
+  const op = opMatch[1] as Op;
+  const value = rest.slice(op.length);
+  const label = name === undefined ? field : `${field}.${name}`;
+
+  if (name === undefined) {
+    if (op !== '~') return `${field}${op} needs a header name: ${field}.NAME=value, or ${field}~text`;
+  } else {
+    if (name === '') return `${field}.${op} needs a header name: ${field}.NAME=value, or ${field}~text`;
+    // Likely part of a URL, like header.php?id=1: searched as text, as it always was.
+    if (!HEADER_NAME.test(name))
+      return { hint: `"${term}" is searched as text: header names use letters, digits, - and _.` };
+  }
+  if (op !== '=' && op !== '!=' && op !== '~') return `${label} can't be compared with ${op}; use =, != or ~`;
+  if (value === '') return `${label}${op} needs a value`;
+  if (value.length > MAX_HEADER_VALUE) return `${label}${op} takes at most ${MAX_HEADER_VALUE} characters`;
+
+  const needle = value.toLowerCase();
+  const lowerName = name?.toLowerCase();
+  const headersOf = (view: HeaderView): Header[] =>
+    side === 'req' ? view.request : side === 'res' ? view.response : [...view.request, ...view.response];
+
+  if (lowerName === undefined) {
+    // One line at a time, so a match never spans two headers.
+    return (view) => headersOf(view).some(([n, v]) => `${n}: ${v}`.includes(needle));
+  }
+  const test = (v: string): boolean => (op === '~' ? v.includes(needle) : wildcardMatch(v, needle));
+  return (view) => {
+    const hit = headersOf(view).some(([n, v]) => n === lowerName && test(v));
+    // As for every other field, != is the opposite of =: no such header matches too.
+    return op === '!=' ? !hit : hit;
+  };
+}
+
 /** Builds a predicate for `field op value`, or an error message. */
 function fieldPredicate(fieldName: string, spec: FieldSpec, op: Op, value: string): Predicate | string {
   if (value === '') return `${fieldName}${op} needs a value`;
@@ -212,13 +388,29 @@ function textHaystack(e: ExchangeSummary): string {
 /** Turns the search box's text into a predicate, plus any errors and hints to show. */
 export function compileQuery(input: string): CompiledQuery {
   const predicates: Predicate[] = [];
+  const headerPredicates: HeaderPredicate[] = [];
   const errors: string[] = [];
   const hints: string[] = [];
+  const tooLong = input.length > MAX_QUERY_LENGTH;
+  let droppedForLength = false;
 
   for (const token of tokenize(input)) {
     const negated = token.startsWith('-') && token.length > 1;
     const term = negated ? token.slice(1) : token;
     let predicate: Predicate | undefined;
+
+    const header = headerPredicate(term);
+    if (typeof header === 'string') {
+      errors.push(header);
+      continue;
+    }
+    if (typeof header === 'function') {
+      // Too long for the backend: dropped, with an error below.
+      if (tooLong) droppedForLength = true;
+      else headerPredicates.push(negated ? (view) => !header(view) : header);
+      continue;
+    }
+    if (header) hints.push(header.hint);
 
     const match = TERM.exec(term);
     if (match) {
@@ -251,8 +443,20 @@ export function compileQuery(input: string): CompiledQuery {
     );
   }
 
+  if (droppedForLength)
+    errors.push(
+      `The search is too long for header terms: ${MAX_QUERY_LENGTH.toLocaleString('en-US')} characters at most.`,
+    );
+  const matches = (e: ExchangeSummary): boolean => predicates.every((p) => p(e));
   return {
-    matches: (e) => predicates.every((p) => p(e)),
+    matches,
+    needsDetail: headerPredicates.length > 0,
+    matchesDetail: (detail) => {
+      if (!matches(detail.summary)) return false;
+      if (headerPredicates.length === 0) return true;
+      const view = headerView(detail);
+      return headerPredicates.every((p) => p(view));
+    },
     errors,
     hints,
   };

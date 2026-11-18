@@ -89,6 +89,30 @@ describe('WebSocket messages through the proxy', () => {
     await rm(dataDir, { recursive: true, force: true });
   });
 
+  it('finds a WebSocket by the headers of its upgrade', async () => {
+    const api = await apiClient(backend.apiPort);
+    const target = `localhost:${upstream.port}`;
+    const socket = await tunnel(backend.proxyPort, target);
+    const ws = new WebSocket(`ws://${target}/header-search`, {
+      createConnection: () => socket,
+      headers: { 'x-ws-search': 'Upgrade-Me' },
+    });
+    await new Promise((resolve, reject) => {
+      ws.once('open', resolve);
+      ws.once('error', reject);
+    });
+    ws.close(1000);
+    const exchange = () => exchangesIn(api.messages).find((e) => e.path === '/header-search');
+    await expect.poll(() => exchange()?.closeCode).toBe(1000);
+    const id = exchange()!.id;
+    const match = async (query: string) =>
+      (await api.send<{ ids: string[] }>({ command: 'matchExchanges', query })).ids;
+    expect(await match('reqheader.x-ws-search=upgrade-me')).toEqual([id]);
+    expect(await match('reqheader.upgrade=websocket header.x-ws-search=*')).toEqual([id]);
+    expect(await match('resheader.x-ws-search=*')).toEqual([]);
+    api.close();
+  });
+
   it('records text and binary messages in both directions, in order, and the close reason', async () => {
     const api = await apiClient(backend.apiPort);
     const target = `localhost:${upstream.port}`;

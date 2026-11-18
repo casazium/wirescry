@@ -53,7 +53,11 @@ function matchesQuick(exchange: ExchangeSummary, filter: QuickFilter): boolean {
 /** A quick filter plus a compiled search, ready to test many exchanges. */
 export function compileFilter(search: string, filter: QuickFilter): CompiledQuery {
   const query = compileQuery(search);
-  return { ...query, matches: (e) => matchesQuick(e, filter) && query.matches(e) };
+  return {
+    ...query,
+    matches: (e) => matchesQuick(e, filter) && query.matches(e),
+    matchesDetail: (detail) => matchesQuick(detail.summary, filter) && query.matchesDetail(detail),
+  };
 }
 
 /** True if the exchange passes the quick filter and the search (see query.ts for the syntax). */

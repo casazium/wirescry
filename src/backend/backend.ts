@@ -64,6 +64,7 @@ import * as mockttp from 'mockttp';
 import { WebSocketStore } from './websocket-store';
 import { SseReader } from './sse-reader';
 import { upstreamTargetOf } from './upstream-target';
+import { matchExchanges } from './search';
 
 /** How long quitting waits to put capturing Android devices back: the app kills the backend after 3 s. */
 const ANDROID_STOP_TIMEOUT_MS = 2000;
@@ -1117,6 +1118,15 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           broadcast({ type: 'status', status: status() });
           return undefined;
         });
+      case 'matchExchanges': {
+        if (typeof command.query !== 'string') throw new Error('query must be text');
+        const ids = command.ids;
+        if (ids !== undefined && (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')))
+          throw new Error('ids must be a list of ids');
+        // The UI sends at most a few thousand, and asks about all of them by leaving ids out.
+        if (ids && ids.length > 10_000) throw new Error('Too many ids');
+        return { ids: await matchExchanges(store, command.query, ids) };
+      }
       case 'getExchange': {
         const exchange: ExchangeDetail | undefined = store.get(command.exchangeId);
         if (!exchange) throw new Error('Exchange not found');

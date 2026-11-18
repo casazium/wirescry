@@ -572,6 +572,12 @@ export type ClientCommand =
   /** A call from a plugin's UI to its backend half. */
   | { id: number; command: 'plugin'; plugin: string; name: string; args?: unknown }
   | { id: number; command: 'getExchange'; exchangeId: string }
+  /**
+   * The search box's query against the exchanges' details, for header terms the UI can't check
+   * itself. Replies `{ ids }`: those that match, among `ids` or all of them. At most
+   * MAX_QUERY_LENGTH characters.
+   */
+  | { id: number; command: 'matchExchanges'; query: string; ids?: string[] }
   | { id: number; command: 'getBody'; exchangeId: string; side: BodySide }
   /** Part of a body's stored bytes, while it arrives or after: BodyRangeContent, or null. At most 1 MB. */
   | {
