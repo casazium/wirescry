@@ -175,33 +175,48 @@ function compare(actual: number, op: Op, expected: number): boolean {
 
 type Predicate = (e: ExchangeSummary) => boolean;
 
+/** Whether `piece` (with `?` for any one character) matches `text` at `at`. */
+function matchesAt(text: string, at: number, piece: string): boolean {
+  if (at < 0 || at + piece.length > text.length) return false;
+  for (let i = 0; i < piece.length; i++) {
+    if (piece[i] !== '?' && piece[i] !== text[at + i]) return false;
+  }
+  return true;
+}
+
+/** Where `piece` first matches in `text` from `from`, ending by `end`; -1 if nowhere. */
+function findPiece(text: string, piece: string, from: number, end: number): number {
+  if (!piece.includes('?')) {
+    const at = text.indexOf(piece, from);
+    return at !== -1 && at + piece.length <= end ? at : -1;
+  }
+  for (let at = from; at + piece.length <= end; at++) if (matchesAt(text, at, piece)) return at;
+  return -1;
+}
+
 /**
  * Whether `text` equals `pattern`, where `*` stands for any run of characters and `?` for any
- * one. Both are lowercased by the caller. Linear in practice and never worse than
- * text × pattern, unlike a regular expression of `.*`s, which can backtrack for minutes on a
- * long header value: header values are matched in the backend, where that would stop the proxy.
+ * one. Both are lowercased by the caller. The pieces between `*`s are found left to right, each
+ * at its first place, which is enough for a glob: no backtracking, unlike a regular expression
+ * of `.*`s, which can take minutes on a long header value. Header values are matched in the
+ * backend, where that would stop the proxy.
  */
 export function wildcardMatch(text: string, pattern: string): boolean {
-  let t = 0;
-  let p = 0;
-  let star = -1;
-  let mark = 0;
-  while (t < text.length) {
-    if (p < pattern.length && (pattern[p] === '?' || pattern[p] === text[t])) {
-      t++;
-      p++;
-    } else if (p < pattern.length && pattern[p] === '*') {
-      star = p++;
-      mark = t;
-    } else if (star !== -1) {
-      p = star + 1;
-      t = ++mark;
-    } else {
-      return false;
-    }
+  const pieces = pattern.split('*');
+  if (pieces.length === 1) return text.length === pattern.length && matchesAt(text, 0, pattern);
+  const first = pieces[0]!;
+  const last = pieces[pieces.length - 1]!;
+  if (text.length < first.length + last.length) return false;
+  if (!matchesAt(text, 0, first) || !matchesAt(text, text.length - last.length, last)) return false;
+  let pos = first.length;
+  const end = text.length - last.length;
+  for (const piece of pieces.slice(1, -1)) {
+    if (piece === '') continue;
+    const at = findPiece(text, piece, pos, end);
+    if (at === -1) return false;
+    pos = at + piece.length;
   }
-  while (pattern[p] === '*') p++;
-  return p === pattern.length;
+  return true;
 }
 
 /** An exchange's headers, lowercased, without pseudo-headers, by side; trailers included. */
@@ -235,11 +250,15 @@ const HEADER_START = /^(req|res)?header(?=[.~=!<>])/i;
 const HEADER_NAME = /^[a-z0-9_-]+$/i;
 const HEADER_OP = /^(>=|<=|!=|=|>|<|~)/;
 
+/** The longest value a header term takes. */
+export const MAX_HEADER_VALUE = 256;
+
 /**
- * Parses a header term (the `-` already taken off). Returns undefined when the term isn't one
- * after all, such as `header.css` (no operator), which stays plain text as before.
+ * Parses a header term (the `-` already taken off): a predicate, an error, or a hint to show
+ * while searching it as plain text. Undefined when it isn't a header term after all, such as
+ * `header.css` (no operator), which stays plain text as before.
  */
-function headerPredicate(term: string): HeaderPredicate | string | undefined {
+function headerPredicate(term: string): HeaderPredicate | string | { hint: string } | undefined {
   const start = HEADER_START.exec(term);
   if (!start) return undefined;
   const field = start[0].toLowerCase();
@@ -263,10 +282,13 @@ function headerPredicate(term: string): HeaderPredicate | string | undefined {
     if (op !== '~') return `${field}${op} needs a header name: ${field}.NAME=value, or ${field}~text`;
   } else {
     if (name === '') return `${field}.${op} needs a header name: ${field}.NAME=value, or ${field}~text`;
-    if (!HEADER_NAME.test(name)) return `"${name}" isn't a header name; names use letters, digits, - and _`;
+    // Likely part of a URL, like header.php?id=1: searched as text, as it always was.
+    if (!HEADER_NAME.test(name))
+      return { hint: `"${term}" is searched as text: header names use letters, digits, - and _.` };
   }
   if (op !== '=' && op !== '!=' && op !== '~') return `${label} can't be compared with ${op}; use =, != or ~`;
   if (value === '') return `${label}${op} needs a value`;
+  if (value.length > MAX_HEADER_VALUE) return `${label}${op} takes at most ${MAX_HEADER_VALUE} characters`;
 
   const needle = value.toLowerCase();
   const lowerName = name?.toLowerCase();
@@ -344,8 +366,7 @@ export function compileQuery(input: string): CompiledQuery {
   const errors: string[] = [];
   const hints: string[] = [];
   const tooLong = input.length > MAX_QUERY_LENGTH;
-  if (tooLong)
-    errors.push(`The search is too long; header terms need it under ${MAX_QUERY_LENGTH} characters`);
+  let droppedForLength = false;
 
   for (const token of tokenize(input)) {
     const negated = token.startsWith('-') && token.length > 1;
@@ -357,11 +378,13 @@ export function compileQuery(input: string): CompiledQuery {
       errors.push(header);
       continue;
     }
-    if (header) {
-      // Too long for the backend: dropped, with the error above.
-      if (!tooLong) headerPredicates.push(negated ? (view) => !header(view) : header);
+    if (typeof header === 'function') {
+      // Too long for the backend: dropped, with an error below.
+      if (tooLong) droppedForLength = true;
+      else headerPredicates.push(negated ? (view) => !header(view) : header);
       continue;
     }
+    if (header) hints.push(header.hint);
 
     const match = TERM.exec(term);
     if (match) {
@@ -394,6 +417,10 @@ export function compileQuery(input: string): CompiledQuery {
     );
   }
 
+  if (droppedForLength)
+    errors.push(
+      `The search is too long for header terms: ${MAX_QUERY_LENGTH.toLocaleString('en-US')} characters at most.`,
+    );
   const matches = (e: ExchangeSummary): boolean => predicates.every((p) => p(e));
   return {
     matches,

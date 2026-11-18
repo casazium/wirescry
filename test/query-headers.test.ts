@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ExchangeDetail, ExchangeSummary, Header } from '../src/shared/api';
-import { compileQuery, MAX_QUERY_LENGTH, wildcardMatch } from '../src/shared/query';
+import { compileQuery, MAX_HEADER_VALUE, MAX_QUERY_LENGTH, wildcardMatch } from '../src/shared/query';
 
 const summary: ExchangeSummary = {
   id: 'a',
@@ -186,6 +186,23 @@ describe('header terms', () => {
   });
 });
 
+describe('non-ASCII', () => {
+  it('matches non-ASCII header values, case-insensitively', () => {
+    const intl = exchange({ request: [['x-city', 'Zürich']], response: [['x-note', 'ÉTÉ 日本']] });
+    expect(matches('header.x-city=zürich', intl)).toBe(true);
+    expect(matches('header.x-city=z?rich', intl)).toBe(true);
+    expect(matches('resheader~été', intl)).toBe(true);
+    expect(matches('header~日本', intl)).toBe(true);
+    expect(matches('header.x-city=zurich', intl)).toBe(false);
+  });
+
+  it('searches a non-ASCII header name as text', () => {
+    const q = compileQuery('header.größe=1');
+    expect(q.needsDetail).toBe(false);
+    expect(q.hints).toHaveLength(1);
+  });
+});
+
 describe('plain words and existing fields are unchanged', () => {
   it('plain words don’t search headers', () => {
     expect(matches('bearer')).toBe(false);
@@ -227,14 +244,32 @@ describe('header term errors', () => {
     ]);
   });
 
-  it('refuses names with other characters', () => {
-    expect(errorsOf('header.a/b=x')).toEqual([
-      `"a/b" isn't a header name; names use letters, digits, - and _`,
-    ]);
-    expect(errorsOf('header.a.b=x')).toEqual([
-      `"a.b" isn't a header name; names use letters, digits, - and _`,
-    ]);
-    expect(errorsOf('header.:path=x')).toHaveLength(1);
+  it('searches a name with other characters as text, with a hint (it is likely part of a URL)', () => {
+    for (const term of [
+      'header.php?id=1',
+      'header.js?v=3',
+      'header.a/b=x',
+      'header.a.b=x',
+      'header.:path=x',
+    ]) {
+      const q = compileQuery(term);
+      expect(q.errors).toEqual([]);
+      expect(q.hints).toEqual([`"${term}" is searched as text: header names use letters, digits, - and _.`]);
+      expect(q.needsDetail).toBe(false);
+      expect(q.matches(summary)).toBe(false);
+      expect(q.matches({ ...summary, url: `https://x.test/${term}` })).toBe(true);
+    }
+    // Negated, it's plain text excluded.
+    expect(
+      compileQuery('-header.php?id=1').matches({ ...summary, url: 'https://x.test/header.php?id=1' }),
+    ).toBe(false);
+  });
+
+  it('caps a header term’s value', () => {
+    const max = 'x'.repeat(MAX_HEADER_VALUE);
+    expect(errorsOf(`header.a=${max}`)).toEqual([]);
+    expect(errorsOf(`header.a=${max}x`)).toEqual([`header.a= takes at most ${MAX_HEADER_VALUE} characters`]);
+    expect(errorsOf(`header~${max}x`)).toEqual([`header~ takes at most ${MAX_HEADER_VALUE} characters`]);
   });
 
   it('refuses number comparisons', () => {
@@ -250,7 +285,7 @@ describe('header term errors', () => {
   });
 
   it('drops a term with an error and keeps the rest', () => {
-    const q = compileQuery('host=api.* header.a/b=x');
+    const q = compileQuery('host=api.* header.a>3');
     expect(q.needsDetail).toBe(false);
     expect(q.matches(summary)).toBe(true);
   });
@@ -258,9 +293,18 @@ describe('header term errors', () => {
   it('drops header terms from a search that is too long', () => {
     const long = `header~x ${'a'.repeat(MAX_QUERY_LENGTH)}`;
     const q = compileQuery(long);
-    expect(q.errors[0]).toContain('too long');
+    expect(q.errors).toEqual(['The search is too long for header terms: 4,096 characters at most.']);
     expect(q.needsDetail).toBe(false);
-    expect(compileQuery(`header~x ${'a'.repeat(MAX_QUERY_LENGTH - 9)}`).needsDetail).toBe(true);
+    // Exactly at the limit is fine.
+    const atLimit = `header~x ${'a'.repeat(MAX_QUERY_LENGTH - 9)}`;
+    expect(atLimit).toHaveLength(MAX_QUERY_LENGTH);
+    expect(compileQuery(atLimit).errors).toEqual([]);
+    expect(compileQuery(atLimit).needsDetail).toBe(true);
+  });
+
+  it('says nothing about length for a long search without header terms', () => {
+    const q = compileQuery(`items ${'a'.repeat(MAX_QUERY_LENGTH)}`);
+    expect(q.errors).toEqual([]);
   });
 });
 
@@ -281,6 +325,30 @@ describe('wildcardMatch', () => {
     expect(wildcardMatch('aXbXc', 'a*c')).toBe(true);
     expect(wildcardMatch('mississippi', 'm*iss*ppi')).toBe(true);
     expect(wildcardMatch('mississippi', 'm*iss*ppx')).toBe(false);
+  });
+
+  it('handles ? inside pieces between stars, and repeated stars', () => {
+    expect(wildcardMatch('session=abc; path=/', 's?ssion=*; p?th=*')).toBe(true);
+    expect(wildcardMatch('abcabd', '*ab?')).toBe(true);
+    expect(wildcardMatch('abcabd', '*a?d')).toBe(true);
+    expect(wildcardMatch('abcabd', 'a**d')).toBe(true);
+    expect(wildcardMatch('abcabd', '*x?d')).toBe(false);
+    // The first and last pieces mustn't overlap.
+    expect(wildcardMatch('aba', 'ab*ba')).toBe(false);
+    expect(wildcardMatch('abba', 'ab*ba')).toBe(true);
+    // A middle piece must fit between them.
+    expect(wildcardMatch('abXcd', 'ab*X*cd')).toBe(true);
+    expect(wildcardMatch('abcd', 'ab*c*cd')).toBe(false);
+    expect(wildcardMatch('ab?cd', 'ab*?*cd')).toBe(true);
+  });
+
+  it('finishes quickly against a huge value', () => {
+    const value = 'a'.repeat(1024 * 1024);
+    const started = performance.now();
+    expect(wildcardMatch(value, `*${'a'.repeat(250)}b`)).toBe(false);
+    expect(wildcardMatch(value, `*${'a'.repeat(250)}b*`)).toBe(false);
+    expect(wildcardMatch(value, `*${'a'.repeat(120)}?${'a'.repeat(120)}b*`)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(2000);
   });
 
   it('finishes quickly on a pattern that makes a regular expression backtrack', () => {

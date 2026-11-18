@@ -164,21 +164,23 @@ export function App(): React.JSX.Element {
     const all = previous.length > 0 ? [...previous, ...exchanges] : exchanges;
     return hidden ? all.filter((e) => !hidden.has(e.id)) : all;
   }, [previous, exchanges, hidden]);
-  const detailMatches = detailMatch.matches;
-  const detailVersion = detailMatch.version;
+  // detailMatch is a new object whenever its set changes (the set itself changes in place).
   const rows = useMemo(
     () =>
       allExchanges.filter(
         (e) =>
           shown.matches(e) &&
           // Requests from before a restart have no headers left to search.
-          (!shown.needsDetail || (!staleIds.has(e.id) && detailMatches.has(e.id))),
+          (!shown.needsDetail || (!staleIds.has(e.id) && detailMatch.matches.has(e.id))),
       ),
-    // detailVersion: the set changes in place.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allExchanges, shown, staleIds, detailMatches, detailVersion],
+    [allExchanges, shown, staleIds, detailMatch],
   );
-  const unsearchable = shown.needsDetail ? previous.length : 0;
+  // Only those in the list: not ones a Clear is hiding while it can be undone.
+  const unsearchable = useMemo(
+    () => (shown.needsDetail ? allExchanges.filter((e) => staleIds.has(e.id)).length : 0),
+    [shown, allExchanges, staleIds],
+  );
+  const detailError = shown.needsDetail ? detailMatch.error : undefined;
   const selected = selectedId ? allExchanges.find((e) => e.id === selectedId) : undefined;
   const exportable = useMemo(() => rows.filter((e) => !staleIds.has(e.id)), [rows, staleIds]);
 
@@ -798,13 +800,14 @@ export function App(): React.JSX.Element {
               </button>
             </div>
           </div>
-          {(compiled.errors.length > 0 || compiled.hints.length > 0 || unsearchable > 0) && (
+          {(compiled.errors.length > 0 || compiled.hints.length > 0 || unsearchable > 0 || detailError) && (
             <div className="filter-notes" role="status">
               {compiled.errors.map((e) => (
                 <span key={e} className="error">
                   {e}
                 </span>
               ))}
+              {detailError && <span className="error">Couldn&apos;t search headers: {detailError}</span>}
               {compiled.hints.map((h) => (
                 <span key={h} className="muted">
                   {h}

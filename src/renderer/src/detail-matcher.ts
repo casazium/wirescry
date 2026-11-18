@@ -5,7 +5,7 @@
  *
  * Replies can come back in any order (the backend yields while it searches), so every request
  * gets a sequence number, and an answer about an exchange counts only if no later request has
- * asked about it.
+ * asked about it. A full request asks about every exchange, so it overrides earlier batches'.
  *
  * What the list shows is the *applied* search: the latest one whose full answer has arrived.
  * Until a new search's answer arrives, the previous one stays in force.
@@ -19,9 +19,14 @@ export interface DetailMatchState {
   applied?: string;
   /** Exchanges that match the applied search. Exchanges not yet answered for aren't in it. */
   matches: ReadonlySet<string>;
-  /** Changes whenever `applied` or `matches` does. */
+  /** Changes whenever `applied`, `matches` or `error` does. */
   version: number;
+  /** Why the backend couldn't answer the applied search, if it couldn't. */
+  error?: string;
 }
+
+/** Lost with the connection: the next connection asks again in full. */
+const DISCONNECTED = new Set(['Disconnected', 'Not connected']);
 
 /** Asks the backend which of `ids` (or of all exchanges) match `query`. */
 export type Ask = (query: string, ids?: string[]) => Promise<string[]>;
@@ -34,12 +39,15 @@ interface Search {
   lastAsked: Map<string, number>;
   /** The latest full request. */
   full: number;
+  /** True from sending a full request until its answer. */
+  awaitingFull: boolean;
   /**
-   * Removed since the latest full request was sent: its answer may still list them. `all`
-   * when everything was cleared.
+   * Removed while a full request is unanswered: its answer may still list them. `all` when
+   * everything was cleared.
    */
   goneSince: Set<string> | 'all';
   ready: boolean;
+  error?: string;
 }
 
 export class DetailMatcher {
@@ -66,6 +74,7 @@ export class DetailMatcher {
       applied: this.applied?.query,
       matches: this.applied?.matches ?? new Set(),
       version: this.version,
+      ...(this.applied?.error ? { error: this.applied.error } : {}),
     };
   }
 
@@ -101,7 +110,7 @@ export class DetailMatcher {
       for (const id of removed) {
         search.matches.delete(id);
         search.lastAsked.delete(id);
-        if (search.goneSince !== 'all') search.goneSince.add(id);
+        if (search.awaitingFull && search.goneSince !== 'all') search.goneSince.add(id);
         this.applied?.matches.delete(id);
       }
       if (this.applied) this.changed();
@@ -127,7 +136,7 @@ export class DetailMatcher {
       search?.matches.clear();
       search?.lastAsked.clear();
     }
-    if (this.current) this.current.goneSince = 'all';
+    if (this.current?.awaitingFull) this.current.goneSince = 'all';
     if (this.applied) this.changed();
   }
 
@@ -138,6 +147,7 @@ export class DetailMatcher {
       matches: new Set(),
       lastAsked: new Map(),
       full: 0,
+      awaitingFull: false,
       goneSince: new Set(),
       ready: false,
     };
@@ -148,10 +158,11 @@ export class DetailMatcher {
     if (!search) return;
     const seq = ++this.seq;
     search.full = seq;
+    search.awaitingFull = true;
     search.goneSince = new Set();
     this.ask(search.query).then(
       (matched) => this.onFullAnswer(search, seq, matched),
-      () => undefined,
+      (error: unknown) => this.onFullError(search, seq, error),
     );
   }
 
@@ -166,13 +177,30 @@ export class DetailMatcher {
       for (const id of matched) if ((search.lastAsked.get(id) ?? 0) <= seq && !gone.has(id)) next.add(id);
     }
     search.matches = next;
+    search.awaitingFull = false;
+    search.goneSince = new Set();
+    search.error = undefined;
+    search.ready = true;
+    this.applied = search;
+    this.changed();
+  }
+
+  /** The backend refused the search: show that, with nothing matching, rather than wait for ever. */
+  private onFullError(search: Search, seq: number, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (search !== this.current || seq !== search.full || DISCONNECTED.has(message)) return;
+    search.matches = new Set();
+    search.awaitingFull = false;
+    search.goneSince = new Set();
+    search.error = message;
     search.ready = true;
     this.applied = search;
     this.changed();
   }
 
   private onAnswer(search: Search, seq: number, asked: string[], matched: string[]): void {
-    if (search !== this.current) return;
+    // A full request sent since asked about every exchange: its answer decides.
+    if (search !== this.current || seq < search.full) return;
     const hits = new Set(matched);
     let any = false;
     for (const id of asked) {

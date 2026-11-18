@@ -22,6 +22,7 @@ vi.mock('../../src/renderer/src/api-client', () => ({
   ApiClient: class {
     send = vi.fn(async (command: { command: string; query?: string; ids?: string[] }) => {
       if (command.command !== 'matchExchanges') return undefined;
+      if (command.query!.includes('refuse-me')) throw new Error('Something went wrong');
       const answer = () => {
         const q = compileQuery(command.query!);
         const ids = command.ids ?? [...fake.details.keys()];
@@ -273,6 +274,39 @@ describe('searching by header', () => {
     await act(async () => release.forEach((r) => r()));
     await settle();
     expect(shownPaths()).toEqual([]);
+  });
+
+  it('says so when the backend can’t search, instead of searching for ever', async () => {
+    await started([captured('alpha', 'red')]);
+    await search('header~refuse-me');
+    expect(count()).not.toBe('Searching headers…');
+    expect(shownPaths()).toEqual([]);
+    expect(document.querySelector('.filter-notes')?.textContent).toContain(
+      "Couldn't search headers: Something went wrong",
+    );
+    // A search that works clears it.
+    await search('header.x-team=red');
+    expect(shownPaths()).toEqual(['/alpha']);
+    expect(document.querySelector('.filter-notes')).toBeNull();
+  });
+
+  it('counts only the rows still listed from before a restart', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await started([captured('alpha', 'red'), captured('beta', 'red')]);
+      fake.details.clear();
+      await act(async () => changeState(ready(2)));
+      await act(async () => client().onMessage(hello([])));
+      await settle();
+      await search('header.x-team=red');
+      expect(document.querySelector('.filter-notes')?.textContent).toContain('2 requests from before');
+      // Clear hides them while Undo is offered: they aren't counted.
+      fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
+      await settle();
+      expect(document.querySelector('.filter-notes')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('shows the error for a bad header term and asks nothing', async () => {

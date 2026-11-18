@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { encodeBuffer } from 'http-encoding';
@@ -183,6 +183,57 @@ describe('backend', () => {
       raw({ query: 'header~x', ids: Array.from({ length: 10_001 }, (_, i) => `${i}`) }),
     ).rejects.toThrow('Too many ids');
     await expect(raw({ query: 'x'.repeat(5000) })).rejects.toThrow('too long');
+    api.close();
+  });
+
+  it('finds imported requests by their headers', async () => {
+    const api = await apiClient(backend.apiPort);
+    const file = path.join(dataDir, 'header-search.har');
+    const entry = (url: string, team: string) => ({
+      startedDateTime: '2026-11-18T00:00:00.000Z',
+      time: 5,
+      request: {
+        method: 'GET',
+        url,
+        httpVersion: 'HTTP/1.1',
+        headers: [{ name: 'X-Imported-Team', value: team }],
+        queryString: [],
+        cookies: [],
+        headersSize: -1,
+        bodySize: 0,
+      },
+      response: {
+        status: 200,
+        statusText: 'OK',
+        httpVersion: 'HTTP/1.1',
+        headers: [{ name: 'X-Imported-Reply', value: 'yes' }],
+        cookies: [],
+        content: { size: 0, mimeType: 'text/plain' },
+        redirectURL: '',
+        headersSize: -1,
+        bodySize: 0,
+      },
+      cache: {},
+      timings: { send: 0, wait: 5, receive: 0 },
+    });
+    await writeFile(
+      file,
+      JSON.stringify({
+        log: {
+          version: '1.2',
+          creator: { name: 'test', version: '1' },
+          entries: [entry('https://imported.test/red', 'red'), entry('https://imported.test/blue', 'blue')],
+        },
+      }),
+    );
+    expect(await backend.importHar(file)).toMatchObject({ imported: 2 });
+    const red = () => exchangesIn(api.messages).find((e) => e.url === 'https://imported.test/red');
+    await expect.poll(red).toBeTruthy();
+    const match = async (query: string) =>
+      (await api.send<{ ids: string[] }>({ command: 'matchExchanges', query })).ids;
+    expect(await match('reqheader.x-imported-team=red')).toEqual([red()!.id]);
+    expect(await match('resheader.x-imported-reply=yes')).toHaveLength(2);
+    expect(await match('reqheader.x-imported-team=green')).toEqual([]);
     api.close();
   });
 

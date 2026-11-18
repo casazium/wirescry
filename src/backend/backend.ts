@@ -1123,7 +1123,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         const ids = command.ids;
         if (ids !== undefined && (!Array.isArray(ids) || !ids.every((id) => typeof id === 'string')))
           throw new Error('ids must be a list of ids');
-        // The store holds at most 10,000; the UI asks for all of them by leaving ids out.
+        // The UI sends at most a few thousand, and asks about all of them by leaving ids out.
         if (ids && ids.length > 10_000) throw new Error('Too many ids');
         return { ids: await matchExchanges(store, command.query, ids) };
       }

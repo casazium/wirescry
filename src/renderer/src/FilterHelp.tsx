@@ -13,7 +13,7 @@ const EXAMPLES: Array<[string, string]> = [
   ['failure=dns', 'DNS failures'],
   ['grpc=NOT_FOUND', 'gRPC calls that failed with NOT_FOUND'],
   ['header~bearer', 'Any header containing bearer'],
-  ['resheader.cache-control~no-store', 'Responses that mustn’t be cached'],
+  ['resheader.cache-control~no-store', 'Responses that must not be cached'],
   ['-host=*.google.com', 'Everything except Google hosts'],
 ];
 
@@ -93,7 +93,7 @@ export function FilterHelp({
       </p>
       <p className="muted">
         Plain words don&apos;t search headers; use <code>header~</code> for that. <code>header.NAME=*</code>{' '}
-        means the header is there. Use <code>~</code> when a header&apos;s value has <code>*</code> or{' '}
+        means the header is present. Use <code>~</code> when a header&apos;s value has <code>*</code> or{' '}
         <code>?</code>.
       </p>
     </div>

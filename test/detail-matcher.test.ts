@@ -12,6 +12,7 @@ interface Asked {
   ids?: string[];
   answer(ids: string[]): Promise<void>;
   fail(): Promise<void>;
+  failWith(message: string): Promise<void>;
 }
 
 function setup() {
@@ -30,6 +31,11 @@ function setup() {
       },
       fail: async () => {
         reply.reject(new Error('Disconnected'));
+        await Promise.resolve();
+        await Promise.resolve();
+      },
+      failWith: async (message: string) => {
+        reply.reject(new Error(message));
         await Promise.resolve();
         await Promise.resolve();
       },
@@ -189,6 +195,78 @@ describe('DetailMatcher', () => {
     expect(shown()).toEqual({ applied: 'header~a', matches: ['2'] });
   });
 
+  it('ignores a batch’s answer that comes after a later full answer', async () => {
+    const { matcher, asked, shown } = setup();
+    matcher.setQuery('header~a');
+    await asked[0]!.answer([]);
+    matcher.onBatch(['x'], []);
+    // A big batch with x in it: asked in full.
+    matcher.onBatch(['x', ...Array.from({ length: MAX_BATCH_IDS }, (_, i) => `n${i}`)], []);
+    expect(asked[2]!.ids).toBeUndefined();
+    await asked[2]!.answer(['x']);
+    expect(shown().matches).toEqual(['x']);
+    // The earlier, smaller question's answer arrives last: the full answer stands.
+    await asked[1]!.answer([]);
+    expect(shown().matches).toEqual(['x']);
+  });
+
+  it('handles a large batch that also removes exchanges', async () => {
+    const { matcher, asked, shown } = setup();
+    matcher.setQuery('header~a');
+    await asked[0]!.answer(['old', 'kept']);
+    matcher.onBatch(
+      Array.from({ length: MAX_BATCH_IDS + 1 }, (_, i) => `n${i}`),
+      ['old'],
+    );
+    expect(shown().matches).toEqual(['kept']);
+    // Asked after old was removed, so the backend doesn't list it.
+    await asked[1]!.answer(['kept', 'n3']);
+    expect(shown().matches).toEqual(['kept', 'n3']);
+  });
+
+  it('starts afresh about removed ids with each full request', async () => {
+    const { matcher, asked, shown } = setup();
+    matcher.setQuery('header~a');
+    await asked[0]!.answer(['1']);
+    // Removed with no full request waiting: nothing to remember.
+    matcher.onBatch([], ['1']);
+    // A later full request may list 1 again (say an exchange came back with that id): it counts.
+    matcher.onBatch(
+      Array.from({ length: MAX_BATCH_IDS + 1 }, (_, i) => `n${i}`),
+      [],
+    );
+    await asked[1]!.answer(['1']);
+    expect(shown().matches).toEqual(['1']);
+  });
+
+  it('shows why when the backend refuses a search, instead of waiting for ever', async () => {
+    const { matcher, asked, shown } = setup();
+    matcher.setQuery('header~a');
+    await asked[0]!.answer(['1']);
+    matcher.setQuery('header~b');
+    const reply = asked[1]!;
+    await reply.failWith('The search is too long');
+    expect(shown()).toEqual({ applied: 'header~b', matches: [] });
+    expect(matcher.state().error).toBe('The search is too long');
+    // A search that works clears it.
+    matcher.setQuery('header~c');
+    await asked[2]!.answer(['2']);
+    expect(matcher.state().error).toBeUndefined();
+    expect(shown()).toEqual({ applied: 'header~c', matches: ['2'] });
+  });
+
+  it('asks afresh for a search set again after none, dropping the first answer', async () => {
+    const { matcher, asked, shown } = setup();
+    matcher.setQuery('header~a');
+    matcher.setQuery(undefined);
+    matcher.setQuery('header~a');
+    expect(asked).toHaveLength(2);
+    await asked[0]!.answer(['stale']);
+    expect(shown().applied).toBeUndefined();
+    await asked[1]!.answer(['fresh']);
+    expect(shown()).toEqual({ applied: 'header~a', matches: ['fresh'] });
+  });
+
   it('asks in full instead for a very large batch', async () => {
     const { matcher, asked, shown } = setup();
     matcher.setQuery('header~a');
@@ -250,7 +328,12 @@ describe('DetailMatcher', () => {
     expect(asked).toHaveLength(0);
     expect(shown().applied).toBeUndefined();
     matcher.connect((query) => {
-      asked.push({ query, answer: async () => undefined, fail: async () => undefined });
+      asked.push({
+        query,
+        answer: async () => undefined,
+        fail: async () => undefined,
+        failWith: async () => undefined,
+      });
       return Promise.resolve(['9']);
     });
     matcher.restart();
