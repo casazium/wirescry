@@ -9,6 +9,7 @@ import type {
 import type { BackendState } from '../../shared/ipc';
 import type { UiPluginApi } from '../../plugin-api/ui';
 import { ApiClient, type Command } from './api-client';
+import { DetailMatcher, type DetailMatchState } from './detail-matcher';
 import { ExchangeList } from './exchange-list';
 
 /** A badge on a plugin's tab. */
@@ -45,6 +46,10 @@ export interface BackendView {
   removeExchanges(ids: ReadonlySet<string>): void;
   /** What the last restart cost, until dismissed. */
   restartNotice?: RestartNotice;
+  /** Which exchanges match the search's header terms, as the backend answered. */
+  detailMatch: DetailMatchState;
+  /** The search box's text when it has header terms, else undefined. */
+  setDetailQuery(query: string | undefined): void;
   dismissRestartNotice(): void;
 }
 
@@ -107,6 +112,9 @@ export function useBackend(showView: (key: string) => void): BackendView {
   const [attempt, setAttempt] = useState(0);
   // plugin name -> event name -> listeners
   const pluginListeners = useRef(new Map<string, Map<string, Set<PluginListener>>>());
+  const [detailMatch, setDetailMatch] = useState<DetailMatchState>({ matches: new Set(), version: 0 });
+  // Kept across connections: a search stays in force while a new connection answers it again.
+  const [matcher] = useState(() => new DetailMatcher(setDetailMatch));
 
   useEffect(() => {
     let active = true;
@@ -181,6 +189,8 @@ export function useBackend(showView: (key: string) => void): BackendView {
           // At once, not next frame: after a restart, the old rows move to `previous` in this
           // same render, and mustn't be in both lists.
           setExchanges(list.snapshot());
+          // Whatever was asked on the old connection is lost: ask again, in full.
+          matcher.restart();
           setConnected(true);
           if (greeted.current !== generation) {
             greeted.current = generation;
@@ -200,10 +210,15 @@ export function useBackend(showView: (key: string) => void): BackendView {
           } else {
             list.apply(message.exchanges, message.removed);
           }
+          matcher.onBatch(
+            message.exchanges.map((e) => e.id),
+            message.removed,
+          );
           render();
           break;
         case 'cleared':
           deleting.current.clear();
+          matcher.clear();
           list.reset([]);
           render();
           setPrevious([]);
@@ -234,6 +249,12 @@ export function useBackend(showView: (key: string) => void): BackendView {
       if (open) retry = setTimeout(() => setAttempt((n) => n + 1), 1000);
     });
     clientRef.current = client;
+    matcher.connect(async (query, ids) => {
+      const reply = (await client.send({ command: 'matchExchanges', query, ...(ids ? { ids } : {}) })) as {
+        ids: string[];
+      };
+      return reply.ids;
+    });
     return () => {
       open = false;
       clearTimeout(retry);
@@ -244,8 +265,9 @@ export function useBackend(showView: (key: string) => void): BackendView {
       }
       client.close();
       clientRef.current = undefined;
+      matcher.connect(undefined);
     };
-  }, [connection, generation, attempt]);
+  }, [connection, generation, attempt, matcher]);
 
   const removeExchanges = useCallback((ids: ReadonlySet<string>) => {
     setPrevious((rows) => (rows.some((e) => ids.has(e.id)) ? rows.filter((e) => !ids.has(e.id)) : rows));
@@ -341,5 +363,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
     removeExchanges,
     restartNotice,
     dismissRestartNotice: useCallback(() => setRestartNotice(undefined), []),
+    detailMatch,
+    setDetailQuery: useCallback((query: string | undefined) => matcher.setQuery(query), [matcher]),
   };
 }

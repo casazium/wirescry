@@ -152,6 +152,40 @@ describe('backend', () => {
     api.close();
   });
 
+  it('finds a captured request by its headers, and checks what it is asked', async () => {
+    const api = await apiClient(backend.apiPort);
+    const ca = await readFile(backend.caCertPath, 'utf8');
+    await requestViaProxy(backend.proxyPort, `https://localhost:${upstream.port}/echo?header-search`, ca, {
+      method: 'POST',
+      body: '{}',
+      headers: { 'content-type': 'application/json', 'x-header-search': 'Found-It' },
+    });
+    const id = await api.completed('/echo?header-search');
+    const match = (query: string, ids?: string[]) =>
+      api.send<{ ids: string[] }>({ command: 'matchExchanges', query, ...(ids ? { ids } : {}) });
+
+    expect((await match('reqheader.x-header-search=found-it')).ids).toEqual([id]);
+    expect((await match('header~"x-header-search: found"')).ids).toEqual([id]);
+    expect((await match('reqheader.x-header-search=found-it', [id, 'not-an-id'])).ids).toEqual([id]);
+    // The negative cases: the other side, another value, and plain words.
+    expect((await match('resheader.x-header-search=*')).ids).toEqual([]);
+    expect((await match('reqheader.x-header-search=lost-it')).ids).toEqual([]);
+    expect((await match('found-it')).ids).not.toContain(id);
+    expect((await match('reqheader.x-header-search=found-it', ['not-an-id'])).ids).toEqual([]);
+
+    // What it's sent is checked.
+    const raw = (command: Record<string, unknown>) =>
+      api.send({ command: 'matchExchanges', ...command } as never);
+    await expect(raw({ query: 42 })).rejects.toThrow('query must be text');
+    await expect(raw({ query: 'header~x', ids: 'abc' })).rejects.toThrow('ids must be a list');
+    await expect(raw({ query: 'header~x', ids: [1, 2] })).rejects.toThrow('ids must be a list');
+    await expect(
+      raw({ query: 'header~x', ids: Array.from({ length: 10_001 }, (_, i) => `${i}`) }),
+    ).rejects.toThrow('Too many ids');
+    await expect(raw({ query: 'x'.repeat(5000) })).rejects.toThrow('too long');
+    api.close();
+  });
+
   it.each(['gzip', 'br', 'zstd'])('decodes %s response bodies', async (encoding) => {
     const api = await apiClient(backend.apiPort);
     const ca = await readFile(backend.caCertPath, 'utf8');

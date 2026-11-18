@@ -34,7 +34,16 @@ describe('FilterHelp', () => {
 
   it('lists every field the search knows', () => {
     open();
-    expect(dialog().textContent).toContain(`Fields: ${QUERY_FIELDS.join(', ')}.`);
+    expect(dialog().textContent).toContain(
+      `Fields: ${QUERY_FIELDS.join(', ')}, header.NAME, reqheader.NAME, resheader.NAME.`,
+    );
+  });
+
+  it('says plain words don’t search headers, and offers header examples', () => {
+    const { onPick } = open();
+    expect(dialog().textContent).toContain("Plain words don't search headers; use header~ for that.");
+    fireEvent.click(screen.getByRole('button', { name: 'header~bearer' }));
+    expect(onPick).toHaveBeenCalledWith('header~bearer');
   });
 
   it('closes with ×, giving focus back', () => {

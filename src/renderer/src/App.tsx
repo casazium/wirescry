@@ -69,6 +69,8 @@ export function App(): React.JSX.Element {
     removeExchanges,
     restartNotice,
     dismissRestartNotice,
+    detailMatch,
+    setDetailQuery,
   } = useBackend((key) => {
     if (pluginViews.some((p) => p.key === key)) setView(key);
   });
@@ -116,7 +118,27 @@ export function App(): React.JSX.Element {
   // Typing stays responsive while a large list is re-filtered.
   const deferredSearch = useDeferredValue(search);
   const [showHelp, setShowHelp] = useState(false);
+  // What was typed: its errors and hints show under the box.
   const compiled = useMemo(() => compileFilter(deferredSearch, quickFilter), [deferredSearch, quickFilter]);
+  // Header terms are matched by the backend. A pause in typing first, then ask it.
+  const needsDetail = compiled.needsDetail;
+  useEffect(() => {
+    if (!needsDetail) {
+      setDetailQuery(undefined);
+      return;
+    }
+    const timer = setTimeout(() => setDetailQuery(deferredSearch), 150);
+    return () => clearTimeout(timer);
+  }, [needsDetail, deferredSearch, setDetailQuery]);
+  // The last search without header terms, shown while the first one with them is answered.
+  const [settledSearch, setSettledSearch] = useState('');
+  // Kept in step while rendering (React's pattern for state that follows other state).
+  if (!needsDetail && settledSearch !== deferredSearch) setSettledSearch(deferredSearch);
+  // What the list shows: the search typed, or until the backend has answered it, the last
+  // search it fully answered, so the list never mixes one search's terms with another's matches.
+  const shownSearch = !needsDetail ? deferredSearch : (detailMatch.applied ?? settledSearch);
+  const searchingHeaders = needsDetail && detailMatch.applied !== deferredSearch;
+  const shown = useMemo(() => compileFilter(shownSearch, quickFilter), [shownSearch, quickFilter]);
   // Requests from before a backend restart come first, read-only (only their summaries are left).
   const staleIds = useMemo(() => new Set(previous.map((e) => e.id)), [previous]);
   // Clear hides rows first, so it can be undone, and deletes them after.
@@ -142,7 +164,21 @@ export function App(): React.JSX.Element {
     const all = previous.length > 0 ? [...previous, ...exchanges] : exchanges;
     return hidden ? all.filter((e) => !hidden.has(e.id)) : all;
   }, [previous, exchanges, hidden]);
-  const rows = useMemo(() => allExchanges.filter((e) => compiled.matches(e)), [allExchanges, compiled]);
+  const detailMatches = detailMatch.matches;
+  const detailVersion = detailMatch.version;
+  const rows = useMemo(
+    () =>
+      allExchanges.filter(
+        (e) =>
+          shown.matches(e) &&
+          // Requests from before a restart have no headers left to search.
+          (!shown.needsDetail || (!staleIds.has(e.id) && detailMatches.has(e.id))),
+      ),
+    // detailVersion: the set changes in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [allExchanges, shown, staleIds, detailMatches, detailVersion],
+  );
+  const unsearchable = shown.needsDetail ? previous.length : 0;
   const selected = selectedId ? allExchanges.find((e) => e.id === selectedId) : undefined;
   const exportable = useMemo(() => rows.filter((e) => !staleIds.has(e.id)), [rows, staleIds]);
 
@@ -724,9 +760,11 @@ export function App(): React.JSX.Element {
             </select>
             <div className="filter-actions">
               <span className="muted count" data-testid="row-count">
-                {filtered
-                  ? `${rows.length.toLocaleString()} of ${allExchanges.length.toLocaleString()}`
-                  : `${allExchanges.length.toLocaleString()} ${allExchanges.length === 1 ? 'request' : 'requests'}`}
+                {searchingHeaders
+                  ? 'Searching headers…'
+                  : filtered
+                    ? `${rows.length.toLocaleString()} of ${allExchanges.length.toLocaleString()}`
+                    : `${allExchanges.length.toLocaleString()} ${allExchanges.length === 1 ? 'request' : 'requests'}`}
               </span>
               <button
                 type="button"
@@ -760,7 +798,7 @@ export function App(): React.JSX.Element {
               </button>
             </div>
           </div>
-          {(compiled.errors.length > 0 || compiled.hints.length > 0) && (
+          {(compiled.errors.length > 0 || compiled.hints.length > 0 || unsearchable > 0) && (
             <div className="filter-notes" role="status">
               {compiled.errors.map((e) => (
                 <span key={e} className="error">
@@ -772,6 +810,12 @@ export function App(): React.JSX.Element {
                   {h}
                 </span>
               ))}
+              {unsearchable > 0 && (
+                <span className="muted">
+                  {unsearchable.toLocaleString()} {unsearchable === 1 ? 'request' : 'requests'} from before
+                  the restart can&apos;t be searched by header.
+                </span>
+              )}
             </div>
           )}
           {showHelp && (
