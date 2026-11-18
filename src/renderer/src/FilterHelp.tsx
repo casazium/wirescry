@@ -72,10 +72,10 @@ export function FilterHelp({
         </button>
       </div>
       <p>
-        Plain words match anywhere. <code>field=value</code> filters one field: <code>=</code> equals (with{' '}
-        <code>*</code> wildcards), <code>!=</code> doesn&apos;t, <code>~</code> contains, and{' '}
-        <code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code> compare numbers. Start a
-        term with <code>-</code> to exclude it. All terms must match.
+        Plain words match the URL, method, status and more, but not headers. <code>field=value</code> filters
+        one field: <code>=</code> equals (with <code>*</code> wildcards), <code>!=</code> doesn&apos;t,{' '}
+        <code>~</code> contains, and <code>&gt;</code> <code>&gt;=</code> <code>&lt;</code> <code>&lt;=</code>{' '}
+        compare numbers. Start a term with <code>-</code> to exclude it. All terms must match.
       </p>
       <ul>
         {EXAMPLES.map(([query, label]) => (

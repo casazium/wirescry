@@ -42,6 +42,11 @@ describe('FilterHelp', () => {
   it('says plain words don’t search headers, and offers header examples', () => {
     const { onPick } = open();
     expect(dialog().textContent).toContain("Plain words don't search headers; use header~ for that.");
+    // And the opening line agrees.
+    expect(dialog().textContent).toContain(
+      'Plain words match the URL, method, status and more, but not headers.',
+    );
+    expect(dialog().textContent).not.toContain('Plain words match anywhere');
     fireEvent.click(screen.getByRole('button', { name: 'header~bearer' }));
     expect(onPick).toHaveBeenCalledWith('header~bearer');
   });
