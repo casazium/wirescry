@@ -183,6 +183,26 @@ describe('backend', () => {
       raw({ query: 'header~x', ids: Array.from({ length: 10_001 }, (_, i) => `${i}`) }),
     ).rejects.toThrow('Too many ids');
     await expect(raw({ query: 'x'.repeat(5000) })).rejects.toThrow('too long');
+    await expect(raw({})).rejects.toThrow('query must be text');
+    await expect(raw({ query: 'header~x', ids: null })).rejects.toThrow('ids must be a list');
+    await expect(raw({ query: 'header~x', ids: [null] })).rejects.toThrow('ids must be a list');
+    await expect(raw({ query: 'header~x', ids: {} })).rejects.toThrow('ids must be a list');
+    // The limits themselves are accepted.
+    await expect(
+      raw({ query: 'header~x', ids: Array.from({ length: 10_000 }, (_, i) => `${i}`) }),
+    ).resolves.toEqual({
+      ids: [],
+    });
+    await expect(raw({ query: `header~x ${'a'.repeat(4096 - 9)}` })).resolves.toEqual({ ids: [] });
+    await expect(raw({ query: `header~x ${'a'.repeat(4096 - 8)}` })).rejects.toThrow('too long');
+    await expect(raw({ query: 'header~x', ids: [] })).resolves.toEqual({ ids: [] });
+
+    // Its response headers are found too, and a deleted request isn't any more.
+    expect((await match('resheader.date=*', [id])).ids).toEqual([id]);
+    expect((await match('reqheader.date=*', [id])).ids).toEqual([]);
+    expect((await match('reqheader.content-type=application/json', [id])).ids).toEqual([id]);
+    await api.send({ command: 'clear', ids: [id] });
+    expect((await match('reqheader.x-header-search=found-it')).ids).toEqual([]);
     api.close();
   });
 
@@ -234,6 +254,17 @@ describe('backend', () => {
     expect(await match('reqheader.x-imported-team=red')).toEqual([red()!.id]);
     expect(await match('resheader.x-imported-reply=yes')).toHaveLength(2);
     expect(await match('reqheader.x-imported-team=green')).toEqual([]);
+    // Answered in the order asked.
+    const blue = exchangesIn(api.messages).find((e) => e.url === 'https://imported.test/blue')!.id;
+    expect(
+      (
+        await api.send<{ ids: string[] }>({
+          command: 'matchExchanges',
+          query: 'header~x-imported',
+          ids: [blue, red()!.id],
+        })
+      ).ids,
+    ).toEqual([blue, red()!.id]);
     api.close();
   });
 

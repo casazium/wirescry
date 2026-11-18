@@ -138,6 +138,23 @@ describe('gRPC status through Wirescry', () => {
     expect(summary.grpcMessage).toBeUndefined();
   });
 
+  it('finds an HTTP/2 call by its response trailers, and not by pseudo-headers', async () => {
+    const summary = await callViaWirescry('/shop.Orders/Get');
+    const api = await apiClient(backend.apiPort);
+    const match = async (query: string) =>
+      (await api.send<{ ids: string[] }>({ command: 'matchExchanges', query, ids: [summary.id] })).ids;
+    expect(await match('resheader.grpc-status=0')).toEqual([summary.id]);
+    expect(await match('reqheader.te=trailers')).toEqual([summary.id]);
+    expect(await match('resheader.content-type=application/grpc')).toEqual([summary.id]);
+    // The negatives: wrong side, wrong value, and pseudo-headers.
+    expect(await match('reqheader.grpc-status=*')).toEqual([]);
+    expect(await match('resheader.grpc-status=5')).toEqual([]);
+    expect(await match('header~":path"')).toEqual([]);
+    expect(await match('header~":status"')).toEqual([]);
+    expect(await match('header~:method')).toEqual([]);
+    api.close();
+  });
+
   it('records a stream the client canceled as a gRPC call the client closed', async () => {
     const api = await apiClient(backend.apiPort);
     const socket = await tunnelThroughProxy(backend.proxyPort, `localhost:${port}`);

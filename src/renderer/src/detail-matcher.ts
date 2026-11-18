@@ -23,6 +23,11 @@ export interface DetailMatchState {
   version: number;
   /** Why the backend couldn't answer the applied search, if it couldn't. */
   error?: string;
+  /**
+   * True while a search is being asked afresh and isn't answered yet: a new one, or the same
+   * one again after the connection started over. The applied one stays shown meanwhile.
+   */
+  pending: boolean;
 }
 
 /** Lost with the connection: the next connection asks again in full. */
@@ -75,6 +80,7 @@ export class DetailMatcher {
       matches: this.applied?.matches ?? new Set(),
       version: this.version,
       ...(this.applied?.error ? { error: this.applied.error } : {}),
+      pending: this.current !== undefined && this.current !== this.applied,
     };
   }
 
@@ -92,6 +98,7 @@ export class DetailMatcher {
     }
     this.current = this.newSearch(query);
     this.askAll();
+    if (this.applied) this.changed();
   }
 
   /** A new connection (the backend restarted, or the same one reconnected): ask again from scratch. */
@@ -100,6 +107,8 @@ export class DetailMatcher {
     this.generation++;
     this.current = this.newSearch(this.current.query);
     this.askAll();
+    // Now pending: say so.
+    if (this.applied) this.changed();
   }
 
   /** A batch from the backend: new or changed exchanges, and those removed. */
@@ -200,7 +209,8 @@ export class DetailMatcher {
 
   private onAnswer(search: Search, seq: number, asked: string[], matched: string[]): void {
     // A full request sent since asked about every exchange: its answer decides.
-    if (search !== this.current || seq < search.full) return;
+    // After a refusal, only a full answer counts: no rows beside the error.
+    if (search !== this.current || seq < search.full || search.error) return;
     const hits = new Set(matched);
     let any = false;
     for (const id of asked) {

@@ -112,7 +112,11 @@ export function useBackend(showView: (key: string) => void): BackendView {
   const [attempt, setAttempt] = useState(0);
   // plugin name -> event name -> listeners
   const pluginListeners = useRef(new Map<string, Map<string, Set<PluginListener>>>());
-  const [detailMatch, setDetailMatch] = useState<DetailMatchState>({ matches: new Set(), version: 0 });
+  const [detailMatch, setDetailMatch] = useState<DetailMatchState>({
+    matches: new Set(),
+    version: 0,
+    pending: false,
+  });
   // Kept across connections: a search stays in force while a new connection answers it again.
   const [matcher] = useState(() => new DetailMatcher(setDetailMatch));
 

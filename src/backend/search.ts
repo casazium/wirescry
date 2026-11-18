@@ -29,7 +29,8 @@ export async function matchExchanges(
   const yieldNow = options.yieldNow ?? (() => new Promise<void>((resolve) => setImmediate(resolve)));
   const compiled = compileQuery(query);
   // The ids now; anything added while this runs comes to the UI in a batch, which asks again.
-  const candidates = ids ?? store.list().map((e) => e.id);
+  // Each once, in the order given.
+  const candidates = ids ? [...new Set(ids)] : store.list().map((e) => e.id);
   const matched: string[] = [];
   let sliceStart = now();
   for (const id of candidates) {

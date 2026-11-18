@@ -43,6 +43,8 @@ export class ApiClient {
   }
 
   send(command: Command): Promise<unknown> {
+    // Still connecting, or already closed: sending would throw, or go nowhere and never settle.
+    if (this.socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error('Disconnected'));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });

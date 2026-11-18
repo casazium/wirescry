@@ -357,4 +357,169 @@ describe('DetailMatcher', () => {
     expect(states.map((s) => s.version)).toEqual([1, 2]);
     expect([...states[1]!.matches].sort()).toEqual(['1', '2']);
   });
+
+  describe('more orderings', () => {
+    const big = (prefix: string) => Array.from({ length: MAX_BATCH_IDS + 1 }, (_, i) => `${prefix}${i}`);
+
+    it('a batch ask that fails changes nothing, sets no error, and later batches still work', async () => {
+      const { matcher, asked, shown } = setup();
+      matcher.setQuery('header~a');
+      await asked[0]!.answer(['1']);
+      matcher.onBatch(['2'], []);
+      await asked[1]!.failWith('Something went wrong');
+      expect(shown().matches).toEqual(['1']);
+      expect(matcher.state().error).toBeUndefined();
+      matcher.onBatch(['3'], []);
+      await asked[2]!.answer(['3']);
+      expect(shown().matches).toEqual(['1', '3']);
+    });
+
+    it('drops an old full answer that arrives after a restart with the same search', async () => {
+      const { matcher, asked, shown } = setup();
+      matcher.setQuery('header~a');
+      matcher.restart();
+      await asked[1]!.answer(['new']);
+      await asked[0]!.answer(['old']);
+      expect(shown().matches).toEqual(['new']);
+    });
+
+    it('with two full asks out, only the later one counts, whichever comes first', async () => {
+      for (const order of [
+        [0, 1],
+        [1, 0],
+      ]) {
+        const { matcher, asked, shown } = setup();
+        matcher.setQuery('header~a');
+        await asked[0]!.answer([]);
+        matcher.onBatch(big('n'), []);
+        matcher.onBatch(big('m'), []);
+        const answers = [() => asked[1]!.answer(['first']), () => asked[2]!.answer(['second'])];
+        for (const i of order) await answers[i]!();
+        expect(shown().matches).toEqual(['second']);
+      }
+    });
+
+    it('a Clear while a batch ask is out: its answer adds nothing', async () => {
+      const { matcher, asked, shown } = setup();
+      matcher.setQuery('header~a');
+      await asked[0]!.answer([]);
+      matcher.onBatch(['1'], []);
+      matcher.clear();
+      await asked[1]!.answer(['1']);
+      expect(shown().matches).toEqual([]);
+    });
+
+    it('an id removed while its batch ask is out isn’t added back', async () => {
+      const { matcher, asked, shown } = setup();
+      matcher.setQuery('header~a');
+      await asked[0]!.answer([]);
+      matcher.onBatch(['1'], []);
+      matcher.onBatch([], ['1']);
+      await asked[1]!.answer(['1']);
+      expect(shown().matches).toEqual([]);
+    });
+
+    it('no search any more: answers still out are dropped, and nothing is reported', async () => {
+      const { matcher, asked, states, shown } = setup();
+      matcher.setQuery('header~a');
+      matcher.onBatch(['1'], []);
+      matcher.setQuery(undefined);
+      const before = states.length;
+      await asked[0]!.answer(['1']);
+      await asked[1]!.answer(['1']);
+      expect(states).toHaveLength(before);
+      expect(shown()).toEqual({ applied: undefined, matches: [] });
+    });
+
+    it('reports nothing when nothing shown changes', async () => {
+      const { matcher, asked, states } = setup();
+      matcher.setQuery('header~a');
+      // A batch answer before the first full answer: nothing applied yet.
+      matcher.onBatch(['1'], []);
+      await asked[1]!.answer(['1']);
+      matcher.clear();
+      matcher.onBatch([], ['1']);
+      expect(states).toHaveLength(0);
+    });
+
+    it('a batch answer for a pending search doesn’t touch the one shown', async () => {
+      const { matcher, asked, shown } = setup();
+      matcher.setQuery('header~a');
+      await asked[0]!.answer(['1']);
+      matcher.setQuery('header~b');
+      matcher.onBatch(['2'], []);
+      await asked[2]!.answer(['2']);
+      expect(shown()).toEqual({ applied: 'header~a', matches: ['1'] });
+    });
+
+    it('says it’s pending while a search is asked afresh, and not otherwise', async () => {
+      const { matcher, asked } = setup();
+      expect(matcher.state().pending).toBe(false);
+      matcher.setQuery('header~a');
+      expect(matcher.state().pending).toBe(true);
+      await asked[0]!.answer([]);
+      expect(matcher.state().pending).toBe(false);
+      // A big batch asks in full but isn't a new search.
+      matcher.onBatch(big('n'), []);
+      expect(matcher.state().pending).toBe(false);
+      matcher.restart();
+      expect(matcher.state().pending).toBe(true);
+      await asked[2]!.answer([]);
+      expect(matcher.state().pending).toBe(false);
+      matcher.setQuery(undefined);
+      expect(matcher.state().pending).toBe(false);
+    });
+
+    it('tells the UI when a search becomes pending while another is shown', async () => {
+      const { matcher, asked, states } = setup();
+      matcher.setQuery('header~a');
+      await asked[0]!.answer([]);
+      matcher.restart();
+      expect(states.at(-1)).toMatchObject({ applied: 'header~a', pending: true });
+    });
+  });
+
+  describe('after the backend refuses a search', () => {
+    it('shows no rows beside the error: batch answers are ignored', async () => {
+      const { matcher, asked, shown } = setup();
+      matcher.setQuery('header~a');
+      await asked[0]!.failWith('Something went wrong');
+      matcher.onBatch(['1'], []);
+      await asked[1]!.answer(['1']);
+      expect(shown().matches).toEqual([]);
+      expect(matcher.state().error).toBe('Something went wrong');
+    });
+
+    it('a later full answer clears the error, from a big batch or a restart', async () => {
+      const { matcher, asked } = setup();
+      matcher.setQuery('header~a');
+      await asked[0]!.failWith('Something went wrong');
+      matcher.onBatch(
+        Array.from({ length: MAX_BATCH_IDS + 1 }, (_, i) => `n${i}`),
+        [],
+      );
+      await asked[1]!.answer(['n1']);
+      expect(matcher.state().error).toBeUndefined();
+      expect([...matcher.state().matches]).toEqual(['n1']);
+
+      await (async () => {
+        matcher.setQuery('header~b');
+        await asked[2]!.failWith('Again');
+        matcher.restart();
+        await asked[3]!.answer(['r']);
+        expect(matcher.state().error).toBeUndefined();
+        expect([...matcher.state().matches]).toEqual(['r']);
+      })();
+    });
+
+    it('a lost connection isn’t shown as an error', async () => {
+      const { matcher, asked } = setup();
+      matcher.setQuery('header~a');
+      await asked[0]!.fail();
+      expect(matcher.state().error).toBeUndefined();
+      matcher.setQuery('header~b');
+      await asked[1]!.failWith('Not connected');
+      expect(matcher.state().error).toBeUndefined();
+    });
+  });
 });

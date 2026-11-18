@@ -137,7 +137,8 @@ export function App(): React.JSX.Element {
   // What the list shows: the search typed, or until the backend has answered it, the last
   // search it fully answered, so the list never mixes one search's terms with another's matches.
   const shownSearch = !needsDetail ? deferredSearch : (detailMatch.applied ?? settledSearch);
-  const searchingHeaders = needsDetail && detailMatch.applied !== deferredSearch;
+  // Also after a restart or reconnect, while the same search is asked again.
+  const searchingHeaders = needsDetail && (detailMatch.applied !== deferredSearch || detailMatch.pending);
   const shown = useMemo(() => compileFilter(shownSearch, quickFilter), [shownSearch, quickFilter]);
   // Requests from before a backend restart come first, read-only (only their summaries are left).
   const staleIds = useMemo(() => new Set(previous.map((e) => e.id)), [previous]);
@@ -956,6 +957,8 @@ export function App(): React.JSX.Element {
                   </button>{' '}
                   for other ways to send traffic through 127.0.0.1:{status?.proxyPort}.
                 </>
+              ) : searchingHeaders ? (
+                <>Searching headers…</>
               ) : (
                 <>No requests match the current search or filter.</>
               )

@@ -4,6 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ExchangeDetail, ExchangeSummary, Header } from '../src/shared/api';
+import { compileFilter } from '../src/shared/filter';
 import { compileQuery, MAX_HEADER_VALUE, MAX_QUERY_LENGTH, wildcardMatch } from '../src/shared/query';
 
 const summary: ExchangeSummary = {
@@ -361,5 +362,189 @@ describe('wildcardMatch', () => {
     ).toBe(false);
     // Generous: it takes well under a millisecond; a backtracking regex takes minutes.
     expect(performance.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe('more header term semantics', () => {
+  it('!= fails if either side has the value, and looks at one side for reqheader', () => {
+    const both = exchange({
+      request: [['content-type', 'application/json']],
+      response: [['content-type', 'text/html']],
+    });
+    expect(matches('header.content-type!=application/json', both)).toBe(false);
+    expect(matches('header.content-type!=text/html', both)).toBe(false);
+    expect(matches('reqheader.content-type!=text/html', both)).toBe(true);
+    expect(matches('resheader.content-type!=application/json', both)).toBe(true);
+    expect(matches('resheader.content-type!=text/*', both)).toBe(false);
+  });
+
+  it('several header terms can each be met by a different line or side', () => {
+    expect(matches('header.set-cookie=a=1 header.set-cookie=session=*')).toBe(true);
+    expect(matches('reqheader.authorization=* resheader.cache-control~private')).toBe(true);
+    expect(matches('header.set-cookie=a=1 header.set-cookie=b=2')).toBe(false);
+    expect(matches('reqheader.authorization=* resheader.authorization=*')).toBe(false);
+  });
+
+  it('negates header~, and a double negative is the positive', () => {
+    expect(matches('-header~bearer')).toBe(false);
+    expect(matches('-header~nowhere')).toBe(true);
+    for (const value of ['req-42', 'other']) {
+      expect(matches(`-header.x-request-id!=${value}`)).toBe(matches(`header.x-request-id=${value}`));
+    }
+  });
+
+  it('takes names with digits and _', () => {
+    const odd = exchange({ request: [['x_trace_2', 'on']] });
+    expect(matches('header.x_trace_2=on', odd)).toBe(true);
+    expect(matches('header.X_TRACE_2=ON', odd)).toBe(true);
+  });
+
+  it('handles a header with an empty value', () => {
+    const empty = exchange({ request: [['x-empty', '']] });
+    expect(matches('header.x-empty=*', empty)).toBe(true);
+    expect(matches('header.x-empty~a', empty)).toBe(false);
+    expect(matches('header.x-empty=?*', empty)).toBe(false);
+    expect(matches('header~"x-empty: "', empty)).toBe(true);
+  });
+
+  it('takes operator characters inside values', () => {
+    const odd = exchange({
+      request: [
+        ['x-a', '=y'],
+        ['x-b', 'a<b'],
+        ['x-c', '!=z'],
+      ],
+    });
+    expect(matches('header.x-a==y', odd)).toBe(true);
+    expect(matches('header.x-a!==y', odd)).toBe(false);
+    expect(matches('header.x-a~=y', odd)).toBe(true);
+    expect(matches('header.x-b=a<b', odd)).toBe(true);
+    expect(matches('header.x-c=!=z', odd)).toBe(true);
+  });
+
+  it('keeps quoted spaces in values, without trimming', () => {
+    const spaced = exchange({ request: [['x-s', 'a b']] });
+    expect(matches('header.x-s="a b"', spaced)).toBe(true);
+    expect(matches('header~" "', spaced)).toBe(true);
+    expect(matches('header.x-s=" a b"', spaced)).toBe(false);
+  });
+
+  it('? stands for one UTF-16 unit, so an emoji takes two', () => {
+    const emoji = exchange({ request: [['x-mood', 'ok😀']] });
+    expect(matches('header.x-mood=ok??', emoji)).toBe(true);
+    expect(matches('header.x-mood=ok?', emoji)).toBe(false);
+    expect(matches('header.x-mood=ok*', emoji)).toBe(true);
+  });
+
+  it('accepts a ~ value of exactly the cap', () => {
+    expect(errorsOf(`header~${'x'.repeat(MAX_HEADER_VALUE)}`)).toEqual([]);
+    expect(errorsOf(`header.a~${'x'.repeat(MAX_HEADER_VALUE)}`)).toEqual([]);
+  });
+});
+
+describe('more header term errors', () => {
+  it('turns header with an operator but no name into an error, negated or not', () => {
+    for (const term of ['header=foo', 'header!=x', 'header<5', 'reqheader>=1', '-header=x']) {
+      const q = compileQuery(term);
+      expect(q.errors).toHaveLength(1);
+      expect(q.errors[0]).toContain('needs a header name');
+      expect(q.hints).toEqual([]);
+      expect(q.needsDetail).toBe(false);
+      // Dropped: it filters nothing.
+      expect(q.matches(summary)).toBe(true);
+    }
+  });
+
+  it('needs a value or a name in the other forms too', () => {
+    expect(errorsOf('header.x!=')).toEqual(['header.x!= needs a value']);
+    expect(errorsOf('-header~')).toEqual(['header~ needs a value']);
+    expect(errorsOf('header.!=x')).toEqual([
+      'header.!= needs a header name: header.NAME=value, or header~text',
+    ]);
+  });
+
+  it('a negated URL-like term gets its one hint, and is negated plain text', () => {
+    const q = compileQuery('-header.a.b=c');
+    expect(q.hints).toEqual([
+      '"header.a.b=c" is searched as text: header names use letters, digits, - and _.',
+    ]);
+    expect(q.matches({ ...summary, url: 'https://x.test/header.a.b=c' })).toBe(false);
+    expect(q.matches(summary)).toBe(true);
+  });
+
+  it('quotes don’t make a header term plain text', () => {
+    expect(compileQuery('"header~x"').needsDetail).toBe(true);
+    expect(compileQuery('"header.a=b"').needsDetail).toBe(true);
+  });
+
+  it('can still find such text in a URL through a field', () => {
+    const odd = { ...summary, url: 'https://x.test/?header=foo&header~x&header.x=1', path: '/?header=foo' };
+    for (const term of ['url~header=foo', 'path~header=foo', 'url~header~x', 'url~"header.x=1"']) {
+      const q = compileQuery(term);
+      expect(q.errors).toEqual([]);
+      expect(q.needsDetail).toBe(false);
+      expect(q.matches(odd)).toBe(true);
+      expect(q.matches(summary)).toBe(false);
+    }
+  });
+
+  it('near-misses aren’t header terms', () => {
+    for (const term of ['headers~x', 'resheaders=1', 'preheader~x', 'xheader.a=1', 'header']) {
+      const q = compileQuery(term);
+      expect(q.needsDetail).toBe(false);
+      expect(q.errors).toEqual([]);
+    }
+    // As on main: an unknown field name gets its usual hint.
+    expect(compileQuery('headers~x').hints).toEqual([
+      'No field called "headers", so "headers~x" is searched as text.',
+    ]);
+  });
+});
+
+describe('a search over the length limit', () => {
+  const pad = (query: string) => `${query} ${'p'.repeat(MAX_QUERY_LENGTH)}`;
+
+  it('still filters by its other terms', () => {
+    const q = compileQuery(`host=api.* ${'z'.repeat(MAX_QUERY_LENGTH)}`);
+    expect(q.matches({ ...summary, url: `https://api.example.com/${'z'.repeat(MAX_QUERY_LENGTH)}` })).toBe(
+      true,
+    );
+    expect(q.matches(summary)).toBe(false);
+  });
+
+  it('drops negated header terms too, with one length error for several', () => {
+    const q = compileQuery(pad('-header.a=* header~b resheader.c=d'));
+    expect(q.needsDetail).toBe(false);
+    expect(q.errors).toEqual(['The search is too long for header terms: 4,096 characters at most.']);
+  });
+
+  it('reports a header term’s own error as well', () => {
+    const q = compileQuery(pad('header=x header~y'));
+    expect(q.errors).toEqual([
+      'header= needs a header name: header.NAME=value, or header~text',
+      'The search is too long for header terms: 4,096 characters at most.',
+    ]);
+  });
+});
+
+describe('compileFilter with header terms', () => {
+  const json = exchange({ request: [['x-a', '1']] });
+  const html = exchange({ request: [['x-a', '1']], summary: { contentType: 'text/html' } });
+
+  it('passes on needsDetail, errors and hints', () => {
+    const f = compileFilter('header~x header=y header.a.b=c', 'json');
+    expect(f.needsDetail).toBe(true);
+    expect(f.errors).toHaveLength(1);
+    expect(f.hints).toHaveLength(1);
+  });
+
+  it('applies the quick filter to summaries and to details', () => {
+    const f = compileFilter('header.x-a=1', 'json');
+    expect(f.matches(json.summary)).toBe(true);
+    expect(f.matches(html.summary)).toBe(false);
+    expect(f.matchesDetail(json)).toBe(true);
+    expect(f.matchesDetail(html)).toBe(false);
+    expect(compileFilter('header.x-a=2', 'json').matchesDetail(json)).toBe(false);
+    expect(compileFilter('header.x-a=1', 'all').matchesDetail(html)).toBe(true);
   });
 });

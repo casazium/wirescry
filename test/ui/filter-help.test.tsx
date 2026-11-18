@@ -3,7 +3,7 @@ import { createRef } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { FilterHelp } from '../../src/renderer/src/FilterHelp';
-import { QUERY_FIELDS } from '../../src/shared/query';
+import { compileQuery, QUERY_FIELDS } from '../../src/shared/query';
 
 function open() {
   const onPick = vi.fn();
@@ -99,5 +99,21 @@ describe('FilterHelp', () => {
     fireEvent.keyDown(document.body, { key: 'Escape' });
     fireEvent.pointerDown(document.body);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('offers the response header example too', () => {
+    const { onPick } = open();
+    fireEvent.click(screen.getByRole('button', { name: 'resheader.cache-control~no-store' }));
+    expect(onPick).toHaveBeenCalledWith('resheader.cache-control~no-store');
+  });
+
+  it('every example is a search with no errors or hints', () => {
+    open();
+    const examples = [...dialog().querySelectorAll('li button code')].map((c) => c.textContent ?? '');
+    expect(examples.length).toBeGreaterThan(10);
+    for (const example of examples) {
+      const q = compileQuery(example);
+      expect({ example, errors: q.errors, hints: q.hints }).toEqual({ example, errors: [], hints: [] });
+    }
   });
 });
