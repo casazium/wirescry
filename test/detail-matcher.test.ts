@@ -609,8 +609,8 @@ describe('DetailMatcher', () => {
       expect(canceled).toEqual([]);
     });
 
-    it('never shows "Canceled" as an error, and keeps the previous search shown', async () => {
-      const { matcher, asked } = withCancel();
+    it('never shows "Canceled" as an error; if the current search is canceled, it asks again', async () => {
+      const { matcher, asked, canceled } = withCancel();
       matcher.setQuery('header~a');
       await asked[0]!.answer(['1']);
       matcher.setQuery('header~b');
@@ -618,6 +618,22 @@ describe('DetailMatcher', () => {
       expect(matcher.state()).toMatchObject({ applied: 'header~a', pending: true });
       expect(matcher.state().error).toBeUndefined();
       expect([...matcher.state().matches]).toEqual(['1']);
+      // Asked again, under a new name, rather than waiting for ever.
+      expect(asked[2]).toMatchObject({ query: 'header~b' });
+      expect(asked[2]!.ids).toBeUndefined();
+      expect(asked[2]!.searchId).not.toBe(asked[1]!.searchId);
+      // The canceled one isn't canceled again.
+      expect(canceled).toEqual([]);
+      await asked[2]!.answer(['2']);
+      expect(matcher.state()).toMatchObject({ applied: 'header~b', pending: false });
+    });
+
+    it('a canceled search it replaced isn’t asked again', async () => {
+      const { matcher, asked } = withCancel();
+      matcher.setQuery('header~a');
+      matcher.setQuery('header~b');
+      await asked[0]!.fail('Canceled');
+      expect(asked.map((a) => a.query)).toEqual(['header~a', 'header~b']);
     });
 
     it('drops a canceled search’s late answer', async () => {

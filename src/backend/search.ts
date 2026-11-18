@@ -1,8 +1,11 @@
 import { compileQuery, MAX_QUERY_LENGTH } from '../shared/query';
 import type { RequestStore } from './store';
 
-/** Searches the window has named and can cancel, at most; past this the oldest is canceled. */
-export const MAX_NAMED_SEARCHES = 32;
+/**
+ * Searches one window has named and can cancel, at most; past this its oldest is canceled. The
+ * window needs one or two; each running search costs the proxy a slice per turn.
+ */
+export const MAX_NAMED_SEARCHES = 8;
 export const MAX_SEARCH_ID_LENGTH = 64;
 
 /** Throws unless `id` is a name a window may give a search. */
@@ -12,7 +15,7 @@ export function checkSearchId(id: unknown): asserts id is string {
 }
 
 /** Why a search stopped before it finished. */
-export type StopReason = 'canceled' | 'cleared' | 'closed';
+export type StopReason = 'canceled' | 'cleared' | 'closed' | 'stopped';
 
 /** Thrown by a search whose signal aborted, with why. */
 export class SearchStopped extends Error {

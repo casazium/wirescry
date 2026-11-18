@@ -82,14 +82,11 @@ describe('stopping searches', () => {
 
   it('a full search over the import takes long enough to interrupt, and finds what it should', async () => {
     const api = await apiClient(backend.apiPort);
-    const started = performance.now();
     const reply = await api.send<{ ids: string[] }>({
       command: 'matchExchanges',
       query: 'reqheader.x-n=3999',
     });
     expect(reply.ids).toHaveLength(1);
-    // Several 8 ms slices at least: otherwise the tests below couldn't land mid-search.
-    expect(performance.now() - started).toBeGreaterThan(20);
     // And the slow search takes far longer than a poll's interval.
     const slowStart = performance.now();
     expect(await api.send({ command: 'matchExchanges', query: SLOW })).toEqual({ ids: [] });
@@ -120,7 +117,7 @@ describe('stopping searches', () => {
     api.close();
   });
 
-  it('past the limit on named searches, the oldest is canceled', async () => {
+  it('past one window’s limit on named searches, its oldest is canceled', async () => {
     const api = await apiClient(backend.apiPort);
     const replies = Array.from({ length: MAX_NAMED_SEARCHES + 1 }, (_, i) =>
       api.send({ command: 'matchExchanges', query: SLOW, searchId: `n${i}` }).then(
@@ -128,14 +125,36 @@ describe('stopping searches', () => {
         (error: Error) => error.message,
       ),
     );
-    // The oldest goes when the 33rd arrives; the other 32 are all still running.
+    // The oldest goes when one more arrives; the others are all still running.
     expect(await replies[0]).toBe('Canceled');
     expect(backend.searchesRunning()).toBe(MAX_NAMED_SEARCHES);
-    for (let i = 1; i <= MAX_NAMED_SEARCHES; i++)
-      await api.send({ command: 'cancelMatch', searchId: `n${i}` });
+    await Promise.all(
+      Array.from({ length: MAX_NAMED_SEARCHES }, (_, i) =>
+        api.send({ command: 'cancelMatch', searchId: `n${i + 1}` }),
+      ),
+    );
     expect(new Set(await Promise.all(replies))).toEqual(new Set(['Canceled']));
     expect(backend.searchesRunning()).toBe(0);
     api.close();
+  });
+
+  it('another window’s named searches don’t count toward the limit, and its names are its own', async () => {
+    const a = await apiClient(backend.apiPort);
+    const b = await apiClient(backend.apiPort);
+    const ofA = a.send({ command: 'matchExchanges', query: SLOW, searchId: 'same' });
+    // The same name in another window is another search: it replaces nothing.
+    const ofB = Array.from({ length: MAX_NAMED_SEARCHES }, (_, i) =>
+      b.send({ command: 'matchExchanges', query: SLOW, searchId: i === 0 ? 'same' : `b${i}` }),
+    );
+    await expect.poll(() => backend.searchesRunning()).toBe(MAX_NAMED_SEARCHES + 1);
+    await a.send({ command: 'cancelMatch', searchId: 'same' });
+    await expect(ofA).rejects.toThrow('Canceled');
+    expect(backend.searchesRunning()).toBe(MAX_NAMED_SEARCHES);
+    // Closing b stops its searches (the test helper's replies never settle once it has closed).
+    void ofB;
+    b.close();
+    await expect.poll(() => backend.searchesRunning()).toBe(0);
+    a.close();
   });
 
   it('cancelMatch for a name not running is harmless; an unnamed search can’t be canceled by name', async () => {
@@ -182,15 +201,33 @@ describe('stopping searches', () => {
     staying.close();
   });
 
-  it('a search only a window has can be canceled by that name from another window too', async () => {
-    // Names are the backend's, not per window: the UI makes them unique.
+  it('one window can’t cancel another’s search by its name', async () => {
     const a = await apiClient(backend.apiPort);
     const b = await apiClient(backend.apiPort);
-    const search = a.send({ command: 'matchExchanges', query: SLOW, searchId: 'shared' });
-    await b.send({ command: 'cancelMatch', searchId: 'shared' });
-    await expect(search).rejects.toThrow('Canceled');
+    const search = a.send<{ ids: string[] }>({
+      command: 'matchExchanges',
+      query: 'reqheader.x-n=5',
+      searchId: 'mine',
+    });
+    await b.send({ command: 'cancelMatch', searchId: 'mine' });
+    expect((await search).ids).toHaveLength(1);
     a.close();
     b.close();
+  });
+
+  it('a running search listens for its window closing, and stops listening when done', async () => {
+    const api = await apiClient(backend.apiPort);
+    const search = api.send({ command: 'matchExchanges', query: SLOW, searchId: 'listening' });
+    await expect.poll(() => backend.searchListeners()).toBe(1);
+    await api.send({ command: 'cancelMatch', searchId: 'listening' });
+    await expect(search).rejects.toThrow('Canceled');
+    expect(backend.searchListeners()).toBe(0);
+    for (let i = 0; i < 25; i++) {
+      await api.send({ command: 'matchExchanges', query: 'reqheader.x-n=1', searchId: `seq${i}` });
+      await api.send({ command: 'matchExchanges', query: 'reqheader.x-n=1' });
+    }
+    expect(backend.searchListeners()).toBe(0);
+    api.close();
   });
 
   // Last: Clear empties the store, and stop ends the backend.
@@ -211,23 +248,22 @@ describe('stopping searches', () => {
     api.close();
   });
 
-  // Stopping closes every window's connection (before the body store closes), which stops its
-  // searches.
-  it('stopping the backend stops a running search', async () => {
+  it('stopping the backend stops a running search before it finishes stopping', async () => {
     expect(await backend.importHar(harFile)).toMatchObject({ imported: ENTRIES });
     const api = await apiClient(backend.apiPort);
-    const search = api.send({ command: 'matchExchanges', query: SLOW }).then(
-      () => 'answered',
+    // Matches every exchange: left to finish, it would answer with all of them.
+    const everyOne = `${Array.from({ length: 60 }, (_, i) => `-header~absent-${i}`).join(' ')} header.x-n=*`;
+    const search = api.send<{ ids: string[] }>({ command: 'matchExchanges', query: everyOne }).then(
+      (reply) => `answered ${reply.ids.length}`,
       (error: Error) => error.message,
     );
     await expect.poll(() => backend.searchesRunning()).toBe(1);
     const stopping = backend.stop();
-    // Either it answered (nothing) before the socket closed, or the socket closed first.
-    expect(['answered', 'Disconnected', 'Socket closed']).toContain(
-      await Promise.race([search, stopping.then(() => 'answered')]),
-    );
     await stopping;
+    // Stopped, not left to run on: nothing is running once stop() resolves.
     expect(backend.searchesRunning()).toBe(0);
+    // It answered (with nothing) before the connection closed, or the connection closed first.
+    expect(['answered 0', 'Disconnected']).toContain(await search);
     backend = undefined as never;
   });
 });

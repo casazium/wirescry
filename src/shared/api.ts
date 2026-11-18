@@ -583,12 +583,14 @@ export type ClientCommand =
       query: string;
       ids?: string[];
       /**
-       * A name for this search, so `cancelMatch` can stop it. A search given a name already in
-       * use replaces (cancels) the earlier one. A canceled search's reply is the error "Canceled".
+       * A name for this search, so `cancelMatch` can stop it. Names are per connection. A search
+       * given a name already in use replaces (cancels) the earlier one. A canceled search's reply
+       * is the error "Canceled"; one stopped by Clear or by the backend stopping replies
+       * `{ ids: [] }`.
        */
       searchId?: string;
     }
-  /** Stops the search with this name, if it's still running. */
+  /** Stops the search with this name, started on this connection, if it's still running. */
   | { id: number; command: 'cancelMatch'; searchId: string }
   | { id: number; command: 'getBody'; exchangeId: string; side: BodySide }
   /** Part of a body's stored bytes, while it arrives or after: BodyRangeContent, or null. At most 1 MB. */

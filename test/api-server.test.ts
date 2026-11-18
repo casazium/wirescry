@@ -85,12 +85,15 @@ describe('the API server’s command context', () => {
     await expect.poll(() => ofB!.signal.aborted).toBe(true);
   });
 
-  it('a stopped server aborts every connection’s signal', async () => {
+  it('stopping the server has aborted every connection’s signal by the time it resolves', async () => {
     const a = await client();
+    const b = await client();
     send(a.ws, { id: 1, command: 'clear' });
-    await expect.poll(() => contexts.length).toBe(1);
+    send(b.ws, { id: 1, command: 'clear' });
+    await expect.poll(() => contexts.length).toBe(2);
     await server.stop();
-    await expect.poll(() => contexts[0]!.signal.aborted).toBe(true);
+    // No waiting: work tied to a connection must have been told before stop() returns.
+    expect(contexts.map((c) => c.signal.aborted)).toEqual([true, true]);
     // afterEach stops it again: harmless.
     server = { ...server, stop: async () => undefined };
   });

@@ -30,11 +30,8 @@ export interface DetailMatchState {
   pending: boolean;
 }
 
-/**
- * Not the backend refusing: lost with the connection (the next connection asks again in full),
- * or canceled because this window replaced the search.
- */
-const NOT_REFUSED = new Set(['Disconnected', 'Not connected', 'Canceled']);
+/** Lost with the connection, not refused: the next connection asks again in full. */
+const NOT_REFUSED = new Set(['Disconnected', 'Not connected']);
 
 /**
  * Asks the backend which of `ids` (or of all exchanges) match `query`. A full ask is named with
@@ -227,7 +224,14 @@ export class DetailMatcher {
   /** The backend refused the search: show that, with nothing matching, rather than wait for ever. */
   private onFullError(search: Search, seq: number, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
-    if (search !== this.current || seq !== search.full || NOT_REFUSED.has(message)) return;
+    if (search !== this.current || seq !== search.full) return;
+    // This window cancels only searches it replaced, so the current one shouldn't be: if it is,
+    // ask again rather than wait for an answer that won't come.
+    if (message === 'Canceled') {
+      search.awaitingFull = false;
+      return this.askAll();
+    }
+    if (NOT_REFUSED.has(message)) return;
     search.matches = new Set();
     search.awaitingFull = false;
     search.goneSince = new Set();

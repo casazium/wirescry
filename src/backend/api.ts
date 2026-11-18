@@ -136,9 +136,14 @@ export async function startApiServer(options: ApiServerOptions): Promise<Running
       }
     },
     async stop() {
+      // Resolves once every connection has closed, so work tied to one (its context's signal)
+      // has been told to stop by then.
+      const closed = [...wss.clients].map(
+        (client) => new Promise<void>((resolve) => client.once('close', () => resolve())),
+      );
       for (const client of wss.clients) client.terminate();
       wss.close();
-      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      await Promise.all([...closed, new Promise<void>((resolve) => httpServer.close(() => resolve()))]);
     },
   };
 }
