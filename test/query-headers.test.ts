@@ -343,6 +343,97 @@ describe('wildcardMatch', () => {
     expect(wildcardMatch('ab?cd', 'ab*?*cd')).toBe(true);
   });
 
+  it('agrees with a plain reference on thousands of random cases', () => {
+    // A small, slow, obviously right matcher: fine on short strings.
+    const reference = (text: string, pattern: string): boolean => {
+      const memo = new Map<string, boolean>();
+      const go = (t: number, p: number): boolean => {
+        const key = `${t},${p}`;
+        const known = memo.get(key);
+        if (known !== undefined) return known;
+        let result: boolean;
+        if (p === pattern.length) result = t === text.length;
+        else if (pattern[p] === '*') result = go(t, p + 1) || (t < text.length && go(t + 1, p));
+        else result = t < text.length && (pattern[p] === '?' || pattern[p] === text[t]) && go(t + 1, p + 1);
+        memo.set(key, result);
+        return result;
+      };
+      return go(0, 0);
+    };
+    // Seeded, so a failure repeats.
+    let seed = 12345;
+    const random = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    const pick = (alphabet: string, length: number): string =>
+      Array.from({ length }, () => alphabet[random(alphabet.length)]).join('');
+    let agreed = 0;
+    for (let i = 0; i < 4000; i++) {
+      const text = pick('ab', random(90));
+      // Pieces long enough to cross a 32-bit word, with ? and * mixed in.
+      const pattern = pick('ab??*', random(i % 4 === 0 ? 80 : 12));
+      expect({ text, pattern, result: wildcardMatch(text, pattern) }).toEqual({
+        text,
+        pattern,
+        result: reference(text, pattern),
+      });
+      agreed++;
+    }
+    expect(agreed).toBe(4000);
+  });
+
+  it('a middle piece with ? must end before the last piece starts', () => {
+    expect(wildcardMatch('xabcd', '*a?c*cd')).toBe(false);
+    expect(wildcardMatch('xabccd', '*a?c*cd')).toBe(true);
+    expect(wildcardMatch('ab', '*?b*b')).toBe(false);
+  });
+
+  it('agrees with the reference on long pieces with ?, where most should match', () => {
+    const reference = (text: string, pattern: string): boolean =>
+      new RegExp(`^${pattern.replace(/\?/g, '.').replace(/\*/g, '.*')}$`, 's').test(text);
+    let seed = 777;
+    const random = (n: number): number => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed % n;
+    };
+    const pick = (alphabet: string, length: number): string =>
+      Array.from({ length }, () => alphabet[random(alphabet.length)]).join('');
+    for (let i = 0; i < 2000; i++) {
+      // A piece of 20 to 100 characters, some of them ?, found inside a text built around it.
+      const piece = pick('ab', 20 + random(81))
+        .split('')
+        .map((c) => (random(6) === 0 ? '?' : c))
+        .join('');
+      const instance = piece.replace(/\?/g, () => 'ab'[random(2)]!);
+      // Sometimes broken by one character, so it shouldn't match there.
+      const broken =
+        random(3) === 0
+          ? (() => {
+              const at = random(instance.length);
+              return `${instance.slice(0, at)}${instance[at] === 'a' ? 'b' : 'a'}${instance.slice(at + 1)}`;
+            })()
+          : instance;
+      const text = `${pick('ab', random(40))}${broken}${pick('ab', random(40))}`;
+      for (const pattern of [`*${piece}*`, `*${piece}`, `${piece}*`, `*a*${piece}*b`]) {
+        expect({ text, pattern, result: wildcardMatch(text, pattern) }).toEqual({
+          text,
+          pattern,
+          result: reference(text, pattern),
+        });
+      }
+    }
+  });
+
+  it('finds a piece with ? that crosses a 32-bit word, at the very end', () => {
+    const piece = `${'a'.repeat(31)}?${'b'.repeat(33)}`;
+    const text = `${'x'.repeat(100)}${'a'.repeat(31)}Z${'b'.repeat(33)}${'y'.repeat(5)}`;
+    expect(wildcardMatch(text, `*${piece}*`)).toBe(true);
+    expect(wildcardMatch(text, `*${piece}`)).toBe(false);
+    expect(wildcardMatch(`${text.slice(0, -5)}`, `x*${piece}`)).toBe(true);
+    expect(wildcardMatch(text, `*${piece.replace('?', 'Q')}*`)).toBe(false);
+  });
+
   it('finishes quickly against a huge value', () => {
     const value = 'a'.repeat(1024 * 1024);
     const started = performance.now();

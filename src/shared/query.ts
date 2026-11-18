@@ -190,7 +190,33 @@ function findPiece(text: string, piece: string, from: number, end: number): numb
     const at = text.indexOf(piece, from);
     return at !== -1 && at + piece.length <= end ? at : -1;
   }
-  for (let at = from; at + piece.length <= end; at++) if (matchesAt(text, at, piece)) return at;
+  // With ? in it: a bit-parallel search (shift-and), one pass over the text whatever the piece,
+  // where checking the piece at every position would take text × piece on a long value.
+  const length = piece.length;
+  const words = Math.ceil(length / 32);
+  const anyChar = new Uint32Array(words);
+  for (let i = 0; i < length; i++) if (piece[i] === '?') anyChar[i >> 5]! |= 1 << (i & 31);
+  const masks = new Map<string, Uint32Array>();
+  for (let i = 0; i < length; i++) {
+    const char = piece[i]!;
+    if (char === '?') continue;
+    let mask = masks.get(char);
+    if (!mask) masks.set(char, (mask = Uint32Array.from(anyChar)));
+    mask[i >> 5]! |= 1 << (i & 31);
+  }
+  const state = new Uint32Array(words);
+  const lastWord = (length - 1) >> 5;
+  const lastBit = (1 << ((length - 1) & 31)) >>> 0;
+  for (let t = from; t < end; t++) {
+    const mask = masks.get(text[t]!) ?? anyChar;
+    let carry = 1;
+    for (let w = 0; w < words; w++) {
+      const value = state[w]!;
+      state[w] = ((value << 1) | carry) & mask[w]!;
+      carry = value >>> 31;
+    }
+    if ((state[lastWord]! & lastBit) >>> 0 !== 0) return t - length + 1;
+  }
   return -1;
 }
 
