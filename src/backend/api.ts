@@ -4,11 +4,19 @@ import type { AddressInfo } from 'node:net';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { API_PROTOCOL, TOKEN_PROTOCOL_PREFIX, type ClientCommand, type ServerMessage } from '../shared/api';
 
+/** The connection a command came on. */
+export interface CommandContext {
+  /** Aborts when that connection closes: work for it can stop. */
+  signal: AbortSignal;
+  /** Sends a message to that connection only (nothing once it has closed). */
+  notify(message: ServerMessage): void;
+}
+
 export interface ApiHandlers {
   /** Sent to each client when it connects. */
   hello(): ServerMessage;
   /** Handles a command from the UI. Throw to send an error back. */
-  command(command: ClientCommand): Promise<unknown>;
+  command(command: ClientCommand, context: CommandContext): Promise<unknown>;
 }
 
 export interface ApiServerOptions {
@@ -89,6 +97,9 @@ export async function startApiServer(options: ApiServerOptions): Promise<Running
       ws.terminate();
     });
     send(ws, handlers.hello());
+    const closed = new AbortController();
+    ws.once('close', () => closed.abort());
+    const context: CommandContext = { signal: closed.signal, notify: (message) => send(ws, message) };
     ws.on('message', async (data) => {
       let command: ClientCommand;
       try {
@@ -98,7 +109,7 @@ export async function startApiServer(options: ApiServerOptions): Promise<Running
       }
       if (typeof command?.id !== 'number') return;
       try {
-        const value = await handlers.command(command);
+        const value = await handlers.command(command, context);
         send(ws, { type: 'result', id: command.id, ok: true, value });
       } catch (error) {
         send(ws, {
@@ -125,9 +136,14 @@ export async function startApiServer(options: ApiServerOptions): Promise<Running
       }
     },
     async stop() {
+      // Resolves once every connection has closed, so work tied to one (its context's signal)
+      // has been told to stop by then.
+      const closed = [...wss.clients].map(
+        (client) => new Promise<void>((resolve) => client.once('close', () => resolve())),
+      );
       for (const client of wss.clients) client.terminate();
       wss.close();
-      await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+      await Promise.all([...closed, new Promise<void>((resolve) => httpServer.close(() => resolve()))]);
     },
   };
 }

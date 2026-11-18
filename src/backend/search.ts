@@ -1,7 +1,32 @@
 import { compileQuery, MAX_QUERY_LENGTH } from '../shared/query';
 import type { RequestStore } from './store';
 
+/**
+ * Searches one window has named and can cancel, at most; past this its oldest is canceled. The
+ * window needs one or two; each running search costs the proxy a slice per turn.
+ */
+export const MAX_NAMED_SEARCHES = 8;
+export const MAX_SEARCH_ID_LENGTH = 64;
+
+/** Throws unless `id` is a name a window may give a search. */
+export function checkSearchId(id: unknown): asserts id is string {
+  if (typeof id !== 'string' || id === '' || id.length > MAX_SEARCH_ID_LENGTH)
+    throw new Error(`searchId must be text of 1 to ${MAX_SEARCH_ID_LENGTH} characters`);
+}
+
+/** Why a search stopped before it finished. */
+export type StopReason = 'canceled' | 'cleared' | 'closed' | 'stopped';
+
+/** Thrown by a search whose signal aborted, with why. */
+export class SearchStopped extends Error {
+  constructor(readonly reason: StopReason) {
+    super(`Search ${reason}`);
+  }
+}
+
 export interface MatchOptions {
+  /** Stops the search, which then throws its reason (a SearchStopped). */
+  signal?: AbortSignal;
   /** Work this long, in milliseconds, before letting the proxy run. */
   sliceMs?: number;
   /** Lets other work run; replaceable in tests. */
@@ -32,8 +57,10 @@ export async function matchExchanges(
   // Each once, in the order given.
   const candidates = ids ? [...new Set(ids)] : store.list().map((e) => e.id);
   const matched: string[] = [];
+  const { signal } = options;
   let sliceStart = now();
   for (const id of candidates) {
+    if (signal?.aborted) throw signal.reason;
     const detail = store.get(id);
     if (detail && compiled.matchesDetail(detail)) matched.push(id);
     if (now() - sliceStart >= sliceMs) {
@@ -41,5 +68,6 @@ export async function matchExchanges(
       sliceStart = now();
     }
   }
+  if (signal?.aborted) throw signal.reason;
   return matched;
 }

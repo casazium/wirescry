@@ -30,11 +30,16 @@ export interface DetailMatchState {
   pending: boolean;
 }
 
-/** Lost with the connection: the next connection asks again in full. */
-const DISCONNECTED = new Set(['Disconnected', 'Not connected']);
+/** Lost with the connection, not refused: the next connection asks again in full. */
+const NOT_REFUSED = new Set(['Disconnected', 'Not connected']);
 
-/** Asks the backend which of `ids` (or of all exchanges) match `query`. */
-export type Ask = (query: string, ids?: string[]) => Promise<string[]>;
+/**
+ * Asks the backend which of `ids` (or of all exchanges) match `query`. A full ask is named with
+ * `searchId`, so it can be canceled.
+ */
+export type Ask = (query: string, ids?: string[], searchId?: string) => Promise<string[]>;
+/** Tells the backend to stop the search with this name. */
+export type Cancel = (searchId: string) => void;
 
 interface Search {
   generation: number;
@@ -46,6 +51,8 @@ interface Search {
   full: number;
   /** True from sending a full request until its answer. */
   awaitingFull: boolean;
+  /** The latest full request's name, to cancel it. */
+  fullId?: string;
   /**
    * Removed while a full request is unanswered: its answer may still list them. `all` when
    * everything was cleared.
@@ -62,16 +69,32 @@ export class DetailMatcher {
   private applied: Search | undefined;
   private version = 0;
   private connection: Ask | undefined;
+  private cancelSearch: Cancel | undefined;
+  /** Makes this window's search names its own. */
+  private readonly idPrefix = Math.random().toString(36).slice(2, 10);
 
   constructor(private readonly onChange: (state: DetailMatchState) => void) {}
 
   /** The connection to ask through, or undefined while there's none. */
-  connect(ask: Ask | undefined): void {
+  connect(ask: Ask | undefined, cancel?: Cancel): void {
     this.connection = ask;
+    this.cancelSearch = ask ? cancel : undefined;
   }
 
-  private ask(query: string, ids?: string[]): Promise<string[]> {
-    return this.connection ? this.connection(query, ids) : Promise.reject(new Error('Not connected'));
+  private ask(query: string, ids?: string[], searchId?: string): Promise<string[]> {
+    return this.connection
+      ? this.connection(query, ids, searchId)
+      : Promise.reject(new Error('Not connected'));
+  }
+
+  /** Stops the full request a search is waiting for, if any: its answer is no longer wanted. */
+  private cancelFull(search: Search | undefined): void {
+    if (!search?.awaitingFull || search.fullId === undefined) return;
+    try {
+      this.cancelSearch?.(search.fullId);
+    } catch {
+      // Not connected: the backend stopped it when the connection closed.
+    }
   }
 
   state(): DetailMatchState {
@@ -87,6 +110,7 @@ export class DetailMatcher {
   /** The search box's text when it has header terms; undefined when it has none. */
   setQuery(query: string | undefined): void {
     if (query === this.current?.query) return;
+    this.cancelFull(this.current);
     this.generation++;
     if (query === undefined) {
       this.current = undefined;
@@ -165,11 +189,14 @@ export class DetailMatcher {
   private askAll(): void {
     const search = this.current;
     if (!search) return;
+    // A second full request (a big batch) makes the first's answer unwanted.
+    this.cancelFull(search);
     const seq = ++this.seq;
     search.full = seq;
     search.awaitingFull = true;
+    search.fullId = `${this.idPrefix}-${seq}`;
     search.goneSince = new Set();
-    this.ask(search.query).then(
+    this.ask(search.query, undefined, search.fullId).then(
       (matched) => this.onFullAnswer(search, seq, matched),
       (error: unknown) => this.onFullError(search, seq, error),
     );
@@ -197,7 +224,14 @@ export class DetailMatcher {
   /** The backend refused the search: show that, with nothing matching, rather than wait for ever. */
   private onFullError(search: Search, seq: number, error: unknown): void {
     const message = error instanceof Error ? error.message : String(error);
-    if (search !== this.current || seq !== search.full || DISCONNECTED.has(message)) return;
+    if (search !== this.current || seq !== search.full) return;
+    // This window cancels only searches it replaced, so the current one shouldn't be: if it is,
+    // ask again rather than wait for an answer that won't come.
+    if (message === 'Canceled') {
+      search.awaitingFull = false;
+      return this.askAll();
+    }
+    if (NOT_REFUSED.has(message)) return;
     search.matches = new Set();
     search.awaitingFull = false;
     search.goneSince = new Set();
