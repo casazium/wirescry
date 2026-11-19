@@ -4,9 +4,16 @@
  * grown and their throttle allows, with a nudge so a quiet tail is still searched; nothing
  * remembered from a body that went, or for an exchange gone since.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { encodeBuffer } from 'http-encoding';
-import { BodyMemo, isNewer, memoKey, type MemoValue } from '../src/backend/body-memo';
+import {
+  BodyMemo,
+  isNewer,
+  MAX_KEYS_PER_EXCHANGE,
+  memoKey,
+  Nudger,
+  type MemoValue,
+} from '../src/backend/body-memo';
 import type { StoredRange } from '../src/backend/body-store';
 import { matchExchanges, MIN_RESCAN_MS, RESCAN_COST_FACTOR, type BodyAccess } from '../src/backend/search';
 import { InMemoryRequestStore } from '../src/backend/store';
@@ -22,6 +29,7 @@ const sofar = (over: Partial<MemoValue> = {}): MemoValue =>
     found: [],
     stored: 10,
     final: false,
+    partial: false,
     scannedAt: 0,
     costMs: 1,
     ...over,
@@ -70,6 +78,83 @@ describe('BodyMemo', () => {
     expect(memo.get('b', key)).toBeUndefined();
     memo.clear();
     expect(memo.size).toBe(0);
+  });
+});
+
+describe('BodyMemo, after code review', () => {
+  it('keeps at most a few needle sets per exchange, dropping its oldest', () => {
+    const memo = new BodyMemo();
+    const keys = Array.from({ length: MAX_KEYS_PER_EXCHANGE + 1 }, (_, i) => memoKey('response', [`n${i}`]));
+    for (const key of keys) memo.offer('a', key, done());
+    expect(memo.get('a', keys[0]!)).toBeUndefined();
+    expect(memo.get('a', keys[1]!)).toBeDefined();
+    expect(memo.get('a', keys.at(-1)!)).toBeDefined();
+    // Replacing one already there drops nothing.
+    memo.offer('a', keys[1]!, sofar({ serial: 2 }));
+    expect(memo.get('a', keys[2]!)).toBeDefined();
+  });
+
+  it('won’t let an answer about an older body replace one about a newer', () => {
+    expect(isNewer(sofar({ serial: 1, scannedAt: 9 }), done({ serial: 2 }))).toBe(false);
+    expect(isNewer(done({ serial: 1 }), sofar({ serial: 2 }))).toBe(false);
+    expect(isNewer(done({ serial: 3 }), done({ serial: 2 }))).toBe(true);
+  });
+});
+
+describe('Nudger', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('fires once for an exchange at the time asked, ignoring a second ask meanwhile', () => {
+    vi.useFakeTimers();
+    let clock = 1000;
+    const fired: string[] = [];
+    const nudger = new Nudger(
+      (id) => fired.push(id),
+      () => clock,
+    );
+    nudger.schedule('a', 1100);
+    nudger.schedule('a', 1050);
+    nudger.schedule('b', 1200);
+    expect(nudger.size).toBe(2);
+    vi.advanceTimersByTime(99);
+    expect(fired).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(fired).toEqual(['a']);
+    vi.advanceTimersByTime(100);
+    expect(fired).toEqual(['a', 'b']);
+    expect(nudger.size).toBe(0);
+    // A time already past fires at once.
+    clock = 5000;
+    nudger.schedule('c', 10);
+    vi.advanceTimersByTime(0);
+    expect(fired).toEqual(['a', 'b', 'c']);
+  });
+
+  it('fires nothing for an exchange forgotten, after clear, or after stop', () => {
+    vi.useFakeTimers();
+    const fired: string[] = [];
+    const nudger = new Nudger(
+      (id) => fired.push(id),
+      () => 0,
+    );
+    nudger.schedule('a', 10);
+    nudger.schedule('keep', 10);
+    nudger.forget('a');
+    vi.advanceTimersByTime(100);
+    // Only the one not forgotten.
+    expect(fired).toEqual(['keep']);
+    fired.length = 0;
+    nudger.schedule('b', 10);
+    nudger.clear();
+    vi.advanceTimersByTime(100);
+    expect(fired).toEqual([]);
+    // Cleared, it can wait again.
+    nudger.schedule('c', 10);
+    nudger.stop();
+    nudger.schedule('d', 10);
+    vi.advanceTimersByTime(100);
+    expect(fired).toEqual([]);
+    expect(nudger.size).toBe(0);
   });
 });
 
@@ -385,5 +470,88 @@ describe('searching with the memo', () => {
       }),
     ).rejects.toThrow('stopped');
     expect(memo.size).toBe(0);
+  });
+
+  it('two asks about one body at once make one search, and both get its answer', async () => {
+    const store = new InMemoryRequestStore();
+    store.upsert(stored('a'));
+    const { b, access } = body('arriving text with a word');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let passes = 0;
+    const slow: BodyAccess = {
+      source: (detail, side) => {
+        const s = access.source(detail, side)!;
+        return {
+          ...s,
+          read: async (start, max) => {
+            if (start === 0) {
+              passes++;
+              await gate;
+            }
+            return s.read(start, max);
+          },
+        };
+      },
+    };
+    const memo = new BodyMemo();
+    const ask = () => matchExchanges(store, 'resbody~word', ['a'], { bodies: slow, memo });
+    const first = ask();
+    const second = ask();
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    expect(await Promise.all([first, second])).toEqual([['a'], ['a']]);
+    expect(passes).toBe(1);
+    void b;
+  });
+
+  it('if the search it waited for stops, the second ask searches for itself', async () => {
+    const store = new InMemoryRequestStore();
+    store.upsert(stored('a'));
+    const { access } = body('text with a word');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let passes = 0;
+    const slow: BodyAccess = {
+      source: (detail, side) => {
+        const s = access.source(detail, side)!;
+        return {
+          ...s,
+          read: async (start, max) => {
+            if (start === 0 && ++passes === 1) await gate;
+            return s.read(start, max);
+          },
+        };
+      },
+    };
+    const memo = new BodyMemo();
+    const controller = new AbortController();
+    const first = matchExchanges(store, 'resbody~word', ['a'], {
+      bodies: slow,
+      memo,
+      signal: controller.signal,
+      sliceMs: 0,
+    });
+    const second = matchExchanges(store, 'resbody~word', ['a'], { bodies: slow, memo });
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort(new Error('stopped'));
+    release();
+    await expect(first).rejects.toThrow('stopped');
+    expect(await second).toEqual(['a']);
+    expect(passes).toBe(2);
+  });
+
+  it('an arriving body it can’t decode stays partly searched when answered from the memo', async () => {
+    const { b, store, memo } = setup('raw bytes', { encoding: 'x-made-up' });
+    const access = await bodyAccessFor(b, 'x-made-up');
+    const ask = async () => {
+      const partial = new Set<string>();
+      await matchExchanges(store, 'resbody~absent', ['a'], { bodies: access, memo, partial, now: () => 0 });
+      return [...partial];
+    };
+    expect(await ask()).toEqual(['a']);
+    const reads = b.reads;
+    expect(await ask()).toEqual(['a']);
+    expect(b.reads).toBe(reads);
   });
 });

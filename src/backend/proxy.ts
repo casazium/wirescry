@@ -856,7 +856,8 @@ async function startListener(
     const partial = errorCode !== undefined && (answered.has(res.id) || res.statusCode !== 502);
     answered.delete(res.id);
     sentHeads.delete(res.id);
-    stopReceived(res.id);
+    // An upload still arriving keeps its ticks: its last part's size is still to be reported.
+    if (!writers.has(`${res.id}:request`)) stopReceived(res.id);
     respondingIds.delete(res.id);
     if (partial && !brokenMidBody.has(res.id)) {
       // HTTP/2: the body may already be recorded as complete.
@@ -1252,8 +1253,7 @@ async function startListener(
       respondingIds.clear();
       // Uploads cut off the same way: no longer arriving.
       for (const key of [...writers.keys()]) {
-        const [id, side] = key.split(':') as [string, BodySide];
-        if (side === 'request') finishBody(id, 'request', false);
+        if (key.endsWith(':request')) finishBody(key.slice(0, -':request'.length), 'request', false);
       }
     },
   };

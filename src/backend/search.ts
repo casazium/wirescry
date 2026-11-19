@@ -22,7 +22,8 @@ export interface BodyAccess {
 
 /**
  * A body still arriving is searched again no sooner than this many times its last search's cost:
- * a large stream that doesn't match then costs at most a tenth of the proxy's time.
+ * a large stream that doesn't match then costs at most about a tenth of the proxy's time. That's
+ * per stream: several at once cost more, though searching still yields every few milliseconds.
  */
 export const RESCAN_COST_FACTOR = 10;
 /** The least time between searches of one arriving body, however cheap. */
@@ -79,7 +80,6 @@ export const PROGRESS_MS = 250;
 
 const NO_BODY: BodySearchResult = { found: new Set(), partial: false };
 
-/** Whether an exchange's bodies pass every body term, and whether that's from part of a body. */
 /** Searches one side's body, or answers from the memo when nothing about it has changed. */
 async function searchSide(
   detail: ExchangeDetail,
@@ -110,7 +110,7 @@ async function searchSide(
     // stopped keeping its bytes since.
     const answer = (): BodySearchResult => ({
       found,
-      partial: !allFound && (remembered.final || state.stored < state.size),
+      partial: !allFound && (remembered.final || remembered.partial || state.stored < state.size),
     });
     if (remembered.final) return answer();
     if (remembered.stored === state.stored) {
@@ -131,26 +131,41 @@ async function searchSide(
     }
   }
 
-  const started = now();
-  const report: BodySearchReport = { gone: false, final: false };
-  const result = await searchBody(source, unique, tick, undefined, report);
-  // About part of a body that went, or an exchange gone since: nothing to remember.
-  if (report.gone || !stillThere()) return result;
-  const common = { serial: state.serial, encoding, found: [...result.found] };
-  const value: MemoValue = state.receiving
-    ? {
-        ...common,
-        kind: 'sofar',
-        stored: state.stored,
-        final: report.final,
-        scannedAt: started,
-        costMs: now() - started,
-      }
-    : { ...common, kind: 'done', partial: result.partial };
-  memo.offer(id, key, value);
-  return result;
+  // Another ask is already searching this body for these needles (a stream's updates come faster
+  // than a large body's search): wait for it, then answer as the memo says, rather than pile up
+  // searches that slow each other down.
+  const flight = memo.inFlight(id, key);
+  if (flight && flight.serial === state.serial && flight.encoding === encoding) {
+    await flight.done.catch(() => undefined);
+    await tick();
+    return searchSide(detail, side, needles, tick, options, stillThere);
+  }
+
+  const done = (async (): Promise<BodySearchResult> => {
+    const started = now();
+    const report: BodySearchReport = { gone: false, final: false };
+    const result = await searchBody(source, unique, tick, undefined, report);
+    // About part of a body that went, or an exchange gone since: nothing to remember.
+    if (report.gone || !stillThere()) return result;
+    const common = { serial: state.serial, encoding, found: [...result.found], partial: result.partial };
+    const value: MemoValue = state.receiving
+      ? {
+          ...common,
+          kind: 'sofar',
+          stored: state.stored,
+          final: report.final,
+          scannedAt: started,
+          costMs: now() - started,
+        }
+      : { ...common, kind: 'done' };
+    memo.offer(id, key, value);
+    return result;
+  })();
+  memo.track(id, key, { serial: state.serial, encoding, done });
+  return done;
 }
 
+/** Whether an exchange's bodies pass every body term, and whether that's from part of a body. */
 async function matchBodies(
   detail: ExchangeDetail,
   terms: readonly BodyTerm[],

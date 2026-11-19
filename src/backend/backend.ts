@@ -25,7 +25,7 @@ import type {
 import { startApiServer, type CommandContext } from './api';
 import { harEntry, harFrame, MAX_HAR_BODY_BYTES, MAX_HAR_IMPORT_BYTES, parseHar } from './har';
 import type { Encryptor } from './secure-store';
-import { BodyMemo } from './body-memo';
+import { BodyMemo, Nudger } from './body-memo';
 import { headerValue, toBodyContent, writeBodyToFile, type WrittenBody } from './body-content';
 import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
@@ -317,19 +317,18 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   const completed = new Set<string>();
   const completionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  // Everything kept about an exchange besides its store entry.
   // What body search found in each body, and searches it owes arriving bodies (see search.ts).
   const bodyMemo = new BodyMemo(STORE_LIMIT);
-  const nudges = new Map<string, NodeJS.Timeout>();
-  const clearNudges = (): void => {
-    for (const timer of nudges.values()) clearTimeout(timer);
-    nudges.clear();
-  };
+  // Tells the window about the exchange again, which searches it again.
+  const nudges = new Nudger((id) => {
+    const exchange = store.get(id);
+    if (exchange) updates.change(exchange.summary);
+  });
 
+  // Everything kept about an exchange besides its store entry.
   const forget = (id: string): void => {
     bodyMemo.forget(id);
-    clearTimeout(nudges.get(id));
-    nudges.delete(id);
+    nudges.forget(id);
     completed.delete(id);
     clearTimeout(completionTimers.get(id));
     completionTimers.delete(id);
@@ -985,21 +984,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       };
     },
   };
-  // An arriving body whose search had to wait: its window is told about the exchange again when
-  // it may be searched, so a last part that came meanwhile is found.
-  const nudge = (id: string, at: number): void => {
-    if (nudges.has(id)) return;
-    const timer = setTimeout(
-      () => {
-        nudges.delete(id);
-        const exchange = store.get(id);
-        if (exchange) updates.change(exchange.summary);
-      },
-      Math.max(0, at - performance.now()),
-    );
-    timer.unref();
-    nudges.set(id, timer);
-  };
+  // An arriving body whose search had to wait for its throttle: told about again when it may be
+  // searched, so a last part that came meanwhile is found.
+  const nudge = (id: string, at: number): void => nudges.schedule(id, at);
 
   const handleCommand = async (command: ClientCommand, context: CommandContext): Promise<unknown> => {
     switch (command.command) {
@@ -1053,7 +1040,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         // First: a search reading what's about to go stops (on Windows, before its files are removed).
         stopSearches('cleared');
         bodyMemo.clear();
-        clearNudges();
+        nudges.clear();
         updates.reset();
         store.clear();
         completed.clear();
@@ -1387,8 +1374,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       stopping = true;
       // Searches first, and waited for, so none is reading when the body store closes below.
       stopSearches('stopped');
-      clearNudges();
       await Promise.all(searches.values());
+      // After the searches: one finishing could have asked for a nudge.
+      nudges.stop();
       // First, and quickly, side by side: put capturing devices back before their listeners go (a
       // device left pointing at a closed port has no internet), well inside the time the app gives
       // the backend to stop; any it can't reach keep their records, and are offered Restore next

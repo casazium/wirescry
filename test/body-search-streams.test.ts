@@ -8,6 +8,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { ExchangeSummary } from '../src/shared/api';
@@ -30,6 +31,15 @@ describe('searching bodies while they arrive', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-streams-test-'));
     upstream = http.createServer((req, res) => {
+      if (req.url === '/gzip-stream') {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'content-encoding': 'gzip' });
+        const gzip = zlib.createGzip();
+        gzip.pipe(res);
+        gzip.write('data: first-gzip-marker\n\n');
+        gzip.flush();
+        release.set('/gzip-stream', () => gzip.end('data: last-gzip-marker\n\n'));
+        return;
+      }
       if (req.url === '/stream') {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         res.write('data: first-part-marker\n\n');
@@ -159,6 +169,23 @@ describe('searching bodies while they arrive', () => {
     await api.send({ command: 'matchExchanges', query: 'body~anything' });
     await api.send({ command: 'clear' });
     expect(backend.bodyMemoSize()).toBe(0);
+    api.close();
+  });
+
+  it('finds an arriving gzip stream by its decoded body before it ends', async () => {
+    const api = await apiClient(backend.apiPort);
+    const { req, response } = send('/gzip-stream');
+    req.end();
+    await expect.poll(() => latest(api.messages, '/gzip-stream')?.responding).toBe(true);
+    const id = latest(api.messages, '/gzip-stream')!.id;
+    const match = async (query: string) =>
+      api.send<{ ids: string[]; partial?: string[] }>({ command: 'matchExchanges', query, ids: [id] });
+    await expect.poll(async () => (await match('resbody~first-gzip-marker')).ids).toEqual([id]);
+    // Still arriving: searched so far, not partly searched.
+    expect(await match('resbody~last-gzip-marker')).toEqual({ ids: [] });
+    release.get('/gzip-stream')!();
+    await response;
+    await expect.poll(async () => (await match('resbody~last-gzip-marker')).ids).toEqual([id]);
     api.close();
   });
 });

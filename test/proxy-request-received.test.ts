@@ -25,6 +25,13 @@ describe('an upload’s size so far', () => {
   beforeAll(async () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-request-received-'));
     upstream = http.createServer((req, res) => {
+      if (req.url === '/answers-early') {
+        // Answers soon after the upload's first part (once it has been reported, well inside a
+        // tick), then keeps reading the upload.
+        req.once('data', () => setTimeout(() => res.writeHead(200).end('early'), 50));
+        req.resume();
+        return;
+      }
       if (req.url === '/echo') {
         // Two-way: each chunk that arrives goes straight back.
         res.writeHead(200, { 'content-type': 'text/plain' });
@@ -101,12 +108,10 @@ describe('an upload’s size so far', () => {
           u.summary.responseReceived !== before.responseReceived)
       );
     });
-    // Some tick carried both changes at once; none carried only one while the other side had moved
-    // since the previous update.
+    // Some tick carried both changes at once.
     expect(
-      ticks.some((u, i) => {
+      ticks.some((u) => {
         const before = of('/echo')[of('/echo').indexOf(u) - 1]!.summary;
-        void i;
         return (
           u.summary.requestReceived !== before.requestReceived &&
           u.summary.responseReceived !== before.responseReceived
@@ -117,5 +122,21 @@ describe('an upload’s size so far', () => {
     expect(ticks.length).toBeLessThanOrEqual(5);
     req.end();
     await expect.poll(() => of('/echo').at(-1)?.summary.requestReceived).toBeUndefined();
+  });
+
+  it('keeps reporting an upload after its response has ended', async () => {
+    const proxy = await open();
+    const req = upload(proxy, '/answers-early');
+    req.write('first part ');
+    await expect.poll(() => of('/answers-early').at(-1)?.summary.durationMs).toBeDefined();
+    // The part that came just before the response ended is still reported, with nothing more sent.
+    await expect.poll(() => of('/answers-early').at(-1)?.summary.requestReceived ?? 0).toBeGreaterThan(0);
+    const before = of('/answers-early').at(-1)!.summary.requestReceived ?? 0;
+    req.write('x'.repeat(4000));
+    await expect
+      .poll(() => of('/answers-early').at(-1)?.summary.requestReceived ?? 0)
+      .toBeGreaterThan(before);
+    req.end();
+    await expect.poll(() => of('/answers-early').at(-1)?.summary.requestReceived).toBeUndefined();
   });
 });
