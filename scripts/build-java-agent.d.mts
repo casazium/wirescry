@@ -15,6 +15,29 @@ export declare const byteBuddy: { version: string; url: string; sha256: string; 
 export declare function jdkTool(name: string): string | undefined;
 /** Byte Buddy's jar: the one in deps/ if its SHA-256 matches, else fetched and checked. */
 export declare function fetchByteBuddy(): Promise<string>;
+/** A pinned jar: where it comes from, its SHA-256, and where it's kept. */
+export interface PinnedJar {
+  url: string;
+  sha256: string;
+  file: string;
+}
+/** How many times a pinned jar is asked for before giving up. */
+export declare const FETCH_ATTEMPTS: number;
+/** How long to wait (ms) after failed ask `attempt` (1-based), given the answer's Retry-After. */
+export declare function retryWait(attempt: number, retryAfter: string | null, random?: () => number): number;
+/**
+ * A pinned jar: the one at `jar.file` if its SHA-256 matches, else fetched (failed asks retried
+ * with waits) and checked. `options` are for tests.
+ */
+export declare function fetchPinned(
+  jar: PinnedJar,
+  what: string,
+  options?: {
+    fetch?: (url: string, init?: RequestInit) => Promise<Response>;
+    wait?: (ms: number) => Promise<void>;
+    random?: () => number;
+  },
+): Promise<string>;
 /** A set of test jars: a key of testJars. */
 export type TestJarSet =
   | 'apache4'
