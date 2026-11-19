@@ -139,7 +139,7 @@ export function DetailPane({
 
   // Refetch when the summary changes, e.g. when the response arrives; not for each update of the
   // size so far while it arrives.
-  const summaryKey = JSON.stringify({ ...summary, responseReceived: undefined });
+  const summaryKey = JSON.stringify({ ...summary, responseReceived: undefined, requestReceived: undefined });
   useEffect(() => {
     // The backend that had it is gone; keep whatever was loaded.
     if (stale) return;

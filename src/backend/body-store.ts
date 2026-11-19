@@ -10,6 +10,17 @@ export type StoredRange = Omit<BodyRange, 'decoded'>;
 /** The most a range read returns at once. */
 export const MAX_BODY_RANGE = 1024 * 1024;
 
+/** A body's state, read without reading its bytes. */
+export interface BodyState {
+  /** Which body this is: it changes if the body is replaced. */
+  serial: number;
+  stored: number;
+  size: number;
+  /** True while it's still arriving. */
+  receiving: boolean;
+  incomplete: boolean;
+}
+
 /** What was stored for one body, once it has finished arriving. */
 export interface StoredBody {
   /** Bytes that arrived. */
@@ -42,6 +53,8 @@ export interface BodyStore {
   read(exchangeId: string, side: BodySide): Readable | undefined;
   /** Whether a body is still arriving. */
   isReceiving(exchangeId: string, side: BodySide): boolean;
+  /** A finished or arriving body's state, without reading it; undefined if there's none. */
+  state(exchangeId: string, side: BodySide): BodyState | undefined;
   /**
    * Up to `maxBytes` (at most MAX_BODY_RANGE) of a body's stored bytes from `start`, whether it has
    * finished or is still arriving. Undefined if there's no body, or it was removed meanwhile.
@@ -136,6 +149,22 @@ export class HybridBodyStore implements BodyStore {
 
   isReceiving(exchangeId: string, side: BodySide): boolean {
     return this.writers.has(this.key(exchangeId, side));
+  }
+
+  state(exchangeId: string, side: BodySide): BodyState | undefined {
+    const key = this.key(exchangeId, side);
+    // As readRange answers: from the writer while there is one, then from the stored entry.
+    const writer = this.writers.get(key);
+    if (writer) return writer.state();
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    return {
+      serial: entry.serial,
+      stored: entry.info.stored,
+      size: entry.info.size,
+      receiving: false,
+      incomplete: entry.info.incomplete,
+    };
   }
 
   async readRange(
@@ -251,6 +280,17 @@ class HybridWriter implements BodyWriter {
 
   get stored(): number {
     return this.storedBytes;
+  }
+
+  /** What readRange would say about this body now, without its bytes. */
+  state(): BodyState {
+    return {
+      serial: this.serial,
+      stored: this.storedBytes,
+      size: this.size,
+      receiving: true,
+      incomplete: false,
+    };
   }
 
   write(chunk: Uint8Array): void {

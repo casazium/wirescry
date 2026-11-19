@@ -28,6 +28,43 @@ describe('HybridBodyStore', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('tells a body’s state without reading it: arriving, finished, replaced, gone', async () => {
+    expect(store.state('none', 'response')).toBeUndefined();
+    const writer = store.open('a', 'response');
+    writer.write(Buffer.from('12345'));
+    const arriving = store.state('a', 'response')!;
+    expect(arriving).toMatchObject({ stored: 5, size: 5, receiving: true, incomplete: false });
+    // As readRange says.
+    const range = (await store.readRange('a', 'response', 0, 100))!;
+    expect(arriving).toEqual({
+      serial: range.serial,
+      stored: range.stored,
+      size: range.size,
+      receiving: range.receiving,
+      incomplete: range.incomplete,
+    });
+    // Past the store's limit (40): counted, not kept.
+    writer.write(Buffer.alloc(50, 'x'));
+    expect(store.state('a', 'response')).toMatchObject({ stored: 40, size: 55, receiving: true });
+    await writer.end(false);
+    const finished = store.state('a', 'response')!;
+    expect(finished).toMatchObject({
+      serial: arriving.serial,
+      stored: 40,
+      size: 55,
+      receiving: false,
+      incomplete: true,
+    });
+    // Replaced: a new serial.
+    await store.put('a', 'response', Buffer.from('new'));
+    expect(store.state('a', 'response')!.serial).not.toBe(arriving.serial);
+    await store.delete('a');
+    expect(store.state('a', 'response')).toBeUndefined();
+    await store.put('b', 'request', Buffer.from('b'));
+    await store.clear();
+    expect(store.state('b', 'request')).toBeUndefined();
+  });
+
   it('keeps small bodies in memory and streams larger ones to disk', async () => {
     await store.put('small', 'request', Buffer.from('tiny'));
     const writer = store.open('large', 'response');

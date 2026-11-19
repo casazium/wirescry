@@ -125,7 +125,7 @@ export interface BackendPluginHost {
   /**
    * Part of a body as stored, from `offset`, at most `maxBytes` (and 1 MB): while it's still
    * arriving or after. As sent, Content-Encoding not undone, unless `decoded` says so. Null if
-   * there's no body yet (watch the summary's responseReceived), none at all, or the exchange is
+   * there's no body yet (watch the summary's requestReceived and responseReceived), none at all, or the exchange is
    * gone. Read on from `offset + bytes.length`; if `serial` changes, the body was
    * replaced, so start again from 0.
    */

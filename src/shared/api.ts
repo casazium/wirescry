@@ -37,6 +37,11 @@ export interface ExchangeSummary {
    * byte counted can be read. Not set once the response has finished.
    */
   responseReceived?: number;
+  /**
+   * While the request body is arriving (an upload): its bytes stored so far, updated a few times a
+   * second. Not set once it has finished.
+   */
+  requestReceived?: number;
   /** Set if the real server couldn't be reached, or the client gave up. */
   failure?: ExchangeFailure;
   /** True for a WebSocket connection. */

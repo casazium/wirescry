@@ -705,8 +705,10 @@ async function startListener(
   // Bodies stream into the store chunk by chunk, so large ones never sit in memory whole.
   const writers = new Map<string, BodyWriter>();
 
-  // While a response arrives, its size so far, a few times a second at most: each update goes to
-  // every window. The last chunk before a pause is always reported, by the timer that's waiting.
+  // While a request or response body arrives, its size so far, a few times a second at most:
+  // each update goes to every window (which also searches it again). One timer per exchange, so a
+  // body arriving each way makes one update a tick, not two. The last chunk before a pause is
+  // always reported, by the timer that's waiting.
   const receivedTimers = new Map<string, NodeJS.Timeout>();
   // Exchanges this listener marked as responding, so stopping it can end them.
   const respondingIds = new Set<string>();
@@ -714,11 +716,16 @@ async function startListener(
     if (receivedTimers.has(id)) return;
     const timer = setTimeout(() => {
       receivedTimers.delete(id);
-      const writer = writers.get(`${id}:response`);
       const existing = store.get(id);
-      if (!writer || !existing?.summary.responding) return;
-      if (existing.summary.responseReceived === writer.stored) return;
-      save({ ...existing, summary: { ...existing.summary, responseReceived: writer.stored } });
+      if (!existing) return;
+      let summary = existing.summary;
+      const response = writers.get(`${id}:response`);
+      if (response && summary.responding && summary.responseReceived !== response.stored)
+        summary = { ...summary, responseReceived: response.stored };
+      const request = writers.get(`${id}:request`);
+      if (request && summary.requestReceived !== request.stored)
+        summary = { ...summary, requestReceived: request.stored };
+      if (summary !== existing.summary) save({ ...existing, summary });
     }, RECEIVED_EVERY_MS);
     timer.unref();
     receivedTimers.set(id, timer);
@@ -733,7 +740,8 @@ async function startListener(
     const writer = writers.get(key);
     if (!writer) return;
     writers.delete(key);
-    if (side === 'response') stopReceived(id);
+    // Nothing left arriving either way: no more ticks.
+    if (!writers.has(`${id}:${side === 'request' ? 'response' : 'request'}`)) stopReceived(id);
     writer.end(complete).then(
       (info) =>
         recordBody(id, side, {
@@ -741,7 +749,15 @@ async function startListener(
           stored: info.stored,
           incomplete: info.incomplete || undefined,
         }),
-      (error: unknown) => console.error(`[wirescry] could not store ${side} body for ${id}:`, error),
+      (error: unknown) => {
+        console.error(`[wirescry] could not store ${side} body for ${id}:`, error);
+        // It's no longer arriving, stored or not.
+        if (side === 'request')
+          update(id, (existing) => ({
+            ...existing,
+            summary: { ...existing.summary, requestReceived: undefined },
+          }));
+      },
     );
   };
 
@@ -749,7 +765,7 @@ async function startListener(
     if (info && side === 'response' && brokenMidBody.has(id)) info = { ...info, incomplete: true };
     update(id, (existing) =>
       side === 'request'
-        ? { ...existing, requestBody: info }
+        ? { ...existing, requestBody: info, summary: { ...existing.summary, requestReceived: undefined } }
         : { ...existing, responseBody: info, summary: { ...existing.summary, responseSize: info?.size } },
     );
   };
@@ -785,7 +801,7 @@ async function startListener(
     }
     writer.write(content);
     if (data.isEnded) finishBody(data.id, side, true);
-    else if (side === 'response') noteReceived(data.id);
+    else noteReceived(data.id);
   };
 
   await server.on('request-body-data', (data) => onBodyData('request', data));
@@ -1234,6 +1250,11 @@ async function startListener(
         );
       }
       respondingIds.clear();
+      // Uploads cut off the same way: no longer arriving.
+      for (const key of [...writers.keys()]) {
+        const [id, side] = key.split(':') as [string, BodySide];
+        if (side === 'request') finishBody(id, 'request', false);
+      }
     },
   };
 }

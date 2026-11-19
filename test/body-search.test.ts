@@ -373,4 +373,20 @@ describe('searchBody', () => {
       expect(source.reads).toBe(readsWhenStopped);
     });
   });
+
+  it('a body replaced before its first read isn’t read as the one expected', async () => {
+    // The search expects serial 1; the store already holds a newer body (2).
+    const source = { ...fake(text('the newer body')), serial: 1 };
+    const original = source.read.bind(source);
+    source.read = async (start, max) => {
+      const range = await original(start, max);
+      return range && { ...range, serial: 2 };
+    };
+    const report = { gone: false, final: false };
+    expect(await searchBody(source, ['newer'], noTick, undefined, report)).toEqual({
+      found: new Set(),
+      partial: false,
+    });
+    expect(report.gone).toBe(true);
+  });
 });
