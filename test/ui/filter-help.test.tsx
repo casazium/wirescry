@@ -121,4 +121,9 @@ describe('FilterHelp', () => {
       expect({ example, errors: q.errors, hints: q.hints }).toEqual({ example, errors: [], hints: [] });
     }
   });
+
+  it('says a body still arriving is searched as far as it has arrived', () => {
+    open();
+    expect(dialog().textContent).toContain('A body still arriving is searched as far as it has arrived.');
+  });
 });

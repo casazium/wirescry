@@ -17,6 +17,11 @@ export interface BodySource {
   read(start: number, max: number): Promise<StoredRange | undefined>;
   /** The Content-Encoding to undo, if any (none for a body stored decoded, like an import). */
   encoding: string | undefined;
+  /**
+   * The body's serial, if known before reading: a read of any other body (replaced meanwhile)
+   * then ends the search, the first read included.
+   */
+  serial?: number;
 }
 
 export interface BodySearchResult {
@@ -27,6 +32,17 @@ export interface BodySearchResult {
    * search's limit, not all kept by Wirescry, or a finished body that couldn't be decoded.
    */
   partial: boolean;
+}
+
+/** More about how a search went, for deciding whether to remember its answer. */
+export interface BodySearchReport {
+  /**
+   * True if the body went away (deleted, cleared, replaced) or couldn't be read, partway: the
+   * answer is about what was read, and isn't one to remember.
+   */
+  gone: boolean;
+  /** True if every needle was found or the limit was reached: reading more can't change it. */
+  final: boolean;
 }
 
 /** Runs between chunks: may yield to let the proxy run, and throws if the search was stopped. */
@@ -42,14 +58,18 @@ export async function searchBody(
   needles: readonly string[],
   tick: Tick,
   limit = MAX_SEARCHED_BYTES,
+  report?: BodySearchReport,
 ): Promise<BodySearchResult> {
   const found = new Set<string>();
   const pending = new Set(needles);
-  if (pending.size === 0) return { found, partial: false };
+  if (pending.size === 0) {
+    if (report) Object.assign(report, { gone: false, final: true });
+    return { found, partial: false };
+  }
   const overlap = Math.max(...[...pending].map((n) => n.length)) - 1;
 
   // What the reads saw, for deciding what "partial" means.
-  let serial: number | undefined;
+  let serial: number | undefined = source.serial;
   let receiving = false;
   let notAllKept = false;
   /** The body went away, or was replaced, while it was read. */
@@ -183,5 +203,6 @@ export async function searchBody(
     }
   }
   const partial = pending.size > 0 && (atLimit || notAllKept || (undecodable && sawBytes));
+  if (report) Object.assign(report, { gone, final: pending.size === 0 || atLimit });
   return { found, partial };
 }

@@ -100,7 +100,7 @@ export function FilterHelp({
       </p>
       <p className="muted">
         <code>body~text</code>, <code>reqbody~</code> and <code>resbody~</code> search decoded bodies, up to{' '}
-        {MAX_SEARCHED_MB} MB each.
+        {MAX_SEARCHED_MB} MB each. A body still arriving is searched as far as it has arrived.
       </p>
     </div>
   );

@@ -102,6 +102,12 @@ describe('DetailPane', () => {
     view.rerender(pane({ summary: { ...live, responseReceived: 900 }, send }));
     await act(async () => undefined);
     expect(fetches()).toBe(1);
+    // An upload's size so far, likewise.
+    view.rerender(pane({ summary: { ...live, responseReceived: 900, requestReceived: 50 }, send }));
+    await act(async () => undefined);
+    view.rerender(pane({ summary: { ...live, responseReceived: 900, requestReceived: 5000 }, send }));
+    await act(async () => undefined);
+    expect(fetches()).toBe(1);
     view.rerender(pane({ summary: summary('live'), send }));
     await act(async () => undefined);
     expect(fetches()).toBe(2);

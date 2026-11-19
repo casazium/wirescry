@@ -25,6 +25,7 @@ import type {
 import { startApiServer, type CommandContext } from './api';
 import { harEntry, harFrame, MAX_HAR_BODY_BYTES, MAX_HAR_IMPORT_BYTES, parseHar } from './har';
 import type { Encryptor } from './secure-store';
+import { BodyMemo, Nudger } from './body-memo';
 import { headerValue, toBodyContent, writeBodyToFile, type WrittenBody } from './body-content';
 import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
@@ -185,6 +186,8 @@ export interface RunningBackend {
   searchesRunning(): number;
   /** How many searches are listening for their window to close. For tests: it should match. */
   searchListeners(): number;
+  /** How many exchanges body search remembers something about. For tests. */
+  bodyMemoSize(): number;
   /** Writes one whole body of an exchange to a file, decoded where possible. */
   saveBody(file: string, exchangeId: string, side: BodySide): Promise<WrittenBody>;
   /** Proxy listeners for single devices (Android setup), besides the main proxy. */
@@ -314,8 +317,18 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   const completed = new Set<string>();
   const completionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
+  // What body search found in each body, and searches it owes arriving bodies (see search.ts).
+  const bodyMemo = new BodyMemo(STORE_LIMIT);
+  // Tells the window about the exchange again, which searches it again.
+  const nudges = new Nudger((id) => {
+    const exchange = store.get(id);
+    if (exchange) updates.change(exchange.summary);
+  });
+
   // Everything kept about an exchange besides its store entry.
   const forget = (id: string): void => {
+    bodyMemo.forget(id);
+    nudges.forget(id);
     completed.delete(id);
     clearTimeout(completionTimers.get(id));
     completionTimers.delete(id);
@@ -957,17 +970,23 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
 
   // Body search reads stored bodies piece by piece, decoded as the body view decodes them. A
   // body that can't be read (removed meanwhile, or a file error) counts as gone.
+  // A body still arriving is searched as far as it has arrived.
   const bodyAccess: BodyAccess = {
     source: (exchange, side) => {
-      const info = side === 'request' ? exchange.requestBody : exchange.responseBody;
-      if (!info) return undefined;
       const id = exchange.summary.id;
+      const state = bodies.state(id, side);
+      if (!state) return undefined;
       return {
         read: (start, max) => bodies.readRange(id, side, start, max).catch(() => undefined),
         encoding: headerValue(decodingHeaders(exchange, side), 'content-encoding'),
+        serial: state.serial,
+        state,
       };
     },
   };
+  // An arriving body whose search had to wait for its throttle: told about again when it may be
+  // searched, so a last part that came meanwhile is found.
+  const nudge = (id: string, at: number): void => nudges.schedule(id, at);
 
   const handleCommand = async (command: ClientCommand, context: CommandContext): Promise<unknown> => {
     switch (command.command) {
@@ -1020,6 +1039,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         clears += 1;
         // First: a search reading what's about to go stops (on Windows, before its files are removed).
         stopSearches('cleared');
+        bodyMemo.clear();
+        nudges.clear();
         updates.reset();
         store.clear();
         completed.clear();
@@ -1202,6 +1223,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         const running = matchExchanges(store, command.query, ids, {
           signal: search.signal,
           bodies: bodyAccess,
+          memo: bodyMemo,
+          nudge,
           partial,
           ...(progress ? { onProgress: progress } : {}),
         });
@@ -1339,6 +1362,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     saveBody,
     importHar,
     searchesRunning: () => searches.size,
+    bodyMemoSize: () => bodyMemo.size,
     // Each open window has one listener of its own (for openWindows); the rest are searches'.
     searchListeners: () =>
       [...openWindows].reduce((sum, signal) => sum + getEventListeners(signal, 'abort').length - 1, 0),
@@ -1351,6 +1375,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       // Searches first, and waited for, so none is reading when the body store closes below.
       stopSearches('stopped');
       await Promise.all(searches.values());
+      // After the searches: one finishing could have asked for a nudge.
+      nudges.stop();
       // First, and quickly, side by side: put capturing devices back before their listeners go (a
       // device left pointing at a closed port has no internet), well inside the time the app gives
       // the backend to stop; any it can't reach keep their records, and are offered Restore next
