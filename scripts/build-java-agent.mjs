@@ -59,28 +59,72 @@ export const byteBuddy = {
 
 const sha256Of = (file) => createHash('sha256').update(readFileSync(file)).digest('hex');
 
+/** How many times a pinned jar is asked for before giving up, and the waits between asks (ms). */
+export const FETCH_ATTEMPTS = 5;
+const FETCH_WAITS_MS = [2_000, 5_000, 15_000, 30_000];
+/** The longest a server's Retry-After is waited for (ms). */
+const MAX_RETRY_AFTER_MS = 60_000;
+
+/**
+ * How long to wait before asking again, after `attempt` (1-based) failed: the next wait in
+ * FETCH_WAITS_MS, or the server's Retry-After (in seconds) if that's longer, up to a minute. Plus
+ * up to half again at random (`random` gives 0 to 1), so jobs turned away at once don't all ask
+ * again at once.
+ */
+export function retryWait(attempt, retryAfter, random = Math.random) {
+  let wait = FETCH_WAITS_MS[Math.min(attempt, FETCH_WAITS_MS.length) - 1];
+  const seconds = retryAfter == null || retryAfter.trim() === '' ? NaN : Number(retryAfter);
+  if (Number.isFinite(seconds)) wait = Math.max(wait, Math.min(seconds * 1000, MAX_RETRY_AFTER_MS));
+  return Math.round(wait * (1 + random() / 2));
+}
+
 /**
  * A pinned jar: the one at `jar.file` if its SHA-256 matches, else fetched from `jar.url` and
  * checked. A file that doesn't match is never used.
+ *
+ * Maven Central sometimes answers a CI runner with a 429, a 5xx, or a 404 for a jar it has, so
+ * any failed ask (a bad status, a network error, a timeout, a body cut short) is retried, up to
+ * FETCH_ATTEMPTS asks, waiting longer each time. Bytes that don't match the pin end it at once,
+ * whatever the cause: they're never kept.
+ *
+ * `options.fetch`, `options.wait` and `options.random` are for tests.
  */
-async function fetchPinned(jar, what) {
+export async function fetchPinned(
+  jar,
+  what,
+  {
+    fetch: fetchImpl = fetch,
+    wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    random = Math.random,
+  } = {},
+) {
   if (existsSync(jar.file) && sha256Of(jar.file) === jar.sha256) return jar.file;
   mkdirSync(path.dirname(jar.file), { recursive: true });
-  let response;
+  let bytes;
   for (let attempt = 1; ; attempt++) {
+    let retryAfter = null;
     try {
-      response = await fetch(jar.url, { signal: AbortSignal.timeout(60_000) });
-      if (response.ok) break;
-      throw new Error(`HTTP ${response.status}`);
-    } catch (error) {
-      if (attempt >= 2) {
-        throw new Error(`Fetching ${what} from ${jar.url}: ${error.message}`, { cause: error });
+      const response = await fetchImpl(jar.url, { signal: AbortSignal.timeout(60_000) });
+      if (!response.ok) {
+        retryAfter = response.headers.get('retry-after');
+        // Unread, it would hold its connection open.
+        await response.body?.cancel().catch(() => undefined);
+        throw new Error(`HTTP ${response.status}`);
       }
+      bytes = Buffer.from(await response.arrayBuffer());
+      break;
+    } catch (error) {
+      if (attempt >= FETCH_ATTEMPTS) {
+        throw new Error(`Fetching ${what} from ${jar.url}: ${error.message} (asked ${attempt} times)`, {
+          cause: error,
+        });
+      }
+      await wait(retryWait(attempt, retryAfter, random));
     }
   }
   // Its own name: builds running at once (test files in parallel) each write their own.
   const temp = `${jar.file}.${process.pid}.${randomUUID()}.download`;
-  writeFileSync(temp, Buffer.from(await response.arrayBuffer()));
+  writeFileSync(temp, bytes);
   const got = sha256Of(temp);
   if (got !== jar.sha256) {
     rmSync(temp, { force: true });

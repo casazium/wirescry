@@ -13,6 +13,7 @@ on:
       - src/backend/backend.ts
       - src/shared/terminal-env.ts
       - scripts/build-java-agent.mjs
+      - scripts/fetch-java-test-jars.mjs
       - test/java-agent*.ts
       - test/java/**
       - package.json
@@ -49,12 +50,26 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # Byte Buddy, which the agent's build fetches from Maven Central and checks by its pinned
-      # SHA-256 (scripts/build-java-agent.mjs): fetched once, not by every job.
-      - uses: actions/cache@v6
+      # Byte Buddy and the libraries the tests run the agent against, which come from Maven Central
+      # and are checked by their pinned SHA-256 (scripts/build-java-agent.mjs). They're fetched in
+      # a step of their own and cached at once, not after the tests: a cache saved when the job
+      # ends is saved only if it passes, and the first job to save a key wins, so a key shared
+      # with jobs that fetch only Byte Buddy never held the test jars (and Maven Central's 429s
+      # and stray 404s failed jetty jobs). Its own key, with every jar in it. After the build
+      # script changes, the last cache is restored and only new pins are fetched. Only a run on
+      # main (nightly, or by hand) makes the cache every pull request can use.
+      - uses: actions/cache/restore@v6
+        id: java-deps
         with:
           path: native/java-agent/deps
-          key: byte-buddy-${{ hashFiles('scripts/build-java-agent.mjs') }}
+          key: java-agent-deps-${{ hashFiles('scripts/build-java-agent.mjs') }}
+          restore-keys: java-agent-deps-
+      - run: node scripts/fetch-java-test-jars.mjs
+      - uses: actions/cache/save@v6
+        if: steps.java-deps.outputs.cache-hit != 'true'
+        with:
+          path: native/java-agent/deps
+          key: java-agent-deps-${{ hashFiles('scripts/build-java-agent.mjs') }}
       # Ubuntu's image no longer carries Java 8, which programs still run on.
       - uses: actions/setup-java@v6
         if: runner.os == 'Linux'
