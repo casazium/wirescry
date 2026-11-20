@@ -858,3 +858,30 @@ describe('fixes from the second A2 review', () => {
     }
   });
 });
+
+describe('minors from the final A2 check', () => {
+  it('records header redactions under the header’s name', () => {
+    expect(redactBody('{"set-cookie":["a=1"]}', 'application/json').records).toEqual([
+      { name: 'set-cookie', count: 1 },
+    ]);
+    expect(redactBody('[{"name":"Cookie","value":"a=1"}]', 'application/json').records).toEqual([
+      { name: 'Cookie', count: 1 },
+    ]);
+  });
+
+  it('reads CDATA followed by whitespace before the closing tag', () => {
+    expect(redact('<Password>\n<![CDATA[x1]]>\n</Password>', 'application/xml')).toBe(
+      `<Password>\n<![CDATA[${REDACTED}]]>\n</Password>`,
+    );
+  });
+
+  it('redacts a one-token XML property named for a password, not words', () => {
+    const known = new KnownValues();
+    expect(
+      redact('<property name="hibernate.connection.password">hunter2zz</property>', 'application/xml', known),
+    ).toBe(`<property name="hibernate.connection.password">${REDACTED}</property>`);
+    expect(known.size).toBe(0);
+    const words = '<string name="error_invalid_token">Your session token is invalid</string>';
+    expect(redact(words, 'application/xml')).toBe(words);
+  });
+});

@@ -256,9 +256,6 @@ export function assignmentSpans(text: string): Span[] {
       spans.push({ start, end, kind: 'name', name });
       continue;
     }
-    // A quoted name and a bare number, as in JSON the walker couldn't read: written back quoted,
-    // so the JSON stays valid.
-    // Only a whole JSON number, ending where a JSON value ends, after a double-quoted name.
     // A quoted name and a whole number ending where a value ends: after a double-quoted name (JSON),
     // written back quoted so the JSON stays valid; after a single-quoted one, as it is.
     const scalar =
@@ -489,7 +486,7 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
           start,
           end,
           kind: 'name',
-          name: key,
+          name: header,
           replacement: JSON.stringify(redacted).slice(1, -1),
         });
         return true;
@@ -726,7 +723,7 @@ const CDATA_OPEN = '<![CDATA[';
 
 /**
  * Elements whose text is a secret, redacted: by the element's name (`<Password>…</Password>`,
- * `<wsse:Password>`), or in XML by its `key` attribute (`<entry key="password">…</entry>`). In
+ * `<wsse:Password>`), or in XML by its `key` or `name` attribute (`<entry key="password">…</entry>`). In
  * HTML only a `<textarea>` with a secret `name` counts: a link or button named for a password
  * holds words, not one. Plain text or one CDATA section, after any whitespace. Only text found by
  * the element's own name is added to the known values.
@@ -744,7 +741,7 @@ export function xmlElementSpans(text: string, sink?: ValueSink, html = false): S
         ? /^textarea$/i.test(name)
           ? attributes.find((a) => /^name$/i.test(a.name))
           : undefined
-        : attributes.find((a) => /^key$/i.test(a.name));
+        : attributes.find((a) => /^(?:key|name)$/i.test(a.name));
       family = named ? secretName(named.value, 'form') : undefined;
     }
     if (!family) continue;
@@ -755,7 +752,9 @@ export function xmlElementSpans(text: string, sink?: ValueSink, html = false): S
     let close: number;
     if (window.startsWith(CDATA_OPEN, lead)) {
       const cdataEnd = window.indexOf(']]>', lead + CDATA_OPEN.length);
-      if (cdataEnd < 0 || !text.startsWith(`</${name}`, start + cdataEnd + 3)) continue;
+      const after = start + cdataEnd + 3;
+      const gap = /^\s{0,64}/.exec(text.slice(after, after + 64))![0].length;
+      if (cdataEnd < 0 || !text.startsWith(`</${name}`, after + gap)) continue;
       close = start + cdataEnd;
       start += lead + CDATA_OPEN.length;
     } else {
@@ -764,6 +763,9 @@ export function xmlElementSpans(text: string, sink?: ValueSink, html = false): S
       close = start + lt;
     }
     if (close === start) continue;
+    // Named by an XML `name` attribute (`<property name="…password">`), only text that is one
+    // token: `<string name="error_token">Your token expired</string>` is words.
+    if (named && /^name$/i.test(named.name) && /\s/.test(text.slice(start, close).trim())) continue;
     spans.push({ start, end: close, kind: 'name', name: named?.value ?? localName(name) });
     if (sink && byOwnName && STRONG_FAMILIES.has(byOwnName)) addValue(sink, text.slice(start, close).trim());
   }
