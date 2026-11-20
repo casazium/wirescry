@@ -259,8 +259,10 @@ export function assignmentSpans(text: string): Span[] {
     // A quoted name and a bare number, as in JSON the walker couldn't read: written back quoted,
     // so the JSON stays valid.
     // Only a whole JSON number, ending where a JSON value ends, after a double-quoted name.
+    // A quoted name and a whole number ending where a value ends: after a double-quoted name (JSON),
+    // written back quoted so the JSON stays valid; after a single-quoted one, as it is.
     const scalar =
-      match[1] === '"'
+      match[1] !== ''
         ? /^-?(?:0|[1-9]\d{0,62})(?:\.\d{1,63})?(?:[eE][+-]?\d{1,4})?(?=\s{0,8}(?:[,}\]]|$))/.exec(
             text.slice(from, from + 160),
           )
@@ -271,7 +273,7 @@ export function assignmentSpans(text: string): Span[] {
         end: from + scalar[0].length,
         kind: 'name',
         name,
-        replacement: `"${REDACTED}"`,
+        ...(match[1] === '"' ? { replacement: `"${REDACTED}"` } : {}),
       });
       continue;
     }

@@ -763,6 +763,8 @@ describe('fixes from the second A2 review', () => {
       ['"password": 1234-5678-abcd', `"password": ${REDACTED}`],
       ['{"pin": 123456, "x": 1', `{"pin": "${REDACTED}", "x": 1`],
       ['{"pin": -1.5e3}', `{"pin": "${REDACTED}"}`],
+      // After a single-quoted name, not JSON: redacted as it is.
+      ["{'pin': 1234, 'x': 1}", `{'pin': ${REDACTED}, 'x': 1}`],
     ]) {
       expect(applySpans(text, assignmentSpans(text)), text).toBe(expected);
     }
@@ -779,6 +781,15 @@ describe('fixes from the second A2 review', () => {
       '<resources><string name="error_invalid_token">Your session token is invalid</string></resources>';
     expect(redact(xml, 'application/xml', known)).toBe(xml);
     expect(known.size).toBe(1);
+  });
+
+  it('doesn’t take text found through an attribute as a known value', () => {
+    const known = new KnownValues();
+    const xml = '<entry key="password">Abc123Xyz789</entry><note>Abc123Xyz789</note>';
+    expect(redact(xml, 'application/xml', known)).toBe(
+      `<entry key="password">${REDACTED}</entry><note>Abc123Xyz789</note>`,
+    );
+    expect(known.size).toBe(0);
   });
 
   it('redacts a set-cookie array and HAR-style header pairs', () => {
@@ -801,7 +812,8 @@ describe('fixes from the second A2 review', () => {
     const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
     const known = new KnownValues();
     for (let n = 0; n < 50; n++) {
-      known.add(Array.from({ length: 2048 }, () => alphabet[next() % 64]).join(''));
+      // The generator's high bits: its low ones repeat every 64.
+      known.add(Array.from({ length: 2048 }, () => alphabet[(next() >> 16) % 64]).join(''));
     }
     expect(known.size).toBeGreaterThanOrEqual(45);
   });
