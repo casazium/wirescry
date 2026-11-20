@@ -28,14 +28,14 @@ describe('exportNotice', () => {
     );
     expect(one).toContain('1 request was left out: it couldn’t be redacted.');
     expect(one).toContain('1 body or message was left out: it couldn’t be redacted safely.');
-    expect(one).toContain('1 body or message wasn’t checked: binary or still encoded.');
+    expect(one).toContain('1 body or message wasn’t checked: they aren’t text.');
     const many = exportNotice(
       { name: 'a.har', count: 1, redaction: { ...none, dropped: 2, leftOut: 3, notScanned: 4 } },
       0,
     );
     expect(many).toContain('2 requests were left out: they couldn’t be redacted.');
     expect(many).toContain('3 bodies or messages were left out: they couldn’t be redacted safely.');
-    expect(many).toContain('4 bodies or messages weren’t checked: binary or still encoded.');
+    expect(many).toContain('4 bodies or messages weren’t checked: they aren’t text.');
     const clean = exportNotice({ name: 'a.har', count: 1, redaction: none }, 0);
     expect(clean).not.toMatch(/left out|checked|missed/);
     expect(exportNotice({ name: 'a.har', count: 1, redaction: { ...none, full: true } }, 0)).toContain(

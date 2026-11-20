@@ -201,9 +201,11 @@ export function harEntry(item: HarExportItem, meta?: HarEntryMeta): Record<strin
   if (undecoded.length > 0) {
     // The text is the raw, still-encoded bytes: say so, as readers would take it as decoded.
     entry._wirescryUndecoded = undecoded;
-    notes.push(
-      `The ${undecoded.join(' and ')} couldn't be decoded, so it is written as received (still encoded).`,
-    );
+    // Redacting leaves such a body out (src/backend/har-redact.ts), and says so itself.
+    if (!meta)
+      notes.push(
+        `The ${undecoded.join(' and ')} couldn't be decoded, so it is written as received (still encoded).`,
+      );
   }
   if (summary.websocket && messages) {
     entry._resourceType = 'websocket';

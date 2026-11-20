@@ -25,7 +25,7 @@ export function exportNotice(result: HarExportResult, left: number): string {
     if (r.leftOut > 0)
       text += ` ${count(r.leftOut, 'body or message was', 'bodies or messages were')} left out: ${r.leftOut === 1 ? 'it' : 'they'} couldn’t be redacted safely.`;
     if (r.notScanned > 0)
-      text += ` ${count(r.notScanned, 'body or message wasn’t', 'bodies or messages weren’t')} checked: binary or still encoded.`;
+      text += ` ${count(r.notScanned, 'body or message wasn’t', 'bodies or messages weren’t')} checked: they aren’t text.`;
     if (r.full) text += ' Some secrets may have been missed: there were too many to keep track of.';
   }
   if (left > 0)

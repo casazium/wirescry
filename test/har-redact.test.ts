@@ -313,6 +313,48 @@ describe('redactHarEntry', () => {
       expect(leaked.entry.comment).toMatch(/response body was left out: it couldn't be redacted/);
     });
 
+    it('takes the byte order of BOM-less UTF-16 from its NULs, and doesn’t guess when they don’t show it', () => {
+      const text = `{"token":"${OTHER}"}`;
+      const be = Buffer.from(text, 'utf16le').swap16();
+      const read = (bytes: Buffer, type: string) =>
+        redact({
+          detail: detail({
+            responseHeaders: [['content-type', type]],
+            responseBody: { size: bytes.length, stored: bytes.length },
+          }),
+          requestBody: null,
+          responseBody: body(bytes),
+        });
+      // charset=utf-16 alone, big-endian bytes.
+      const bare = read(be, 'application/json; charset=utf-16');
+      const out = Buffer.from(bare.entry.response.content.text, 'base64');
+      expect(Buffer.from(out).swap16().toString('utf16le')).toBe('{"token":"[redacted]"}');
+      // Said to be UTF-16, but the bytes don't show an order: not checked.
+      // Few NULs (two in twenty bytes), so not caught as NUL-heavy either.
+      const mixed = Buffer.from('\u4e2d\u6587\u4e2d\u6587\u4e2d\u6587\u4e2d\u6587ab', 'utf16le');
+      const unsure = read(mixed, 'text/plain; charset=utf-16');
+      expect(unsure.notScanned).toBe(1);
+      expect(Buffer.from(unsure.entry.response.content.text, 'base64').equals(mixed)).toBe(true);
+    });
+
+    it('doesn’t read text full of NULs, in no UTF-16 pattern, as Latin-1', () => {
+      // A secret in UTF-16 among text that hides the pattern: as Latin-1 it would match nothing.
+      const bytes = Buffer.concat([
+        Buffer.from('\u4e2d\u6587\u4e2d\u6587\u4e2d', 'utf16le'),
+        Buffer.from(`token=${OTHER}`, 'utf16le'),
+      ]);
+      const { notScanned, entry } = redact({
+        detail: detail({
+          responseHeaders: [['content-type', 'text/plain']],
+          responseBody: { size: bytes.length, stored: bytes.length },
+        }),
+        requestBody: null,
+        responseBody: body(bytes),
+      });
+      expect(notScanned).toBe(1);
+      expect(entry._wirescryRedactions).toEqual([{ in: 'response.content', notScanned: 'binary', count: 1 }]);
+    });
+
     it('doesn’t take odd-length UTF-16 for text', () => {
       const bytes = Buffer.from([0xff, 0xfe, 0x41, 0x00, 0x42]);
       const { entry, notScanned } = redact({
@@ -342,9 +384,11 @@ describe('redactHarEntry', () => {
       });
       expect(entry.response.content.text).toBeUndefined();
       expect(entry.response.content.size).toBe(raw.length);
-      expect(entry._wirescryUndecoded).toEqual(['response body']);
+      // Nothing says it's written as received: it isn't written.
+      expect(entry._wirescryUndecoded).toBeUndefined();
       expect([notScanned, leftOut]).toEqual([0, 1]);
       expect(entry.comment).toMatch(/response body was left out/);
+      expect(entry.comment).not.toMatch(/written as received/);
     });
 
     it('redacts text with a stray NUL, or a binary part, as Latin-1, whatever its length', () => {

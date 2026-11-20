@@ -222,7 +222,7 @@ describe('HAR export', () => {
     });
     await act(async () => void fireEvent.click(exportButton()));
     expect(noticeText()).toContain(
-      'Exported 3 requests to traffic-redacted.har, with secrets redacted in 7 places. Redaction is best effort for bodies: check before sharing. 1 request was left out: it couldn’t be redacted. 1 body or message was left out: it couldn’t be redacted safely. 2 bodies or messages weren’t checked: binary or still encoded. Some secrets may have been missed: there were too many to keep track of.',
+      'Exported 3 requests to traffic-redacted.har, with secrets redacted in 7 places. Redaction is best effort for bodies: check before sharing. 1 request was left out: it couldn’t be redacted. 1 body or message was left out: it couldn’t be redacted safely. 2 bodies or messages weren’t checked: they aren’t text. Some secrets may have been missed: there were too many to keep track of.',
     );
     bridge.exportHar.mockResolvedValueOnce({ name: 'traffic.har', count: 3 });
     await command('export-har-unredacted');

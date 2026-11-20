@@ -107,7 +107,7 @@ export interface HarRedactionCounts {
   requests: number;
   /** Requests left out because they couldn't be redacted. */
   dropped: number;
-  /** Bodies or messages not checked: binary or still encoded. */
+  /** Bodies or messages not checked: not text. */
   notScanned: number;
   /** Bodies or messages left out: they couldn't be redacted, or held a secret in binary. */
   leftOut: number;

@@ -21,7 +21,10 @@ function workerFile(): string {
   return existsSync(built) ? built : path.join(__dirname, 'redact-worker.mts');
 }
 
-/** An entry's time to redact: a minute, plus 3 s for each MB of text in it. */
+/**
+ * An entry's time to redact: 20 s, plus 3 s for each MB of text in it. An entry that takes longer
+ * is tried with fewer bodies, so a few slow ones don't use up the export's 10 minutes.
+ */
 export function entryTimeLimitMs(entry: Json): number {
   let chars = 0;
   const request = (entry.request ?? {}) as Json;
@@ -34,8 +37,11 @@ export function entryTimeLimitMs(entry: Json): number {
     for (const m of entry._webSocketMessages as Json[])
       if (typeof m.data === 'string') chars += m.data.length;
   }
-  return 60_000 + Math.ceil(chars / 1e6) * 3_000;
+  return 20_000 + Math.ceil(chars / 1e6) * 3_000;
 }
+
+/** Time for a worker to take an export's URLs and headers (in memory, so quick). */
+const TEACH_TIME_LIMIT_MS = 60_000;
 
 export type Redacted = Extract<RedactResponse, { text: string }>;
 export type RedactOutcome = Redacted | { tooLarge: true } | { dropped: true };
@@ -120,7 +126,7 @@ export class HarRedactor {
   }
 
   private async teach(worker: Worker, parts: Json[]): Promise<void> {
-    const response = await this.send(worker, { op: 'collect', parts });
+    const response = await this.send(worker, { op: 'collect', parts }, TEACH_TIME_LIMIT_MS);
     if (!response.ok) {
       this.stop(new WorkerGone(response.error));
       throw new WorkerGone(response.error);

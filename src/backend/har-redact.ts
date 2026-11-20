@@ -40,7 +40,7 @@ export interface RedactedEntry {
   entry: Json;
   /** Places redacted, in all. */
   values: number;
-  /** Bodies or messages not checked (binary or still encoded). */
+  /** Bodies or messages not checked: not text. */
   notScanned: number;
   /** Bodies or messages left out: they couldn't be redacted, or held a known value in binary. */
   leftOut: number;
@@ -125,10 +125,19 @@ function textOfBytes(bytes: Buffer, mediaType: string): { text: string; encoding
       ? 'utf16be'
       : charset === 'utf-16be'
         ? 'utf16be'
-        : charset?.startsWith('utf-16')
+        : charset === 'utf-16le'
           ? 'utf16le'
           : looksUtf16(bytes);
-  if (!order) return { text: bytes.toString('latin1'), encoding: 'latin1' };
+  // Said to be UTF-16, in an order the bytes don't show: not text Wirescry can read surely.
+  if (!order && charset?.startsWith('utf-16')) return undefined;
+  if (!order) {
+    // Many NULs, but not in a pattern UTF-16 shows: not checked, rather than read as Latin-1, where
+    // an ASCII secret in UTF-16 would be `p\0a\0s\0s` and match nothing.
+    let nuls = 0;
+    for (const byte of bytes) if (byte === 0) nuls++;
+    if (nuls > bytes.length * 0.2) return undefined;
+    return { text: bytes.toString('latin1'), encoding: 'latin1' };
+  }
   // Said to be UTF-16 but isn't, whole: not text Wirescry can put back byte for byte.
   if (bytes.length % 2 !== 0) return undefined;
   const le = order === 'utf16le' ? bytes : Buffer.from(bytes).swap16();
@@ -452,7 +461,7 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
     const { kind, id, label } = entry._wirescrySource;
     out._wirescrySource = { kind: str(kind), id: str(id), label: str(label) };
   }
-  if (undecoded.length > 0) out._wirescryUndecoded = undecoded.filter((u) => typeof u === 'string');
+  // Bodies still encoded are left out (see redactBodyText), so none is written as received.
   if (messages) {
     out._resourceType = 'websocket';
     out._webSocketMessages = messages;

@@ -851,10 +851,6 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     const onAbort = (): void => stopper.abort();
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) stopper.abort();
-    exportsRunning.add(stopper);
-    let finished!: () => void;
-    const finishing = new Promise<void>((resolve) => (finished = resolve));
-    exportsFinishing.add(finishing);
     const checkStopped = (): void => {
       if (stopper.signal.aborted) throw new Error('The export was stopped.');
     };
@@ -888,6 +884,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       leftOut: 0,
       full: false,
     };
+    // Added just before the try, so its finally always takes them out again.
+    exportsRunning.add(stopper);
+    let finished!: () => void;
+    const finishing = new Promise<void>((resolve) => (finished = resolve));
+    exportsFinishing.add(finishing);
     try {
       out = await open(temp, 'wx', 0o600);
       // The exchanges as they are now: one cleared meanwhile is still written, as it was.
@@ -997,7 +998,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
               ? 0
               : step === 1
                 ? Number(item.responseBody !== null)
-                : Number(item.requestBody !== null) + Number(item.responseBody !== null);
+                : Number(item.requestBody !== null && (exchange.requestBody?.size ?? 0) > 0) +
+                  Number(item.responseBody !== null);
           redaction.leftOut += outcome.leftOut + removed;
           redaction.full ||= outcome.full;
           break;

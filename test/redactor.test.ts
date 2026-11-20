@@ -143,11 +143,11 @@ describe('HarRedactor when the worker misbehaves', () => {
 });
 
 describe('entryTimeLimitMs', () => {
-  it('is a minute, plus 3 s for each MB of text, started or not', () => {
-    expect(entryTimeLimitMs({})).toBe(60_000);
+  it('is 20 s, plus 3 s for each MB of text, started or not', () => {
+    expect(entryTimeLimitMs({})).toBe(20_000);
     const mb = 'x'.repeat(1_000_000);
-    expect(entryTimeLimitMs({ request: { postData: { text: mb } } })).toBe(63_000);
-    expect(entryTimeLimitMs({ response: { content: { text: mb + 'x' } } })).toBe(66_000);
-    expect(entryTimeLimitMs({ _webSocketMessages: [{ data: mb }, { data: mb }, { data: 5 }] })).toBe(66_000);
+    expect(entryTimeLimitMs({ request: { postData: { text: mb } } })).toBe(23_000);
+    expect(entryTimeLimitMs({ response: { content: { text: mb + 'x' } } })).toBe(26_000);
+    expect(entryTimeLimitMs({ _webSocketMessages: [{ data: mb }, { data: mb }, { data: 5 }] })).toBe(26_000);
   });
 });
