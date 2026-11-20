@@ -657,12 +657,18 @@ describe('fixes from review', () => {
     ['x-goog-encryption-key', 'header'],
     ['x-functions-key', 'header'],
     ['DD-APPLICATION-KEY', 'header'],
+    ['api_keys', 'json'],
+    ['apiKeys', 'json'],
+    ['access-keys', 'header'],
   ] as const)('%s in %s is a secret', (name, where) => {
     expect(secretName(name, where)).toBeDefined();
   });
 
   it.each([
     ['secretary', 'json'],
+    ['keys', 'json'],
+    ['monkeys', 'json'],
+    ['sort_keys', 'json'],
     ['secretariat_address', 'json'],
     ['password_changed', 'json'],
     ['password_updated', 'json'],

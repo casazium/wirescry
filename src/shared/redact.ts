@@ -207,20 +207,31 @@ const stronger = (a: SecretFamily | undefined, b: SecretFamily): SecretFamily =>
 
 /** The family of a secret name, or undefined if the name isn't a secret's. */
 export function secretName(name: string, where: NameContext): SecretFamily | undefined {
-  if (where === 'header' && HEADER_EXCEPTIONS.has(name.toLowerCase())) return undefined;
+  const rule = nameRule(name, where);
+  return rule === 'describes' ? undefined : rule;
+}
+
+/**
+ * What a name says of its value: a secret's family; `describes` for a name that's about a secret
+ * or is an ID, count or type (`token_type`, `totalTokenCount`, `SecretId`, `id`), whose value is
+ * never a secret; or undefined for any other name. Inside a secret-named JSON object, a neutral
+ * name's value takes the object's rule, and a `describes` name's is kept.
+ */
+export function nameRule(name: string, where: NameContext): SecretFamily | 'describes' | undefined {
+  if (where === 'header' && HEADER_EXCEPTIONS.has(name.toLowerCase())) return 'describes';
   const words = nameWords(name);
   if (words.length === 0) return undefined;
   if (where === 'query' || where === 'form') {
     if (CODE_NAMES.has(words.join(' '))) return 'code';
   }
   // Token counts and tokenizers are about tokens, not tokens themselves.
-  if (words.some((w) => w === 'tokens' || w.startsWith('tokeniz'))) return undefined;
+  if (words.some((w) => w === 'tokens' || w.startsWith('tokeniz'))) return 'describes';
   const last = words[words.length - 1]!;
   // A session's ID is the session (`session_id`, `X-Session-Id`, `ASP.NET_SessionId`), but not
   // `session_id_type`.
   const beforeLast = words[words.length - 2];
   if (last === 'id' && (beforeLast === 'session' || beforeLast === 'sess')) return 'session';
-  if (LAST_WORD_EXCEPTIONS.has(last)) return undefined;
+  if (LAST_WORD_EXCEPTIONS.has(last)) return 'describes';
   let found: SecretFamily | undefined;
   for (const word of words) {
     const family = WORDS.get(word);
@@ -228,7 +239,7 @@ export function secretName(name: string, where: NameContext): SecretFamily | und
       found = stronger(found, family);
       continue;
     }
-    if (word === 'key' && words.some((w) => KEY_QUALIFIERS.has(w))) {
+    if ((word === 'key' || word === 'keys') && words.some((w) => KEY_QUALIFIERS.has(w))) {
       found = stronger(found, 'secret');
       continue;
     }
@@ -245,7 +256,7 @@ export function secretName(name: string, where: NameContext): SecretFamily | und
 }
 
 /** Whether a value under a name of this family is a credential worth finding elsewhere. */
-const STRONG_FAMILIES: ReadonlySet<SecretFamily> = new Set(['password', 'secret', 'token']);
+export const STRONG_FAMILIES: ReadonlySet<SecretFamily> = new Set(['password', 'secret', 'token']);
 
 /**
  * Whether a redacted value is distinctive enough to look for elsewhere: 16+ characters, or 8+
@@ -634,6 +645,14 @@ export function urlSpans(url: string, depth = 0, sink?: ValueSink, shapes = true
   return spans;
 }
 
+/**
+ * Spans in a form body (`application/x-www-form-urlencoded`): values of fields with secret names,
+ * and values that hold a secret once decoded. The same rules as a URL's query.
+ */
+export function formSpans(text: string, sink?: ValueSink): Span[] {
+  return parameterSpans(text, 0, text.length, /&/g, 0, sink);
+}
+
 /** A URL with its secrets redacted, and what was redacted. */
 export function redactUrl(url: string, sink?: ValueSink): { url: string; records: Redaction[] } {
   const spans = urlSpans(url, 0, sink);
@@ -786,7 +805,7 @@ export function textSpans(text: string, sink?: ValueSink): Span[] {
   return spans;
 }
 
-function addValue(sink: ValueSink, value: string): void {
+export function addValue(sink: ValueSink, value: string): void {
   if (distinctive(value)) sink.add(value);
 }
 
