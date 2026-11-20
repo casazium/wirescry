@@ -211,20 +211,14 @@ const MAX_REPORTED = 8000;
 const tail = (text: string): string => (text.length > MAX_REPORTED ? `…${text.slice(-MAX_REPORTED)}` : text);
 
 /**
- * The threads of a running JVM, from `jstack` beside its java (or `jcmd`), for a failure's message:
- * it tells a hang (and where) from a slow start. Says why if there's none.
+ * The threads of a running JVM, from `jstack` beside its java (every JDK the tests use has one), for
+ * a failure's message: it tells a hang, and where, from a slow start. Says why if there's none.
  */
 export function threadDump(java: string, pid: number): string {
-  const bin = path.dirname(java);
-  const suffix = process.platform === 'win32' ? '.exe' : '';
-  for (const [tool, args] of [
-    ['jstack', [String(pid)]],
-    ['jcmd', [String(pid), 'Thread.print']],
-  ] as const) {
-    const result = spawnSync(path.join(bin, tool + suffix), args, { encoding: 'utf8', timeout: 30_000 });
-    if (result.status === 0 && result.stdout.trim() !== '') return tail(result.stdout);
-  }
-  return `(no thread dump: neither jstack nor jcmd beside ${java} gave one)`;
+  const jstack = path.join(path.dirname(java), process.platform === 'win32' ? 'jstack.exe' : 'jstack');
+  const result = spawnSync(jstack, [String(pid)], { encoding: 'utf8', timeout: 30_000 });
+  if (result.status === 0 && result.stdout.trim() !== '') return tail(result.stdout);
+  return `(no thread dump from ${jstack}: ${result.error?.message ?? `exit ${result.status}`} ${result.stderr ?? ''})`;
 }
 
 /**
