@@ -243,7 +243,12 @@ function unquotedEnd(text: string, start: number): number {
  */
 export function assignmentSpans(text: string): Span[] {
   const spans: Span[] = [];
+  // How far values have been read. An assignment starting inside one already read is part of that
+  // value (`password=password=…`): skipped, so each character is read about once, not once for
+  // every assignment before it.
+  let readTo = 0;
   for (const match of text.matchAll(ASSIGNMENT)) {
+    if (match.index < readTo) continue;
     const name = match[2]!;
     const family = secretName(name, 'json');
     if (!family || !STRONG_FAMILIES.has(family)) continue;
@@ -252,6 +257,9 @@ export function assignmentSpans(text: string): Span[] {
     if (quote === '"' || quote === "'") {
       const start = from + 1;
       const end = closingQuote(text, start, quote);
+      // An unclosed quote isn't marked: a later match brings a quote of its own kind, which ends
+      // the search, so a long search happens at most once per kind of quote.
+      readTo = end;
       if (end <= start || STOP_WORDS.has(text.slice(start, end).toLowerCase())) continue;
       spans.push({ start, end, kind: 'name', name });
       continue;
@@ -275,6 +283,7 @@ export function assignmentSpans(text: string): Span[] {
       continue;
     }
     const end = unquotedEnd(text, from);
+    readTo = end;
     const value = text.slice(from, end);
     if (value.length < 6 || /[(){}<>$]/.test(value) || STOP_WORDS.has(value.toLowerCase())) continue;
     // Not added to the known values: a rule over free text is too loose a source for them.

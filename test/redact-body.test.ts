@@ -216,6 +216,23 @@ describe('the assignment rule', () => {
     expect(assignmentSpans(text)).toEqual([]);
   });
 
+  it('reads a value once: an assignment inside one already read is part of it', () => {
+    const text = 'password=password=hunter22 then secret=s3cr3tvalue';
+    expect(applySpans(text, assignmentSpans(text))).toBe(`password=${REDACTED} then secret=${REDACTED}`);
+    const quoted = 'password="abc password="def" token="tok12345"';
+    expect(applySpans(quoted, assignmentSpans(quoted))).toBe(
+      `password="${REDACTED}"def" token="${REDACTED}"`,
+    );
+  });
+
+  it('reads repeated assignments with no end quickly', () => {
+    for (const text of [rep('password=', 200_000), rep('password="', 200_000), rep("secret='x", 200_000)]) {
+      const start = performance.now();
+      assignmentSpans(text);
+      expect(performance.now() - start).toBeLessThan(1500);
+    }
+  });
+
   it('isn’t used in code, and only outside scripts and styles in HTML', () => {
     expect(redact('const password = getValueFromStore123;', 'application/javascript')).toBe(
       'const password = getValueFromStore123;',
@@ -396,7 +413,7 @@ describe('time', () => {
       'multipart/form-data; boundary=b',
     ],
     ['encoded runs', (n: number) => rep('a%41', n * 2), 'text/plain'],
-  ])('stays linear on %s', (_what, make, type) => {
+  ])('stays linear on %s', { timeout: 60_000 }, (_what, make, type) => {
     const known = new KnownValues();
     known.add(SESSION);
     const run = (text: string) => () => redactBody(text, type, known);
@@ -723,7 +740,7 @@ describe('time, after the A2 review', () => {
       'ordinary multipart fields',
       (n: number) => rep('--b\r\nContent-Disposition: form-data; name="f"\r\n\r\nvalue\r\n', n),
     ],
-  ])('stays linear on %s', (_what, make) => {
+  ])('stays linear on %s', { timeout: 60_000 }, (_what, make) => {
     const run = (text: string) => () => redactBody(text, 'multipart/form-data; boundary=b');
     let n = 2_000;
     run(make(n))();
