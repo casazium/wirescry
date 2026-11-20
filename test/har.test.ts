@@ -297,6 +297,13 @@ describe('a redacted file', () => {
     expect((await parseHar(text, 10)).redacted).toBe(true);
   });
 
+  it('says what the app says: best effort, with no hyphen', () => {
+    expect(REDACTED_LOG_COMMENT).toBe(
+      'Secrets were redacted by Wirescry. Redaction is best effort for bodies: check before sharing.',
+    );
+    expect(REDACTED_LOG_COMMENT).not.toContain('best-effort');
+  });
+
   it('isn’t marked otherwise, and the frame is as before', async () => {
     const { head, tail } = harFrame('1.0.0');
     expect(head).toBe(

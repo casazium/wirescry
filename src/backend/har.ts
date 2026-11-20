@@ -245,7 +245,7 @@ export function harEntry(item: HarExportItem, meta?: HarEntryMeta): Record<strin
 
 /** What a redacted export's log says, for anyone reading the file. */
 export const REDACTED_LOG_COMMENT =
-  'Secrets were redacted by Wirescry. Redaction is best-effort for bodies: check before sharing.';
+  'Secrets were redacted by Wirescry. Redaction is best effort for bodies: check before sharing.';
 
 /** The HAR file around the entries, as text before and after them. */
 export function harFrame(version: string, { redacted = false } = {}): { head: string; tail: string } {
