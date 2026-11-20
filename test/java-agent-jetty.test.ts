@@ -43,6 +43,8 @@ import {
   statusOf,
   waitForAgent,
   type Run,
+  waitForOutput,
+  waitForLines,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: answers plain requests itself, and tunnels CONNECT. */
@@ -274,7 +276,7 @@ async function probe(
       ? [...VERIFY, ...jvm, '-cp', isolated, 'Isolated', classpaths[set]!, main]
       : [...VERIFY, ...jvm, '-cp', options.classpath ?? classpaths[set]!, main];
   const r = run(java, args, { stdin: true });
-  await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+  await waitForOutput(r, 'ready', 30_000);
   await waitForAgent(r.child.spawnargs, r.child.pid);
   return r;
 }
@@ -286,9 +288,7 @@ async function probe(
 async function ask(r: Run, command: string): Promise<string> {
   const before = r.stdout().split('\n').filter(Boolean).length;
   r.send(command);
-  await expect
-    .poll(() => r.stdout().split('\n').filter(Boolean).length, { timeout: 30_000 })
-    .toBeGreaterThan(before);
+  await waitForLines(r, before, 30_000);
   return r.stdout().split('\n').filter(Boolean)[before]!.trim();
 }
 
@@ -729,7 +729,7 @@ describe.skipIf(!buildJava)('the Java agent’s Jetty hooks', { timeout: 180_000
           stdin: true,
         },
       );
-      await expect.poll(r.stdout, { timeout: 20_000 }).toContain('ready');
+      await waitForOutput(r, 'ready', 20_000);
       await waitForAgent(r.child.spawnargs, r.child.pid);
       return r;
     }

@@ -114,12 +114,28 @@ describe('trailers through Wirescry', () => {
   const recorded = async (urlPath: string): Promise<ExchangeDetail> => {
     const api = await apiClient(backend.apiPort);
     let found: ExchangeSummary | undefined;
-    await expect
-      .poll(() => {
-        found = exchangesIn(api.messages).find((e) => e.path === urlPath && e.durationMs !== undefined);
-        return found;
-      })
-      .toBeTruthy();
+    try {
+      await expect
+        .poll(() => {
+          found = exchangesIn(api.messages).find((e) => e.path === urlPath && e.durationMs !== undefined);
+          return found;
+        })
+        .toBeTruthy();
+    } catch (error) {
+      // Say what was recorded instead: this failed once on Windows CI, never alone or on hypatia.
+      const seen = exchangesIn(api.messages)
+        .filter((e) => e.path === urlPath)
+        .map((e) => ({
+          status: e.status,
+          durationMs: e.durationMs,
+          responding: e.responding,
+          failure: e.failure,
+        }));
+      api.close();
+      throw new Error(`${urlPath} didn't finish; copies recorded, oldest first: ${JSON.stringify(seen)}`, {
+        cause: error,
+      });
+    }
     const detail = await api.send<ExchangeDetail>({ command: 'getExchange', exchangeId: found!.id });
     api.close();
     return detail;

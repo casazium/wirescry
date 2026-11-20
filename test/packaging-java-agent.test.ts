@@ -52,9 +52,12 @@ let work: string;
 beforeAll(async () => {
   work = await mkdtemp(path.join(os.tmpdir(), 'wirescry packaging-'));
 });
+// The folder holds the agent's build, Byte Buddy unpacked among it: thousands of files, which took
+// Windows CI over the default 10 s to delete. A folder left behind in the temp folder isn't a test
+// failure (as in java-agent-helpers.ts).
 afterAll(async () => {
-  await rm(work, { recursive: true, force: true });
-});
+  await rm(work, { recursive: true, force: true, maxRetries: 5 }).catch(() => undefined);
+}, 120_000);
 
 /** A folder with the three jars, `change` replacing some of them (null leaves one out). */
 async function jars(change: Record<string, Buffer | null> = {}): Promise<string> {
