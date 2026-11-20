@@ -13,12 +13,15 @@ interface Matrix {
   os: string;
   attacher: string;
   suite: string[];
-  exclude?: Array<Record<string, string>>;
+  exclude?: Array<Record<string, unknown>>;
 }
 
 const workflow = parse(
   readFileSync(path.join(import.meta.dirname, '..', '.github', 'workflows', 'java-agent.yml'), 'utf8'),
-) as { on: Record<string, unknown>; jobs: { versions: { strategy: { matrix: Matrix } } } };
+) as {
+  on: Record<string, unknown>;
+  jobs: { versions: { 'runs-on': string; strategy: { matrix: Matrix } } };
+};
 const matrix = workflow.jobs.versions.strategy.matrix;
 
 /**
@@ -43,7 +46,8 @@ function jobsFor(event: Event): Array<{ os: string; attacher: string; suite: str
       for (const suite of matrix.suite) {
         const job = { os, attacher, suite };
         const excluded = (matrix.exclude ?? []).some((rule) =>
-          Object.entries(rule).every(([key, value]) => job[key as keyof typeof job] === String(value)),
+          // Strictly: GitHub compares the matrix's strings with the rule's values as they are.
+          Object.entries(rule).every(([key, value]) => job[key as keyof typeof job] === value),
         );
         if (!excluded) jobs.push(job);
       }
@@ -56,6 +60,8 @@ const macos = (jobs: ReturnType<typeof jobsFor>) => jobs.filter((j) => j.os === 
 
 describe('the Java agent workflow’s jobs', () => {
   it('asks for no macOS runner on a pull request, and runs every suite on Linux and Windows', () => {
+    // Not on the list at all, so a change of the pull requests' attacher can't bring macOS back.
+    expect(valueFor(matrix.os, 'pull_request')).toEqual(['ubuntu-latest', 'windows-latest']);
     const jobs = jobsFor('pull_request');
     expect(macos(jobs)).toEqual([]);
     expect(jobs).toHaveLength(8);
@@ -74,8 +80,9 @@ describe('the Java agent workflow’s jobs', () => {
     'on %s, runs every suite on macOS with one attacher: 4 macOS jobs, not 12',
     (event) => {
       const jobs = jobsFor(event);
+      // JDK 17: the oldest Wirescry supports on macOS, and not the JDK that builds.
       expect(macos(jobs)).toEqual(
-        ['core', 'apache', 'jetty', 'netty'].map((suite) => ({ os: 'macos-latest', attacher: '21', suite })),
+        ['core', 'apache', 'jetty', 'netty'].map((suite) => ({ os: 'macos-latest', attacher: '17', suite })),
       );
       // Linux and Windows still try every attacher.
       for (const os of ['ubuntu-latest', 'windows-latest']) {
@@ -86,6 +93,11 @@ describe('the Java agent workflow’s jobs', () => {
       expect(jobs).toHaveLength(4 + 2 * 3 * 4);
     },
   );
+
+  it('has no other matrix keys, such as an include that could add macOS jobs back, and runs on its os', () => {
+    expect(Object.keys(matrix).sort()).toEqual(['attacher', 'exclude', 'os', 'suite']);
+    expect(workflow.jobs.versions['runs-on']).toBe('${{ matrix.os }}');
+  });
 
   it('still runs nightly and by hand, so macOS is covered every day', () => {
     expect(workflow.on).toHaveProperty('schedule');

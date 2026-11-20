@@ -84,6 +84,8 @@ jobs:
           key: byte-buddy-${{ hashFiles('scripts/build-java-agent.mjs') }}
       # Apache's, Jetty's and Reactor Netty's agent tests run in java-agent.yml, on every Java and
       # each on a runner of its own; here they'd only repeat one Java and push the job past its limit.
+      # On macOS that's nightly only (macOS runners are scarce), so a macOS-only break in them shows
+      # the next morning.
       - run: >-
           npm test -- --exclude test/java-agent-apache.test.ts --exclude test/java-agent-jetty.test.ts
           --exclude test/java-agent-netty.test.ts

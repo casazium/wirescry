@@ -1,10 +1,10 @@
 name: Java agent
 
 # Wirescry's Java agent (native/java-agent) on every Java GitHub's images carry, plus 8 on Linux,
-# loaded at startup and attached, on each OS. Attaching takes a JDK on Wirescry's side; nightly
-# runs try JDK 17, 21 and 25 as the attacher against every target, pull requests JDK 21. (Before 17,
+# loaded at startup and attached. Attaching takes a JDK on Wirescry's side. On Linux and Windows,
+# nightly runs try JDK 17, 21 and 25 as the attacher against every target, pull requests JDK 21.
+# macOS runs nightly and by hand only, with JDK 17 as the attacher (see the matrix). (Before 17,
 # attaching on Linux and macOS can send SIGQUIT to a process that isn't Java; Wirescry needs 17 there.)
-# macOS runs nightly and by hand only, with JDK 21 (see the matrix).
 
 on:
   pull_request:
@@ -37,10 +37,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # GitHub's macOS runners are scarce: jobs waiting for one were cancelled, 10 of 18 from this
-        # workflow's nightly run when it asked for 12 at once. So pull requests run on Linux and
-        # Windows, and macOS runs nightly and by hand (workflow_dispatch, on any branch), with one
-        # attacher: 4 macOS jobs, not 12. Linux and Windows still try every attacher.
+        # GitHub's macOS runners are scarce: jobs waiting for one were cancelled, 10 of 18 (Nov 10-20,
+        # 2026) from this workflow's nightly runs, which asked for 12 at once. So pull requests run on
+        # Linux and Windows, and macOS runs nightly and by hand (workflow_dispatch, on any branch) with
+        # one attacher: 4 macOS jobs, not 12. That one is JDK 17, the oldest Wirescry supports on
+        # macOS, and unlike 21 it isn't also the JDK that builds. Linux and Windows try every attacher.
         os: >-
           ${{ fromJSON(github.event_name == 'pull_request'
           && '["ubuntu-latest","windows-latest"]'
@@ -51,7 +52,7 @@ jobs:
         suite: [core, apache, jetty, netty]
         exclude:
           - os: macos-latest
-            attacher: '17'
+            attacher: '21'
           - os: macos-latest
             attacher: '25'
     runs-on: ${{ matrix.os }}
