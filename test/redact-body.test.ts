@@ -980,3 +980,50 @@ describe('KnownValues.inBytes', () => {
     expect(known.full).toBe(false);
   });
 });
+
+describe('JSON or XML labeled as a form', () => {
+  const FORM = 'application/x-www-form-urlencoded';
+
+  it('redacts JSON by the JSON rules, escaped values included', () => {
+    expect(redact('{"password":"correcthorsebattery","page":2}', FORM)).toBe(
+      '{"password":"[redacted]","page":2}',
+    );
+    const escaped = `{"note":"${JWT.replace(/\./g, '\\u002e')}"}`;
+    expect(redact(escaped, FORM)).toBe('{"note":"[redacted]"}');
+    expect(redact(`\uFEFF  [{"token":"${SESSION}"}]`, FORM)).toBe('\uFEFF  [{"token":"[redacted]"}]');
+  });
+
+  it('redacts XML by the XML rules', () => {
+    expect(redact('<login><password>correcthorsebattery</password><user>bob</user></login>', FORM)).toBe(
+      '<login><password>[redacted]</password><user>bob</user></login>',
+    );
+  });
+
+  it('is still a form when it only starts like JSON or XML', () => {
+    expect(redact('{x}=1&password=correcthorsebattery', FORM)).toBe('{x}=1&password=[redacted]');
+    expect(redact('<a>=1&password=correcthorsebattery', FORM)).toContain('password=[redacted]');
+  });
+
+  it('gives broken JSON, and a form that only looks like JSON or XML, the form and text rules too', () => {
+    expect(redact('{"password":"correcthorsebattery", broken', FORM)).not.toContain('correcthorsebattery');
+    expect(redact('<a>=1&code=abc123def', FORM)).toBe('<a>=1&code=[redacted]');
+    const form = '[1]=x&code=abc123def&client_secret=s3cr3tvalue99';
+    expect(applySpans(form, redactBody(form, FORM, undefined, { cut: true }).spans)).toBe(
+      '[1]=x&code=[redacted]&client_secret=[redacted]',
+    );
+    expect(redact(form, FORM)).toBe('[1]=x&code=[redacted]&client_secret=[redacted]');
+  });
+
+  it('redacts the start of cut JSON labeled as a form', () => {
+    // `session` isn't one of the names the text rules look for, so only the JSON rules find it.
+    const text = `{"session":"${SESSION}","items":[1,2,`;
+    expect(applySpans(text, redactBody(text, FORM, undefined, { cut: true }).spans)).toBe(
+      '{"session":"[redacted]","items":[1,2,',
+    );
+  });
+
+  it('leaves a form’s ordinary fields, and JSON’s ordinary values, as they are', () => {
+    expect(redact('user=bob&page=2', FORM)).toBe('user=bob&page=2');
+    expect(redact('{"user":"bob","page":2}', FORM)).toBe('{"user":"bob","page":2}');
+  });
+});
