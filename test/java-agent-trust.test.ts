@@ -27,6 +27,8 @@ import {
   shared,
   statusOf,
   type Run,
+  waitForOutput,
+  waitForLines,
 } from './java-agent-helpers';
 
 interface Ca {
@@ -110,7 +112,7 @@ async function tlsProbe(java: string, args: string[], jvm: string[] = []): Promi
   const r = run(java, [...jvm, '-cp', probes, mainClass, ...args.slice(args[0] === 'httpclient' ? 1 : 0)], {
     stdin: true,
   });
-  await expect.poll(r.stdout, { timeout: 15_000 }).toContain('ready');
+  await waitForOutput(r, 'ready', 15_000);
   return r;
 }
 
@@ -118,9 +120,7 @@ async function tlsProbe(java: string, args: string[], jvm: string[] = []): Promi
 async function connect(r: Run): Promise<string> {
   const before = r.stdout().split('\n').filter(Boolean).length;
   r.send('');
-  await expect
-    .poll(() => r.stdout().split('\n').filter(Boolean).length, { timeout: 15_000 })
-    .toBeGreaterThan(before);
+  await waitForLines(r, before, 15_000);
   return r.stdout().split('\n').filter(Boolean)[before]!.trim();
 }
 

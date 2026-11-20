@@ -26,6 +26,8 @@ import {
   setUpJavaAgentTests,
   shared,
   type Run,
+  waitForOutput,
+  waitForLines,
 } from './java-agent-helpers';
 
 const version = JSON.parse(
@@ -116,16 +118,14 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
 
   async function probe(java: string, flags: string[] = [], args: string[] = []): Promise<Run> {
     const r = run(java, [...flags, '-cp', probes, 'ProxyProbe', ...args], { stdin: true });
-    await expect.poll(r.stdout, { timeout: 15_000 }).toContain('ready');
+    await waitForOutput(r, 'ready', 15_000);
     return r;
   }
 
   async function ask(r: Run, command: string): Promise<string> {
     const before = r.stdout().split('\n').filter(Boolean).length;
     r.send(command);
-    await expect
-      .poll(() => r.stdout().split('\n').filter(Boolean).length, { timeout: 15_000 })
-      .toBeGreaterThan(before);
+    await waitForLines(r, before, 15_000);
     return r.stdout().split('\n').filter(Boolean)[before]!.trim();
   }
 

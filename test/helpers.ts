@@ -74,9 +74,13 @@ export function connectApi(
   });
 }
 
-/** All exchange updates pushed so far, oldest first. */
+/**
+ * Every copy of every exchange sent so far, oldest first: those the backend had when the client
+ * connected (in its hello), then each update. Without the hello's, an exchange that finished before
+ * the client connected was missed: on a slow Windows runner, its last update had already gone.
+ */
 export function exchangesIn(messages: ServerMessage[]): ExchangeSummary[] {
-  return messages.flatMap((m) => (m.type === 'exchanges' ? m.exchanges : []));
+  return messages.flatMap((m) => (m.type === 'hello' || m.type === 'exchanges' ? m.exchanges : []));
 }
 
 /**

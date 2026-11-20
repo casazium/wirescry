@@ -25,8 +25,9 @@ import {
   setUpJavaAgentTests,
   shared,
   statusOf,
-  track,
   type Run,
+  waitForOutput,
+  waitForLines,
 } from './java-agent-helpers';
 
 let probes: string;
@@ -51,34 +52,16 @@ setUpJavaAgentTests(async () => {
 
 async function probe(java: string, jvm: string[], env?: NodeJS.ProcessEnv): Promise<Run> {
   const r = env
-    ? wrap(java, ['-cp', probes, 'ProxyProbe'], env)
+    ? run(java, ['-cp', probes, 'ProxyProbe'], { stdin: true, env })
     : run(java, [...jvm, '-cp', probes, 'ProxyProbe'], { stdin: true });
-  await expect.poll(r.stdout, { timeout: 15_000 }).toContain('ready');
+  await waitForOutput(r, 'ready', 15_000);
   return r;
-}
-
-/** Like run, with an environment of its own. */
-function wrap(java: string, args: string[], env: NodeJS.ProcessEnv): Run {
-  const child = track(spawn(java, args, { stdio: ['pipe', 'pipe', 'pipe'], env }));
-  let stdout = '';
-  let stderr = '';
-  child.stdout!.on('data', (d) => (stdout += d));
-  child.stderr!.on('data', (d) => (stderr += d));
-  return {
-    child,
-    stdout: () => stdout,
-    stderr: () => stderr,
-    exit: new Promise((resolve) => child.on('exit', (code) => resolve(code))),
-    send: (line) => child.stdin!.write(`${line}\n`),
-  };
 }
 
 async function ask(r: Run, command: string): Promise<string> {
   const before = r.stdout().split('\n').filter(Boolean).length;
   r.send(command);
-  await expect
-    .poll(() => r.stdout().split('\n').filter(Boolean).length, { timeout: 15_000 })
-    .toBeGreaterThan(before);
+  await waitForLines(r, before, 15_000);
   return r.stdout().split('\n').filter(Boolean)[before]!.trim();
 }
 

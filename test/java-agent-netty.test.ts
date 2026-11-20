@@ -45,6 +45,8 @@ import {
   statusOf,
   waitForAgent,
   type Run,
+  waitForOutput,
+  waitForLines,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: tunnels CONNECT, and records what it was asked. */
@@ -241,7 +243,7 @@ async function probe(java: string, set: TestJarSet, jvm: string[] = [], classpat
   const r = run(java, [...VERIFY, ...jvm, '-cp', classpath ?? classpaths[set]!, 'NettyProbe'], {
     stdin: true,
   });
-  await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+  await waitForOutput(r, 'ready', 30_000);
   await waitForAgent(r.child.spawnargs, r.child.pid);
   return r;
 }
@@ -253,9 +255,7 @@ async function probe(java: string, set: TestJarSet, jvm: string[] = [], classpat
 async function ask(r: Run, command: string): Promise<string> {
   const before = r.stdout().split('\n').filter(Boolean).length;
   r.send(command);
-  await expect
-    .poll(() => r.stdout().split('\n').filter(Boolean).length, { timeout: 30_000 })
-    .toBeGreaterThan(before);
+  await waitForLines(r, before, 30_000);
   return r.stdout().split('\n').filter(Boolean)[before]!.trim();
 }
 
@@ -651,7 +651,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
             ],
             { stdin: true },
           );
-          await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+          await waitForOutput(r, 'ready', 30_000);
           await waitForAgent(r.child.spawnargs, r.child.pid);
           expect(await ask(r, 'route default http://proxied.test/')).toBe(via(proxy));
           expect(await ask(r, 'get default http://proxied.test/i')).toBe('OK plain proxied.test/i');
@@ -732,7 +732,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
           stdin: true,
         },
       );
-      await expect.poll(r.stdout, { timeout: 30_000 }).toContain('ready');
+      await waitForOutput(r, 'ready', 30_000);
       await waitForAgent(r.child.spawnargs, r.child.pid);
       return r;
     };
