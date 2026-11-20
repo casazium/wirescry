@@ -1,8 +1,9 @@
 name: Java agent
 
 # Wirescry's Java agent (native/java-agent) on every Java GitHub's images carry, plus 8 on Linux,
-# loaded at startup and attached, on each OS. Attaching takes a JDK on Wirescry's side; nightly
-# runs try JDK 17, 21 and 25 as the attacher against every target, pull requests JDK 21. (Before 17,
+# loaded at startup and attached. Attaching takes a JDK on Wirescry's side. On Linux and Windows,
+# nightly runs try JDK 17, 21 and 25 as the attacher against every target, pull requests JDK 21.
+# macOS runs nightly and by hand only, with JDK 17 as the attacher (see the matrix). (Before 17,
 # attaching on Linux and macOS can send SIGQUIT to a process that isn't Java; Wirescry needs 17 there.)
 
 on:
@@ -36,11 +37,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # GitHub's macOS runners are scarce: jobs waiting for one were cancelled, 10 of 18 (Nov 10-20,
+        # 2026) from this workflow's nightly runs, which asked for 12 at once. So pull requests run on
+        # Linux and Windows, and macOS runs nightly and by hand (workflow_dispatch, on any branch) with
+        # one attacher: 4 macOS jobs, not 12. That one is JDK 17, the oldest Wirescry supports on
+        # macOS, and unlike 21 it isn't also the JDK that builds. Linux and Windows try every attacher.
+        os: >-
+          ${{ fromJSON(github.event_name == 'pull_request'
+          && '["ubuntu-latest","windows-latest"]'
+          || '["ubuntu-latest","macos-latest","windows-latest"]') }}
         attacher: ${{ fromJSON(github.event_name == 'pull_request' && '["21"]' || '["17","21","25"]') }}
         # Each library's tests on a runner of their own: together, on every Java, they overloaded
         # macOS's 3-core runner (probes too slow to answer). `core` is every other agent test.
         suite: [core, apache, jetty, netty]
+        exclude:
+          - os: macos-latest
+            attacher: '21'
+          - os: macos-latest
+            attacher: '25'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
@@ -71,8 +85,8 @@ jobs:
           path: native/java-agent/deps
           key: java-agent-deps-${{ hashFiles('scripts/build-java-agent.mjs') }}
       # Ubuntu's image no longer carries Java 8, which programs still run on. Pinned: Temurin 8u514
-      # (published Nov 19, 2026) failed setup-java's checksum on every run, the same wrong file each
-      # time. Move on once a newer build installs.
+      # (published Nov 19, 2026) failed setup-java's checksum on some runs, the same wrong file each
+      # time it did, and installed on others. Move on once a newer build installs reliably.
       - uses: actions/setup-java@v6
         if: runner.os == 'Linux'
         with:

@@ -1,7 +1,8 @@
 /**
  * The Java agent workflow's Java 8, installed on Linux by setup-java (Ubuntu's image has none).
- * Temurin 8u514, published Nov 19, 2026, failed setup-java's checksum on every run, so the step
- * names an exact build until a newer one installs.
+ * Temurin 8u514, published Nov 19, 2026, failed setup-java's checksum on some runs (the same wrong
+ * file each time it did) and installed on others, so the step names an exact build until a newer
+ * one installs reliably.
  */
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
