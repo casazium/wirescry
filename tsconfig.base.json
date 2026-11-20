@@ -15,6 +15,7 @@
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": false,
     "noEmit": true,
+    "allowImportingTsExtensions": true,
     "paths": {
       "@wirescry/pro/backend": ["./src/pro-stub/backend.ts"],
       "@wirescry/pro/check-worker": ["./src/pro-stub/check-worker.ts"],

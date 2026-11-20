@@ -154,6 +154,8 @@ export default defineConfig(() => {
             backend: resolve(__dirname, 'src/backend/index.ts'),
             // Formats bodies in a worker thread of the backend; see src/backend/formatter.ts.
             'format-worker': resolve(__dirname, 'src/backend/format-worker.mts'),
+            // Redacts HAR exports in a worker thread of the backend; see src/backend/redactor.ts.
+            'redact-worker': resolve(__dirname, 'src/backend/redact-worker.mts'),
             // With Pro, its spec parser's worker; see proSpecWorker above.
             ...(proSpecWorkerKey ? { 'pro-spec-worker': proSpecWorker! } : {}),
             ...(proCheckWorker && existsSync(proCheckWorker)

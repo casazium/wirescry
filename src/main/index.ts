@@ -349,8 +349,8 @@ app.whenReady().then(() => {
   handle(IPC.saveTextFile, (_event, request: unknown) => {
     return saveTextFile(mainWindow, request);
   });
-  handle(IPC.exportHar, (_event, request: unknown) => {
-    return exportHar(mainWindow, backend, request);
+  handle(IPC.exportHar, (_event, request: unknown, options: unknown) => {
+    return exportHar(mainWindow, backend, request, options);
   });
   handle(IPC.importHar, () => {
     return importHar(mainWindow, backend);

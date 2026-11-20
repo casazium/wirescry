@@ -11,9 +11,18 @@ const MAX_EXPORT_IDS = 10_000;
 const EXCHANGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const HAR_FILTERS = [{ name: 'HAR (HTTP Archive)', extensions: ['har'] }];
 
-/** A file name for today's export, e.g. `wirescry-2026-10-26.har`. */
-function defaultName(): string {
-  return `wirescry-${new Date().toISOString().slice(0, 10)}.har`;
+/** A file name for today's export, e.g. `wirescry-2026-10-26-redacted.har`. */
+export function defaultName(redact: boolean, now = new Date()): string {
+  return `wirescry-${now.toISOString().slice(0, 10)}${redact ? '-redacted' : ''}.har`;
+}
+
+/** Whether an export asked to redact: always, unless it plainly said `redact: false`. */
+export function wantsRedaction(options: unknown): boolean {
+  return !(
+    typeof options === 'object' &&
+    options !== null &&
+    (options as { redact?: unknown }).redact === false
+  );
 }
 
 /**
@@ -44,6 +53,7 @@ export async function exportHar(
   window: BrowserWindow | undefined,
   backend: BackendSupervisor,
   request: unknown,
+  exportOptions?: unknown,
 ): Promise<HarExportResult> {
   if (
     !Array.isArray(request) ||
@@ -53,17 +63,26 @@ export async function exportHar(
   ) {
     throw new Error('Nothing to export.');
   }
+  const redact = wantsRedaction(exportOptions);
   const options = {
-    defaultPath: path.join(app.getPath('downloads'), defaultName()),
+    title: redact ? 'Export HAR' : 'Export HAR Without Redaction',
+    // Shown on macOS, where the title isn't.
+    message: redact
+      ? 'Secrets are redacted: best effort for bodies.'
+      : 'Secrets are not redacted: anyone with this file can use them.',
+    defaultPath: path.join(app.getPath('downloads'), defaultName(redact)),
     filters: HAR_FILTERS,
   };
   const result = window ? await dialog.showSaveDialog(window, options) : await dialog.showSaveDialog(options);
   if (result.canceled || !result.filePath) return {};
   const scratch = await scratchFile();
   try {
-    const { count } = (await backend.har({ op: 'export', file: scratch, exchangeIds: request })) as {
-      count: number;
-    };
+    const { count, redaction } = (await backend.har({
+      op: 'export',
+      file: scratch,
+      exchangeIds: request,
+      redact,
+    })) as Pick<HarExportResult, 'count' | 'redaction'>;
     // Copied beside the target and renamed into place, so a full disk never leaves half a
     // file, or spoils a file the user chose to replace.
     const temp = `${result.filePath}.${randomBytes(6).toString('hex')}.tmp`;
@@ -74,7 +93,7 @@ export async function exportHar(
       await rm(temp, { force: true });
       throw error;
     }
-    return { name: path.basename(result.filePath), count };
+    return { name: path.basename(result.filePath), count, ...(redaction ? { redaction } : {}) };
   } finally {
     await rm(scratch, { force: true });
   }

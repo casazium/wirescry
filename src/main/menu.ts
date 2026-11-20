@@ -57,6 +57,12 @@ export function buildMenu(actions: {
           enabled: false,
           click: command('export-har'),
         },
+        {
+          id: 'export-har-unredacted',
+          label: 'Export HAR Without Redaction…',
+          enabled: false,
+          click: command('export-har-unredacted'),
+        },
         { type: 'separator' },
         isMac ? { role: 'close' } : { role: 'quit' },
       ],
@@ -121,6 +127,7 @@ export function updateMenu(menu: Menu, state: MenuState): void {
   };
   set('import-har', state.connected);
   set('export-har', state.connected && state.canExport);
+  set('export-har-unredacted', state.connected && state.canExport);
   set('pause-recording', state.connected, state.paused);
   set('clear', state.connected);
 }

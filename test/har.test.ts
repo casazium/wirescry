@@ -6,7 +6,7 @@ import { generateCACertificate, getLocal, type Mockttp } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { loadOrCreateCA } from '../src/backend/ca';
-import { harEntry, MAX_HAR_IMPORT_BYTES, parseHar } from '../src/backend/har';
+import { harEntry, harFrame, MAX_HAR_IMPORT_BYTES, parseHar, REDACTED_LOG_COMMENT } from '../src/backend/har';
 import type { BodyContent, ExchangeDetail, ServerMessage, WebSocketMessages } from '../src/shared/api';
 import { describeBlocked } from '../src/shared/failure';
 import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
@@ -75,7 +75,8 @@ describe('HAR export and import', () => {
     ];
 
     const file = path.join(dir, 'capture.har');
-    expect(await backend.exportHar(file, [...ids, 'gone-already'])).toEqual({ count: 3 });
+    // Without redaction: exactly as captured.
+    expect(await backend.exportHar(file, [...ids, 'gone-already'], { redact: false })).toEqual({ count: 3 });
     expect((await readdir(dir)).filter((f) => f.endsWith('.tmp'))).toEqual([]); // No temp file left.
 
     const har = JSON.parse(await readFile(file, 'utf8'));
@@ -99,7 +100,13 @@ describe('HAR export and import', () => {
     // Into a fresh Wirescry.
     const second = (await start('second')).backend;
     const api2 = await apiClient(second.apiPort);
-    expect(await second.importHar(file)).toEqual({ imported: 3, skipped: 0, problems: [], removed: 0 });
+    expect(await second.importHar(file)).toEqual({
+      imported: 3,
+      skipped: 0,
+      problems: [],
+      removed: 0,
+      redacted: false,
+    });
     await expect.poll(() => exchangesIn(api2.messages).length).toBe(3);
     const imported = exchangesIn(api2.messages);
     expect(imported.every((e) => e.imported === true)).toBe(true);
@@ -134,6 +141,7 @@ describe('HAR export and import', () => {
     await second.exportHar(
       again,
       imported.map((e) => e.id),
+      { redact: false },
     );
     const entries = JSON.parse(await readFile(again, 'utf8')).log.entries;
     for (const [i, entry] of entries.entries()) {
@@ -187,7 +195,7 @@ describe('HAR export and import', () => {
       'None of those requests',
     );
     expect((await readdir(dir)).filter((f) => f.endsWith('.tmp'))).toEqual([]);
-    expect(await backend.exportHar(path.join(dir, 'ok.har'), ids)).toEqual({ count: 3 });
+    expect(await backend.exportHar(path.join(dir, 'ok.har'), ids, { redact: false })).toEqual({ count: 3 });
     api.close();
   });
 
@@ -265,13 +273,53 @@ describe('HAR export and import', () => {
     expect(Buffer.from(messages[1]!.base64, 'base64').equals(BINARY)).toBe(true);
 
     const out = path.join(dir, 'ws-again.har');
-    await backend.exportHar(out, [socket!.id]);
+    await backend.exportHar(out, [socket!.id], { redact: false });
     const [entry] = JSON.parse(await readFile(out, 'utf8')).log.entries;
     expect(entry._webSocketMessages).toEqual([
       { type: 'send', time: startedAt / 1000 + 0.5, opcode: 1, data: 'hello' },
       { type: 'receive', time: startedAt / 1000 + 1, opcode: 2, data: BINARY.toString('base64') },
     ]);
     api.close();
+  });
+});
+
+describe('a redacted file', () => {
+  const entry = { request: { method: 'GET', url: 'https://example.com/' }, response: { status: 200 } };
+  const file = (log: Record<string, unknown>): string => JSON.stringify({ log: { version: '1.2', ...log } });
+
+  it('is marked in its log, before the entries, and the mark is read back', async () => {
+    const { head, tail } = harFrame('1.0.0', { redacted: true });
+    const text = head + JSON.stringify(entry) + tail;
+    const log = JSON.parse(text).log;
+    expect(log.comment).toBe(REDACTED_LOG_COMMENT);
+    expect(log._wirescryRedacted).toBe(true);
+    expect(text.indexOf('_wirescryRedacted')).toBeLessThan(text.indexOf('"entries"'));
+    expect((await parseHar(text, 10)).redacted).toBe(true);
+  });
+
+  it('isn’t marked otherwise, and the frame is as before', async () => {
+    const { head, tail } = harFrame('1.0.0');
+    expect(head).toBe(
+      '{"log":{"version":"1.2","creator":{"name":"Wirescry","version":"1.0.0"},"pages":[],"entries":[\n',
+    );
+    expect(harFrame('1.0.0', { redacted: false }).head).toBe(head);
+    expect((await parseHar(head + JSON.stringify(entry) + tail, 10)).redacted).toBeUndefined();
+  });
+
+  it('is read only from a literal true, before or after the entries', async () => {
+    expect((await parseHar(file({ entries: [entry], _wirescryRedacted: true }), 10)).redacted).toBe(true);
+    for (const value of ['true', 1, false, null, { a: true }, [true]]) {
+      expect(
+        (await parseHar(file({ _wirescryRedacted: value, entries: [entry] }), 10)).redacted,
+        String(value),
+      ).toBeUndefined();
+    }
+    // Not in an entry, or outside the log.
+    const elsewhere = JSON.stringify({
+      _wirescryRedacted: true,
+      log: { entries: [{ ...entry, _wirescryRedacted: true }] },
+    });
+    expect((await parseHar(elsewhere, 10)).redacted).toBeUndefined();
   });
 });
 

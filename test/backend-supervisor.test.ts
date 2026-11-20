@@ -427,11 +427,11 @@ describe('BackendSupervisor’s other jobs', () => {
   describe('HAR files', () => {
     it('is refused while the backend isn’t running', async () => {
       const s = supervisor();
-      await expect(s.har({ op: 'export', file: '/x.har', exchangeIds: [] })).rejects.toThrow(
+      await expect(s.har({ op: 'export', file: '/x.har', exchangeIds: [], redact: true })).rejects.toThrow(
         "Wirescry's backend isn't running.",
       );
       s.start();
-      await expect(s.har({ op: 'export', file: '/x.har', exchangeIds: [] })).rejects.toThrow(
+      await expect(s.har({ op: 'export', file: '/x.har', exchangeIds: [], redact: true })).rejects.toThrow(
         "Wirescry's backend isn't running.",
       );
     });
@@ -441,14 +441,14 @@ describe('BackendSupervisor’s other jobs', () => {
       s.start();
       const child = forked[0]!;
       ready(child);
-      const exported = s.har({ op: 'export', file: '/x.har', exchangeIds: ['a'] });
+      const exported = s.har({ op: 'export', file: '/x.har', exchangeIds: ['a'], redact: false });
       const imported = s.har({ op: 'import', file: '/y.har', name: 'y.har' });
       const [first, second] = child.messages.filter((m) => (m as { type: string }).type === 'har') as Array<{
         id: number;
         op: string;
         file: string;
       }>;
-      expect(first).toMatchObject({ op: 'export', file: '/x.har', exchangeIds: ['a'] });
+      expect(first).toMatchObject({ op: 'export', file: '/x.har', exchangeIds: ['a'], redact: false });
       expect(second).toMatchObject({ op: 'import', file: '/y.har' });
       // An answer for a job that isn't waiting is ignored.
       child.emit('message', { type: 'har-result', id: 999, ok: true, value: 'stray' });
@@ -463,15 +463,27 @@ describe('BackendSupervisor’s other jobs', () => {
       const s = supervisor();
       s.start();
       ready(forked[0]!);
-      const slow = s.har({ op: 'export', file: '/x.har', exchangeIds: [] });
+      const slow = s.har({ op: 'export', file: '/x.har', exchangeIds: [], redact: true });
       const slowFailed = expect(slow).rejects.toThrow('That took too long.');
       await vi.advanceTimersByTimeAsync(10 * 60 * 1000 - 1);
       let settled = false;
       void slow.catch(() => (settled = true));
       await Promise.resolve();
       expect(settled).toBe(false);
+      const cancels = (): unknown[] =>
+        forked[0]!.messages.filter((m) => (m as { type: string }).type === 'har-cancel');
+      expect(cancels()).toEqual([]);
       await vi.advanceTimersByTimeAsync(1);
       await slowFailed;
+      // The export is stopped in the backend too, so it doesn't go on redacting and writing.
+      const sent = forked[0]!.messages.find((m) => (m as { type: string }).type === 'har') as { id: number };
+      expect(cancels()).toEqual([{ type: 'har-cancel', id: sent.id }]);
+      // An import that takes too long isn't sent one: only exports stop.
+      const slowImport = s.har({ op: 'import', file: '/y.har', name: 'y' });
+      const importFailed = expect(slowImport).rejects.toThrow('That took too long.');
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1000);
+      await importFailed;
+      expect(cancels()).toHaveLength(1);
 
       const cut = s.har({ op: 'import', file: '/y.har', name: 'y' });
       forked[0]!.emit('exit', 5);

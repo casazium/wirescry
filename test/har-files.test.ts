@@ -69,6 +69,7 @@ type Job = {
   op: string;
   file: string;
   exchangeIds?: string[];
+  redact?: boolean;
   name?: string;
   exchangeId?: string;
   side?: string;
@@ -115,15 +116,19 @@ describe('Exporting a HAR file', () => {
       await writeFile(job.file, '{"log":{"entries":[1,2]}}');
       return { count: 2 };
     });
-    const result = await exportHar(window, supervisor, ['a1', 'b_2-x']);
+    const result = await exportHar(window, supervisor, ['a1', 'b_2-x'], { redact: false });
     expect(result).toEqual({ name: 'capture.har', count: 2 });
-    expect(jobs).toEqual([{ op: 'export', file: expect.any(String), exchangeIds: ['a1', 'b_2-x'] }]);
+    expect(jobs).toEqual([
+      { op: 'export', file: expect.any(String), exchangeIds: ['a1', 'b_2-x'], redact: false },
+    ]);
     expect(await readFile(fake.chosen, 'utf8')).toBe('{"log":{"entries":[1,2]}}');
     expect(fake.dialogs).toEqual([
       {
         kind: 'save',
         window,
         options: {
+          title: 'Export HAR Without Redaction',
+          message: 'Secrets are not redacted: anyone with this file can use them.',
           defaultPath: path.join(downloads(), 'wirescry-2026-11-09.har'),
           filters: [{ name: 'HAR (HTTP Archive)', extensions: ['har'] }],
         },
@@ -132,6 +137,48 @@ describe('Exporting a HAR file', () => {
     // Nothing left behind: no scratch file, no temporary file beside the export.
     expect(await filesIn(scratchDir())).toEqual([]);
     expect(await filesIn(downloads())).toEqual(['capture.har']);
+  });
+
+  it('redacts unless plainly asked not to, says so, and passes on what redaction did', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-09T12:00:00Z'));
+    fake.chosen = path.join(downloads(), 'capture.har');
+    const redaction = { values: 3, requests: 2, dropped: 0, notScanned: 1, leftOut: 0, full: false };
+    const { supervisor, jobs } = backend(async (job) => {
+      await writeFile(job.file, '{}');
+      return job.redact ? { count: 2, redaction } : { count: 2 };
+    });
+    // No options, and anything but `{ redact: false }`, redacts.
+    const asked: unknown[] = [
+      undefined,
+      null,
+      {},
+      { redact: true },
+      { redact: 'false' },
+      { redact: 0 },
+      'no',
+      [false],
+    ];
+    for (const options of asked) {
+      fake.dialogs = [];
+      expect(await exportHar(undefined, supervisor, ['a1'], options), String(options)).toEqual({
+        name: 'capture.har',
+        count: 2,
+        redaction,
+      });
+      expect(fake.dialogs[0]!.options).toMatchObject({
+        title: 'Export HAR',
+        message: 'Secrets are redacted: best effort for bodies.',
+        defaultPath: path.join(downloads(), 'wirescry-2026-11-09-redacted.har'),
+      });
+    }
+    expect(jobs.map((job) => job.redact)).toEqual(asked.map(() => true));
+    // Only `false` itself doesn't, and then there's nothing about redaction to pass on.
+    expect(await exportHar(undefined, supervisor, ['a1'], { redact: false })).toEqual({
+      name: 'capture.har',
+      count: 2,
+    });
+    expect(jobs.at(-1)!.redact).toBe(false);
   });
 
   it('replaces a file the user chose to replace', async () => {

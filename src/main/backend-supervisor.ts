@@ -14,6 +14,7 @@ import type {
   CryptoRequest,
   BackendShutdownMessage,
   BackendRestart,
+  HarCancelMessage,
   HarRequest,
   AndroidUndoMessage,
 } from '../shared/ipc';
@@ -239,6 +240,8 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.harWaiting.delete(id);
+        // An export keeps redacting and writing otherwise; it's stopped and leaves no file.
+        if (job.op === 'export') child.postMessage({ type: 'har-cancel', id } satisfies HarCancelMessage);
         reject(new Error('That took too long.'));
       }, HAR_TIMEOUT_MS);
       this.harWaiting.set(id, { resolve, reject, timer });

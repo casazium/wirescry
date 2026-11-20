@@ -36,7 +36,12 @@ export type BackendMessage =
 
 /** What the main process sends the backend. */
 export type MainToBackendMessage =
-  BackendStartMessage | CryptoReply | HarRequest | BackendShutdownMessage | AndroidUndoMessage;
+  | BackendStartMessage
+  | CryptoReply
+  | HarRequest
+  | HarCancelMessage
+  | BackendShutdownMessage
+  | AndroidUndoMessage;
 
 /** Where, in the data folder, the backend keeps a record of each Android device it has set up. */
 export const ANDROID_RECORDS_DIR = 'android-capture';
@@ -70,10 +75,16 @@ export interface BackendShutdownMessage {
 
 /** Main to backend: write or read a HAR file at a path the user chose in a dialog. */
 export type HarRequest =
-  | { type: 'har'; id: number; op: 'export'; file: string; exchangeIds: string[] }
+  | { type: 'har'; id: number; op: 'export'; file: string; exchangeIds: string[]; redact: boolean }
   | { type: 'har'; id: number; op: 'import'; file: string; name: string }
   /** Not a HAR file: one exchange's whole body, decoded where possible. */
   | { type: 'har'; id: number; op: 'body'; file: string; exchangeId: string; side: 'request' | 'response' };
+
+/** Main to backend: stop the HAR export with this id (it ran out of time). */
+export interface HarCancelMessage {
+  type: 'har-cancel';
+  id: number;
+}
 
 /** Backend to main: how a HAR request went. */
 export type HarReply =
@@ -84,6 +95,24 @@ export type HarReply =
 export interface HarExportResult {
   name?: string;
   count?: number;
+  /** For a redacted export: what redaction did. */
+  redaction?: HarRedactionCounts;
+}
+
+/** What redacting a HAR export did. Never a value. */
+export interface HarRedactionCounts {
+  /** Places a secret was redacted, in all. */
+  values: number;
+  /** Requests with at least one. */
+  requests: number;
+  /** Requests left out because they couldn't be redacted. */
+  dropped: number;
+  /** Bodies or messages not checked: binary or still encoded. */
+  notScanned: number;
+  /** Bodies or messages left out: they couldn't be redacted, or held a secret in binary. */
+  leftOut: number;
+  /** Too many secrets to track: some may have been missed. */
+  full: boolean;
 }
 
 /** What importing a HAR file did, or nothing if canceled. */
@@ -96,6 +125,8 @@ export interface HarImportResult {
   problems?: string[];
   /** Older exchanges dropped from the list to make room. */
   removed?: number;
+  /** The file says its secrets were redacted by Wirescry. */
+  redacted?: boolean;
 }
 
 /**
@@ -172,7 +203,8 @@ export interface SaveBodyResult {
 }
 
 /** Commands from the app menu to the window. */
-export type MenuCommand = 'import-har' | 'export-har' | 'toggle-recording' | 'clear' | 'find';
+export type MenuCommand =
+  'import-har' | 'export-har' | 'export-har-unredacted' | 'toggle-recording' | 'clear' | 'find';
 
 /** What the window tells the app menu, so its commands are enabled and ticked to match. */
 export interface MenuState {
@@ -235,8 +267,11 @@ export interface WirescryBridge {
   openTextFile(request: OpenTextFileRequest): Promise<OpenTextFileResult>;
   /** Asks the user to pick a file and returns its full path, without reading it. */
   chooseFilePath(request: ChooseFilePathRequest): Promise<ChooseFilePathResult>;
-  /** Asks where to save, then writes these exchanges (in this order) as a HAR file. */
-  exportHar(exchangeIds: string[]): Promise<HarExportResult>;
+  /**
+   * Asks where to save, then writes these exchanges (in this order) as a HAR file, with their
+   * secrets redacted unless `redact` is `false`.
+   */
+  exportHar(exchangeIds: string[], options?: { redact: boolean }): Promise<HarExportResult>;
   /** Asks the user to pick a HAR file, then adds its exchanges to the traffic list. */
   importHar(): Promise<HarImportResult>;
   /** Listens for app menu commands. Returns a function that stops listening. */

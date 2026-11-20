@@ -2,6 +2,8 @@ import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 import { toBodyContent } from './body-content';
 import { Formatter } from './formatter';
+import { knownPart } from './har-redact';
+import { HarRedactor } from './redactor';
 import { findAgentJars } from './java/agent-host';
 import path from 'node:path';
 
@@ -46,6 +48,33 @@ export async function selfCheck(resources?: string): Promise<string[]> {
     problems.push(`formatting HTML failed: ${(error as Error).message}`);
   } finally {
     await formatter.close();
+  }
+
+  // HAR export's redaction worker loads and redacts: a header, and a value it learned in a body.
+  const redactor = new HarRedactor();
+  try {
+    const secret = 'self-check-secret-0123456789';
+    const entry = {
+      request: {
+        url: 'https://example.com/',
+        headers: [{ name: 'Authorization', value: `Bearer ${secret}` }],
+      },
+      response: { content: { mimeType: 'text/plain', text: `echo ${secret}` } },
+    };
+    await redactor.collect([knownPart(entry)]);
+    const outcome = await redactor.redact(entry, {
+      cut: { request: false, response: false },
+      base64Frames: [],
+    });
+    if (!('text' in outcome)) problems.push(`redacting a HAR entry gave ${JSON.stringify(outcome)}`);
+    else if (outcome.text.includes(secret) || outcome.values !== 2)
+      problems.push(
+        `redacting a HAR entry left ${outcome.text.includes(secret) ? 'a secret' : `${outcome.values} places`}`,
+      );
+  } catch (error) {
+    problems.push(`redacting a HAR entry failed: ${(error as Error).message}`);
+  } finally {
+    await redactor.close();
   }
   return problems;
 }

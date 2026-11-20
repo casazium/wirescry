@@ -33,6 +33,7 @@ import { followingRequest } from './redirect';
 import { alreadyDismissed, REFUSED_HELP_URL, refusedSummary, refusedWhy } from './refused-text';
 import { SetupPage } from './SetupPage';
 import { loadDetailSize, saveDetailSize, useStacked } from './detail-size';
+import { exportNotice, importNotice } from './har-notices';
 import { Splitter } from './Splitter';
 import { TrafficList } from './TrafficList';
 import { useBackend } from './useBackend';
@@ -373,22 +374,20 @@ export function App(): React.JSX.Element {
     }
   };
 
-  /** Exports what the list shows (the filter applies), in list order. */
-  const exportHar = async (): Promise<void> => {
+  /**
+   * Exports what the list shows (the filter applies), in list order, with secrets redacted
+   * unless `redact` is false.
+   */
+  const exportHar = async (redact = true): Promise<void> => {
     setMessage(undefined);
     setNotice(undefined);
     setHarBusy(true);
     try {
-      const result = await window.wirescry.exportHar(exportable.map((e) => e.id));
-      if (result.name) {
-        const left = rows.length - exportable.length;
-        setNotice(
-          `Exported ${result.count?.toLocaleString()} ${result.count === 1 ? 'request' : 'requests'} to ${result.name}.` +
-            (left > 0
-              ? ` ${left.toLocaleString()} from before the proxy restarted ${left === 1 ? 'wasn’t included: its details were' : 'weren’t included: their details were'} lost.`
-              : ''),
-        );
-      }
+      const result = await window.wirescry.exportHar(
+        exportable.map((e) => e.id),
+        { redact },
+      );
+      if (result.name) setNotice(exportNotice(result, rows.length - exportable.length));
     } catch (error) {
       setMessage(`Couldn't export: ${(error as Error).message}`);
     } finally {
@@ -409,11 +408,7 @@ export function App(): React.JSX.Element {
           setMessage(`Nothing to import from ${result.name}.${problems ? ` ${problems}` : ''}`);
           return;
         }
-        const plural = (n: number): string => `${n.toLocaleString()} ${n === 1 ? 'request' : 'requests'}`;
-        let text = `Imported ${plural(imported)} from ${result.name}.`;
-        if (result.skipped) text += ` Skipped ${result.skipped.toLocaleString()}: ${problems}`;
-        if (result.removed) text += ` To make room, the oldest ${plural(result.removed)} left the list.`;
-        setNotice(text);
+        setNotice(importNotice(result));
       }
     } catch (error) {
       setMessage(`Couldn't import: ${(error as Error).message}`);
@@ -486,8 +481,8 @@ export function App(): React.JSX.Element {
         return;
       } else if (command === 'import-har') {
         if (!harBusy) void importHar();
-      } else if (command === 'export-har') {
-        if (!harBusy && exportable.length > 0) void exportHar();
+      } else if (command === 'export-har' || command === 'export-har-unredacted') {
+        if (!harBusy && exportable.length > 0) void exportHar(command === 'export-har');
       } else if (command === 'toggle-recording') {
         void send({ command: 'setPaused', paused: !paused });
       } else if (command === 'clear') {
@@ -798,7 +793,10 @@ export function App(): React.JSX.Element {
               <button
                 type="button"
                 className="secondary"
-                title={filtered ? 'Save the requests shown as a HAR file' : 'Save all requests as a HAR file'}
+                title={
+                  (filtered ? 'Save the requests shown as a HAR file' : 'Save all requests as a HAR file') +
+                  ', with secrets redacted. File › Export HAR Without Redaction keeps them.'
+                }
                 onClick={() => void exportHar()}
                 disabled={!connected || harBusy || exportable.length === 0}
               >
