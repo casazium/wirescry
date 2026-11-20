@@ -554,8 +554,6 @@ describe('time', () => {
     ['a long escape run in a URL', (n: number) => 'https://a/?q=' + rep('\\u0041', n)],
     ['WebSocket protocols', (n: number) => rep('abcdefghijklmnopqrstu, ', n)],
   ])('stays linear on %s', (_what, make) => {
-    const small = make(50_000);
-    const large = make(200_000);
     const run = (text: string) => () => {
       textSpans(text);
       redactUrl(text);
@@ -566,9 +564,16 @@ describe('time', () => {
       redactHeader('Authorization', text);
       redactHeader('Sec-WebSocket-Protocol', text);
     };
-    run(small)(); // Warm up.
-    const t1 = time(run(small));
-    const t2 = time(run(large));
+    // Grow the input until one run takes at least 20 ms, so a busy machine's noise is small
+    // next to what's measured.
+    let n = 10_000;
+    run(make(n))(); // Warm up.
+    let t1 = time(run(make(n)));
+    while (t1 < 20 && n < 2_000_000) {
+      n *= 2;
+      t1 = time(run(make(n)));
+    }
+    const t2 = time(run(make(n * 4)));
     // Four times the input should take about four times as long; quadratic would take 16.
     // The margin allows for a busy machine.
     expect(t2 / t1).toBeLessThan(8);
