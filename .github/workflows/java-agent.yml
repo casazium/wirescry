@@ -4,6 +4,7 @@ name: Java agent
 # loaded at startup and attached, on each OS. Attaching takes a JDK on Wirescry's side; nightly
 # runs try JDK 17, 21 and 25 as the attacher against every target, pull requests JDK 21. (Before 17,
 # attaching on Linux and macOS can send SIGQUIT to a process that isn't Java; Wirescry needs 17 there.)
+# macOS runs nightly and by hand only, with JDK 21 (see the matrix).
 
 on:
   pull_request:
@@ -36,11 +37,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # GitHub's macOS runners are scarce: jobs waiting for one were cancelled, 10 of 18 from this
+        # workflow's nightly run when it asked for 12 at once. So pull requests run on Linux and
+        # Windows, and macOS runs nightly and by hand (workflow_dispatch, on any branch), with one
+        # attacher: 4 macOS jobs, not 12. Linux and Windows still try every attacher.
+        os: >-
+          ${{ fromJSON(github.event_name == 'pull_request'
+          && '["ubuntu-latest","windows-latest"]'
+          || '["ubuntu-latest","macos-latest","windows-latest"]') }}
         attacher: ${{ fromJSON(github.event_name == 'pull_request' && '["21"]' || '["17","21","25"]') }}
         # Each library's tests on a runner of their own: together, on every Java, they overloaded
         # macOS's 3-core runner (probes too slow to answer). `core` is every other agent test.
         suite: [core, apache, jetty, netty]
+        exclude:
+          - os: macos-latest
+            attacher: '17'
+          - os: macos-latest
+            attacher: '25'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     steps:
