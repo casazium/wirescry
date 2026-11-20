@@ -522,15 +522,24 @@ describe('collecting values to find elsewhere', () => {
 });
 
 describe('time', () => {
-  /** The best of five timings of `run`. */
-  const time = (run: () => void): number => {
-    let best = Infinity;
+  const once = (run: () => void): number => {
+    const start = performance.now();
+    run();
+    return performance.now() - start;
+  };
+
+  /**
+   * The best of five timings of each of `small` and `large`, taken in turn: a busy spell (the rest
+   * of the suite runs alongside) then slows both alike, rather than only one of them.
+   */
+  const timeBoth = (small: () => void, large: () => void): [number, number] => {
+    let bestSmall = Infinity;
+    let bestLarge = Infinity;
     for (let i = 0; i < 5; i++) {
-      const start = performance.now();
-      run();
-      best = Math.min(best, performance.now() - start);
+      bestSmall = Math.min(bestSmall, once(small));
+      bestLarge = Math.min(bestLarge, once(large));
     }
-    return best;
+    return [bestSmall, bestLarge];
   };
 
   it.each([
@@ -564,19 +573,15 @@ describe('time', () => {
       redactHeader('Authorization', text);
       redactHeader('Sec-WebSocket-Protocol', text);
     };
-    // Grow the input until one run takes at least 20 ms, so a busy machine's noise is small
-    // next to what's measured.
+    // Grow the input until one run takes at least 10 ms (or the text is 2 MB), so a busy machine's
+    // noise is small next to what's measured.
     let n = 10_000;
     run(make(n))(); // Warm up.
-    let t1 = time(run(make(n)));
-    while (t1 < 20 && n < 2_000_000) {
-      n *= 2;
-      t1 = time(run(make(n)));
-    }
-    const t2 = time(run(make(n * 4)));
-    // Four times the input should take about four times as long; quadratic would take 16.
-    // The margin allows for a busy machine.
-    expect(t2 / t1).toBeLessThan(8);
+    while (once(run(make(n))) < 10 && make(n).length < 2_000_000) n *= 2;
+    const [t1, t2] = timeBoth(run(make(n)), run(make(n * 8)));
+    // Eight times the input should take about eight times as long; quadratic would take 64. The
+    // limit sits between them, with room for a busy machine.
+    expect(t2 / t1).toBeLessThan(20);
   });
 });
 
