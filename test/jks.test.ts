@@ -33,29 +33,34 @@ describe('trustStoreJks', () => {
     expect(jks.length).toBe(bodyLength + 20);
   });
 
-  it.skipIf(!keytool)('is read by keytool, with every certificate trusted', async () => {
+  // Two keytool JVMs, one after the other: on a Windows CI runner busy with the rest of the suite,
+  // that took over the default 20 s.
+  it.skipIf(!keytool)('is read by keytool, with every certificate trusted', { timeout: 60_000 }, async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry jks test-'));
-    const file = path.join(dir, 'trust.jks');
-    await writeFile(file, trustStoreJks(certs, 'changeit'));
-    const ok = spawnSync(
-      keytool!,
-      ['-list', '-keystore', file, '-storepass', 'changeit', '-storetype', 'JKS'],
-      {
-        encoding: 'utf8',
-      },
-    );
-    expect(ok.status).toBe(0);
-    expect(ok.stdout.match(/trustedCertEntry/g)).toHaveLength(5);
-    expect(ok.stdout).toContain('wirescry-ca');
+    try {
+      const file = path.join(dir, 'trust.jks');
+      await writeFile(file, trustStoreJks(certs, 'changeit'));
+      const ok = spawnSync(
+        keytool!,
+        ['-list', '-keystore', file, '-storepass', 'changeit', '-storetype', 'JKS'],
+        {
+          encoding: 'utf8',
+        },
+      );
+      expect(ok.status).toBe(0);
+      expect(ok.stdout.match(/trustedCertEntry/g)).toHaveLength(5);
+      expect(ok.stdout).toContain('wirescry-ca');
 
-    const wrong = spawnSync(
-      keytool!,
-      ['-list', '-keystore', file, '-storepass', 'wrong', '-storetype', 'JKS'],
-      {
-        encoding: 'utf8',
-      },
-    );
-    expect(wrong.status).not.toBe(0); // The checksum covers the password.
-    await rm(dir, { recursive: true, force: true });
+      const wrong = spawnSync(
+        keytool!,
+        ['-list', '-keystore', file, '-storepass', 'wrong', '-storetype', 'JKS'],
+        {
+          encoding: 'utf8',
+        },
+      );
+      expect(wrong.status).not.toBe(0); // The checksum covers the password.
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

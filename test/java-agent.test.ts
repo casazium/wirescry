@@ -106,7 +106,9 @@ describe.skipIf(!buildJava)('the Java agent', () => {
     describe(`on Java ${major}`, () => {
       it('starts with the program, reads its settings before main, and reports', async () => {
         const agent = await agentFolder();
-        const r = probe(java, 1500, [`-javaagent:${agent.stub}`]);
+        // Lives through several of the agent's reads (a second apart). A 1.5 s program gets one status
+        // write at most, which can land late or fail on a loaded Windows runner; it failed there twice.
+        const r = probe(java, 5000, [`-javaagent:${agent.stub}`]);
         await started(r);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
@@ -169,7 +171,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
           if (/not supported in this VM/.test(`${dump.stdout}${dump.stderr}`)) return ctx.skip();
           expect(dump.status, dump.stderr).toBe(0);
           const agent = await agentFolder();
-          const r = probe(java, 1500, [
+          const r = probe(java, 5000, [
             `-XX:SharedArchiveFile=${archive}`,
             '-Xshare:auto',
             `-javaagent:${agent.stub}`,
@@ -255,7 +257,7 @@ describe.skipIf(!buildJava)('the Java agent', () => {
         const good = await readFile(file, 'utf8');
         // From a newer Wirescry that only added a key.
         await writeWhole(file, good.replace('end=1', 'newerSetting=yes\nend=1'));
-        const r = probe(java, 1500, [`-javaagent:${agent.stub}`]);
+        const r = probe(java, 5000, [`-javaagent:${agent.stub}`]);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid))
           .toMatchObject({ enabled: true, reason: 'on' });
