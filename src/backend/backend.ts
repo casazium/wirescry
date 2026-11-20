@@ -838,8 +838,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     );
   };
 
-  /** Exports running, stopped by `stop()`. */
+  /** Exports running, stopped by `stop()`, which waits for them to finish. */
   const exportsRunning = new Set<AbortController>();
+  const exportsFinishing = new Set<Promise<void>>();
 
   const exportHar = async (
     file: string,
@@ -851,6 +852,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     signal?.addEventListener('abort', onAbort, { once: true });
     if (signal?.aborted) stopper.abort();
     exportsRunning.add(stopper);
+    let finished!: () => void;
+    const finishing = new Promise<void>((resolve) => (finished = resolve));
+    exportsFinishing.add(finishing);
     const checkStopped = (): void => {
       if (stopper.signal.aborted) throw new Error('The export was stopped.');
     };
@@ -933,6 +937,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         let text: string | undefined;
         let why = 'was too large to write';
         const last = 2;
+        // The worker gets one more try at an entry without bodies before the export fails.
+        let lastRetried = false;
         for (let step = 0; step <= last; step++) {
           const tried = attempt(step, step === 1 ? why : why.replace(/^was/, 'were'));
           if (!redactor) {
@@ -945,7 +951,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
             }
           }
           checkStopped();
-          const meta: HarEntryMeta = { cut: { request: false, response: false }, base64Frames: [] };
+          const meta: HarEntryMeta = {
+            cut: { request: false, response: false },
+            base64Frames: [],
+            cutFrames: [],
+          };
           let entry: Record<string, unknown>;
           try {
             entry = harEntry(tried, meta);
@@ -961,6 +971,11 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
             checkStopped();
             // Even without its bodies, the worker can't redact it: something is wrong with
             // redaction itself, so stop rather than leave out every request.
+            if (step === last && !lastRetried) {
+              lastRetried = true;
+              step -= 1;
+              continue;
+            }
             if (step === last)
               throw new Error(`Couldn't redact the requests: ${(error as Error).message}`, { cause: error });
             why = "couldn't be redacted";
@@ -976,7 +991,14 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           redaction.values += outcome.values;
           if (outcome.values > 0) redaction.requests += 1;
           redaction.notScanned += outcome.notScanned;
-          redaction.leftOut += outcome.leftOut;
+          // Bodies the ladder took out count as left out too.
+          const removed =
+            step === 0
+              ? 0
+              : step === 1
+                ? Number(item.responseBody !== null)
+                : Number(item.requestBody !== null) + Number(item.responseBody !== null);
+          redaction.leftOut += outcome.leftOut + removed;
           redaction.full ||= outcome.full;
           break;
         }
@@ -999,6 +1021,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       await write(tail);
       await flush();
       await out.close();
+      // Stopped while finishing: the caller may have gone, so nothing goes in place.
+      checkStopped();
       await rename(temp, file);
     } catch (error) {
       await out?.close().catch(() => undefined);
@@ -1010,6 +1034,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       exportsRunning.delete(stopper);
       signal?.removeEventListener('abort', onAbort);
       await redactor?.close();
+      exportsFinishing.delete(finishing);
+      finished();
     }
     return redactor ? { count, redaction } : { count };
   };
@@ -1508,6 +1534,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       stopSearches('stopped');
       // Exports stop too: they'd be writing from a closing store.
       for (const running of exportsRunning) running.abort();
+      // And their temporary files are gone before the process is.
+      await Promise.all(exportsFinishing);
       await Promise.all(searches.values());
       // After the searches: one finishing could have asked for a nudge.
       nudges.stop();

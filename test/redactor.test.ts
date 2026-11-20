@@ -61,35 +61,61 @@ describe('HarRedactor with the real worker, from source', () => {
 });
 
 describe('HarRedactor when the worker misbehaves', () => {
-  it('teaches a new worker what the old one knew, and tries the entry once more', async () => {
+  it('fails the entry, and teaches the next worker what the old one knew before it redacts', async () => {
     const redactor = make(FAKE);
     await redactor.collect([{ a: 1 }, { b: 2 }]);
-    const outcome = await redactor.redact({ mode: 'crash-first' }, META);
-    if (!('text' in outcome)) throw new Error(JSON.stringify(outcome));
+    await expect(redactor.redact({ mode: 'crash-first' }, META)).rejects.toThrow(
+      'the redaction worker stopped',
+    );
+    const outcome = await redactor.redact({ mode: 'ok' }, META);
     // The second worker was taught both parts again, and redacted one entry.
-    expect(JSON.parse(outcome.text)).toEqual({ collected: 2, redacted: 1 });
+    expect('text' in outcome && JSON.parse(outcome.text)).toEqual({ collected: 2, redacted: 1 });
     expect(await started()).toBe(2);
-    // And it goes on with that worker.
+    // And it goes on with that worker, learning more.
+    await redactor.collect([{ c: 3 }]);
     const next = await redactor.redact({ mode: 'ok' }, META);
-    expect('text' in next && JSON.parse(next.text)).toEqual({ collected: 2, redacted: 2 });
+    expect('text' in next && JSON.parse(next.text)).toEqual({ collected: 3, redacted: 2 });
     expect(await started()).toBe(2);
   });
 
-  it('fails after a second crash, a throw, a failure, or an answer out of turn', async () => {
+  it('teaches every new worker, however many fail in a row', async () => {
+    const redactor = make(FAKE);
+    await redactor.collect([{ a: 1 }]);
+    for (const mode of ['crash', 'hang', 'fail', 'throw', 'out-of-turn']) {
+      await expect(redactor.redact({ mode }, META, 200), mode).rejects.toThrow();
+    }
+    const outcome = await redactor.redact({ mode: 'ok' }, META);
+    expect('text' in outcome && JSON.parse(outcome.text)).toEqual({ collected: 1, redacted: 1 });
+    expect(await started()).toBe(6);
+  });
+
+  it('fails each of a crash, a throw, a failure and an answer out of turn, once', async () => {
     for (const mode of ['crash', 'throw', 'fail', 'out-of-turn']) {
       const redactor = make(FAKE);
       await expect(redactor.redact({ mode }, META), mode).rejects.toThrow();
     }
+    // One worker each: no second try here (the export tries with fewer bodies instead).
+    expect(await started()).toBe(4);
   });
 
-  it('fails an entry that runs out of time, twice, and then works on with a new worker', async () => {
+  it('fails an entry that runs out of time, once, and then works on with a new worker', async () => {
     const redactor = make(FAKE);
     const before = performance.now();
     await expect(redactor.redact({ mode: 'hang' }, META, 100)).rejects.toThrow('took too long');
-    expect(performance.now() - before).toBeGreaterThanOrEqual(190);
+    const took = performance.now() - before;
+    expect(took).toBeGreaterThanOrEqual(90);
+    expect(took).toBeLessThan(1000);
     const next = await redactor.redact({ mode: 'ok' }, META, 5000);
     expect('text' in next).toBe(true);
-    expect(await started()).toBe(3);
+    expect(await started()).toBe(2);
+  });
+
+  it('fails a collect the worker can’t take, and a redact after it, then starts afresh', async () => {
+    const redactor = make(FAKE);
+    await redactor.collect([{ a: 1 }]);
+    await expect(redactor.collect([{ fail: true }])).rejects.toThrow('collect failed');
+    // Every new worker is taught everything collected, the bad part too: so it fails again.
+    await expect(redactor.redact({ mode: 'ok' }, META)).rejects.toThrow('collect failed');
   });
 
   it('passes on too large and dropped as they are', async () => {

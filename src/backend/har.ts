@@ -77,6 +77,8 @@ export interface HarEntryMeta {
   cut: { request: boolean; response: boolean };
   /** WebSocket text frames written as base64 (not valid UTF-8, e.g. cut mid-character): their indexes. */
   base64Frames: number[];
+  /** WebSocket text frames cut to their first 64 KB: their indexes. */
+  cutFrames: number[];
 }
 
 export function harEntry(item: HarExportItem, meta?: HarEntryMeta): Record<string, unknown> {
@@ -208,7 +210,10 @@ export function harEntry(item: HarExportItem, meta?: HarEntryMeta): Record<strin
     let cutMessages = 0;
     entry._webSocketMessages = messages.messages.map((m, index) => {
       const bytes = Buffer.from(m.base64, 'base64');
-      if (bytes.length < m.size) cutMessages += 1;
+      if (bytes.length < m.size) {
+        cutMessages += 1;
+        if (!m.isBinary) meta?.cutFrames.push(index);
+      }
       let data = m.base64;
       if (!m.isBinary) {
         try {

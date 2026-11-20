@@ -2,10 +2,10 @@
  * Runs HAR redaction in a worker thread (redact-worker.mts) for one export. Redacting a large body
  * takes seconds, and the proxy runs in the backend's own thread.
  *
- * Each entry has a time limit. A worker that crashes, fails or runs out of time is replaced: the
- * new one is taught the export's known values again, and the entry is tried once more. Only a
- * second failure is the caller's to handle (it tries the entry with fewer bodies, then leaves it
- * out). Nothing unredacted ever comes back from here.
+ * Each entry has a time limit. A worker that crashes, fails or runs out of time is stopped and the
+ * entry fails; the caller tries it with fewer bodies, then leaves it out. The next worker is
+ * taught the export's known values before it redacts anything. Nothing unredacted ever comes back
+ * from here.
  */
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -51,10 +51,12 @@ interface Pending {
 
 export class HarRedactor {
   private worker: Worker | undefined;
+  /** The current worker, taught the export's known values; set while teaching it. */
+  private taught: Promise<Worker> | undefined;
   private readonly pending = new Map<number, Pending>();
   private nextId = 1;
   private closed = false;
-  /** What the export has collected so far, taught again to a new worker. */
+  /** What the export has collected so far, taught to every new worker before it redacts. */
   private readonly collected: Json[] = [];
 
   constructor(private readonly file = workerFile()) {}
@@ -62,24 +64,34 @@ export class HarRedactor {
   /** Teaches the worker the values in these entries' URLs and headers. */
   async collect(parts: Json[]): Promise<void> {
     this.collected.push(...parts);
-    await this.send({ op: 'collect', parts });
+    const worker = this.worker;
+    // A new worker is taught everything collected, these parts too.
+    if (!worker || !this.taught) {
+      await this.ready();
+      return;
+    }
+    await this.taught;
+    if (this.worker === worker) await this.teach(worker, parts);
+    else await this.ready();
   }
 
-  /** An entry redacted, or that it's too large to write, or that it must be left out. */
+  /**
+   * An entry redacted, or that it's too large to write, or that it must be left out. Throws if the
+   * worker fails, crashes or runs out of time; the next call has a new worker, taught what the old
+   * one knew. The caller tries again with less (see exportHar).
+   */
   async redact(entry: Json, meta: EntryMeta, timeLimitMs = entryTimeLimitMs(entry)): Promise<RedactOutcome> {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const response = await this.send({ op: 'redact', entry, meta }, timeLimitMs);
-        if (!response.ok) throw new WorkerGone(response.error);
-        if ('collected' in response) throw new WorkerGone('the worker answered out of turn');
-        return response;
-      } catch (error) {
-        if (this.closed || attempt >= 1) throw error;
-        // A new worker, taught what the old one knew, and one more try.
-        this.stop(error as Error);
-        if (this.collected.length > 0) await this.send({ op: 'collect', parts: this.collected });
-      }
+    const worker = await this.ready();
+    const response = await this.send(worker, { op: 'redact', entry, meta }, timeLimitMs);
+    if (!response.ok) {
+      this.stop(new WorkerGone(response.error));
+      throw new WorkerGone(response.error);
     }
+    if ('collected' in response) {
+      this.stop(new WorkerGone('the worker answered out of turn'));
+      throw new WorkerGone('the worker answered out of turn');
+    }
+    return response;
   }
 
   /** Stops the worker; anything waiting fails. */
@@ -90,9 +102,34 @@ export class HarRedactor {
     await worker?.terminate();
   }
 
-  private send(request: RedactJob, timeLimitMs?: number): Promise<RedactResponse> {
+  /** The worker, started and taught everything collected if there isn't one. */
+  private ready(): Promise<Worker> {
     if (this.closed) return Promise.reject(new WorkerGone('redaction was stopped'));
-    const worker = this.ensureWorker();
+    if (this.worker && this.taught) return this.taught;
+    const worker = this.start();
+    const taught = (async () => {
+      if (this.collected.length > 0) await this.teach(worker, this.collected);
+      return worker;
+    })();
+    this.taught = taught;
+    // A failure is the caller's, and the next call starts afresh.
+    taught.catch(() => {
+      if (this.taught === taught) this.stop(new WorkerGone('the redaction worker couldn’t be taught'));
+    });
+    return taught;
+  }
+
+  private async teach(worker: Worker, parts: Json[]): Promise<void> {
+    const response = await this.send(worker, { op: 'collect', parts });
+    if (!response.ok) {
+      this.stop(new WorkerGone(response.error));
+      throw new WorkerGone(response.error);
+    }
+  }
+
+  private send(worker: Worker, request: RedactJob, timeLimitMs?: number): Promise<RedactResponse> {
+    if (this.closed) return Promise.reject(new WorkerGone('redaction was stopped'));
+    if (this.worker !== worker) return Promise.reject(new WorkerGone('the redaction worker stopped'));
     const id = this.nextId++;
     return new Promise<RedactResponse>((resolve, reject) => {
       const timer =
@@ -100,26 +137,34 @@ export class HarRedactor {
           ? undefined
           : setTimeout(() => this.stop(new WorkerGone('redacting an entry took too long')), timeLimitMs);
       this.pending.set(id, { resolve, reject, timer });
-      worker.postMessage({ ...request, id } satisfies RedactRequest);
+      try {
+        worker.postMessage({ ...request, id } satisfies RedactRequest);
+      } catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(new WorkerGone((error as Error).message));
+      }
     });
   }
 
-  private ensureWorker(): Worker {
-    if (this.worker) return this.worker;
+  private start(): Worker {
     const worker = new Worker(this.file);
     worker.on('message', (message: RedactResponse) => {
+      if (this.worker !== worker) return;
       const job = this.pending.get(message.id);
       if (!job) return;
       this.pending.delete(message.id);
       clearTimeout(job.timer);
       job.resolve(message);
     });
-    worker.on('error', (error) => this.stop(new WorkerGone(error.message)));
-    worker.on('messageerror', (error) => this.stop(new WorkerGone(error.message)));
-    worker.on('exit', () => {
-      if (this.worker === worker) this.stop(new WorkerGone('the redaction worker stopped'));
-    });
+    const gone = (why: string): void => {
+      if (this.worker === worker) this.stop(new WorkerGone(why));
+    };
+    worker.on('error', (error) => gone(error.message));
+    worker.on('messageerror', (error) => gone(error.message));
+    worker.on('exit', () => gone('the redaction worker stopped'));
     this.worker = worker;
+    this.taught = undefined;
     return worker;
   }
 
@@ -127,6 +172,7 @@ export class HarRedactor {
   private stop(error: Error): void {
     const worker = this.worker;
     this.worker = undefined;
+    this.taught = undefined;
     for (const job of this.pending.values()) {
       clearTimeout(job.timer);
       job.reject(error instanceof WorkerGone ? error : new WorkerGone(error.message));

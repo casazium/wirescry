@@ -18,6 +18,8 @@ const script = vi.hoisted(() => ({
   steps: [] as Step[],
   calls: [] as Array<{ op: string; entry?: Json }>,
   closed: 0,
+  full: false,
+  onRedact: undefined as (() => void) | undefined,
 }));
 
 vi.mock('../src/backend/redactor', () => ({
@@ -27,11 +29,12 @@ vi.mock('../src/backend/redactor', () => ({
     }
     async redact(entry: Json): Promise<unknown> {
       script.calls.push({ op: 'redact', entry });
+      script.onRedact?.();
       const step = script.steps.shift() ?? 'ok';
       if (step === 'throw') throw new Error('the redaction worker stopped');
       if (step === 'tooLarge') return { tooLarge: true };
       if (step === 'dropped') return { dropped: true };
-      return { text: JSON.stringify(entry), values: 1, notScanned: 0, leftOut: 0, full: false, ms: 1 };
+      return { text: JSON.stringify(entry), values: 1, notScanned: 0, leftOut: 0, full: script.full, ms: 1 };
     }
     async close(): Promise<void> {
       script.closed += 1;
@@ -118,6 +121,8 @@ describe('Redacted export, when entries can’t be redacted', () => {
     script.steps = ['tooLarge', 'ok', 'tooLarge', 'tooLarge', 'ok'];
     const result = await backend.exportHar(path.join(dir, 'large.har'), ids);
     expect(result.count).toBe(3);
+    // The bodies taken out are counted: one from the first entry, two from the second.
+    expect(result.redaction!.leftOut).toBe(3);
     const tried = redacts();
     expect(tried).toHaveLength(6);
     expect(tried[0]!.response.content.text).toBe('response 1');
@@ -160,12 +165,47 @@ describe('Redacted export, when entries can’t be redacted', () => {
 
   it('fails, and writes nothing, when the worker can’t redact even an entry without bodies', async () => {
     await ready();
-    script.steps = ['ok', 'throw', 'throw', 'throw'];
+    // The last try, without bodies, gets a second go before the export fails.
+    script.steps = ['ok', 'throw', 'throw', 'throw', 'throw'];
     await expect(backend.exportHar(path.join(dir, 'broken.har'), ids)).rejects.toThrow(
       "Couldn't redact the requests: the redaction worker stopped",
     );
     expect((await readdir(dir)).filter((f) => f.startsWith('broken.har'))).toEqual([]);
     expect(script.closed).toBe(1);
+  });
+
+  it('gives the last try a second go, and goes on when it works', async () => {
+    await ready();
+    script.steps = ['throw', 'throw', 'throw', 'ok'];
+    const result = await backend.exportHar(path.join(dir, 'retried.har'), ids);
+    expect(result.count).toBe(3);
+    expect(redacts()).toHaveLength(6);
+    expect(result.redaction!.leftOut).toBe(2);
+  });
+
+  it('passes on that some secrets may have been missed', async () => {
+    await ready();
+    script.full = true;
+    try {
+      expect((await backend.exportHar(path.join(dir, 'full.har'), ids)).redaction!.full).toBe(true);
+    } finally {
+      script.full = false;
+    }
+  });
+
+  it('stops between entries when asked', async () => {
+    await ready();
+    const stopper = new AbortController();
+    script.onRedact = () => stopper.abort();
+    try {
+      await expect(
+        backend.exportHar(path.join(dir, 'aborted.har'), ids, { signal: stopper.signal }),
+      ).rejects.toThrow('The export was stopped.');
+    } finally {
+      script.onRedact = undefined;
+    }
+    expect(redacts()).toHaveLength(1);
+    expect((await readdir(dir)).filter((f) => f.startsWith('aborted.har'))).toEqual([]);
   });
 
   it('doesn’t use the worker at all without redaction', async () => {

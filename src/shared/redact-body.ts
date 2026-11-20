@@ -158,6 +158,8 @@ export class KnownValues implements ValueSink {
       ((b[at]! << 24) | (b[at + 1]! << 16) | (b[at + 2]! << 8) | b[at + 3]!) >>> 0;
     for (const value of this.values) {
       const encoded = encoder.encode(value);
+      // Found by eight bytes: `distinctive` keeps none shorter, but don't rely on it.
+      if (encoded.length < 8) continue;
       const hi = word(encoded, 0);
       const lo = word(encoded, 4);
       let inner = index.get(hi);

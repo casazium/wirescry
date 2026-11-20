@@ -20,6 +20,8 @@ type Header = [string, string];
 export interface EntryMeta {
   cut: { request: boolean; response: boolean };
   base64Frames: number[];
+  /** Text messages cut to their first 64 KB. */
+  cutFrames?: number[];
 }
 
 /** A redaction made in one part of an entry: never the value. */
@@ -90,36 +92,53 @@ export function knownPart(entry: Json): Json {
 type Encoding = 'latin1' | 'utf16le' | 'utf16be';
 
 /**
+ * Whether bytes look like UTF-16 without a BOM: NULs in most of one byte position (the high byte
+ * of each character) and few in the other. A stray NUL in UTF-8 or Latin-1 text, or a binary part
+ * in a multipart upload, isn't that.
+ */
+function looksUtf16(bytes: Buffer): 'utf16le' | 'utf16be' | undefined {
+  const pairs = Math.floor(bytes.length / 2);
+  if (pairs < 2) return undefined;
+  let even = 0;
+  let odd = 0;
+  for (let i = 0; i + 1 < bytes.length; i += 2) {
+    if (bytes[i] === 0) even++;
+    if (bytes[i + 1] === 0) odd++;
+  }
+  if (odd >= pairs * 0.9 && even <= pairs * 0.1) return 'utf16le';
+  if (even >= pairs * 0.9 && odd <= pairs * 0.1) return 'utf16be';
+  return undefined;
+}
+
+/**
  * Text of a body written as base64, if it can be had byte for byte: UTF-16 by its BOM, its
- * charset, or the NULs of one; otherwise Latin-1, which maps every byte to one character and back.
+ * charset, or how its NULs fall; otherwise Latin-1, which maps every byte to one character and
+ * back (NULs and all).
  */
 function textOfBytes(bytes: Buffer, mediaType: string): { text: string; encoding: Encoding } | undefined {
   const charset = /charset\s*=\s*"?([\w-]+)/i.exec(mediaType)?.[1]?.toLowerCase();
   const bomLE = bytes[0] === 0xff && bytes[1] === 0xfe;
   const bomBE = bytes[0] === 0xfe && bytes[1] === 0xff;
-  const nuls = bytes.includes(0);
-  const utf16 = bomLE || bomBE || charset?.startsWith('utf-16') === true || nuls;
-  if (!utf16) return { text: bytes.toString('latin1'), encoding: 'latin1' };
+  const order: Encoding | undefined = bomLE
+    ? 'utf16le'
+    : bomBE
+      ? 'utf16be'
+      : charset === 'utf-16be'
+        ? 'utf16be'
+        : charset?.startsWith('utf-16')
+          ? 'utf16le'
+          : looksUtf16(bytes);
+  if (!order) return { text: bytes.toString('latin1'), encoding: 'latin1' };
+  // Said to be UTF-16 but isn't, whole: not text Wirescry can put back byte for byte.
   if (bytes.length % 2 !== 0) return undefined;
-  const orders: Array<'utf16le' | 'utf16be'> =
-    bomBE || charset === 'utf-16be'
-      ? ['utf16be']
-      : bomLE || charset === 'utf-16le'
-        ? ['utf16le']
-        : ['utf16le', 'utf16be'];
-  for (const order of orders) {
-    const le = order === 'utf16le' ? bytes : Buffer.from(bytes).swap16();
-    try {
-      // The BOM kept as a character, so it's written back.
-      const text = new TextDecoder('utf-16le', { fatal: true, ignoreBOM: true }).decode(le);
-      // NULs in the text too: this wasn't UTF-16 after all.
-      if (!bomLE && !bomBE && text.includes('\u0000')) continue;
-      return { text, encoding: order };
-    } catch {
-      // Not this byte order.
-    }
+  const le = order === 'utf16le' ? bytes : Buffer.from(bytes).swap16();
+  try {
+    // The BOM kept as a character, so it's written back.
+    const text = new TextDecoder('utf-16le', { fatal: true, ignoreBOM: true }).decode(le);
+    return { text, encoding: order };
+  } catch {
+    return undefined;
   }
-  return undefined;
 }
 
 function bytesOfText(text: string, encoding: Encoding): Buffer {
@@ -154,14 +173,8 @@ function redactBodyText(
     for (const r of redactions) records.push({ in: where, ...r });
   };
   if (options.undecoded) {
-    // Still compressed: can't be read. But a secret found elsewhere, there byte for byte, means it goes.
-    const leftOut = known.inBytes(Buffer.from(text, options.base64 ? 'base64' : 'utf8'));
-    return {
-      text: leftOut ? undefined : text,
-      records,
-      notScanned: { in: where, notScanned: 'still encoded', count: 1 },
-      leftOut,
-    };
+    // Still compressed, so it can't be checked, yet anyone can decompress it: left out.
+    return { text: undefined, records, leftOut: true };
   }
   if (!options.base64) {
     const result = redactBody(text, mediaType, known, { cut: options.cut });
@@ -324,6 +337,7 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
   let messages: Json[] | undefined;
   if (Array.isArray(entry._webSocketMessages)) {
     const base64Frames = new Set(meta.base64Frames);
+    const cutFrames = new Set(meta.cutFrames ?? []);
     let framesNotScanned = 0;
     let framesLeftOut = 0;
     messages = [];
@@ -338,12 +352,13 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
             'webSocketMessages',
             data,
             'text/plain',
-            // A message may have been cut to its first 64 KB: read as cut, which changes nothing
-            // for one that wasn't.
-            { base64: base64Frames.has(index), undecoded: false, cut: true },
+            // Cut to its first 64 KB: a secret's value may run to the end.
+            { base64: base64Frames.has(index), undecoded: false, cut: cutFrames.has(index) },
             known,
           );
           records.push(...body.records);
+          if (body.notScanned) framesNotScanned += 1;
+          if (body.leftOut) framesLeftOut += 1;
           messages!.push({ ...kept, data: body.text ?? '' });
         } else {
           // Binary: not checked, and left out if a known value is in it byte for byte.

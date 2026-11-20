@@ -39,7 +39,13 @@ const known = new KnownValues();
 
 function handle(message: RedactRequest): RedactResponse {
   if (message.op === 'collect') {
-    for (const part of message.parts) collectKnown(part, known);
+    for (const part of message.parts) {
+      try {
+        collectKnown(part, known);
+      } catch {
+        // A part that can't be read: its entry is dropped when redacted (its URL or headers fail).
+      }
+    }
     return { id: message.id, ok: true, collected: true };
   }
   const started = performance.now();

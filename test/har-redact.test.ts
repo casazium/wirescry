@@ -12,7 +12,7 @@ const OTHER = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
 
 type Json = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
-const NO_META: EntryMeta = { cut: { request: false, response: false }, base64Frames: [] };
+const NO_META: EntryMeta = { cut: { request: false, response: false }, base64Frames: [], cutFrames: [] };
 
 const detail = (overrides: Partial<ExchangeDetail> = {}): ExchangeDetail => ({
   summary: {
@@ -39,7 +39,7 @@ const body = (bytes: string | Buffer, extra: Partial<BodyContent> = {}): BodyCon
 
 /** harEntry's entry and meta, then redacted, with a header's bearer token known beforehand. */
 function redact(item: HarExportItem, known = new KnownValues()) {
-  const meta: HarEntryMeta = { cut: { request: false, response: false }, base64Frames: [] };
+  const meta: HarEntryMeta = { cut: { request: false, response: false }, base64Frames: [], cutFrames: [] };
   const entry = harEntry(item, meta);
   collectKnown(knownPart(entry), known);
   const result = redactHarEntry(entry, meta, known);
@@ -327,9 +327,9 @@ describe('redactHarEntry', () => {
       expect(Buffer.from(entry.response.content.text, 'base64').equals(bytes)).toBe(true);
     });
 
-    it('doesn’t check a body still encoded, and leaves it out when it holds a value found elsewhere', () => {
+    it('leaves out a body still encoded: it can’t be checked, and anyone can decode it', () => {
       const raw = Buffer.from('not really gzip');
-      const still = redact({
+      const { entry, notScanned, leftOut } = redact({
         detail: detail({
           responseHeaders: [
             ['content-type', 'application/json'],
@@ -340,30 +340,66 @@ describe('redactHarEntry', () => {
         requestBody: null,
         responseBody: body(raw, { encoding: 'gzip', decodeError: 'bad gzip' }),
       });
-      expect(still.entry._wirescryRedactions).toEqual([
-        { in: 'response.content', notScanned: 'still encoded', count: 1 },
-      ]);
-      expect(still.entry._wirescryUndecoded).toEqual(['response body']);
-      expect([still.notScanned, still.leftOut]).toEqual([1, 0]);
+      expect(entry.response.content.text).toBeUndefined();
+      expect(entry.response.content.size).toBe(raw.length);
+      expect(entry._wirescryUndecoded).toEqual(['response body']);
+      expect([notScanned, leftOut]).toEqual([0, 1]);
+      expect(entry.comment).toMatch(/response body was left out/);
+    });
 
-      const holding = Buffer.from(`xx${BEARER}xx`);
-      const leaked = redact({
-        detail: detail({
-          requestHeaders: [['authorization', `Bearer ${BEARER}`]],
-          responseHeaders: [['content-encoding', 'br']],
-          responseBody: { size: holding.length, stored: holding.length },
-        }),
-        requestBody: null,
-        responseBody: body(holding, { encoding: 'br', decodeError: 'bad br' }),
-      });
-      expect(JSON.stringify(leaked.entry)).not.toContain(BEARER);
-      expect(leaked.leftOut).toBe(1);
+    it('redacts text with a stray NUL, or a binary part, as Latin-1, whatever its length', () => {
+      for (const extra of ['', 'x']) {
+        const json = Buffer.concat([
+          Buffer.from(`{"password":"${PASSWORD}","a":"`),
+          Buffer.from([0]),
+          Buffer.from(`${extra}"}`),
+        ]);
+        const fromJson = redact({
+          detail: detail({
+            responseHeaders: [['content-type', 'application/json']],
+            responseBody: { size: json.length, stored: json.length },
+          }),
+          requestBody: null,
+          responseBody: body(json),
+        });
+        expect(fromJson.entry.response.content.encoding).toBe('base64');
+        const out = Buffer.from(fromJson.entry.response.content.text, 'base64');
+        expect(out.toString('latin1'), `extra ${extra}`).toBe(
+          `{"password":"[redacted]","a":"\u0000${extra}"}`,
+        );
+
+        const boundary = 'XyZ';
+        const binary = Buffer.from([0, 0, 1, 0xff, 0, 2, 0, 0x89]);
+        const upload = Buffer.concat([
+          Buffer.from(
+            `--${boundary}\r\nContent-Disposition: form-data; name="password"\r\n\r\n${PASSWORD}\r\n`,
+          ),
+          Buffer.from(
+            `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\nContent-Type: application/octet-stream\r\n\r\n`,
+          ),
+          binary,
+          Buffer.from(`${extra}\r\n--${boundary}--\r\n`),
+        ]);
+        const fromForm = redact({
+          detail: detail({
+            summary: { ...detail().summary, method: 'POST' },
+            requestHeaders: [['content-type', `multipart/form-data; boundary=${boundary}`]],
+            requestBody: { size: upload.length, stored: upload.length },
+          }),
+          requestBody: body(upload),
+          responseBody: null,
+        });
+        const sent = Buffer.from(fromForm.entry.request.postData.text, 'base64');
+        expect(sent.toString('latin1'), `extra ${extra}`).not.toContain(PASSWORD);
+        expect(sent.includes(binary)).toBe(true);
+        expect(fromForm.values).toBe(1);
+      }
     });
   });
 
   describe('WebSocket messages', () => {
     const socket = (
-      messages: Array<{ data: Buffer; isBinary: boolean; fromClient?: boolean }>,
+      messages: Array<{ data: Buffer; isBinary: boolean; fromClient?: boolean; size?: number }>,
       known = new KnownValues(),
     ) =>
       redact(
@@ -380,7 +416,7 @@ describe('redactHarEntry', () => {
               fromClient: m.fromClient ?? true,
               isBinary: m.isBinary,
               time: index,
-              size: m.data.length,
+              size: m.size ?? m.data.length,
               base64: m.data.toString('base64'),
             })),
             dropped: 0,
@@ -419,8 +455,16 @@ describe('redactHarEntry', () => {
 
     it('redacts a message cut short, to its end under a secret name', () => {
       const cut = Buffer.from(`{"type":"auth","password":"${PASSWORD}`);
-      const { entry } = socket([{ data: cut, isBinary: false }]);
+      const { entry } = socket([{ data: cut, isBinary: false, size: 100_000 }]);
       expect((entry._webSocketMessages as Json[])[0]!.data).toBe('{"type":"auth","password":"[redacted]');
+    });
+
+    it('counts a text message it can’t read as text as not checked', () => {
+      // Not UTF-8 (so base64), and with NULs like UTF-16 but an odd length.
+      const odd = Buffer.from([0x41, 0, 0xff, 0, 0x43]);
+      const { entry, notScanned } = socket([{ data: odd, isBinary: false }]);
+      expect(notScanned).toBe(1);
+      expect(Buffer.from((entry._webSocketMessages as Json[])[0]!.data, 'base64').equals(odd)).toBe(true);
     });
 
     it('empties a binary message holding a value found elsewhere, and says so', () => {
@@ -582,7 +626,7 @@ describe('redactHarEntry', () => {
       },
       notes: [`note ${MARK}`],
     };
-    const meta: HarEntryMeta = { cut: { request: false, response: false }, base64Frames: [] };
+    const meta: HarEntryMeta = { cut: { request: false, response: false }, base64Frames: [], cutFrames: [] };
     const entry = harEntry(item, meta) as Json;
     // A field a later harEntry might add, at every level: not known here, so never written.
     const plant = (node: unknown): void => {

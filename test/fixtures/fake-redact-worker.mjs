@@ -14,6 +14,7 @@ let redacted = 0;
 parentPort.on('message', (message) => {
   const reply = (body) => parentPort.postMessage({ id: message.id, ...body });
   if (message.op === 'collect') {
+    if (message.parts.some((part) => part.fail)) return reply({ ok: false, error: 'collect failed' });
     collected += message.parts.length;
     return reply({ ok: true, collected: true });
   }

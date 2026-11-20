@@ -72,7 +72,7 @@ describe('Redacted HAR export', () => {
   let api: Awaited<ReturnType<typeof apiClient>>;
   const others: RunningBackend[] = [];
   let ids: string[];
-  const BIG = 12 * 1024 * 1024;
+  const BIG = 6 * 1024 * 1024;
 
   const start = async (name: string): Promise<{ backend: RunningBackend; ca: string }> => {
     const dataDir = path.join(dir, name);
@@ -360,7 +360,7 @@ describe('Redacted HAR export', () => {
     expect(result.count).toBe(2);
     expectNoSecrets(await readFile(file, 'utf8'));
     expect(answered).toBeGreaterThan(0);
-    // Redacting ~24 MB of JSON takes seconds; done in the backend's thread, the event loop
+    // Redacting ~12 MB of JSON takes seconds; done in the backend's thread, the event loop
     // would stall for most of it.
     expect(took).toBeGreaterThan(1000);
     expect(delay.max / 1e6).toBeLessThan(Math.max(500, took / 4));
@@ -372,7 +372,8 @@ describe('Redacted HAR export', () => {
     busyApi.close();
     others.splice(others.indexOf(busy), 1);
     await busy.stop();
-    await failed;
+    // Gone as soon as the backend has stopped: the process may end right after.
     expect((await readdir(dir)).filter((f) => f.startsWith('big-stopped'))).toEqual([]);
+    await failed;
   }, 120_000);
 });
