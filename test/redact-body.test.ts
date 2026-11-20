@@ -521,6 +521,16 @@ describe('fixes from the A2 review', () => {
     );
   });
 
+  it('reads guarded and line-by-line JSON as JSON, not text: a short token value stays', () => {
+    // As text, the assignment rule would redact "Hello"; as JSON, a token that short is kept.
+    expect(redact(`)]}'\n{\n  "token": "Hello"\n}`, 'application/json')).toBe(
+      `)]}'\n{\n  "token": "Hello"\n}`,
+    );
+    expect(redact('{"token":"Hello"}\n{"token":"World"}', 'application/json')).toBe(
+      '{"token":"Hello"}\n{"token":"World"}',
+    );
+  });
+
   it('writes a bare number back quoted when JSON falls to text, so it stays JSON-shaped', () => {
     expect(redact('{"pin": 123456, "password": 12345678', 'application/json')).toBe(
       `{"pin": "${REDACTED}", "password": "${REDACTED}"`,
