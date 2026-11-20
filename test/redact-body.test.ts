@@ -72,6 +72,13 @@ describe('JSON', () => {
     );
   });
 
+  it('gives an array its rule from where it sits: a neutral key in a secret object, or a secret array', () => {
+    const text = '{"token":{"list":["abcdefgh1234"]},"secrets":[["one"]],"other":{"list":["abcdefgh1234"]}}';
+    expect(redactJson(text)).toBe(
+      `{"token":{"list":["${REDACTED}"]},"secrets":[["${REDACTED}"]],"other":{"list":["abcdefgh1234"]}}`,
+    );
+  });
+
   it('finds token shapes and URL secrets inside strings, escapes and all', () => {
     const text = `{"note":"see ${JWT} and https:\\/\\/a.example\\/cb?code=abc\\u0026x=1","n":1}`;
     expect(redactJson(text)).toBe(
@@ -163,6 +170,15 @@ describe('known values', () => {
     // In JSON, inside strings only (escaped or not), never in numbers or structure.
     const json = `{"echo":"${SESSION}","n":12345678}`;
     expect(redact(json, 'application/json', known)).toBe(`{"echo":"${REDACTED}","n":12345678}`);
+  });
+
+  it('doesn’t match a value with a separator inside when the text runs on past either edge', () => {
+    const known = new KnownValues();
+    // Each value's longest run is away from the edge being checked, so the run itself still matches.
+    known.add('ab.Cdefgh12xy');
+    known.add('Klmnop34uv.c9');
+    const text = 'zab.Cdefgh12xy ab.Cdefgh12xy Klmnop34uv.c9z Klmnop34uv.c9';
+    expect(applySpans(text, known.scan(text))).toBe(`zab.Cdefgh12xy ${REDACTED} Klmnop34uv.c9z ${REDACTED}`);
   });
 
   it('doesn’t match inside a longer run or across a number', () => {
