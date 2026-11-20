@@ -85,8 +85,8 @@ jobs:
           path: native/java-agent/deps
           key: java-agent-deps-${{ hashFiles('scripts/build-java-agent.mjs') }}
       # Ubuntu's image no longer carries Java 8, which programs still run on. Pinned: Temurin 8u514
-      # (published Nov 19, 2026) failed setup-java's checksum on every run, the same wrong file each
-      # time. Move on once a newer build installs.
+      # (published Nov 19, 2026) failed setup-java's checksum on some runs, the same wrong file each
+      # time it did, and installed on others. Move on once a newer build installs reliably.
       - uses: actions/setup-java@v6
         if: runner.os == 'Linux'
         with:
