@@ -203,13 +203,31 @@ describe('the right-click menu on a request', () => {
 
 describe('HAR export', () => {
   const exportButton = () => screen.getByRole('button', { name: 'Export HAR' });
+  const command = (name: MenuCommand) => act(async () => bridge.menu!(name));
 
   it('exports the requests shown, in order, and says how many went where', async () => {
     await started();
     bridge.exportHar.mockResolvedValueOnce({ name: 'traffic.har', count: 3 });
     await act(async () => void fireEvent.click(exportButton()));
-    expect(bridge.exportHar).toHaveBeenCalledWith(['a', 'b', 'c']);
+    expect(bridge.exportHar).toHaveBeenCalledWith(['a', 'b', 'c'], { redact: true });
     expect(noticeText()).toContain('Exported 3 requests to traffic.har.');
+  });
+
+  it('says what redaction did, or that it wasn’t done', async () => {
+    await started();
+    bridge.exportHar.mockResolvedValueOnce({
+      name: 'traffic-redacted.har',
+      count: 3,
+      redaction: { values: 7, requests: 2, dropped: 1, notScanned: 2, leftOut: 1, full: true },
+    });
+    await act(async () => void fireEvent.click(exportButton()));
+    expect(noticeText()).toContain(
+      'Exported 3 requests to traffic-redacted.har, with secrets redacted in 7 places. Redaction is best effort for bodies: check before sharing. 1 request was left out: it couldn’t be redacted. 1 body or message was left out: it couldn’t be redacted safely. 2 bodies or messages weren’t checked: they aren’t text. Some secrets may have been missed: there were too many to keep track of.',
+    );
+    bridge.exportHar.mockResolvedValueOnce({ name: 'traffic.har', count: 3 });
+    await command('export-har-unredacted');
+    expect(bridge.exportHar).toHaveBeenLastCalledWith(['a', 'b', 'c'], { redact: false });
+    expect(noticeText()).toContain('Exported 3 requests to traffic.har. Secrets weren’t redacted.');
   });
 
   it('exports only what the filter shows, and says one request', async () => {
@@ -217,7 +235,7 @@ describe('HAR export', () => {
     await act(async () => void fireEvent.click(screen.getByRole('radio', { name: 'HTML' })));
     bridge.exportHar.mockResolvedValueOnce({ name: 'one.har', count: 1 });
     await act(async () => void fireEvent.click(exportButton()));
-    expect(bridge.exportHar).toHaveBeenCalledWith(['b']);
+    expect(bridge.exportHar).toHaveBeenCalledWith(['b'], { redact: true });
     expect(noticeText()).toContain('Exported 1 request to one.har.');
   });
 
@@ -262,6 +280,16 @@ describe('HAR import', () => {
     expect(noticeText()).toContain('Imported 1 request from one.har.');
     expect(noticeText()).not.toContain('Skipped');
     expect(noticeText()).not.toContain('To make room');
+    expect(noticeText()).not.toContain('redacted');
+  });
+
+  it('says when the file’s secrets were redacted', async () => {
+    await started();
+    bridge.importHar.mockResolvedValueOnce({ name: 'shared.har', imported: 2, redacted: true });
+    await act(async () => void fireEvent.click(importButton()));
+    expect(noticeText()).toContain(
+      'Imported 2 requests from shared.har. This file’s secrets were redacted, so resending its requests won’t sign in.',
+    );
   });
 
   it('says so when there was nothing to import, and why', async () => {
@@ -336,12 +364,15 @@ describe('the app menu’s commands', () => {
     await command('import-har');
     expect(bridge.importHar).toHaveBeenCalledTimes(1);
     await command('export-har');
-    expect(bridge.exportHar).toHaveBeenCalledWith(['a', 'b', 'c']);
+    expect(bridge.exportHar).toHaveBeenCalledWith(['a', 'b', 'c'], { redact: true });
+    await command('export-har-unredacted');
+    expect(bridge.exportHar).toHaveBeenLastCalledWith(['a', 'b', 'c'], { redact: false });
   });
 
   it('doesn’t export an empty list', async () => {
     await started([]);
     await command('export-har');
+    await command('export-har-unredacted');
     expect(bridge.exportHar).not.toHaveBeenCalled();
   });
 

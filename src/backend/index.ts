@@ -29,6 +29,9 @@ let dataDir: string | undefined;
 
 const post = (message: BackendMessage): void => parentPort.postMessage(message);
 
+/** HAR exports running, by request id, so main can stop one that ran out of time. */
+const harExports = new Map<number, AbortController>();
+
 // Plugins' secure stores are encrypted by the main process, which has safeStorage.
 const encryptor = ipcEncryptor(post);
 
@@ -37,15 +40,29 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
     encryptor.receive(data);
     return;
   }
+  if (data?.type === 'har-cancel') {
+    harExports.get(data.id)?.abort();
+    return;
+  }
   if (data?.type === 'har') {
     const { id } = data;
+    let stopper: AbortController | undefined;
+    if (data.op === 'export') {
+      stopper = new AbortController();
+      harExports.set(id, stopper);
+    }
     const job = !backend
       ? Promise.reject(new Error("Wirescry's backend is still starting."))
       : data.op === 'export'
-        ? backend.exportHar(data.file, data.exchangeIds)
+        ? // Redacted unless plainly asked not to.
+          backend.exportHar(data.file, data.exchangeIds, {
+            redact: data.redact !== false,
+            signal: stopper!.signal,
+          })
         : data.op === 'body'
           ? backend.saveBody(data.file, data.exchangeId, data.side)
           : backend.importHar(data.file, data.name);
+    void job.finally(() => harExports.delete(id)).catch(() => undefined);
     job.then(
       (value) => post({ type: 'har-result', id, ok: true, value }),
       (error: unknown) =>

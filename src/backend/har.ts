@@ -16,6 +16,7 @@ import type {
 } from '../shared/api';
 import { describePartialFailure, type ExchangeFailure, type FailureKind } from '../shared/failure';
 import { formFields } from '../shared/form-fields';
+import { isFormEncoded, queryString } from '../shared/har-fields';
 
 /** The largest HAR file Wirescry imports. */
 export const MAX_HAR_IMPORT_BYTES = 256 * 1024 * 1024;
@@ -63,18 +64,6 @@ const harHeaders = (headers: Header[] | undefined): Array<{ name: string; value:
 const harHttpVersion = (version: string): string =>
   version === '' ? '' : version.startsWith('2') ? 'HTTP/2.0' : `HTTP/${version}`;
 
-/** Whether a Content-Type is an HTML form's default, whose fields HAR lists as postData.params. */
-const isFormEncoded = (type: string | undefined): boolean =>
-  type?.split(';')[0]?.trim().toLowerCase() === 'application/x-www-form-urlencoded';
-
-function queryString(url: string): Array<{ name: string; value: string }> {
-  try {
-    return [...new URL(url).searchParams].map(([name, value]) => ({ name, value }));
-  } catch {
-    return [];
-  }
-}
-
 const span = (from: number | undefined, to: number | undefined): number =>
   from !== undefined && to !== undefined && to >= from ? Math.round((to - from) * 1000) / 1000 : -1;
 
@@ -82,7 +71,17 @@ const span = (from: number | undefined, to: number | undefined): number =>
 /** Said of a response exported while it was still arriving: what's in the file is only its start. */
 const STILL_ARRIVING = 'The response was still arriving when this was exported.';
 
-export function harEntry(item: HarExportItem): Record<string, unknown> {
+/** What `harEntry` knows of an entry that its JSON doesn't say, for redaction. */
+export interface HarEntryMeta {
+  /** Bodies of which only part was kept, so their text ends early. */
+  cut: { request: boolean; response: boolean };
+  /** WebSocket text frames written as base64 (not valid UTF-8, e.g. cut mid-character): their indexes. */
+  base64Frames: number[];
+  /** WebSocket text frames cut to their first 64 KB: their indexes. */
+  cutFrames: number[];
+}
+
+export function harEntry(item: HarExportItem, meta?: HarEntryMeta): Record<string, unknown> {
   const { detail, requestBody, responseBody, messages } = item;
   const { summary, timing } = detail;
   const requestType = headerValue(detail.requestHeaders, 'content-type');
@@ -105,8 +104,10 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
         ? { params: formFields(body.text).map(({ name, value }) => ({ name, value })) }
         : {}),
     };
-    if (requestBody.truncated || detail.requestBody.stored < detail.requestBody.size)
+    if (requestBody.truncated || detail.requestBody.stored < detail.requestBody.size) {
       cut.push('request body');
+      if (meta) meta.cut.request = true;
+    }
     if (requestBody.decodeError) undecoded.push('request body');
   }
 
@@ -128,7 +129,10 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
         ? { compression: Math.max(0, kept - responseBody.size) }
         : {}),
     };
-    if (wasCut) cut.push('response body');
+    if (wasCut) {
+      cut.push('response body');
+      if (meta) meta.cut.response = true;
+    }
     if (responseBody.decodeError) undecoded.push('response body');
   }
   if (detail.requestBody?.incomplete) notes.push('The request body ended early: the connection closed.');
@@ -197,22 +201,28 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
   if (undecoded.length > 0) {
     // The text is the raw, still-encoded bytes: say so, as readers would take it as decoded.
     entry._wirescryUndecoded = undecoded;
-    notes.push(
-      `The ${undecoded.join(' and ')} couldn't be decoded, so it is written as received (still encoded).`,
-    );
+    // Redacting leaves such a body out (src/backend/har-redact.ts), and says so itself.
+    if (!meta)
+      notes.push(
+        `The ${undecoded.join(' and ')} couldn't be decoded, so it is written as received (still encoded).`,
+      );
   }
   if (summary.websocket && messages) {
     entry._resourceType = 'websocket';
     let cutMessages = 0;
-    entry._webSocketMessages = messages.messages.map((m) => {
+    entry._webSocketMessages = messages.messages.map((m, index) => {
       const bytes = Buffer.from(m.base64, 'base64');
-      if (bytes.length < m.size) cutMessages += 1;
+      if (bytes.length < m.size) {
+        cutMessages += 1;
+        if (!m.isBinary) meta?.cutFrames.push(index);
+      }
       let data = m.base64;
       if (!m.isBinary) {
         try {
           data = utf8.decode(bytes);
         } catch {
           // Keep base64.
+          meta?.base64Frames.push(index);
         }
       }
       return {
@@ -233,10 +243,18 @@ export function harEntry(item: HarExportItem): Record<string, unknown> {
   return entry;
 }
 
+/** What a redacted export's log says, for anyone reading the file. */
+export const REDACTED_LOG_COMMENT =
+  'Secrets were redacted by Wirescry. Redaction is best effort for bodies: check before sharing.';
+
 /** The HAR file around the entries, as text before and after them. */
-export function harFrame(version: string): { head: string; tail: string } {
+export function harFrame(version: string, { redacted = false } = {}): { head: string; tail: string } {
   const creator = JSON.stringify({ name: 'Wirescry', version });
-  return { head: `{"log":{"version":"1.2","creator":${creator},"pages":[],"entries":[\n`, tail: '\n]}}\n' };
+  const marks = redacted ? `"comment":${JSON.stringify(REDACTED_LOG_COMMENT)},"_wirescryRedacted":true,` : '';
+  return {
+    head: `{"log":{"version":"1.2","creator":${creator},"pages":[],${marks}"entries":[\n`,
+    tail: '\n]}}\n',
+  };
 }
 
 // ---------------------------------------------------------------- import
@@ -268,6 +286,8 @@ export interface HarImport {
   /** Entries left out, and why (the first few). */
   skipped: number;
   problems: string[];
+  /** The log says Wirescry redacted its secrets. */
+  redacted?: boolean;
 }
 
 /** WebSocket messages read per connection; the rest are left out. */
@@ -708,6 +728,12 @@ export async function parseHar(text: string, maxEntries: number): Promise<HarImp
     await walker.object(async (key) => {
       if (key !== 'log' || found || walker.peek() !== '{') return void walker.value();
       await walker.object(async (logKey) => {
+        // Exported redacted by Wirescry: its secrets are gone, which the import notice says.
+        // (Before or after the entries: another tool may have saved the file again.)
+        if (logKey === '_wirescryRedacted') {
+          if (walker.value() === 'true') result.redacted = true;
+          return;
+        }
         if (logKey !== 'entries' || found || walker.peek() !== '[') return void walker.value();
         found = true;
         await entries();

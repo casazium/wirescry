@@ -23,7 +23,17 @@ import type {
   WebSocketMessages,
 } from '../shared/api';
 import { startApiServer, type CommandContext } from './api';
-import { harEntry, harFrame, MAX_HAR_BODY_BYTES, MAX_HAR_IMPORT_BYTES, parseHar } from './har';
+import {
+  harEntry,
+  harFrame,
+  MAX_HAR_BODY_BYTES,
+  MAX_HAR_IMPORT_BYTES,
+  parseHar,
+  type HarEntryMeta,
+  type HarExportItem,
+} from './har';
+import { knownPart } from './har-redact';
+import { HarRedactor, type RedactOutcome } from './redactor';
 import type { Encryptor } from './secure-store';
 import { BodyMemo, Nudger } from './body-memo';
 import { headerValue, toBodyContent, writeBodyToFile, type WrittenBody } from './body-content';
@@ -39,7 +49,7 @@ import { AndroidSetup, type AndroidSetupOptions } from './android/setup';
 import { CaptureRecords } from './android/capture';
 import { findAdb } from './android/adb-server';
 import { certificateSha256 } from './android/certificates';
-import { ANDROID_RECORDS_DIR } from '../shared/ipc';
+import { ANDROID_RECORDS_DIR, type HarRedactionCounts } from '../shared/ipc';
 import { Composer } from './composer';
 import { javaAgentPathProblem, terminalEnv } from '../shared/terminal-env';
 import { loadOrCreateCA, resetCA, type CertificateAuthority } from './ca';
@@ -164,6 +174,21 @@ export interface HarImportCounts {
   skipped: number;
   problems: string[];
   removed: number;
+  /** The file says its secrets were redacted by Wirescry. */
+  redacted: boolean;
+}
+
+export interface HarExportOptions {
+  /** Redact secrets (the default); `false` writes everything as captured. */
+  redact?: boolean;
+  /** Stops the export: nothing is written. */
+  signal?: AbortSignal;
+}
+
+export interface HarExportCounts {
+  count: number;
+  /** When redacting: what redaction did. */
+  redaction?: HarRedactionCounts;
 }
 
 /** Exchanges kept in the traffic list; the oldest go past this. */
@@ -176,7 +201,7 @@ export interface RunningBackend {
   /** Each plugin's state. Plugins have finished starting by the time startBackend resolves. */
   pluginStatuses(): PluginStatus[];
   /** Writes these exchanges (in this order) to a HAR file. Ids that are gone are skipped. */
-  exportHar(file: string, exchangeIds: string[]): Promise<{ count: number }>;
+  exportHar(file: string, exchangeIds: string[], options?: HarExportOptions): Promise<HarExportCounts>;
   /**
    * Adds the exchanges in a HAR file to the traffic list. `name` is the file's name to
    * show (the file may be a copy). `removed` counts older exchanges dropped to make room.
@@ -813,11 +838,28 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     );
   };
 
-  const exportHar = async (file: string, exchangeIds: string[]): Promise<{ count: number }> => {
-    const { head, tail } = harFrame(options.app?.version ?? '0.0.0');
+  /** Exports running, stopped by `stop()`, which waits for them to finish. */
+  const exportsRunning = new Set<AbortController>();
+  const exportsFinishing = new Set<Promise<void>>();
+
+  const exportHar = async (
+    file: string,
+    exchangeIds: string[],
+    { redact = true, signal }: HarExportOptions = {},
+  ): Promise<HarExportCounts> => {
+    const stopper = new AbortController();
+    const onAbort = (): void => stopper.abort();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) stopper.abort();
+    const checkStopped = (): void => {
+      if (stopper.signal.aborted) throw new Error('The export was stopped.');
+    };
+    const redactor = redact ? new HarRedactor() : undefined;
+    stopper.signal.addEventListener('abort', () => void redactor?.close(), { once: true });
+    const { head, tail } = harFrame(options.app?.version ?? '0.0.0', { redacted: redact });
     // Written to a temporary file and renamed into place, so a failure never leaves half a file.
     const temp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
-    const out = await open(temp, 'wx', 0o600);
+    let out: Awaited<ReturnType<typeof open>> | undefined;
     // Small entries are gathered and written together.
     let pending: string[] = [];
     let pendingLength = 0;
@@ -826,7 +868,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       const text = pending.join('');
       pending = [];
       pendingLength = 0;
-      await out.writeFile(text, 'utf8');
+      await out!.writeFile(text, 'utf8');
     };
     const write = async (text: string): Promise<void> => {
       pending.push(text);
@@ -834,11 +876,39 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       if (pendingLength >= 1024 * 1024) await flush();
     };
     let count = 0;
+    const redaction: HarRedactionCounts = {
+      values: 0,
+      requests: 0,
+      dropped: 0,
+      notScanned: 0,
+      leftOut: 0,
+      full: false,
+    };
+    // Added just before the try, so its finally always takes them out again.
+    exportsRunning.add(stopper);
+    let finished!: () => void;
+    const finishing = new Promise<void>((resolve) => (finished = resolve));
+    exportsFinishing.add(finishing);
     try {
-      await write(head);
-      for (const id of new Set(exchangeIds)) {
+      out = await open(temp, 'wx', 0o600);
+      // The exchanges as they are now: one cleared meanwhile is still written, as it was.
+      const exchanges = [...new Set(exchangeIds)].flatMap((id) => {
         const exchange = store.get(id);
-        if (!exchange) continue;
+        return exchange ? [exchange] : [];
+      });
+      if (redactor) {
+        // First, the values in every URL and header, so one seen in any of them is found in
+        // every body.
+        await redactor.collect(
+          exchanges.map((detail) =>
+            knownPart(harEntry({ detail, requestBody: null, responseBody: null, notes: [] })),
+          ),
+        );
+      }
+      await write(head);
+      for (const exchange of exchanges) {
+        checkStopped();
+        const id = exchange.summary.id;
         const notes: string[] = [];
         const item = {
           detail: exchange,
@@ -847,45 +917,129 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           messages: exchange.summary.websocket ? websockets.get(id, -1, Number.MAX_SAFE_INTEGER) : undefined,
           notes,
         };
-        // Two very large bodies can make an entry longer than a string can be:
-        // then leave out the response body, and if need be the request body too.
-        const attempts = [
-          item,
-          {
-            ...item,
-            responseBody: null,
-            notes: [...notes, 'The response body was too large to write, so it was left out.'],
-          },
-          {
-            ...item,
-            requestBody: null,
-            responseBody: null,
-            notes: [...notes, 'The bodies were too large to write, so they were left out.'],
-          },
-        ];
+        // Two very large bodies can make an entry longer than a string can be: then leave out
+        // the response body, and if need be the request body too. Redacting does the same
+        // when an entry can't be redacted.
+        const attempt = (step: number, why: string): HarExportItem =>
+          step === 0
+            ? item
+            : step === 1
+              ? {
+                  ...item,
+                  responseBody: null,
+                  notes: [...notes, `The response body ${why}, so it was left out.`],
+                }
+              : {
+                  ...item,
+                  requestBody: null,
+                  responseBody: null,
+                  notes: [...notes, `The bodies ${why}, so they were left out.`],
+                };
         let text: string | undefined;
-        for (const attempt of attempts) {
-          try {
-            text = JSON.stringify(harEntry(attempt));
-            break;
-          } catch (error) {
-            if (!(error instanceof RangeError) || attempt === attempts.at(-1)) throw error;
+        let why = 'was too large to write';
+        const last = 2;
+        // The worker gets one more try at an entry without bodies before the export fails.
+        let lastRetried = false;
+        for (let step = 0; step <= last; step++) {
+          const tried = attempt(step, step === 1 ? why : why.replace(/^was/, 'were'));
+          if (!redactor) {
+            try {
+              text = JSON.stringify(harEntry(tried));
+              break;
+            } catch (error) {
+              if (!(error instanceof RangeError) || step === last) throw error;
+              continue;
+            }
           }
+          checkStopped();
+          const meta: HarEntryMeta = {
+            cut: { request: false, response: false },
+            base64Frames: [],
+            cutFrames: [],
+          };
+          let entry: Record<string, unknown>;
+          try {
+            entry = harEntry(tried, meta);
+          } catch (error) {
+            if (!(error instanceof RangeError) || step === last) throw error;
+            why = 'was too large to write';
+            continue;
+          }
+          let outcome: RedactOutcome;
+          try {
+            outcome = await redactor.redact(entry, meta);
+          } catch (error) {
+            checkStopped();
+            // Even without its bodies, the worker can't redact it: something is wrong with
+            // redaction itself, so stop rather than leave out every request.
+            if (step === last && !lastRetried) {
+              lastRetried = true;
+              step -= 1;
+              continue;
+            }
+            if (step === last)
+              throw new Error(`Couldn't redact the requests: ${(error as Error).message}`, { cause: error });
+            why = "couldn't be redacted";
+            continue;
+          }
+          if ('tooLarge' in outcome) {
+            if (step === last) break;
+            why = 'was too large to write';
+            continue;
+          }
+          if ('dropped' in outcome) break;
+          text = outcome.text;
+          redaction.values += outcome.values;
+          if (outcome.values > 0) redaction.requests += 1;
+          redaction.notScanned += outcome.notScanned;
+          // Bodies the ladder took out count as left out too.
+          const removed =
+            step === 0
+              ? 0
+              : step === 1
+                ? Number(item.responseBody !== null)
+                : Number(item.requestBody !== null && (exchange.requestBody?.size ?? 0) > 0) +
+                  Number(item.responseBody !== null);
+          redaction.leftOut += outcome.leftOut + removed;
+          redaction.full ||= outcome.full;
+          break;
         }
-        await write((count > 0 ? ',\n' : '') + text!);
+        if (text === undefined) {
+          // Only when redacting: the entry couldn't be redacted, so it's left out.
+          redaction.dropped += 1;
+          continue;
+        }
+        await write((count > 0 ? ',\n' : '') + text);
         count += 1;
       }
-      if (count === 0) throw new Error('None of those requests are in the list any more.');
+      checkStopped();
+      if (count === 0) {
+        throw new Error(
+          redaction.dropped > 0
+            ? 'None of these requests could be redacted.'
+            : 'None of those requests are in the list any more.',
+        );
+      }
       await write(tail);
       await flush();
       await out.close();
+      // Stopped while finishing: the caller may have gone, so nothing goes in place.
+      checkStopped();
       await rename(temp, file);
     } catch (error) {
-      await out.close().catch(() => undefined);
+      await out?.close().catch(() => undefined);
       await rm(temp, { force: true });
+      // Stopping fails whatever was waiting on the worker: say why.
+      if (stopper.signal.aborted) throw new Error('The export was stopped.', { cause: error });
       throw error;
+    } finally {
+      exportsRunning.delete(stopper);
+      signal?.removeEventListener('abort', onAbort);
+      await redactor?.close();
+      exportsFinishing.delete(finishing);
+      finished();
     }
-    return { count };
+    return redactor ? { count, redaction } : { count };
   };
 
   // Bumped by Clear, so an import that's running stops adding to the list.
@@ -945,7 +1099,13 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       imported += 1;
     }
     if (cleared()) throw new Error('The import stopped because the list was cleared.');
-    return { imported, skipped: parsed.skipped, problems: parsed.problems, removed };
+    return {
+      imported,
+      skipped: parsed.skipped,
+      problems: parsed.problems,
+      removed,
+      redacted: parsed.redacted === true,
+    };
   };
 
   // Searches running, so Clear, stop or their window closing can stop them; and those each window
@@ -1374,6 +1534,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       stopping = true;
       // Searches first, and waited for, so none is reading when the body store closes below.
       stopSearches('stopped');
+      // Exports stop too: they'd be writing from a closing store.
+      for (const running of exportsRunning) running.abort();
+      // And their temporary files are gone before the process is.
+      await Promise.all(exportsFinishing);
       await Promise.all(searches.values());
       // After the searches: one finishing could have asked for a nudge.
       nudges.stop();

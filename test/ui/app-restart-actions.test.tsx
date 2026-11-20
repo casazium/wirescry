@@ -231,10 +231,10 @@ describe('requests from before the proxy restarted', () => {
     await restarted([post]);
     exportHar.mockResolvedValueOnce({ name: 'now.har', count: 1 });
     await act(async () => void fireEvent.click(screen.getByRole('button', { name: 'Export HAR' })));
-    expect(exportHar).toHaveBeenCalledWith(['p']);
+    expect(exportHar).toHaveBeenCalledWith(['p'], { redact: true });
     expect(
       screen.getByText(
-        'Exported 1 request to now.har. 2 from before the proxy restarted weren’t included: their details were lost.',
+        'Exported 1 request to now.har. Secrets weren’t redacted. 2 from before the proxy restarted weren’t included: their details were lost.',
       ),
     ).toBeTruthy();
   });
@@ -246,7 +246,7 @@ describe('requests from before the proxy restarted', () => {
     await act(async () => void fireEvent.click(screen.getByRole('button', { name: 'Export HAR' })));
     expect(
       screen.getByText(
-        'Exported 1 request to now.har. 1 from before the proxy restarted wasn’t included: its details were lost.',
+        'Exported 1 request to now.har. Secrets weren’t redacted. 1 from before the proxy restarted wasn’t included: its details were lost.',
       ),
     ).toBeTruthy();
   });

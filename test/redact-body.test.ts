@@ -902,3 +902,81 @@ describe('minors from the final A2 check', () => {
     expect(redact(words, 'application/xml')).toBe(words);
   });
 });
+
+describe('KnownValues.inBytes', () => {
+  const VALUE = 'Q2xA9fK3' + 'mZ7pL1sW';
+
+  it('finds a value anywhere in bytes, even inside a longer run', () => {
+    const known = new KnownValues();
+    known.add(VALUE);
+    for (const bytes of [
+      Buffer.from(VALUE),
+      Buffer.from(`xx${VALUE}xx`),
+      Buffer.concat([Buffer.from([0x0a, 0x32]), Buffer.from(VALUE), Buffer.from([0x32])]),
+      Buffer.concat([Buffer.alloc(1000, 0xff), Buffer.from(VALUE)]),
+    ]) {
+      expect(known.inBytes(bytes), bytes.toString('latin1').slice(-20)).toBe(true);
+    }
+    // In a slice of a larger buffer, by the slice's own bytes only.
+    const big = Buffer.from(`aaaa${VALUE}bbbb`);
+    expect(known.inBytes(big.subarray(4, 4 + VALUE.length))).toBe(true);
+    expect(known.inBytes(big.subarray(5))).toBe(false);
+  });
+
+  it('finds a value by its UTF-8 bytes', () => {
+    const known = new KnownValues();
+    const unicode = 'pässwörd' + '12345678';
+    known.add(unicode);
+    expect(known.inBytes(Buffer.concat([Buffer.from([0]), Buffer.from(unicode, 'utf8')]))).toBe(true);
+    expect(known.inBytes(Buffer.from(unicode, 'latin1'))).toBe(false);
+  });
+
+  it('finds nothing without values, in short bytes, or in part of a value', () => {
+    expect(new KnownValues().inBytes(Buffer.from(VALUE))).toBe(false);
+    const known = new KnownValues();
+    known.add(VALUE);
+    expect(known.inBytes(Buffer.from(VALUE.slice(0, 7)))).toBe(false);
+    expect(known.inBytes(Buffer.from(VALUE.slice(0, -1)))).toBe(false);
+    expect(known.inBytes(Buffer.from(`${VALUE.slice(0, 8)}-${VALUE.slice(8)}`))).toBe(false);
+    expect(known.inBytes(Buffer.alloc(10_000, 0x41))).toBe(false);
+  });
+
+  it('finds a value added after an earlier search', () => {
+    const known = new KnownValues();
+    known.add(VALUE);
+    const later = 'Zx8Wv6Ut' + '4Sr2Qp0n';
+    expect(known.inBytes(Buffer.from(later))).toBe(false);
+    known.add(later);
+    expect(known.inBytes(Buffer.from(later))).toBe(true);
+  });
+
+  it('takes time in proportion to the bytes, with many values sharing their first bytes', () => {
+    const known = new KnownValues();
+    for (let i = 0; i < 2000; i++) known.add(`AAAA${String(i).padStart(6, '0')}xQ`);
+    const time = (size: number): number => {
+      const bytes = Buffer.alloc(size, 0x41);
+      const started = performance.now();
+      known.inBytes(bytes);
+      return performance.now() - started;
+    };
+    // Sized so a small run takes about 10 ms, then 8 times as much, alternated.
+    let size = 10_000;
+    while (time(size) < 10 && size < 50_000_000) size *= 2;
+    let small = 0;
+    let large = 0;
+    for (let i = 0; i < 3; i++) {
+      small += time(size);
+      large += time(size * 8);
+    }
+    expect(large / small).toBeLessThan(20);
+    // Values alike past the few checked can't all be found in bytes, and say so.
+    expect(known.full).toBe(true);
+  });
+
+  it('isn’t full with values that differ in their first eight bytes', () => {
+    const known = new KnownValues();
+    for (let i = 0; i < 2000; i++) known.add(`${String(i).padStart(8, '0')}xQ`);
+    expect(known.inBytes(Buffer.from('xx00001999xQ'))).toBe(true);
+    expect(known.full).toBe(false);
+  });
+});

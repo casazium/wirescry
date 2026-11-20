@@ -5,10 +5,18 @@ vi.mock('electron', () => ({
   // The template itself is what the test reads.
   Menu: { buildFromTemplate: (template: unknown) => template },
 }));
-const { buildMenu } = await import('../src/main/menu');
+const { buildMenu, updateMenu } = await import('../src/main/menu');
 const { DOCS_URL } = await import('../src/main/about');
 
-type Item = { label?: string; role?: string; submenu?: Item[]; click?: () => void };
+type Item = {
+  id?: string;
+  label?: string;
+  role?: string;
+  accelerator?: string;
+  enabled?: boolean;
+  submenu?: Item[];
+  click?: () => void;
+};
 
 describe('Help menu', () => {
   it('opens the documentation', () => {
@@ -34,5 +42,47 @@ describe('Help menu', () => {
 
   it('points at the Wirescry section of the docs site', () => {
     expect(DOCS_URL).toBe('https://docs.casazium.com/docs/wirescry/intro');
+  });
+});
+
+describe('File menu', () => {
+  const actions = () => ({
+    devTools: false,
+    showLogFile: vi.fn(),
+    checkForUpdates: vi.fn(),
+    showAbout: vi.fn(),
+    command: vi.fn(),
+    openDocumentation: vi.fn(),
+    openWebsite: vi.fn(),
+    reportProblem: vi.fn(),
+  });
+  const items = (template: Item[]): Item[] =>
+    template.flatMap((item) => [item, ...items(item.submenu ?? [])]);
+
+  it('has Export HAR, redacted, on the shortcut, and Export HAR Without Redaction beside it', () => {
+    const a = actions();
+    const all = items(buildMenu(a) as unknown as Item[]);
+    const redacted = all.find((item) => item.id === 'export-har')!;
+    const plain = all.find((item) => item.id === 'export-har-unredacted')!;
+    expect(redacted).toMatchObject({ label: 'Export HAR…', accelerator: 'CmdOrCtrl+S', enabled: false });
+    expect(plain).toMatchObject({ label: 'Export HAR Without Redaction…', enabled: false });
+    expect(plain.accelerator).toBeUndefined();
+    redacted.click!();
+    plain.click!();
+    expect(a.command.mock.calls).toEqual([['export-har'], ['export-har-unredacted']]);
+  });
+
+  it('enables both exports together, when there’s something to export', () => {
+    const state: Record<string, { enabled: boolean }> = {
+      'export-har': { enabled: false },
+      'export-har-unredacted': { enabled: false },
+    };
+    const menu = { getMenuItemById: (id: string) => state[id] } as never;
+    updateMenu(menu, { connected: true, canExport: true, paused: false } as never);
+    expect([state['export-har']!.enabled, state['export-har-unredacted']!.enabled]).toEqual([true, true]);
+    updateMenu(menu, { connected: true, canExport: false, paused: false } as never);
+    expect([state['export-har']!.enabled, state['export-har-unredacted']!.enabled]).toEqual([false, false]);
+    updateMenu(menu, { connected: false, canExport: true, paused: false } as never);
+    expect([state['export-har']!.enabled, state['export-har-unredacted']!.enabled]).toEqual([false, false]);
   });
 });

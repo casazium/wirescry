@@ -502,7 +502,7 @@ describe('searching by header', () => {
       await started([captured('alpha', 'red'), captured('beta', 'blue'), captured('gamma', 'red')]);
       await search('header.x-team=red');
       await act(async () => void fireEvent.click(exportButton()));
-      expect(exportHar).toHaveBeenCalledWith(['alpha', 'gamma']);
+      expect(exportHar).toHaveBeenCalledWith(['alpha', 'gamma'], { redact: true });
     });
 
     it('exports what’s still shown while a new header search is answered', async () => {
@@ -511,7 +511,7 @@ describe('searching by header', () => {
       fake.held = [];
       await search('header.x-team=blue');
       await act(async () => void fireEvent.click(exportButton()));
-      expect(exportHar).toHaveBeenCalledWith(['alpha']);
+      expect(exportHar).toHaveBeenCalledWith(['alpha'], { redact: true });
     });
 
     it('offers no export when nothing matches', async () => {
@@ -530,7 +530,7 @@ describe('searching by header', () => {
       await search('header.x-team=red');
       exportHar.mockResolvedValueOnce({ name: 'red.har', count: 1 });
       await act(async () => void fireEvent.click(exportButton()));
-      expect(exportHar).toHaveBeenCalledWith(['newer']);
+      expect(exportHar).toHaveBeenCalledWith(['newer'], { redact: true });
       expect(screen.getByText(/Exported 1 request to red\.har\./).textContent).not.toContain(
         'before the proxy',
       );

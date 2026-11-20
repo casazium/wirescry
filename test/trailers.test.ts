@@ -194,7 +194,9 @@ describe('trailers through Wirescry', () => {
     await uploadViaWirescry('/upload?again');
     const upload = await recorded('/upload?again');
     const file = path.join(dataDir, 'trailers.har');
-    expect(await backend.exportHar(file, [original.summary.id, upload.summary.id])).toEqual({ count: 2 });
+    expect(
+      await backend.exportHar(file, [original.summary.id, upload.summary.id], { redact: false }),
+    ).toEqual({ count: 2 });
     const result = await backend.importHar(file);
     expect(result.imported).toBe(2);
     const api = await apiClient(backend.apiPort);

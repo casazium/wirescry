@@ -28,7 +28,7 @@ import {
   type SecretFamily,
   type Span,
   type ValueSink,
-} from './redact';
+} from './redact.ts';
 
 // ---------------------------------------------------------------- known values
 
@@ -76,6 +76,8 @@ function longestRun(value: string): { run: string; at: number } | undefined {
 export class KnownValues implements ValueSink {
   private readonly byRun = new Map<string, Known[]>();
   private readonly values = new Set<string>();
+  /** For `inBytes`: built when first needed. */
+  private byFirstEight: Map<number, Map<number, Uint8Array[]>> | undefined;
   /** Whether a value was turned away for want of room, so a later secret may not be found. */
   full = false;
 
@@ -95,6 +97,7 @@ export class KnownValues implements ValueSink {
       return;
     }
     this.values.add(value);
+    this.byFirstEight = undefined;
     if (list) list.push({ value, at: longest.at });
     else this.byRun.set(longest.run, [{ value, at: longest.at }]);
   }
@@ -115,6 +118,60 @@ export class KnownValues implements ValueSink {
       }
     }
     return spans;
+  }
+
+  /**
+   * Whether a known value's UTF-8 bytes are anywhere in these bytes, even inside a longer run:
+   * for a body that isn't text, where a value sits between arbitrary bytes (a length, a field
+   * tag) and finding one means leaving the body out. One pass, each position looked up by the
+   * eight bytes from it; at most a few values share those, so it stays linear.
+   */
+  inBytes(bytes: Uint8Array): boolean {
+    if (this.values.size === 0 || bytes.length < 8) return false;
+    const index = this.bytesIndex();
+    let hi = 0;
+    let lo = 0;
+    for (let i = 0; i < bytes.length; i++) {
+      hi = ((hi << 8) | (lo >>> 24)) >>> 0;
+      lo = ((lo << 8) | bytes[i]!) >>> 0;
+      if (i < 7) continue;
+      const candidates = index.get(hi)?.get(lo);
+      if (!candidates) continue;
+      const start = i - 7;
+      for (const value of candidates) {
+        if (start + value.length > bytes.length) continue;
+        // The first eight match already.
+        let k = 8;
+        while (k < value.length && bytes[start + k] === value[k]) k++;
+        if (k === value.length) return true;
+      }
+    }
+    return false;
+  }
+
+  /** Each value's UTF-8 bytes, by their first four bytes and then the next four. */
+  private bytesIndex(): Map<number, Map<number, Uint8Array[]>> {
+    if (this.byFirstEight) return this.byFirstEight;
+    const index = new Map<number, Map<number, Uint8Array[]>>();
+    const encoder = new TextEncoder();
+    const word = (b: Uint8Array, at: number): number =>
+      ((b[at]! << 24) | (b[at + 1]! << 16) | (b[at + 2]! << 8) | b[at + 3]!) >>> 0;
+    for (const value of this.values) {
+      const encoded = encoder.encode(value);
+      // Found by eight bytes: `distinctive` keeps none shorter, but don't rely on it.
+      if (encoded.length < 8) continue;
+      const hi = word(encoded, 0);
+      const lo = word(encoded, 4);
+      let inner = index.get(hi);
+      if (!inner) index.set(hi, (inner = new Map()));
+      const list = inner.get(lo);
+      if (!list) inner.set(lo, [encoded]);
+      else if (list.length < MAX_PER_RUN) list.push(encoded);
+      // Too many alike to check at every position: one may go unfound in bytes.
+      else this.full = true;
+    }
+    this.byFirstEight = index;
+    return index;
   }
 
   /** Spans in `text`, mapped to the caller's positions by `rawAt` (rounding a start down, an end up). */
@@ -405,7 +462,7 @@ const LONG_ONLY_FAMILIES: ReadonlySet<SecretFamily> = new Set(['token', 'session
  * the text rules and the known values run inside every string, and JSON inside a string is looked
  * into. Walked without building it, and without recursion.
  */
-export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] | undefined {
+export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = false): Span[] | undefined {
   const spans: Span[] = [];
   const stack: Frame[] = [];
   let i = 0;
@@ -531,6 +588,16 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
 
   ws();
   if (i >= n) return undefined;
+  /**
+   * Where the walk can't go on. For a body cut short (`cut`), the spans found so far are kept,
+   * and the rest from here gets the text rules; otherwise it isn't JSON.
+   */
+  const fail = (): Span[] | undefined => {
+    if (!cut) return undefined;
+    for (const span of plainSpans(text.slice(i), known, true))
+      spans.push({ ...span, start: i + span.start, end: i + span.end });
+    return spans;
+  };
   let needValue = true;
   for (;;) {
     ws();
@@ -543,11 +610,11 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
         i++;
         needValue = false;
       } else {
-        if (c !== '"') return undefined;
+        if (c !== '"') return fail();
         const end = stringEnd();
-        if (end < 0) return undefined;
+        if (end < 0) return fail();
         const decodedKey = decodeJsonString(text.slice(i + 1, end - 1));
-        if (decodedKey === undefined) return undefined;
+        if (decodedKey === undefined) return fail();
         const key = decodedKey.decoded;
         frame.key = key;
         // A key can be a secret too (a token used as a map's key): its shapes and known values.
@@ -564,7 +631,7 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
         }
         i = end;
         ws();
-        if (text[i] !== ':') return undefined;
+        if (text[i] !== ':') return fail();
         i++;
         frame.expectKey = false;
         needValue = true;
@@ -573,7 +640,7 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
     } else if (needValue) {
       const family = familyHere();
       if (c === '{' || c === '[') {
-        if (stack.length >= MAX_DEPTH) return undefined;
+        if (stack.length >= MAX_DEPTH) return fail();
         // An object under a secret name gives its direct values that name's rule; an array, its
         // items. Deeper containers judge by their own keys.
         const own = frame?.kind === 'object' ? nameRule(frame.key ?? '', 'json') : undefined;
@@ -613,14 +680,19 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
       }
       if (c === '"') {
         const end = stringEnd();
-        if (end < 0) return undefined;
-        if (!stringValue(i + 1, end - 1, family)) return undefined;
+        if (end < 0) {
+          // Cut inside a string under a secret name: redacted to the end.
+          if (cut && family && i + 1 < n)
+            spans.push({ start: i + 1, end: n, kind: 'name', name: nameHere() });
+          return fail();
+        }
+        if (!stringValue(i + 1, end - 1, family)) return fail();
         i = end;
       } else {
         const scalar = /^(?:-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null)/.exec(
           text.slice(i, i + 400),
         );
-        if (!scalar) return undefined;
+        if (!scalar) return fail();
         // Numbers only: a boolean is no secret, and changing its type would break readers.
         if (family && SCALAR_FAMILIES.has(family) && /^-?\d/.test(scalar[0])) {
           spans.push({
@@ -636,14 +708,14 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
       needValue = false;
     } else {
       // After a value: a comma, or the container's end.
-      if (!frame) return undefined;
+      if (!frame) return fail();
       if (c === ',') {
         i++;
         if (frame.kind === 'object') {
           frame.expectKey = true;
           frame.key = undefined;
           ws();
-          if (text[i] !== '"') return undefined;
+          if (text[i] !== '"') return fail();
         } else {
           needValue = true;
         }
@@ -654,14 +726,14 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
         i++;
         continue;
       }
-      return undefined;
+      return fail();
     }
     if (stack.length === 0 && !needValue) {
       ws();
-      return i >= n ? spans : undefined;
+      return i >= n ? spans : fail();
     }
   }
-  return stack.length === 0 && !needValue ? spans : undefined;
+  return (stack.length === 0 && !needValue) || cut ? spans : undefined;
 }
 
 // ---------------------------------------------------------------- tags (XML and HTML)
@@ -798,6 +870,20 @@ function codeRanges(text: string): Array<[number, number]> {
 }
 
 // ---------------------------------------------------------------- bodies
+
+/**
+ * Whether a body of this media type is text, to be redacted: text of any kind, JSON, XML,
+ * JavaScript, forms, multipart, and the like. Anything else (images, archives, protocol buffers)
+ * isn't scanned. An unknown or missing type counts as text only to the caller who has looked at
+ * the bytes.
+ */
+export function isTextual(mediaType: string | undefined): boolean {
+  const type = (mediaType ?? '').split(';')[0]!.trim().toLowerCase();
+  if (type.startsWith('text/') || type.startsWith('multipart/')) return true;
+  return /(?:^application\/(?:json|xml|javascript|ecmascript|x-www-form-urlencoded|x-ndjson|jsonl|json-seq|x-jsonlines|stream\+json|yaml|x-yaml|csv|graphql|graphql-response\+json|x-javascript|sql|xhtml\+xml|ld\+json|problem\+json|soap\+xml|atom\+xml|rss\+xml)$)|\+(?:json|xml)$/.test(
+    type,
+  );
+}
 
 /** What kind of body a media type names, for the rules it gets. */
 export type BodyKind =
@@ -952,9 +1038,9 @@ function lineSpans(text: string, known: KnownValues | undefined, valueOf: (line:
 const JSON_PREFIX = /^\uFEFF?(?:\)\]\}',?\s*|for\s*\(;;\);\s*|while\s*\(\s*1\s*\);\s*)?/;
 
 /** JSON after any prefix, its spans in the text's positions; undefined if it isn't JSON. */
-function prefixedJsonSpans(text: string, known: KnownValues | undefined): Span[] | undefined {
+function prefixedJsonSpans(text: string, known: KnownValues | undefined, cut = false): Span[] | undefined {
   const prefix = JSON_PREFIX.exec(text)![0].length;
-  const spans = jsonSpans(prefix > 0 ? text.slice(prefix) : text, known);
+  const spans = jsonSpans(prefix > 0 ? text.slice(prefix) : text, known, 0, cut);
   return spans?.map((s) => ({ ...s, start: s.start + prefix, end: s.end + prefix }));
 }
 
@@ -991,12 +1077,13 @@ function kindSpans(
   known: KnownValues | undefined,
   notScanned: string[],
   depth = 0,
+  cut = false,
 ): Span[] {
   const kind = bodyKind(mediaType);
   switch (kind) {
     case 'json':
       // JSON as a whole, else line by line (JSON objects one after another), else text.
-      return prefixedJsonSpans(text, known) ?? lineSpans(text, known, () => 0);
+      return prefixedJsonSpans(text, known, cut) ?? lineSpans(text, known, () => 0);
     case 'ndjson':
       return lineSpans(text, known, () => 0);
     case 'sse':
@@ -1042,7 +1129,7 @@ function kindSpans(
     default:
       // Text that is JSON, sent without saying so; else text.
       return (
-        (/^\uFEFF?\s*[[{)fw]/.test(text) ? prefixedJsonSpans(text, known) : undefined) ??
+        (/^\uFEFF?\s*[[{)fw]/.test(text) ? prefixedJsonSpans(text, known, cut) : undefined) ??
         plainSpans(text, known, true)
       );
   }
@@ -1052,12 +1139,18 @@ function kindSpans(
  * A text body's redactions, by its media type. Values found by name are added to `known`, and
  * every known value found in the body is redacted too, before or after where it was learned.
  */
-export function redactBody(text: string, mediaType: string | undefined, known?: KnownValues): BodyRedaction {
+export function redactBody(
+  text: string,
+  mediaType: string | undefined,
+  known?: KnownValues,
+  options: { cut?: boolean } = {},
+): BodyRedaction {
   const notScanned: string[] = [];
+  const cut = options.cut === true;
   // Collected first, so a value found late in the body is also found earlier in it.
-  if (known) kindSpans(text, mediaType, known, []);
+  if (known) kindSpans(text, mediaType, known, [], 0, cut);
   // Known values are looked for by each kind's rules: in JSON, inside its strings; in text, anywhere.
-  const spans = kindSpans(text, mediaType, known, notScanned);
+  const spans = kindSpans(text, mediaType, known, notScanned, 0, cut);
   const merged = mergeSpans(spans);
   return {
     spans: merged,
