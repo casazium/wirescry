@@ -36,10 +36,12 @@ describe('JSON', () => {
     );
   });
 
-  it('turns numbers and booleans under password and secret names into a redacted string', () => {
-    const out = redactJson('{"pin":1234,"cvv":123,"api_key":98765,"secret":true,"otp":null,"n":5}');
+  it('turns numbers under password and secret names into a redacted string, keeping booleans and null', () => {
+    const out = redactJson(
+      '{"pin":1234,"cvv":123,"api_key":98765,"secret":true,"has_password":false,"otp":null,"n":5}',
+    );
     expect(out).toBe(
-      `{"pin":"${REDACTED}","cvv":"${REDACTED}","api_key":"${REDACTED}","secret":"${REDACTED}","otp":null,"n":5}`,
+      `{"pin":"${REDACTED}","cvv":"${REDACTED}","api_key":"${REDACTED}","secret":true,"has_password":false,"otp":null,"n":5}`,
     );
     expect(() => JSON.parse(out)).not.toThrow();
   });
@@ -425,11 +427,13 @@ describe('limits and edges', () => {
     expect(known.size).toBe(0);
   });
 
-  it('leaves JSON keys and structure alone, even where a known value matches', () => {
+  it('redacts a known value or token used as a JSON key, inside its quotes, and leaves numbers alone', () => {
     const known = new KnownValues();
     known.add('ab12cd34ef');
-    const text = '{"ab12cd34ef":1,"v":"ab12cd34ef"}';
-    expect(redact(text, 'application/json', known)).toBe(`{"ab12cd34ef":1,"v":"${REDACTED}"}`);
+    const text = `{"ab12cd34ef":1,"v":"ab12cd34ef","${GH}":true,"n":12345678}`;
+    expect(redact(text, 'application/json', known)).toBe(
+      `{"${REDACTED}":1,"v":"${REDACTED}","${REDACTED}":true,"n":12345678}`,
+    );
   });
 
   it('finds a value partly encoded', () => {
@@ -485,5 +489,257 @@ describe('a whole exchange', () => {
     // Every cookie value is redacted, but its name is kept.
     for (const kept of ['theme=', '"user":"bob"', 'state=1', '<html>', '"delta":"echo '])
       expect(out).toContain(kept);
+  });
+});
+
+describe('fixes from the A2 review', () => {
+  const crlfParts = (parts: string[][], b = 'B0und'): string =>
+    [...parts.map(([headers, body]) => `--${b}\r\n${headers}\r\n\r\n${body}`), `--${b}--\r\n`].join('\r\n');
+
+  it('finds known values where the JSON walk falls back to text', () => {
+    const known = new KnownValues();
+    known.add(SESSION);
+    // A body cut short, a non-JSON NDJSON line, event-stream text lines, stream+json.
+    expect(redact(`{"a":"${SESSION}","b":`, 'application/json', known)).toBe(`{"a":"${REDACTED}","b":`);
+    expect(redact(`not json ${SESSION}\n{"ok":1}`, 'application/x-ndjson', known)).toBe(
+      `not json ${REDACTED}\n{"ok":1}`,
+    );
+    expect(redact(`event: x ${SESSION}\ndata: hello ${SESSION}\n`, 'text/event-stream', known)).toBe(
+      `event: x ${REDACTED}\ndata: hello ${REDACTED}\n`,
+    );
+    expect(bodyKind('application/stream+json')).toBe('ndjson');
+  });
+
+  it('reads JSON after a byte order mark or an XSSI guard, and JSON objects one per line', () => {
+    expect(redact('\uFEFF{"password":"x"}', 'application/json')).toBe(`\uFEFF{"password":"${REDACTED}"}`);
+    expect(redact(`)]}',\n{"password":"x"}`, 'application/json')).toBe(`)]}',\n{"password":"${REDACTED}"}`);
+    expect(redact('while(1);{"password":"x"}', 'application/json')).toBe(
+      `while(1);{"password":"${REDACTED}"}`,
+    );
+    expect(redact('{"password":"a"}\n{"password":"b"}', 'application/json')).toBe(
+      `{"password":"${REDACTED}"}\n{"password":"${REDACTED}"}`,
+    );
+  });
+
+  it('writes a bare number back quoted when JSON falls to text, so it stays JSON-shaped', () => {
+    expect(redact('{"pin": 123456, "password": 12345678', 'application/json')).toBe(
+      `{"pin": "${REDACTED}", "password": "${REDACTED}"`,
+    );
+  });
+
+  it('redacts a session’s or token’s own id and value, and keys and values of objects in secret arrays', () => {
+    expect(redactJson('{"session":{"id":"s1s2s3s4s5","user":"bob"},"token":{"value":"t1t2t3t4t5"}}')).toBe(
+      `{"session":{"id":"${REDACTED}","user":"bob"},"token":{"value":"${REDACTED}"}}`,
+    );
+    expect(
+      redactJson('{"api_keys":[{"key":"k1k2k3k4k5","label":"prod"}],"secrets":[{"value":"pw","note":"x"}]}'),
+    ).toBe(
+      `{"api_keys":[{"key":"${REDACTED}","label":"prod"}],"secrets":[{"value":"${REDACTED}","note":"x"}]}`,
+    );
+  });
+
+  it('redacts echoed headers in JSON as the headers themselves would be', () => {
+    const text =
+      '{"Cookie":"sid=abc123def456; theme=dark","Authorization":"Token abc123","set-cookie":"a=1; Path=/"}';
+    expect(redactJson(text)).toBe(
+      `{"Cookie":"sid=${REDACTED}; theme=${REDACTED}","Authorization":"Token ${REDACTED}","set-cookie":"a=${REDACTED}; Path=/"}`,
+    );
+  });
+
+  it('doesn’t take an inherited value as known: only one under its own strong name', () => {
+    const known = new KnownValues();
+    redactJson('{"credentials":{"username":"alice@example.com","password":"Hunter2Hunter2"}}', known);
+    expect(known.scan('alice@example.com Hunter2Hunter2').length).toBe(1);
+  });
+
+  it('redacts a SAML-sized hidden input', () => {
+    const saml = rep('PHNhbWxwOlJlc3BvbnNl', 400);
+    const html = `<form><input type="hidden" name="SAMLResponse" value="${saml}"></form>`;
+    expect(redact(html, 'text/html')).toBe(
+      `<form><input type="hidden" name="SAMLResponse" value="${REDACTED}"></form>`,
+    );
+  });
+
+  it('redacts a password field whatever its name, a secret textarea, and XML CDATA and keyed entries', () => {
+    expect(redact('<input type="password" name="p1" value="v1v1v1">', 'text/html')).toBe(
+      `<input type="password" name="p1" value="${REDACTED}">`,
+    );
+    expect(redact('<textarea name="secret">abc</textarea>', 'text/html')).toBe(
+      `<textarea name="secret">${REDACTED}</textarea>`,
+    );
+    expect(
+      redact('<Password><![CDATA[p<w]]></Password><entry key="password">pw2</entry>', 'application/xml'),
+    ).toBe(`<Password><![CDATA[${REDACTED}]]></Password><entry key="password">${REDACTED}</entry>`);
+  });
+
+  it('reads multipart parts after a malformed one, the preamble and epilogue, and unquoted names', () => {
+    const b = 'B0und';
+    const text =
+      `preamble ${GH}\r\n--${b}\r\nno blank line here ${JWT}\r\n--${b}\r\n` +
+      `Content-Disposition: form-data; name=password\r\n\r\nhunter2\r\n--${b}--\r\nepilogue ${GH}`;
+    const out = redact(text, `multipart/form-data; boundary=${b}`);
+    expect(out).toBe(
+      `preamble ${REDACTED}\r\n--${b}\r\nno blank line here ${REDACTED}\r\n--${b}\r\n` +
+        `Content-Disposition: form-data; name=password\r\n\r\n${REDACTED}\r\n--${b}--\r\nepilogue ${REDACTED}`,
+    );
+  });
+
+  it('redacts a secret-named file part whole, finds shapes in binary ones, and isn’t fooled by filename=', () => {
+    const text = crlfParts([
+      [
+        'Content-Disposition: form-data; name="ssh_private_key"; filename="id"\r\nContent-Type: application/octet-stream',
+        'KEYDATA',
+      ],
+      [
+        'Content-Disposition: form-data; name="up"; filename="password"\r\nContent-Type: application/octet-stream',
+        `bin ${GH}`,
+      ],
+    ]);
+    const out = redact(text, 'multipart/form-data; boundary=B0und');
+    expect(out).toContain(`filename="id"\r\nContent-Type: application/octet-stream\r\n\r\n${REDACTED}`);
+    expect(out).toContain(`bin ${REDACTED}`);
+  });
+
+  it('stops looking into nested multipart after two levels', () => {
+    let body = `password=deep1234`;
+    // Deep enough to overflow the stack without the limit.
+    for (let i = 0; i < 3000; i++) {
+      body = crlfParts([[`Content-Type: multipart/mixed; boundary=b${i}`, body]], `b${i + 1}`);
+    }
+    expect(() => redactBody(body, 'multipart/mixed; boundary=b3000')).not.toThrow();
+  });
+
+  it('redacts a form field holding JSON with a secret, and known values written with + for spaces', () => {
+    const known = new KnownValues();
+    known.add('correct horse battery 1');
+    const text = `payload=${encodeURIComponent('{"password":"x"}')}&q=correct+horse+battery+1&other=%7B%22a%22%3A1%7D`;
+    expect(redact(text, 'application/x-www-form-urlencoded', known)).toBe(
+      `payload=${REDACTED}&q=${REDACTED}&other=%7B%22a%22%3A1%7D`,
+    );
+  });
+
+  it('finds a known value beside raw / = : @ and escapes, never leaving part of an escape', () => {
+    const known = new KnownValues();
+    known.add('ab12/cdEFgh+ijKL==');
+    known.add('+abcDEF123456');
+    const text = `x=ab12/cdEFgh%2BijKL== y=token%3D%2BabcDEF123456`;
+    // A value starting inside a run of escapes takes the whole run: more, never less.
+    expect(applySpans(text, known.scan(text))).toBe(`x=${REDACTED} y=token${REDACTED}`);
+  });
+
+  it('trims closing brackets from an unquoted value, and skips quoted stop words', () => {
+    expect(applySpans('(password=hunter22)', assignmentSpans('(password=hunter22)'))).toBe(
+      `(password=${REDACTED})`,
+    );
+    expect(
+      applySpans('{user: bob, password: hunter22}', assignmentSpans('{user: bob, password: hunter22}')),
+    ).toBe(`{user: bob, password: ${REDACTED}}`);
+    expect(assignmentSpans('"password": "required"')).toEqual([]);
+  });
+
+  it('turns away values far longer than their longest run, and says when it’s full', () => {
+    const known = new KnownValues();
+    known.add(rep('abcd.', 20) + 'X1');
+    expect(known.size).toBe(0);
+    expect(known.full).toBe(false);
+    for (let i = 0; i < 9; i++) known.add(`${i}.Shared_Run_Of_Text.${i}`);
+    expect(known.full).toBe(true);
+  });
+
+  it('takes as JSON exactly what JSON.parse does, on a corpus', () => {
+    const corpus = [
+      '{}',
+      '[]',
+      '"s"',
+      '1',
+      '-0.5e3',
+      'true',
+      'null',
+      '{"a":[1,{"b":"c\\u00e9"}],"d":null}',
+      ' [ 1 , 2 ] ',
+      '{',
+      '}',
+      '[1,]',
+      '{"a":1,}',
+      '{"a" 1}',
+      "{'a':1}",
+      '01',
+      '1.',
+      '.5',
+      '+1',
+      'tru',
+      '{"a":"\\x"}',
+      '[1 2]',
+      '{"a":1}{"b":2}',
+      '',
+    ];
+    for (const text of corpus) {
+      let valid = true;
+      try {
+        JSON.parse(text);
+      } catch {
+        valid = false;
+      }
+      expect(jsonSpans(text) !== undefined, text).toBe(valid);
+    }
+  });
+
+  it('always leaves JSON-shaped output on the text paths too', () => {
+    const known = new KnownValues();
+    known.add(SESSION);
+    for (const [text, type] of [
+      [`{"t":"${SESSION}","n":1700000000.123456}`, 'text/plain'],
+      [`)]}',\n{"pin":1,"x":"${SESSION}"}`, 'application/json'],
+      ['{"a":1}\n{"password":2}', 'application/json'],
+    ] as const) {
+      const out = redact(text, type, known);
+      const json = out.replace(/^\)\]\}',\n/, '');
+      for (const line of json.split('\n')) expect(() => JSON.parse(line), out).not.toThrow();
+    }
+  });
+});
+
+describe('time, after the A2 review', () => {
+  const once = (run: () => void): number => {
+    const start = performance.now();
+    run();
+    return performance.now() - start;
+  };
+  it.each([
+    ['multipart parts, CRLF', (n: number) => rep('--b\r\n\r\nx\r\n', n)],
+    ['multipart parts, LF', (n: number) => rep('--b\n\nx\n', n)],
+    [
+      'ordinary multipart fields',
+      (n: number) => rep('--b\r\nContent-Disposition: form-data; name="f"\r\n\r\nvalue\r\n', n),
+    ],
+  ])('stays linear on %s', (_what, make) => {
+    const run = (text: string) => () => redactBody(text, 'multipart/form-data; boundary=b');
+    let n = 2_000;
+    run(make(n))();
+    while (once(run(make(n))) < 10 && make(n).length < 2_000_000) n *= 2;
+    let t1 = Infinity;
+    let t2 = Infinity;
+    for (let i = 0; i < 5; i++) {
+      t1 = Math.min(t1, once(run(make(n))));
+      t2 = Math.min(t2, once(run(make(n * 8))));
+    }
+    // Linear gives about 8; even n^1.44 would pass 20, so the limit here is tighter.
+    expect(t2 / t1).toBeLessThan(14);
+  });
+
+  it('finds known values quickly when they share a short run', () => {
+    const known = new KnownValues();
+    for (let i = 0; i < 8; i++) known.add(`${rep('abcd.', 6)}Z${i}`);
+    const text = rep('.abcd', 200_000);
+    const start = performance.now();
+    redactBody(text, 'text/plain', known);
+    expect(performance.now() - start).toBeLessThan(2000);
+  });
+
+  it('handles many small JSON strings within a budget', () => {
+    const text = `[${rep('"ab",', 200_000)}"ab"]`;
+    const start = performance.now();
+    redactBody(text, 'application/json', new KnownValues());
+    expect(performance.now() - start).toBeLessThan(2000);
   });
 });

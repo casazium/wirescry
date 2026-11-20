@@ -19,6 +19,7 @@ import {
   percentDecode,
   recordsOf,
   REDACTED,
+  redactHeader,
   secretName,
   shapeSpans,
   STRONG_FAMILIES,
@@ -33,14 +34,21 @@ import {
 
 const TOKEN_CHAR = /[A-Za-z0-9_-]/;
 const TOKEN_RUN = /[A-Za-z0-9_-]+/g;
-/** A run of URL characters with at least one percent escape, for values written encoded. */
-// Anchored at a run's start, so a long run with no escape is tried once, not from every character.
-const ENCODED_RUN =
-  /(?<![A-Za-z0-9_.~!*'()+-])(?:[A-Za-z0-9_.~!*'()+-]|%[0-9A-Fa-f]{2})*%[0-9A-Fa-f]{2}(?:[A-Za-z0-9_.~!*'()+-]|%[0-9A-Fa-f]{2})*/g;
+/**
+ * A run of characters that can't end a value written in a URL or form (no space, quote or angle
+ * bracket), anchored at its start so each is read once. Runs holding a `%` (or, in a form, a `+`)
+ * are decoded and searched again.
+ */
+const ENCODED_RUN = /(?<![^\s"'<>])[^\s"'<>]+/g;
 
 /** At most this many known values, and this many sharing one longest run. */
 const MAX_KNOWN = 10_000;
 const MAX_PER_RUN = 8;
+/**
+ * A value much longer than its longest run (`abcd.abcd.abcd…`) would be checked at length
+ * wherever that short run appears: such values aren't kept.
+ */
+const MAX_LENGTH_PER_RUN = 8;
 
 interface Known {
   value: string;
@@ -68,30 +76,40 @@ function longestRun(value: string): { run: string; at: number } | undefined {
 export class KnownValues implements ValueSink {
   private readonly byRun = new Map<string, Known[]>();
   private readonly values = new Set<string>();
+  /** Whether a value was turned away for want of room, so a later secret may not be found. */
+  full = false;
 
   get size(): number {
     return this.values.size;
   }
 
   add(value: string): void {
-    if (this.values.size >= MAX_KNOWN || this.values.has(value) || !distinctive(value)) return;
+    if (this.values.has(value) || !distinctive(value)) return;
     const longest = longestRun(value);
     // A value of mostly punctuation can't be found by its runs.
-    if (!longest || longest.run.length < 4) return;
+    if (!longest || longest.run.length < 4 || value.length > longest.run.length * MAX_LENGTH_PER_RUN) return;
     const list = this.byRun.get(longest.run);
     // Values sharing a run are checked one by one wherever it appears, so only a few are kept.
-    if (list && list.length >= MAX_PER_RUN) return;
+    if (this.values.size >= MAX_KNOWN || (list && list.length >= MAX_PER_RUN)) {
+      this.full = true;
+      return;
+    }
     this.values.add(value);
     if (list) list.push({ value, at: longest.at });
     else this.byRun.set(longest.run, [{ value, at: longest.at }]);
   }
 
-  /** Spans of known values in text, as written or percent-encoded. */
-  scan(text: string): Span[] {
-    if (this.values.size === 0) return [];
+  /**
+   * Spans of known values in text, as written or percent-encoded (and, in a form, with `+` for a
+   * space).
+   */
+  scan(text: string, plusIsSpace = false): Span[] {
+    if (this.values.size === 0 || text.length < 8) return [];
     const spans = this.find(text, (i) => i);
     for (const match of text.matchAll(ENCODED_RUN)) {
-      const { decoded, rawAt } = decodeWithMap(match[0]);
+      const run = match[0];
+      if (!run.includes('%') && !(plusIsSpace && run.includes('+'))) continue;
+      const { decoded, rawAt } = decodeWithMap(run, plusIsSpace);
       for (const span of this.find(decoded, rawAt)) {
         spans.push({ ...span, start: match.index + span.start, end: match.index + span.end });
       }
@@ -99,8 +117,8 @@ export class KnownValues implements ValueSink {
     return spans;
   }
 
-  /** Spans in `text`, mapped to the caller's positions by `rawAt`. */
-  private find(text: string, rawAt: (i: number) => number): Span[] {
+  /** Spans in `text`, mapped to the caller's positions by `rawAt` (rounding a start down, an end up). */
+  private find(text: string, rawAt: (i: number, up: boolean) => number): Span[] {
     const spans: Span[] = [];
     for (const match of text.matchAll(TOKEN_RUN)) {
       const candidates = this.byRun.get(match[0]);
@@ -112,7 +130,7 @@ export class KnownValues implements ValueSink {
         // Standing alone: not the middle of a longer run.
         if (TOKEN_CHAR.test(value[0]!) && start > 0 && TOKEN_CHAR.test(text[start - 1]!)) continue;
         if (TOKEN_CHAR.test(value.at(-1)!) && end < text.length && TOKEN_CHAR.test(text[end]!)) continue;
-        spans.push({ start: rawAt(start), end: rawAt(end), kind: 'known value' });
+        spans.push({ start: rawAt(start, false), end: rawAt(end, true), kind: 'known value' });
       }
     }
     return spans;
@@ -120,19 +138,25 @@ export class KnownValues implements ValueSink {
 }
 
 /**
- * Percent escapes decoded, with a map back to the raw text. An index inside a decoded run of
- * escapes maps to the run's edge, so a span may grow to whole escapes, never shrink.
+ * Percent escapes decoded (and `+` as a space, if asked), with a map back to the raw text. An
+ * index inside a decoded run of escapes maps to the run's start for a span's start and to its end
+ * for a span's end, so a span may grow to whole escapes, never shrink.
  */
-function decodeWithMap(raw: string): { decoded: string; rawAt: (i: number) => number } {
+function decodeWithMap(
+  raw: string,
+  plusIsSpace = false,
+): { decoded: string; rawAt: (i: number, up: boolean) => number } {
   const decodedStarts: number[] = [];
   const rawStarts: number[] = [];
   let decoded = '';
   let at = 0;
+  // A `+` as a space keeps the length, so the plain parts still map one to one.
+  const plain = (part: string): string => (plusIsSpace ? part.replace(/\+/g, ' ') : part);
   for (const match of raw.matchAll(/(?:%[0-9A-Fa-f]{2})+/g)) {
     if (match.index > at) {
       decodedStarts.push(decoded.length);
       rawStarts.push(at);
-      decoded += raw.slice(at, match.index);
+      decoded += plain(raw.slice(at, match.index));
     }
     decodedStarts.push(decoded.length);
     rawStarts.push(match.index);
@@ -142,11 +166,11 @@ function decodeWithMap(raw: string): { decoded: string; rawAt: (i: number) => nu
   if (at < raw.length) {
     decodedStarts.push(decoded.length);
     rawStarts.push(at);
-    decoded += raw.slice(at);
+    decoded += plain(raw.slice(at));
   }
   decodedStarts.push(decoded.length);
   rawStarts.push(raw.length);
-  const rawAt = (i: number): number => {
+  const rawAt = (i: number, up: boolean): number => {
     // The chunk holding i: the last start at or before it.
     let low = 0;
     let high = decodedStarts.length - 1;
@@ -157,11 +181,9 @@ function decodeWithMap(raw: string): { decoded: string; rawAt: (i: number) => nu
     }
     const chunkStart = decodedStarts[low]!;
     const chunkRaw = rawStarts[low]!;
-    const next = low + 1 < decodedStarts.length ? low + 1 : low;
-    const chunkIsEscapes = raw[chunkRaw] === '%';
     if (i === chunkStart) return chunkRaw;
-    // Inside a run of escapes: its end, so the span covers the whole run.
-    if (chunkIsEscapes) return rawStarts[next]!;
+    // Inside a run of escapes: its start or its end, so the span covers the whole run.
+    if (raw[chunkRaw] === '%') return up ? rawStarts[Math.min(low + 1, rawStarts.length - 1)]! : chunkRaw;
     return chunkRaw + (i - chunkStart);
   };
   return { decoded, rawAt };
@@ -201,6 +223,18 @@ function closingQuote(text: string, from: number, quote: string): number {
 }
 
 /**
+ * Where an unquoted value starting at `start` ends: at whitespace, `&`, markup or a quote, less a
+ * sentence's full stop, a list's comma or a closing bracket.
+ */
+function unquotedEnd(text: string, start: number): number {
+  let end = start;
+  const limit = Math.min(text.length, start + MAX_VALUE);
+  while (end < limit && !/[\s&<>"']/.test(text[end]!)) end++;
+  while (end > start && /[.,;)}\]]/.test(text[end - 1]!)) end--;
+  return end;
+}
+
+/**
  * The assignment rule: a strong secret name (a password's, a secret's or a token's) followed by
  * `=` or `:` and a value, as in logs and config: `password=…`, `api_key: …`, `"token": "…"`. A
  * quoted value runs to its closing quote; an unquoted one to whitespace or `&`, needs 6+
@@ -215,24 +249,31 @@ export function assignmentSpans(text: string): Span[] {
     if (!family || !STRONG_FAMILIES.has(family)) continue;
     const from = match.index + match[0].length;
     const quote = text[from];
-    let start: number;
-    let end: number;
     if (quote === '"' || quote === "'") {
-      start = from + 1;
-      end = closingQuote(text, start, quote);
-      if (end <= start) continue;
-    } else {
-      start = from;
-      end = start;
-      const limit = Math.min(text.length, start + MAX_VALUE);
-      while (end < limit && !/[\s&<>"']/.test(text[end]!)) end++;
-      // A sentence's full stop or a list's comma isn't the value's.
-      while (end > start && /[.,;]/.test(text[end - 1]!)) end--;
-      const value = text.slice(start, end);
-      if (value.length < 6 || /[(){}<>$]/.test(value) || STOP_WORDS.has(value.toLowerCase())) continue;
+      const start = from + 1;
+      const end = closingQuote(text, start, quote);
+      if (end <= start || STOP_WORDS.has(text.slice(start, end).toLowerCase())) continue;
+      spans.push({ start, end, kind: 'name', name });
+      continue;
     }
+    // A quoted name and a bare number, as in JSON the walker couldn't read: written back quoted,
+    // so the JSON stays valid.
+    const scalar = match[1] !== '' ? /^-?\d[\d.eE+-]{0,63}/.exec(text.slice(from, from + 64)) : null;
+    if (scalar) {
+      spans.push({
+        start: from,
+        end: from + scalar[0].length,
+        kind: 'name',
+        name,
+        replacement: `"${REDACTED}"`,
+      });
+      continue;
+    }
+    const end = unquotedEnd(text, from);
+    const value = text.slice(from, end);
+    if (value.length < 6 || /[(){}<>$]/.test(value) || STOP_WORDS.has(value.toLowerCase())) continue;
     // Not added to the known values: a rule over free text is too loose a source for them.
-    spans.push({ start, end, kind: 'name', name });
+    spans.push({ start: from, end, kind: 'name', name });
   }
   return spans;
 }
@@ -251,6 +292,17 @@ function textSpans(text: string, sink: ValueSink | undefined, assignments: boole
 const MAX_DEPTH = 512;
 /** JSON inside JSON strings (an LLM tool's arguments) is looked into this many levels deep. */
 const MAX_JSON_IN_STRING = 3;
+
+const SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
+  '"': '"',
+  '\\': '\\',
+  '/': '/',
+  b: '\b',
+  f: '\f',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+};
 
 /** A JSON string's contents decoded, with a map from a decoded index to the raw text's. */
 function decodeJsonString(raw: string): { decoded: string; rawAt: (i: number) => number } | undefined {
@@ -271,18 +323,8 @@ function decodeJsonString(raw: string): { decoded: string; rawAt: (i: number) =>
       char = String.fromCharCode(parseInt(hex, 16));
       width = 6;
     } else {
-      const simple: Record<string, string> = {
-        '"': '"',
-        '\\': '\\',
-        '/': '/',
-        b: '\b',
-        f: '\f',
-        n: '\n',
-        r: '\r',
-        t: '\t',
-      };
-      if (next === undefined || !(next in simple)) return undefined;
-      char = simple[next]!;
+      if (next === undefined || !(next in SIMPLE_ESCAPES)) return undefined;
+      char = SIMPLE_ESCAPES[next]!;
     }
     parts.push(raw.slice(from, at), char);
     length += at - from;
@@ -313,13 +355,28 @@ interface Frame {
   inherit?: SecretFamily;
   /** The name that rule came from, for the record. */
   inheritName?: string;
+  /**
+   * Only these keys take the inherited rule: an object inside a secret-named array passes it to a
+   * key, value or ID (`{"api_keys":[{"key":"…"}]}`), not to every field.
+   */
+  inheritOnly?: ReadonlySet<string>;
   /** In an object: the key of the value being read. */
   key?: string;
   /** In an object: whether the next token is a key. */
   expectKey: boolean;
 }
 
-/** Families whose numbers and booleans are secrets too (a PIN, a card code); tokens' aren't. */
+/** Keys that take a secret container's rule though their own name says nothing, or says ID. */
+const VALUE_KEYS: ReadonlySet<string> = new Set(['id', 'value', 'key', 'val']);
+/** Keys holding a header's value, redacted by that header's rules (an echoed request, a HAR). */
+const HEADER_KEYS: ReadonlySet<string> = new Set([
+  'cookie',
+  'set-cookie',
+  'authorization',
+  'proxy-authorization',
+]);
+
+/** Families whose numbers are secrets too (a PIN, a card code); tokens' aren't. */
 const SCALAR_FAMILIES: ReadonlySet<SecretFamily> = new Set(['password', 'secret']);
 /** Families whose short or spaced strings are kept in JSON (a logprob's `"token": "Hello"`). */
 const LONG_ONLY_FAMILIES: ReadonlySet<SecretFamily> = new Set(['token', 'session']);
@@ -347,11 +404,23 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
     const frame = stack.at(-1);
     if (!frame) return undefined;
     if (frame.kind === 'object') {
-      const rule = nameRule(frame.key ?? '', 'json');
-      if (rule === 'describes') return undefined;
-      return rule ?? frame.inherit;
+      const key = frame.key ?? '';
+      const rule = nameRule(key, 'json');
+      if (rule && rule !== 'describes') return rule;
+      const lower = key.toLowerCase();
+      // A session's or token's own `id` or `value` is the secret (`{"session":{"id":"…"}}`).
+      if (frame.inherit && VALUE_KEYS.has(lower)) return frame.inherit;
+      if (rule === 'describes' || (frame.inheritOnly && !frame.inheritOnly.has(lower))) return undefined;
+      return frame.inherit;
     }
     return frame.inherit;
+  };
+  /** Whether the value here is under a strong secret name of its own, not one it inherits. */
+  const ownStrong = (): boolean => {
+    const frame = stack.at(-1);
+    if (frame?.kind !== 'object') return false;
+    const rule = nameRule(frame.key ?? '', 'json');
+    return rule !== undefined && rule !== 'describes' && STRONG_FAMILIES.has(rule);
   };
   /** The name a redaction here is recorded under: its key's, or the one its rule came from. */
   const nameHere = (): string => {
@@ -378,14 +447,32 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
     const unescaped = decodeJsonString(raw);
     if (!unescaped) return false;
     const { decoded, rawAt } = unescaped;
+    const key = stack.at(-1)?.kind === 'object' ? (stack.at(-1)!.key ?? '') : '';
+    if (HEADER_KEYS.has(key.toLowerCase()) && decoded !== '') {
+      // As the header itself would be: a cookie's name kept, an authorization's scheme.
+      const redacted = redactHeader(key, decoded, known).value;
+      if (redacted !== decoded) {
+        spans.push({
+          start,
+          end,
+          kind: 'name',
+          name: key,
+          replacement: JSON.stringify(redacted).slice(1, -1),
+        });
+      }
+      return true;
+    }
     if (family && decoded !== '') {
       const longEnough = !LONG_ONLY_FAMILIES.has(family) || (decoded.length >= 8 && !/\s/.test(decoded));
       if (longEnough) {
         spans.push({ start, end, kind: 'name', name: nameHere() });
-        if (known && STRONG_FAMILIES.has(family)) addValue(known, decoded);
+        // Only a value under its own strong name is certain enough to look for elsewhere.
+        if (known && ownStrong()) addValue(known, decoded);
         return true;
       }
     }
+    // Too short for a token shape, a URL with a secret, an assignment or a known value.
+    if (decoded.length < 8) return true;
     let inner: Span[] | undefined;
     if (depth < MAX_JSON_IN_STRING && /^\s*[[{]/.test(decoded)) inner = jsonSpans(decoded, known, depth + 1);
     inner ??= textSpans(decoded, known, true);
@@ -419,9 +506,22 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
         if (c !== '"') return undefined;
         const end = stringEnd();
         if (end < 0) return undefined;
-        const key = decodeJsonString(text.slice(i + 1, end - 1))?.decoded;
-        if (key === undefined) return undefined;
+        const decodedKey = decodeJsonString(text.slice(i + 1, end - 1));
+        if (decodedKey === undefined) return undefined;
+        const key = decodedKey.decoded;
         frame.key = key;
+        // A key can be a secret too (a token used as a map's key): its shapes and known values.
+        if (key.length >= 8) {
+          const inKey = shapeSpans(key, known);
+          if (known) for (const span of known.scan(key)) inKey.push(span);
+          for (const span of mergeSpans(inKey)) {
+            spans.push({
+              ...span,
+              start: i + 1 + decodedKey.rawAt(span.start),
+              end: i + 1 + decodedKey.rawAt(span.end),
+            });
+          }
+        }
         i = end;
         ws();
         if (text[i] !== ':') return undefined;
@@ -437,11 +537,19 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
         // An object under a secret name gives its direct values that name's rule; an array, its
         // items. Deeper containers judge by their own keys.
         const own = frame?.kind === 'object' ? nameRule(frame.key ?? '', 'json') : undefined;
-        const inherit = c === '[' ? family : own && own !== 'describes' ? own : undefined;
+        // An object in a secret-named array passes the rule on to its key, value or ID only.
+        const inArray = c === '{' && frame?.kind === 'array' && frame.inherit !== undefined;
+        const inherit = c === '[' || inArray ? family : own && own !== 'describes' ? own : undefined;
         const inheritName = inherit ? nameHere() : undefined;
         stack.push(
           c === '{'
-            ? { kind: 'object', inherit, inheritName, expectKey: true }
+            ? {
+                kind: 'object',
+                inherit,
+                inheritName,
+                expectKey: true,
+                ...(inArray ? { inheritOnly: VALUE_KEYS } : {}),
+              }
             : { kind: 'array', inherit, inheritName, expectKey: false },
         );
         i++;
@@ -465,7 +573,8 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
           text.slice(i, i + 400),
         );
         if (!scalar) return undefined;
-        if (family && SCALAR_FAMILIES.has(family) && scalar[0] !== 'null') {
+        // Numbers only: a boolean is no secret, and changing its type would break readers.
+        if (family && SCALAR_FAMILIES.has(family) && /^-?\d/.test(scalar[0])) {
           spans.push({
             start: i,
             end: i + scalar[0].length,
@@ -509,9 +618,10 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
 
 // ---------------------------------------------------------------- tags (XML and HTML)
 
-const TAG = /<([A-Za-z][\w:.-]{0,63})([^<>]{0,4096})>/g;
+/** Tags and quoted attribute values up to 256 KB: a SAML form's hidden input runs to 20 KB. */
+const TAG = /<([A-Za-z][\w:.-]{0,63})([^<>]{0,262144})>/g;
 const ATTRIBUTE =
-  /([A-Za-z_:][\w:.-]{0,63})\s*=\s*(?:"([^"]{0,4096})"|'([^']{0,4096})'|([^\s"'<>`=]{1,4096}))/g;
+  /([A-Za-z_:][\w:.-]{0,63})\s*=\s*(?:"([^"]{0,262144})"|'([^']{0,262144})'|([^\s"'<>`=]{1,4096}))/g;
 
 interface Attribute {
   name: string;
@@ -546,7 +656,11 @@ export function tagSpans(text: string, sink?: ValueSink): Span[] {
   for (const match of text.matchAll(TAG)) {
     const attributes = attributesOf(match[2]!, match.index + 1 + match[1]!.length);
     const named = attributes.find((a) => /^(?:name|key|property)$/i.test(a.name));
-    const namedFamily = named ? secretName(named.value, 'form') : undefined;
+    // A password field is one whatever its name.
+    const isPassword =
+      /^input$/i.test(match[1]!) &&
+      attributes.some((a) => /^type$/i.test(a.name) && /^password$/i.test(a.value));
+    const namedFamily = isPassword ? 'password' : named ? secretName(named.value, 'form') : undefined;
     for (const attribute of attributes) {
       if (attribute.value === '') continue;
       const own = secretName(localName(attribute.name), 'json');
@@ -556,7 +670,7 @@ export function tagSpans(text: string, sink?: ValueSink): Span[] {
         start: attribute.start,
         end: attribute.end,
         kind: 'name',
-        name: byName ? named!.value : attribute.name,
+        name: byName ? (named?.value ?? 'password') : attribute.name,
       });
       const family = byName ? namedFamily : own;
       if (sink && family && STRONG_FAMILIES.has(family)) addValue(sink, attribute.value);
@@ -565,20 +679,37 @@ export function tagSpans(text: string, sink?: ValueSink): Span[] {
   return spans;
 }
 
-const ELEMENT_OPEN = /<([A-Za-z][\w:.-]{0,63})(?:\s[^<>]{0,4096})?>/g;
+const ELEMENT_OPEN = /<([A-Za-z][\w:.-]{0,63})(\s[^<>]{0,4096})?>/g;
+const CDATA_OPEN = '<![CDATA[';
 
-/** XML elements with secret names, their text redacted: `<Password>…</Password>`. */
+/**
+ * Elements whose text is a secret, redacted: by the element's name (`<Password>…</Password>`,
+ * `<wsse:Password>`), or by its `name` or `key` attribute (`<entry key="password">…</entry>`,
+ * HTML's `<textarea name="secret">`). Plain text or one CDATA section.
+ */
 export function xmlElementSpans(text: string, sink?: ValueSink): Span[] {
   const spans: Span[] = [];
   for (const match of text.matchAll(ELEMENT_OPEN)) {
     const name = match[1]!;
-    const family = secretName(localName(name), 'json');
+    const attributes = match[2] ? attributesOf(match[2], match.index + 1 + name.length) : [];
+    const named = attributes.find((a) => /^(?:name|key)$/i.test(a.name));
+    const family =
+      secretName(localName(name), 'json') ?? (named ? secretName(named.value, 'form') : undefined);
     if (!family) continue;
-    const start = match.index + match[0].length;
-    const close = text.indexOf('<', start);
-    if (close < 0 || close - start > MAX_VALUE || !text.startsWith(`</${name}`, close)) continue;
+    let start = match.index + match[0].length;
+    let close: number;
+    if (text.startsWith(CDATA_OPEN, start)) {
+      const cdataEnd = text.indexOf(']]>', start);
+      if (cdataEnd < 0 || cdataEnd - start > MAX_VALUE) continue;
+      start += CDATA_OPEN.length;
+      close = cdataEnd;
+      if (!text.startsWith(`</${name}`, cdataEnd + 3)) continue;
+    } else {
+      close = text.indexOf('<', start);
+      if (close < 0 || close - start > MAX_VALUE || !text.startsWith(`</${name}`, close)) continue;
+    }
     if (close === start) continue;
-    spans.push({ start, end: close, kind: 'name', name: localName(name) });
+    spans.push({ start, end: close, kind: 'name', name: named?.value ?? localName(name) });
     if (sink && STRONG_FAMILIES.has(family)) addValue(sink, text.slice(start, close).trim());
   }
   return spans;
@@ -587,15 +718,15 @@ export function xmlElementSpans(text: string, sink?: ValueSink): Span[] {
 /** Where `<script>` and `<style>` elements' contents are, in which assignments are code. */
 function codeRanges(text: string): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
-  const lower = text.toLowerCase();
-  const pattern = /<(script|style)\b[^<>]{0,4096}>/gi;
-  for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+  const open = /<(script|style)\b[^<>]{0,4096}>/gi;
+  for (let match = open.exec(text); match; match = open.exec(text)) {
     const start = match.index + match[0].length;
-    const close = lower.indexOf(`</${match[1]!.toLowerCase()}`, start);
-    const end = close < 0 ? text.length : close;
+    const close = new RegExp(`</${match[1]!}`, 'gi');
+    close.lastIndex = start;
+    const end = close.exec(text)?.index ?? text.length;
     ranges.push([start, end]);
     // On from the element's end: an unclosed one runs to the end, and is searched once.
-    pattern.lastIndex = end;
+    open.lastIndex = end;
   }
   return ranges;
 }
@@ -613,7 +744,8 @@ export function bodyKind(mediaType: string | undefined): BodyKind {
     type === 'application/x-ndjson' ||
     type === 'application/jsonl' ||
     type === 'application/json-seq' ||
-    type === 'application/x-jsonlines'
+    type === 'application/x-jsonlines' ||
+    type === 'application/stream+json'
   )
     return 'ndjson';
   if (type === 'application/json' || type.endsWith('+json') || type === 'text/json') return 'json';
@@ -623,7 +755,7 @@ export function bodyKind(mediaType: string | undefined): BodyKind {
   if (type === 'text/html' || type === 'application/xhtml+xml') return 'html';
   if (type.endsWith('/xml') || type.endsWith('+xml')) return 'xml';
   if (/javascript|ecmascript|^text\/css$|sourcemap|\/wasm/.test(type)) return 'code';
-  if (type === 'application/grpc-web-text' || type.startsWith('application/grpc')) return 'opaque';
+  if (type.startsWith('application/grpc')) return 'opaque';
   return 'text';
 }
 
@@ -641,44 +773,82 @@ function boundaryOf(mediaType: string | undefined): string | undefined {
   return match ? (match[1] ?? match[2]) : undefined;
 }
 
+/** Multipart parts are looked into this many levels deep (a part can be multipart itself). */
+const MAX_MULTIPART_DEPTH = 2;
+/** A part's headers are looked for in its first 16 KB. */
+const MAX_PART_HEADERS = 16_384;
+
+/** The text rules and the known values, for text with no structure to go by. */
+function plainSpans(text: string, known: KnownValues | undefined, assignments: boolean): Span[] {
+  const spans = textSpans(text, known, assignments);
+  if (known) for (const span of known.scan(text)) spans.push(span);
+  return spans;
+}
+
 /** Spans in a multipart body, part by part. */
 function multipartSpans(
   text: string,
   mediaType: string | undefined,
   known: KnownValues | undefined,
   notScanned: string[],
+  depth: number,
 ): Span[] {
   const boundary = boundaryOf(mediaType);
-  if (!boundary) return textSpans(text, known, true);
+  if (!boundary || depth >= MAX_MULTIPART_DEPTH) return plainSpans(text, known, true);
   const spans: Span[] = [];
+  const add = (inner: Span[], offset: number): void => {
+    for (const span of inner) spans.push({ ...span, start: offset + span.start, end: offset + span.end });
+  };
   const delimiter = `--${boundary}`;
   let at = text.indexOf(delimiter);
+  // Before the first part: a preamble, as text.
+  add(plainSpans(text.slice(0, at < 0 ? text.length : at), known, true), 0);
   while (at >= 0) {
     const headersStart = at + delimiter.length;
-    if (text.startsWith('--', headersStart)) break;
+    if (text.startsWith('--', headersStart)) {
+      // After the last part: an epilogue, as text.
+      add(plainSpans(text.slice(headersStart + 2), known, true), headersStart + 2);
+      break;
+    }
     const next = text.indexOf(delimiter, headersStart);
     const partEnd = next < 0 ? text.length : next;
-    const crlf = text.indexOf('\r\n\r\n', headersStart);
-    const lf = text.indexOf('\n\n', headersStart);
-    const blank = crlf >= 0 && crlf < partEnd ? crlf + 4 : lf >= 0 && lf < partEnd ? lf + 2 : -1;
-    if (blank < 0) break;
+    // The blank line ending the part's headers, looked for only in the part's first 16 KB.
+    const zone = text.slice(headersStart, Math.min(partEnd, headersStart + MAX_PART_HEADERS));
+    const crlf = zone.indexOf('\r\n\r\n');
+    const lf = zone.indexOf('\n\n');
+    const blankInZone = crlf >= 0 && (lf < 0 || crlf < lf) ? crlf + 4 : lf >= 0 ? lf + 2 : -1;
+    if (blankInZone < 0) {
+      // A part with no headers to read: its text gets the text rules, and the next part is read.
+      add(plainSpans(text.slice(headersStart, partEnd), known, true), headersStart);
+      at = next;
+      continue;
+    }
+    const blank = headersStart + blankInZone;
     const headers = text.slice(headersStart, blank);
     let bodyEnd = partEnd;
     if (text.slice(bodyEnd - 2, bodyEnd) === '\r\n') bodyEnd -= 2;
     else if (text[bodyEnd - 1] === '\n') bodyEnd -= 1;
-    const name = /name="([^"]{0,256})"/i.exec(headers)?.[1];
-    const isFile = /filename\*?=/i.test(headers);
+    const disposition = /^content-disposition:([^\r\n]{0,1024})/im.exec(headers)?.[1] ?? '';
+    // `name=`, quoted or not, and not the end of `filename=`.
+    const nameMatch = /(?:^|[;\s])name=(?:"([^"]{0,256})"|([^;\s]{1,256}))/i.exec(disposition);
+    const name = nameMatch ? (nameMatch[1] ?? nameMatch[2]) : undefined;
+    const isFile = /filename\*?=/i.test(disposition);
     const partType = /^content-type:\s*([^\r\n]{1,256})/im.exec(headers)?.[1];
     if (bodyEnd > blank) {
-      const family = name !== undefined && !isFile ? secretName(name, 'form') : undefined;
+      const family = name !== undefined ? secretName(name, 'form') : undefined;
       if (family) {
+        // A secret-named field or file (an uploaded private key) is redacted whole.
         spans.push({ start: blank, end: bodyEnd, kind: 'name', name });
-        if (known && STRONG_FAMILIES.has(family)) addValue(known, text.slice(blank, bodyEnd));
+        if (known && !isFile && STRONG_FAMILIES.has(family)) addValue(known, text.slice(blank, bodyEnd));
       } else if (isFile && partType && !/^text\/|json|xml|javascript|x-www-form-urlencoded/i.test(partType)) {
         notScanned.push('a file part that isn’t text');
+        // Token shapes are still looked for: a key or token in a file of unknown type.
+        add(shapeSpans(text.slice(blank, bodyEnd), known), blank);
       } else {
-        const inner = kindSpans(text.slice(blank, bodyEnd), partType ?? 'text/plain', known, notScanned);
-        for (const span of inner) spans.push({ ...span, start: blank + span.start, end: blank + span.end });
+        add(
+          kindSpans(text.slice(blank, bodyEnd), partType ?? 'text/plain', known, notScanned, depth + 1),
+          blank,
+        );
       }
     }
     at = next;
@@ -699,38 +869,73 @@ function lineSpans(text: string, known: KnownValues | undefined, valueOf: (line:
     const json = from >= 0 && /^\s*[[{]/.test(value) ? jsonSpans(value, known) : undefined;
     const inLine = json
       ? json.map((s) => ({ ...s, start: s.start + from, end: s.end + from }))
-      : textSpans(line, known, true);
+      : plainSpans(line, known, true);
     for (const span of inLine) spans.push({ ...span, start: at + span.start, end: at + span.end });
     at = end + 1;
   }
   return spans;
 }
 
-/** Spans by the rules for a body's kind, before known values. */
+/** What can come before JSON: a byte order mark, and the prefixes that guard JSON from being run as a script. */
+const JSON_PREFIX = /^\uFEFF?(?:\)\]\}',?\s*|for\s*\(;;\);\s*|while\s*\(\s*1\s*\);\s*)?/;
+
+/** JSON after any prefix, its spans in the text's positions; undefined if it isn't JSON. */
+function prefixedJsonSpans(text: string, known: KnownValues | undefined): Span[] | undefined {
+  const prefix = JSON_PREFIX.exec(text)![0].length;
+  const spans = jsonSpans(prefix > 0 ? text.slice(prefix) : text, known);
+  return spans?.map((s) => ({ ...s, start: s.start + prefix, end: s.end + prefix }));
+}
+
+/** A form's fields: by name, values holding JSON by its rules, and known values (`+` as a space). */
+function formBodySpans(text: string, known: KnownValues | undefined): Span[] {
+  const spans = formSpans(text, known);
+  for (const span of shapeSpans(text, known)) spans.push(span);
+  // A field holding JSON (`payload=%7B%22password%22…`): redacted whole if the JSON has a secret.
+  let at = 0;
+  for (const pair of text.split('&')) {
+    const eq = pair.indexOf('=');
+    if (eq >= 0) {
+      const value = pair.slice(eq + 1);
+      const decoded = percentDecode(value);
+      if (/^\s*[[{]/.test(decoded) && (jsonSpans(decoded, known)?.length ?? 0) > 0) {
+        spans.push({
+          start: at + eq + 1,
+          end: at + pair.length,
+          kind: 'name',
+          name: percentDecode(pair.slice(0, eq)),
+        });
+      }
+    }
+    at += pair.length + 1;
+  }
+  if (known) for (const span of known.scan(text, true)) spans.push(span);
+  return spans;
+}
+
+/** Spans by the rules for a body's kind, known values included. */
 function kindSpans(
   text: string,
   mediaType: string | undefined,
   known: KnownValues | undefined,
   notScanned: string[],
+  depth = 0,
 ): Span[] {
   const kind = bodyKind(mediaType);
   switch (kind) {
     case 'json':
-      return jsonSpans(text, known) ?? textSpans(text, known, true);
+      // JSON as a whole, else line by line (JSON objects one after another), else text.
+      return prefixedJsonSpans(text, known) ?? lineSpans(text, known, () => 0);
     case 'ndjson':
       return lineSpans(text, known, () => 0);
     case 'sse':
       // `data:` lines' values, with the one space after the colon left out.
       return lineSpans(text, known, (line) => (line.startsWith('data:') ? (line[5] === ' ' ? 6 : 5) : -1));
-    case 'form': {
-      const spans = formSpans(text, known);
-      for (const span of shapeSpans(text, known)) spans.push(span);
-      return spans;
-    }
+    case 'form':
+      return formBodySpans(text, known);
     case 'multipart':
-      return multipartSpans(text, mediaType, known, notScanned);
+      return multipartSpans(text, mediaType, known, notScanned, depth);
     case 'xml': {
-      const spans = textSpans(text, known, true);
+      const spans = plainSpans(text, known, true);
       for (const span of xmlElementSpans(text, known)) spans.push(span);
       for (const span of tagSpans(text, known)) spans.push(span);
       return spans;
@@ -751,24 +956,23 @@ function kindSpans(
         }
         return found >= 0 && span.end <= code[found]![1];
       };
-      const spans = textSpans(text, known, false);
+      const spans = plainSpans(text, known, false);
       for (const span of assignmentSpans(text)) if (!inCode(span)) spans.push(span);
       for (const span of tagSpans(text, known)) spans.push(span);
+      for (const span of xmlElementSpans(text, known)) spans.push(span);
       return spans;
     }
     case 'code':
-      return textSpans(text, known, false);
+      return plainSpans(text, known, false);
     case 'opaque':
       notScanned.push('an encoded body');
       return [];
-    default: {
-      // Text that is JSON, sent without saying so.
-      if (/^\s*[[{]/.test(text)) {
-        const json = jsonSpans(text, known);
-        if (json) return json;
-      }
-      return textSpans(text, known, true);
-    }
+    default:
+      // Text that is JSON, sent without saying so; else text.
+      return (
+        (/^\uFEFF?\s*[[{)fw]/.test(text) ? prefixedJsonSpans(text, known) : undefined) ??
+        plainSpans(text, known, true)
+      );
   }
 }
 
@@ -780,11 +984,8 @@ export function redactBody(text: string, mediaType: string | undefined, known?: 
   const notScanned: string[] = [];
   // Collected first, so a value found late in the body is also found earlier in it.
   if (known) kindSpans(text, mediaType, known, []);
+  // Known values are looked for by each kind's rules: in JSON, inside its strings; in text, anywhere.
   const spans = kindSpans(text, mediaType, known, notScanned);
-  // Known values: in JSON, the walk looked in its strings; elsewhere, anywhere in the text.
-  if (known && !['json', 'ndjson', 'sse'].includes(bodyKind(mediaType))) {
-    for (const span of known.scan(text)) spans.push(span);
-  }
   const merged = mergeSpans(spans);
   return {
     spans: merged,
