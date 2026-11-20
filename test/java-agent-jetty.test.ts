@@ -44,6 +44,7 @@ import {
   waitForAgent,
   type Run,
   waitForOutput,
+  waitForLines,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: answers plain requests itself, and tunnels CONNECT. */
@@ -287,9 +288,7 @@ async function probe(
 async function ask(r: Run, command: string): Promise<string> {
   const before = r.stdout().split('\n').filter(Boolean).length;
   r.send(command);
-  await expect
-    .poll(() => r.stdout().split('\n').filter(Boolean).length, { timeout: 30_000 })
-    .toBeGreaterThan(before);
+  await waitForLines(r, before, 30_000);
   return r.stdout().split('\n').filter(Boolean)[before]!.trim();
 }
 

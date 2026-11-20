@@ -27,6 +27,7 @@ import {
   shared,
   type Run,
   waitForOutput,
+  waitForLines,
 } from './java-agent-helpers';
 
 const version = JSON.parse(
@@ -124,9 +125,7 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
   async function ask(r: Run, command: string): Promise<string> {
     const before = r.stdout().split('\n').filter(Boolean).length;
     r.send(command);
-    await expect
-      .poll(() => r.stdout().split('\n').filter(Boolean).length, { timeout: 15_000 })
-      .toBeGreaterThan(before);
+    await waitForLines(r, before, 15_000);
     return r.stdout().split('\n').filter(Boolean)[before]!.trim();
   }
 

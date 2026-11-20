@@ -33,6 +33,7 @@ import {
   statusOf,
   type Run,
   waitForOutput,
+  waitForLines,
 } from './java-agent-helpers';
 
 let work: string;
@@ -759,9 +760,7 @@ describe.skipIf(!buildJava)('JVMs following the host', { timeout: 90_000 }, () =
   async function ask(r: Run, command: string): Promise<string> {
     const before = r.stdout().split('\n').filter(Boolean).length;
     r.send(command);
-    await expect
-      .poll(() => r.stdout().split('\n').filter(Boolean).length, { timeout: 15_000 })
-      .toBeGreaterThan(before);
+    await waitForLines(r, before, 15_000);
     return r.stdout().split('\n').filter(Boolean)[before]!.trim();
   }
 

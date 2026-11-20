@@ -201,62 +201,110 @@ export interface Run {
   stdout: () => string;
   stderr: () => string;
   exit: Promise<number | null>;
+  /** When the program has exited and its output has all been read. */
+  closed: Promise<void>;
   /** Writes a line to the program's stdin (for programs started with `stdin: true`). */
   send(line: string): void;
 }
 
 /** At most this much of a program's output goes into a failure's message. */
 const MAX_REPORTED = 8000;
+/** At most this much of a thread dump: a small program's is well under it. */
+const MAX_DUMP = 60_000;
 
 const tail = (text: string): string => (text.length > MAX_REPORTED ? `…${text.slice(-MAX_REPORTED)}` : text);
 
 /**
  * The threads of a running JVM, from `jstack` beside its java (every JDK the tests use has one), for
  * a failure's message: it tells a hang, and where, from a slow start. Says why if there's none.
+ * Asynchronous and capped at 10 s, so a JVM too stuck to answer doesn't hold up the test's own
+ * timeout. Kept from the start: the order of threads differs between JDKs.
  */
-export function threadDump(java: string, pid: number): string {
+export function threadDump(java: string, pid: number): Promise<string> {
   const jstack = path.join(path.dirname(java), process.platform === 'win32' ? 'jstack.exe' : 'jstack');
-  const result = spawnSync(jstack, [String(pid)], { encoding: 'utf8', timeout: 30_000 });
-  if (result.status === 0 && result.stdout.trim() !== '') return tail(result.stdout);
-  return `(no thread dump from ${jstack}: ${result.error?.message ?? `exit ${result.status}`} ${result.stderr ?? ''})`;
+  return new Promise((resolve) => {
+    let out = '';
+    let err = '';
+    const child = spawn(jstack, [String(pid)], { stdio: ['ignore', 'pipe', 'pipe'] });
+    const timer = setTimeout(() => child.kill('SIGKILL'), 10_000);
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      resolve(`(no thread dump from ${jstack}: ${error.message})`);
+    });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      if (code === 0 && out.trim() !== '')
+        resolve(out.length > MAX_DUMP ? `${out.slice(0, MAX_DUMP)}…` : out);
+      else
+        resolve(
+          `(no thread dump from ${jstack}: exit ${code}, signal ${signal}${err ? `: ${tail(err)}` : ''})`,
+        );
+    });
+  });
 }
 
 /**
- * Waits until a program prints `text`. If it doesn't within `timeoutMs`, fails with what happened:
- * how long it waited, whether the program exited (and how), what it printed, and, for a JVM still
- * running, its threads. Without these, a hang, a crash and a slow start all read as "expected ''".
+ * Waits until `done()` holds for a program. If it doesn't within `timeoutMs`, or the program closes
+ * its output first, fails with what happened: how long it waited, whether the program exited (and
+ * how), what it printed, and for a JVM still running, its threads. Without these, a hang, a crash and
+ * a slow start all read as "expected ''" or "expected 3 to be greater than 3".
  */
-export async function waitForOutput(r: Run, text: string, timeoutMs: number): Promise<void> {
+export async function waitFor(r: Run, done: () => boolean, what: string, timeoutMs: number): Promise<void> {
   const started = Date.now();
-  try {
-    await expect.poll(r.stdout, { timeout: timeoutMs }).toContain(text);
-  } catch (error) {
-    const { exitCode, signalCode, pid, spawnfile } = r.child;
-    const running = exitCode === null && signalCode === null;
-    const state = running ? 'is still running' : `exited (code ${exitCode}, signal ${signalCode})`;
-    const isJava = /^java(\.exe)?$/i.test(path.basename(spawnfile));
-    const dump = running && isJava && pid !== undefined ? `\nthreads:\n${threadDump(spawnfile, pid)}` : '';
-    throw new Error(
-      `no "${text}" after ${Date.now() - started} ms; the program ${state}.\n` +
-        `stdout:\n${tail(r.stdout())}\nstderr:\n${tail(r.stderr())}${dump}`,
-      { cause: error },
-    );
+  let closed = false;
+  void r.closed.then(() => (closed = true));
+  while (!done() && !closed && Date.now() - started < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
   }
+  // Checked again: the output may have come in with the close, or just at the deadline.
+  if (done()) return;
+  const { exitCode, signalCode, pid, spawnfile } = r.child;
+  const running = exitCode === null && signalCode === null;
+  const state = running ? 'is still running' : `exited (code ${exitCode}, signal ${signalCode})`;
+  const isJava = /^java(\.exe)?$/i.test(path.basename(spawnfile));
+  const dump =
+    running && isJava && pid !== undefined ? `\nthreads:\n${await threadDump(spawnfile, pid)}` : '';
+  throw new Error(
+    `no ${what} after ${Date.now() - started} ms; the program ${state}.\n` +
+      `stdout:\n${tail(r.stdout())}\nstderr:\n${tail(r.stderr())}${dump}`,
+  );
 }
 
-export function run(java: string, args: string[], options: { stdin?: boolean } = {}): Run {
-  const child = spawn(java, args, { stdio: [options.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
+/** Waits until a program prints `text`, failing as {@link waitFor} does. */
+export const waitForOutput = (r: Run, text: string, timeoutMs: number): Promise<void> =>
+  waitFor(r, () => r.stdout().includes(text), `"${text}"`, timeoutMs);
+
+/** A program's lines of output so far, blank ones left out. */
+export const linesOf = (r: Run): string[] => r.stdout().split('\n').filter(Boolean);
+
+/** Waits until a program has printed more than `before` lines, failing as {@link waitFor} does. */
+export const waitForLines = (r: Run, before: number, timeoutMs: number): Promise<void> =>
+  waitFor(r, () => linesOf(r).length > before, `line ${before + 1} of output`, timeoutMs);
+
+export function run(
+  java: string,
+  args: string[],
+  options: { stdin?: boolean; env?: NodeJS.ProcessEnv } = {},
+): Run {
+  const child = spawn(java, args, {
+    stdio: [options.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+    ...(options.env ? { env: options.env } : {}),
+  });
   children.push(child);
   let stdout = '';
   let stderr = '';
   child.stdout!.on('data', (d) => (stdout += d));
   child.stderr!.on('data', (d) => (stderr += d));
   const exit = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
+  const closed = new Promise<void>((resolve) => child.on('close', () => resolve()));
   return {
     child,
     stdout: () => stdout,
     stderr: () => stderr,
     exit,
+    closed,
     send: (line) => child.stdin!.write(`${line}\n`),
   };
 }

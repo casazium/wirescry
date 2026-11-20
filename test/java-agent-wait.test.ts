@@ -7,7 +7,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { buildJava, run, waitForOutput, type Run } from './java-agent-helpers';
+import { buildJava, run, waitForLines, waitForOutput, type Run } from './java-agent-helpers';
 
 const node = process.execPath;
 const started: Run[] = [];
@@ -54,12 +54,30 @@ describe('waitForOutput', () => {
     expect(message).not.toContain('threads:');
   });
 
-  it('says a program exited, and how', async () => {
+  it('says a program exited, and how, without waiting out the time', async () => {
     const r = start(['-e', "console.error('crashed'); process.exit(3)"]);
-    await r.exit;
-    const message = await failure(waitForOutput(r, 'ready', 300));
+    const before = Date.now();
+    const message = await failure(waitForOutput(r, 'ready', 30_000));
+    expect(Date.now() - before).toBeLessThan(10_000);
     expect(message).toContain('the program exited (code 3, signal null).');
     expect(message).toContain('stderr:\ncrashed');
+  });
+
+  it('still finds the text when the program prints it and exits at once', async () => {
+    const r = start(['-e', "console.log('ready'); process.exit(0)"]);
+    await waitForOutput(r, 'ready', 30_000);
+  });
+
+  it('waits for a further line, and says so when it never comes', async () => {
+    const r = start([
+      '-e',
+      "console.log('one'); setTimeout(() => console.log('two'), 200); setTimeout(() => {}, 60000)",
+    ]);
+    await waitForOutput(r, 'one', 5000);
+    await waitForLines(r, 1, 5000);
+    expect(r.stdout()).toContain('two');
+    const message = await failure(waitForLines(r, 2, 300));
+    expect(message).toMatch(/^no line 3 of output after \d+ ms; the program is still running\./);
   });
 
   it('keeps only the end of long output', async () => {
@@ -79,13 +97,13 @@ describe('waitForOutput', () => {
         const source = path.join(dir, 'Sleeper.java');
         await writeFile(
           source,
-          'public class Sleeper { public static void main(String[] a) throws Exception { Thread.sleep(60000); } }',
+          'public class Sleeper { public static void main(String[] a) throws Exception { System.out.println("up"); Thread.sleep(60000); } }',
         );
-        // A JDK 11+ java runs a source file directly.
+        // A JDK 11+ java runs a source file directly. Once it's up, it can answer jstack.
         const r = run(buildJava!, [source]);
         started.push(r);
-        // Long enough for the JVM to be up, so it can answer jstack.
-        const message = await failure(waitForOutput(r, 'ready', 5000));
+        await waitForOutput(r, 'up', 60_000);
+        const message = await failure(waitForOutput(r, 'ready', 500));
         expect(message).toContain('the program is still running');
         expect(message).toContain('threads:');
         expect(message).toMatch(/"main"[\s\S]*Sleeper\.main/);
@@ -97,6 +115,6 @@ describe('waitForOutput', () => {
         await rm(dir, { recursive: true, force: true });
       }
     },
-    60_000,
+    120_000,
   );
 });

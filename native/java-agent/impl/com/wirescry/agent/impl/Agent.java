@@ -114,7 +114,10 @@ public final class Agent {
             },
             "wirescry-agent-control");
     thread.setDaemon(true);
-    thread.setPriority(Thread.MIN_PRIORITY);
+    // Normal, not the lowest: it wakes once a second for a moment, so it costs a program nothing,
+    // but Windows honours Java's priorities, and at the lowest a busy program's own threads kept it
+    // from running for seconds (a port change, turning off and the status file all came late).
+    thread.setPriority(Thread.NORM_PRIORITY);
     thread.start();
     running = agent;
   }
