@@ -649,7 +649,8 @@ describe('fixes from the A2 review', () => {
 
   it('turns away values far longer than their longest run, and says when it’s full', () => {
     const known = new KnownValues();
-    known.add(rep('abcd.', 20) + 'X1');
+    // 202 characters around a 4-character run: over 32 times as long.
+    known.add(rep('abcd.', 40) + 'X1');
     expect(known.size).toBe(0);
     expect(known.full).toBe(false);
     for (let i = 0; i < 9; i++) known.add(`${i}.Shared_Run_Of_Text.${i}`);
@@ -751,5 +752,97 @@ describe('time, after the A2 review', () => {
     const start = performance.now();
     redactBody(text, 'application/json', new KnownValues());
     expect(performance.now() - start).toBeLessThan(2000);
+  });
+});
+
+describe('fixes from the second A2 review', () => {
+  it('redacts a digit-led value after a quoted name whole, unless it’s a whole JSON number', () => {
+    for (const [text, expected] of <Array<[string, string]>>[
+      ['"api_key": 4f3c2a1b9d8e7f60', `"api_key": ${REDACTED}`],
+      ["'secret'=12ab34cd56ef", `'secret'=${REDACTED}`],
+      ['"password": 1234-5678-abcd', `"password": ${REDACTED}`],
+      ['{"pin": 123456, "x": 1', `{"pin": "${REDACTED}", "x": 1`],
+      ['{"pin": -1.5e3}', `{"pin": "${REDACTED}"}`],
+    ]) {
+      expect(applySpans(text, assignmentSpans(text)), text).toBe(expected);
+    }
+  });
+
+  it('leaves links, buttons and resource strings named for passwords alone', () => {
+    const known = new KnownValues();
+    const html =
+      '<a name="password-reset">Reset your password</a><button name="csrf_token" value="tok12345">Log in</button><p>Reset your password</p>';
+    expect(redact(html, 'text/html', known)).toBe(
+      `<a name="password-reset">Reset your password</a><button name="csrf_token" value="${REDACTED}">Log in</button><p>Reset your password</p>`,
+    );
+    const xml =
+      '<resources><string name="error_invalid_token">Your session token is invalid</string></resources>';
+    expect(redact(xml, 'application/xml', known)).toBe(xml);
+    expect(known.size).toBe(1);
+  });
+
+  it('redacts a set-cookie array and HAR-style header pairs', () => {
+    expect(
+      redactJson('{"set-cookie":["sid=abcdef123456; Path=/","b=2"],"other":["sid=abcdef123456; x"]}'),
+    ).toBe(`{"set-cookie":["sid=${REDACTED}; Path=/","b=${REDACTED}"],"other":["sid=abcdef123456; x"]}`);
+    expect(
+      redactJson(
+        '[{"name":"Cookie","value":"sid=s3cr3t1234"},{"name":"Authorization","value":"Token abc123"},{"name":"Accept","value":"*/*"}]',
+      ),
+    ).toBe(
+      `[{"name":"Cookie","value":"sid=${REDACTED}"},{"name":"Authorization","value":"Token ${REDACTED}"},{"name":"Accept","value":"*/*"}]`,
+    );
+  });
+
+  it('keeps long random base64 values as known values', () => {
+    // A seeded generator: the same values every run.
+    let seed = 42;
+    const next = (): number => (seed = (seed * 1103515245 + 12345) % 2147483648);
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    const known = new KnownValues();
+    for (let n = 0; n < 50; n++) {
+      known.add(Array.from({ length: 2048 }, () => alphabet[next() % 64]).join(''));
+    }
+    expect(known.size).toBeGreaterThanOrEqual(45);
+  });
+
+  it('finds known values in binary multipart parts and in part headers', () => {
+    const known = new KnownValues();
+    known.add(SESSION);
+    const b = 'B0und';
+    const text = `--${b}\r\nContent-Disposition: form-data; name="f"; filename="${SESSION}.bin"\r\nContent-Type: application/octet-stream\r\n\r\nbin ${SESSION} bin\r\n--${b}--\r\n`;
+    expect(redact(text, `multipart/form-data; boundary=${b}`, known)).not.toContain(SESSION);
+  });
+
+  it('keeps a secret’s or key’s numeric id, but a session’s id is the secret', () => {
+    expect(
+      redactJson(
+        '{"secret":{"id":42},"api_keys":[{"id":17,"key":"k1k2k3k4k5"}],"session":{"id":"s1s2s3s4s5"}}',
+      ),
+    ).toBe(`{"secret":{"id":42},"api_keys":[{"id":17,"key":"${REDACTED}"}],"session":{"id":"${REDACTED}"}}`);
+  });
+
+  it('reads CDATA after whitespace, and says when nested multipart stops being read', () => {
+    expect(redact('<Password>\n  <![CDATA[x1]]></Password>', 'application/xml')).toBe(
+      `<Password>\n  <![CDATA[${REDACTED}]]></Password>`,
+    );
+    let body = 'x';
+    for (let i = 0; i < 3; i++) {
+      body = `--b${i + 1}\r\nContent-Type: multipart/mixed; boundary=b${i}\r\n\r\n${body}\r\n--b${i + 1}--\r\n`;
+    }
+    expect(redactBody(body, 'multipart/mixed; boundary=b3').notScanned).toBe(
+      'multipart nested more than two deep, read as text',
+    );
+  });
+
+  it('stays quick on unclosed CDATA sections', () => {
+    for (const [text, type] of [
+      [rep('<Password><![CDATA[', 100_000), 'application/xml'],
+      [rep('<textarea name="password"><![CDATA[', 60_000), 'text/html'],
+    ] as const) {
+      const start = performance.now();
+      redactBody(text, type);
+      expect(performance.now() - start).toBeLessThan(1500);
+    }
   });
 });

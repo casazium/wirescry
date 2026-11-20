@@ -48,7 +48,7 @@ const MAX_PER_RUN = 8;
  * A value much longer than its longest run (`abcd.abcd.abcd…`) would be checked at length
  * wherever that short run appears: such values aren't kept.
  */
-const MAX_LENGTH_PER_RUN = 8;
+const MAX_LENGTH_PER_RUN = 32;
 
 interface Known {
   value: string;
@@ -258,7 +258,13 @@ export function assignmentSpans(text: string): Span[] {
     }
     // A quoted name and a bare number, as in JSON the walker couldn't read: written back quoted,
     // so the JSON stays valid.
-    const scalar = match[1] !== '' ? /^-?\d[\d.eE+-]{0,63}/.exec(text.slice(from, from + 64)) : null;
+    // Only a whole JSON number, ending where a JSON value ends, after a double-quoted name.
+    const scalar =
+      match[1] === '"'
+        ? /^-?(?:0|[1-9]\d{0,62})(?:\.\d{1,63})?(?:[eE][+-]?\d{1,4})?(?=\s{0,8}(?:[,}\]]|$))/.exec(
+            text.slice(from, from + 160),
+          )
+        : null;
     if (scalar) {
       spans.push({
         start: from,
@@ -360,6 +366,10 @@ interface Frame {
    * key, value or ID (`{"api_keys":[{"key":"…"}]}`), not to every field.
    */
   inheritOnly?: ReadonlySet<string>;
+  /** An array holding a header's values (`"set-cookie": ["…", "…"]`): the header's name. */
+  headerKey?: string;
+  /** An object naming a header (`{"name": "Cookie", "value": "…"}`): the header's name. */
+  headerName?: string;
   /** In an object: the key of the value being read. */
   key?: string;
   /** In an object: whether the next token is a key. */
@@ -409,7 +419,14 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
       if (rule && rule !== 'describes') return rule;
       const lower = key.toLowerCase();
       // A session's or token's own `id` or `value` is the secret (`{"session":{"id":"…"}}`).
-      if (frame.inherit && VALUE_KEYS.has(lower)) return frame.inherit;
+      // An ID only of a session or token: a secret's or key's ID isn't the secret.
+      if (
+        frame.inherit &&
+        VALUE_KEYS.has(lower) &&
+        (lower !== 'id' || LONG_ONLY_FAMILIES.has(frame.inherit))
+      ) {
+        return frame.inherit;
+      }
       if (rule === 'describes' || (frame.inheritOnly && !frame.inheritOnly.has(lower))) return undefined;
       return frame.inherit;
     }
@@ -447,10 +464,24 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
     const unescaped = decodeJsonString(raw);
     if (!unescaped) return false;
     const { decoded, rawAt } = unescaped;
-    const key = stack.at(-1)?.kind === 'object' ? (stack.at(-1)!.key ?? '') : '';
-    if (HEADER_KEYS.has(key.toLowerCase()) && decoded !== '') {
-      // As the header itself would be: a cookie's name kept, an authorization's scheme.
-      const redacted = redactHeader(key, decoded, known).value;
+    const frame = stack.at(-1);
+    const key = frame?.kind === 'object' ? (frame.key ?? '') : '';
+    // A header's value: under its name, in an array under its name, or as a HAR-style pair's value.
+    const header =
+      frame?.kind === 'array'
+        ? frame.headerKey
+        : HEADER_KEYS.has(key.toLowerCase())
+          ? key
+          : key === 'value'
+            ? frame?.headerName
+            : undefined;
+    if (frame?.kind === 'object' && key.toLowerCase() === 'name' && HEADER_KEYS.has(decoded.toLowerCase())) {
+      frame.headerName = decoded;
+    }
+    if (header && decoded !== '') {
+      // As the header itself would be: a cookie's name kept, an authorization's scheme. The whole
+      // string is written back, so escapes in its kept parts may change; it stays valid JSON.
+      const redacted = redactHeader(header, decoded, known).value;
       if (redacted !== decoded) {
         spans.push({
           start,
@@ -459,8 +490,9 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
           name: key,
           replacement: JSON.stringify(redacted).slice(1, -1),
         });
+        return true;
       }
-      return true;
+      // Nothing to redact by the header's rules: the shapes and known values below still look.
     }
     if (family && decoded !== '') {
       const longEnough = !LONG_ONLY_FAMILIES.has(family) || (decoded.length >= 8 && !/\s/.test(decoded));
@@ -550,7 +582,15 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0): Span[] 
                 expectKey: true,
                 ...(inArray ? { inheritOnly: VALUE_KEYS } : {}),
               }
-            : { kind: 'array', inherit, inheritName, expectKey: false },
+            : {
+                kind: 'array',
+                inherit,
+                inheritName,
+                expectKey: false,
+                ...(frame?.kind === 'object' && HEADER_KEYS.has((frame.key ?? '').toLowerCase())
+                  ? { headerKey: frame.key }
+                  : {}),
+              },
         );
         i++;
         ws();
@@ -684,33 +724,46 @@ const CDATA_OPEN = '<![CDATA[';
 
 /**
  * Elements whose text is a secret, redacted: by the element's name (`<Password>…</Password>`,
- * `<wsse:Password>`), or by its `name` or `key` attribute (`<entry key="password">…</entry>`,
- * HTML's `<textarea name="secret">`). Plain text or one CDATA section.
+ * `<wsse:Password>`), or in XML by its `key` attribute (`<entry key="password">…</entry>`). In
+ * HTML only a `<textarea>` with a secret `name` counts: a link or button named for a password
+ * holds words, not one. Plain text or one CDATA section, after any whitespace. Only text found by
+ * the element's own name is added to the known values.
  */
-export function xmlElementSpans(text: string, sink?: ValueSink): Span[] {
+export function xmlElementSpans(text: string, sink?: ValueSink, html = false): Span[] {
   const spans: Span[] = [];
   for (const match of text.matchAll(ELEMENT_OPEN)) {
     const name = match[1]!;
-    const attributes = match[2] ? attributesOf(match[2], match.index + 1 + name.length) : [];
-    const named = attributes.find((a) => /^(?:name|key)$/i.test(a.name));
-    const family =
-      secretName(localName(name), 'json') ?? (named ? secretName(named.value, 'form') : undefined);
+    const byOwnName = html ? undefined : secretName(localName(name), 'json');
+    let family: SecretFamily | undefined = byOwnName;
+    let named: Attribute | undefined;
+    if (!family) {
+      const attributes = match[2] ? attributesOf(match[2], match.index + 1 + name.length) : [];
+      named = html
+        ? /^textarea$/i.test(name)
+          ? attributes.find((a) => /^name$/i.test(a.name))
+          : undefined
+        : attributes.find((a) => /^key$/i.test(a.name));
+      family = named ? secretName(named.value, 'form') : undefined;
+    }
     if (!family) continue;
+    // The text, searched for its end only so far: an unclosed one isn't read to the body's end.
     let start = match.index + match[0].length;
+    const window = text.slice(start, start + 64 + CDATA_OPEN.length + MAX_VALUE + 3);
+    const lead = /^\s{0,64}/.exec(window)![0].length;
     let close: number;
-    if (text.startsWith(CDATA_OPEN, start)) {
-      const cdataEnd = text.indexOf(']]>', start);
-      if (cdataEnd < 0 || cdataEnd - start > MAX_VALUE) continue;
-      start += CDATA_OPEN.length;
-      close = cdataEnd;
-      if (!text.startsWith(`</${name}`, cdataEnd + 3)) continue;
+    if (window.startsWith(CDATA_OPEN, lead)) {
+      const cdataEnd = window.indexOf(']]>', lead + CDATA_OPEN.length);
+      if (cdataEnd < 0 || !text.startsWith(`</${name}`, start + cdataEnd + 3)) continue;
+      close = start + cdataEnd;
+      start += lead + CDATA_OPEN.length;
     } else {
-      close = text.indexOf('<', start);
-      if (close < 0 || close - start > MAX_VALUE || !text.startsWith(`</${name}`, close)) continue;
+      const lt = window.indexOf('<');
+      if (lt < 0 || !text.startsWith(`</${name}`, start + lt)) continue;
+      close = start + lt;
     }
     if (close === start) continue;
     spans.push({ start, end: close, kind: 'name', name: named?.value ?? localName(name) });
-    if (sink && STRONG_FAMILIES.has(family)) addValue(sink, text.slice(start, close).trim());
+    if (sink && byOwnName && STRONG_FAMILIES.has(byOwnName)) addValue(sink, text.slice(start, close).trim());
   }
   return spans;
 }
@@ -794,7 +847,11 @@ function multipartSpans(
   depth: number,
 ): Span[] {
   const boundary = boundaryOf(mediaType);
-  if (!boundary || depth >= MAX_MULTIPART_DEPTH) return plainSpans(text, known, true);
+  if (!boundary) return plainSpans(text, known, true);
+  if (depth >= MAX_MULTIPART_DEPTH) {
+    notScanned.push('multipart nested more than two deep, read as text');
+    return plainSpans(text, known, true);
+  }
   const spans: Span[] = [];
   const add = (inner: Span[], offset: number): void => {
     for (const span of inner) spans.push({ ...span, start: offset + span.start, end: offset + span.end });
@@ -825,6 +882,8 @@ function multipartSpans(
     }
     const blank = headersStart + blankInZone;
     const headers = text.slice(headersStart, blank);
+    // A part's headers: token shapes and known values (`filename="<token>.bin"`).
+    add(plainSpans(headers, known, false), headersStart);
     let bodyEnd = partEnd;
     if (text.slice(bodyEnd - 2, bodyEnd) === '\r\n') bodyEnd -= 2;
     else if (text[bodyEnd - 1] === '\n') bodyEnd -= 1;
@@ -843,7 +902,7 @@ function multipartSpans(
       } else if (isFile && partType && !/^text\/|json|xml|javascript|x-www-form-urlencoded/i.test(partType)) {
         notScanned.push('a file part that isn’t text');
         // Token shapes are still looked for: a key or token in a file of unknown type.
-        add(shapeSpans(text.slice(blank, bodyEnd), known), blank);
+        add(plainSpans(text.slice(blank, bodyEnd), known, false), blank);
       } else {
         add(
           kindSpans(text.slice(blank, bodyEnd), partType ?? 'text/plain', known, notScanned, depth + 1),
@@ -959,7 +1018,7 @@ function kindSpans(
       const spans = plainSpans(text, known, false);
       for (const span of assignmentSpans(text)) if (!inCode(span)) spans.push(span);
       for (const span of tagSpans(text, known)) spans.push(span);
-      for (const span of xmlElementSpans(text, known)) spans.push(span);
+      for (const span of xmlElementSpans(text, known, true)) spans.push(span);
       return spans;
     }
     case 'code':
