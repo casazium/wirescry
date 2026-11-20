@@ -29,6 +29,7 @@ import {
   statusOf,
   track,
   type Run,
+  waitForOutput,
 } from './java-agent-helpers';
 
 /** The agent reports the version it was built as: package.json's. */
@@ -63,7 +64,7 @@ const probe = (java: string, ms: number, extra: string[] = [], programArgs: stri
 
 /** Waits until the program has printed "started", so it's running main. */
 async function started(r: Run) {
-  await expect.poll(r.stdout, { timeout: 10_000 }).toContain('started');
+  await waitForOutput(r, 'started', 10_000);
 }
 
 describe.skipIf(!buildJava)('the Java agent', () => {

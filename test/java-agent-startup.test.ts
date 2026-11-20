@@ -27,6 +27,7 @@ import {
   statusOf,
   track,
   type Run,
+  waitForOutput,
 } from './java-agent-helpers';
 
 let probes: string;
@@ -53,7 +54,7 @@ async function probe(java: string, jvm: string[], env?: NodeJS.ProcessEnv): Prom
   const r = env
     ? wrap(java, ['-cp', probes, 'ProxyProbe'], env)
     : run(java, [...jvm, '-cp', probes, 'ProxyProbe'], { stdin: true });
-  await expect.poll(r.stdout, { timeout: 15_000 }).toContain('ready');
+  await waitForOutput(r, 'ready', 15_000);
   return r;
 }
 

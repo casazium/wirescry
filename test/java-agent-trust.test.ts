@@ -27,6 +27,7 @@ import {
   shared,
   statusOf,
   type Run,
+  waitForOutput,
 } from './java-agent-helpers';
 
 interface Ca {
@@ -110,7 +111,7 @@ async function tlsProbe(java: string, args: string[], jvm: string[] = []): Promi
   const r = run(java, [...jvm, '-cp', probes, mainClass, ...args.slice(args[0] === 'httpclient' ? 1 : 0)], {
     stdin: true,
   });
-  await expect.poll(r.stdout, { timeout: 15_000 }).toContain('ready');
+  await waitForOutput(r, 'ready', 15_000);
   return r;
 }
 

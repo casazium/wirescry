@@ -35,6 +35,7 @@ import {
   shared,
   statusOf,
   type Run,
+  waitForOutput,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: answers plain requests itself, and tunnels CONNECT. */
@@ -150,7 +151,7 @@ const UNKNOWN_HOST = /^FAIL java\.net\.UnknownHostException/;
 /** A ProxyProbe, ready for commands. */
 async function probe(java: string, jvm: string[] = []): Promise<Run> {
   const r = run(java, [...VERIFY, ...jvm, '-cp', probes, 'ProxyProbe'], { stdin: true });
-  await expect.poll(r.stdout, { timeout: 15_000 }).toContain('ready');
+  await waitForOutput(r, 'ready', 15_000);
   return r;
 }
 
@@ -434,7 +435,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
         const client = run(java, [...VERIFY, '-cp', probes, 'TlsProbeHttpClient', 'https://proxied.test/'], {
           stdin: true,
         });
-        await expect.poll(client.stdout, { timeout: 15_000 }).toContain('ready');
+        await waitForOutput(client, 'ready', 15_000);
         const send = async () => {
           const before = client.stdout().split('\n').filter(Boolean).length;
           client.send('');

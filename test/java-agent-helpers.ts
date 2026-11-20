@@ -205,6 +205,51 @@ export interface Run {
   send(line: string): void;
 }
 
+/** At most this much of a program's output goes into a failure's message. */
+const MAX_REPORTED = 8000;
+
+const tail = (text: string): string => (text.length > MAX_REPORTED ? `…${text.slice(-MAX_REPORTED)}` : text);
+
+/**
+ * The threads of a running JVM, from `jstack` beside its java (or `jcmd`), for a failure's message:
+ * it tells a hang (and where) from a slow start. Says why if there's none.
+ */
+export function threadDump(java: string, pid: number): string {
+  const bin = path.dirname(java);
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  for (const [tool, args] of [
+    ['jstack', [String(pid)]],
+    ['jcmd', [String(pid), 'Thread.print']],
+  ] as const) {
+    const result = spawnSync(path.join(bin, tool + suffix), args, { encoding: 'utf8', timeout: 30_000 });
+    if (result.status === 0 && result.stdout.trim() !== '') return tail(result.stdout);
+  }
+  return `(no thread dump: neither jstack nor jcmd beside ${java} gave one)`;
+}
+
+/**
+ * Waits until a program prints `text`. If it doesn't within `timeoutMs`, fails with what happened:
+ * how long it waited, whether the program exited (and how), what it printed, and, for a JVM still
+ * running, its threads. Without these, a hang, a crash and a slow start all read as "expected ''".
+ */
+export async function waitForOutput(r: Run, text: string, timeoutMs: number): Promise<void> {
+  const started = Date.now();
+  try {
+    await expect.poll(r.stdout, { timeout: timeoutMs }).toContain(text);
+  } catch (error) {
+    const { exitCode, signalCode, pid, spawnfile } = r.child;
+    const running = exitCode === null && signalCode === null;
+    const state = running ? 'is still running' : `exited (code ${exitCode}, signal ${signalCode})`;
+    const isJava = /^java(\.exe)?$/i.test(path.basename(spawnfile));
+    const dump = running && isJava && pid !== undefined ? `\nthreads:\n${threadDump(spawnfile, pid)}` : '';
+    throw new Error(
+      `no "${text}" after ${Date.now() - started} ms; the program ${state}.\n` +
+        `stdout:\n${tail(r.stdout())}\nstderr:\n${tail(r.stderr())}${dump}`,
+      { cause: error },
+    );
+  }
+}
+
 export function run(java: string, args: string[], options: { stdin?: boolean } = {}): Run {
   const child = spawn(java, args, { stdio: [options.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'] });
   children.push(child);

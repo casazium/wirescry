@@ -26,6 +26,7 @@ import {
   setUpJavaAgentTests,
   shared,
   type Run,
+  waitForOutput,
 } from './java-agent-helpers';
 
 const version = JSON.parse(
@@ -116,7 +117,7 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
 
   async function probe(java: string, flags: string[] = [], args: string[] = []): Promise<Run> {
     const r = run(java, [...flags, '-cp', probes, 'ProxyProbe', ...args], { stdin: true });
-    await expect.poll(r.stdout, { timeout: 15_000 }).toContain('ready');
+    await waitForOutput(r, 'ready', 15_000);
     return r;
   }
 
