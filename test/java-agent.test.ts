@@ -161,6 +161,8 @@ describe.skipIf(!buildJava)('the Java agent', () => {
 
       it.skipIf(major < 11)(
         'leaves class-data sharing on: no warning in the program’s output',
+        // A class-data dump, then a 5 s program: over the default 20 s on a loaded runner.
+        { timeout: 60_000 },
         async (ctx) => {
           // A shared archive of our own, like the one most JDKs ship (this test's may not), made for
           // runs with an agent (java.instrument). Appending to the bootstrap class path would make

@@ -264,12 +264,14 @@ export async function waitFor(r: Run, done: () => boolean, what: string, timeout
   const running = exitCode === null && signalCode === null;
   const state = running ? 'is still running' : `exited (code ${exitCode}, signal ${signalCode})`;
   const isJava = /^java(\.exe)?$/i.test(path.basename(spawnfile));
-  const dump =
-    running && isJava && pid !== undefined ? `\nthreads:\n${await threadDump(spawnfile, pid)}` : '';
-  throw new Error(
+  const message =
     `no ${what} after ${Date.now() - started} ms; the program ${state}.\n` +
-      `stdout:\n${tail(r.stdout())}\nstderr:\n${tail(r.stderr())}${dump}`,
-  );
+    `stdout:\n${tail(r.stdout())}\nstderr:\n${tail(r.stderr())}`;
+  if (!(running && isJava && pid !== undefined)) throw new Error(message);
+  // Printed before the thread dump is taken: if that takes the test past its own time limit, the
+  // failure says only "Test timed out", and this would be lost.
+  console.error(message);
+  throw new Error(`${message}\nthreads:\n${await threadDump(spawnfile, pid)}`);
 }
 
 /** Waits until a program prints `text`, failing as {@link waitFor} does. */
