@@ -397,95 +397,119 @@ describe('the backend and the Java agent', () => {
     return path.join(dataDir, 'java-agent');
   };
 
-  it('keeps the control file on its port and CA, and says off when it stops', async () => {
-    const dir = await startWith({ jars, heartbeatMs: 20 });
-    // Written in the background.
-    await expect
-      .poll(() =>
-        control(dir).then(
-          () => true,
-          () => false,
-        ),
-      )
-      .toBe(true);
-    const c0 = await control(dir);
-    expect(c0).toMatchObject({ enabled: 'true', startup: 'true', proxyPort: String(backend!.proxyPort) });
-    expect(c0.caSha256).toBe(caSha256(await readFile(backend!.caCertPath, 'utf8')));
-    await expect.poll(async () => (await control(dir)).seq).not.toBe(c0.seq);
-
-    const api = await apiClient(backend!.apiPort);
-    const port = await systemPickedPort();
-    await api.send({ command: 'setProxyPort', port });
-    expect((await control(dir)).proxyPort).toBe(String(port));
-    await api.send({ command: 'resetCertificate' });
-    const c1 = await control(dir);
-    expect(c1.caSha256).toBe(caSha256(await readFile(backend!.caCertPath, 'utf8')));
-    expect(c1.caSha256).not.toBe(c0.caSha256);
-    api.close();
-
-    await backend!.stop();
-    backend = undefined;
-    expect((await control(dir)).enabled).toBe('false');
-  });
-
-  it('shows an agent up to date with the host Wirescry started, before anything attaches', async () => {
-    const dir = await startWith({
-      jars,
-      heartbeatMs: 20,
-      attach: {
-        findJdk: async () => ({
-          jdk: { home: '/jdk', java: '/jdk/bin/java', version: '21', major: 21, from: 'JAVA_HOME' },
-          passed: [],
-        }),
-        attacher: () => ({
-          list: async () => [{ pid: process.pid, name: 'Main' }],
-          load: async () => ({ ok: false, reason: 'load-failed' }),
-        }),
-        pollMs: 50,
-      },
-    });
-    await expect
-      .poll(() =>
-        control(dir).then(
-          () => true,
-          () => false,
-        ),
-      )
-      .toBe(true);
-    // An agent started with Wirescry's option (this test's process stands in for its program)
-    // that applied the control file's settings.
-    const { config } = await control(dir);
-    await mkdir(path.join(dir, 'status'), { recursive: true });
-    await writeFile(
-      path.join(dir, 'status', `${process.pid}-s1.properties`),
-      [
-        'protocol=1',
-        'agentVersion=0.0.0',
-        'route=startup',
-        'id=s1',
-        `pid=${process.pid}`,
-        'java=21.0.2',
-        'enabled=true',
-        'reason=on',
-        `appliedConfig=${config}`,
-        `port=${backend!.proxyPort}`,
-        'hooks=trust:ok,proxy:ok',
-        'beat=1',
-        'end=1',
-        '',
-      ].join('\n'),
-    );
-    const api = await apiClient(backend!.apiPort);
-    await api.send({ command: 'javaRefresh' });
-    const program = () => {
-      const statuses = api.messages.flatMap((m) =>
-        m.type === 'status' || m.type === 'hello' ? [m.status] : [],
+  /**
+   * Waits for the control file the backend writes in the background once it starts. That copies
+   * the agent's jars first, which took a Windows CI runner over 5 s (its antivirus scans new files),
+   * so it gets 30 s. If it still isn't there, says what is, and any problem the backend reported.
+   */
+  const waitForControl = async (dir: string): Promise<void> => {
+    try {
+      await expect
+        .poll(
+          () =>
+            control(dir).then(
+              () => true,
+              () => false,
+            ),
+          { timeout: 30_000 },
+        )
+        .toBe(true);
+    } catch (error) {
+      const files = await readdir(dir, { recursive: true }).catch((e: Error) => `(can't list: ${e.message})`);
+      const api = await apiClient(backend!.apiPort);
+      const hello = api.messages.find((m) => m.type === 'hello');
+      api.close();
+      const agent = hello?.type === 'hello' ? hello.status.javaAgent : undefined;
+      throw new Error(
+        `no control file in ${dir}; it holds ${JSON.stringify(files)}; the backend says ${JSON.stringify(agent)}`,
+        { cause: error },
       );
-      return statuses.at(-1)?.javaAgent?.attach?.programs.find((p) => p.pid === process.pid);
-    };
-    await expect.poll(() => program()?.agent).toMatchObject({ route: 'startup', on: true, current: true });
-    api.close();
-  });
+    }
+  };
+
+  it(
+    'keeps the control file on its port and CA, and says off when it stops',
+    { timeout: 60_000 },
+    async () => {
+      const dir = await startWith({ jars, heartbeatMs: 20 });
+      // Written in the background.
+      await waitForControl(dir);
+      const c0 = await control(dir);
+      expect(c0).toMatchObject({ enabled: 'true', startup: 'true', proxyPort: String(backend!.proxyPort) });
+      expect(c0.caSha256).toBe(caSha256(await readFile(backend!.caCertPath, 'utf8')));
+      await expect.poll(async () => (await control(dir)).seq).not.toBe(c0.seq);
+
+      const api = await apiClient(backend!.apiPort);
+      const port = await systemPickedPort();
+      await api.send({ command: 'setProxyPort', port });
+      expect((await control(dir)).proxyPort).toBe(String(port));
+      await api.send({ command: 'resetCertificate' });
+      const c1 = await control(dir);
+      expect(c1.caSha256).toBe(caSha256(await readFile(backend!.caCertPath, 'utf8')));
+      expect(c1.caSha256).not.toBe(c0.caSha256);
+      api.close();
+
+      await backend!.stop();
+      backend = undefined;
+      expect((await control(dir)).enabled).toBe('false');
+    },
+  );
+
+  it(
+    'shows an agent up to date with the host Wirescry started, before anything attaches',
+    { timeout: 60_000 },
+    async () => {
+      const dir = await startWith({
+        jars,
+        heartbeatMs: 20,
+        attach: {
+          findJdk: async () => ({
+            jdk: { home: '/jdk', java: '/jdk/bin/java', version: '21', major: 21, from: 'JAVA_HOME' },
+            passed: [],
+          }),
+          attacher: () => ({
+            list: async () => [{ pid: process.pid, name: 'Main' }],
+            load: async () => ({ ok: false, reason: 'load-failed' }),
+          }),
+          pollMs: 50,
+        },
+      });
+      await waitForControl(dir);
+      // An agent started with Wirescry's option (this test's process stands in for its program)
+      // that applied the control file's settings.
+      const { config } = await control(dir);
+      await mkdir(path.join(dir, 'status'), { recursive: true });
+      await writeFile(
+        path.join(dir, 'status', `${process.pid}-s1.properties`),
+        [
+          'protocol=1',
+          'agentVersion=0.0.0',
+          'route=startup',
+          'id=s1',
+          `pid=${process.pid}`,
+          'java=21.0.2',
+          'enabled=true',
+          'reason=on',
+          `appliedConfig=${config}`,
+          `port=${backend!.proxyPort}`,
+          'hooks=trust:ok,proxy:ok',
+          'beat=1',
+          'end=1',
+          '',
+        ].join('\n'),
+      );
+      const api = await apiClient(backend!.apiPort);
+      await api.send({ command: 'javaRefresh' });
+      const program = () => {
+        const statuses = api.messages.flatMap((m) =>
+          m.type === 'status' || m.type === 'hello' ? [m.status] : [],
+        );
+        return statuses.at(-1)?.javaAgent?.attach?.programs.find((p) => p.pid === process.pid);
+      };
+      await expect.poll(() => program()?.agent).toMatchObject({ route: 'startup', on: true, current: true });
+      api.close();
+    },
+  );
 
   it('turns the startup setting off and on, for agents, new terminals and the next start', async () => {
     const dir = await startWith({ jars, heartbeatMs: 20 });
@@ -640,7 +664,7 @@ describe('the backend and the Java agent', () => {
     await expect(readFile(path.join(dir, 'control.properties'))).rejects.toThrow(/ENOENT/);
   });
 
-  it('says off while the proxy still takes connections', async () => {
+  it('says off while the proxy still takes connections', { timeout: 60_000 }, async () => {
     let proxyOpen: boolean | undefined;
     const ops: FileOps = {
       rename: async (from, to) => {
@@ -659,21 +683,14 @@ describe('the backend and the Java agent', () => {
       sleep: async () => {},
     };
     const dir = await startWith({ jars, ops });
-    await expect
-      .poll(() =>
-        control(dir).then(
-          () => true,
-          () => false,
-        ),
-      )
-      .toBe(true);
+    await waitForControl(dir);
     await backend!.stop();
     backend = undefined;
     expect((await control(dir)).enabled).toBe('false');
     expect(proxyOpen).toBe(true);
   });
 
-  it('doesn’t hold up quitting when the control file can’t be written', async () => {
+  it('doesn’t hold up quitting when the control file can’t be written', { timeout: 60_000 }, async () => {
     let hang = false;
     const ops: FileOps = {
       rename: async (from, to) => {
@@ -684,14 +701,7 @@ describe('the backend and the Java agent', () => {
       sleep: async () => {},
     };
     const dir = await startWith({ jars, ops });
-    await expect
-      .poll(() =>
-        control(dir).then(
-          () => true,
-          () => false,
-        ),
-      )
-      .toBe(true);
+    await waitForControl(dir);
     hang = true;
     const started = Date.now();
     await backend!.stop();
