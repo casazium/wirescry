@@ -735,6 +735,13 @@ describe('fixes from review', () => {
     );
   });
 
+  it('maps spans back through many escapes', () => {
+    const json = '"https:\\/\\/a.example\\/p?x=\\u0031&token=t\\u006Fk\\u0065n1&b=2&sig=s\\/g&c=\\u00e9"';
+    expect(applySpans(json, urlInTextSpans(json))).toBe(
+      `"https:\\/\\/a.example\\/p?x=\\u0031&token=${REDACTED}&b=2&sig=${REDACTED}&c=\\u00e9"`,
+    );
+  });
+
   it('finds a URL with a digit before its scheme', () => {
     const text = '12345https://example.com/?token=abc';
     expect(applySpans(text, urlInTextSpans(text))).toBe(`12345https://example.com/?token=${REDACTED}`);

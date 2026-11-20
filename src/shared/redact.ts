@@ -718,15 +718,15 @@ export function urlInTextSpans(text: string, sink?: ValueSink): Span[] {
       const raw = whole.slice(0, proseEnd(whole));
       // Punctuation right after a value is likelier part of it (`password=hunter2!!`) than prose.
       const tail = /^[.,;:!?]*/.exec(whole.slice(raw.length))![0].length;
-      const { decoded, offsets } = unescapeForUrl(raw);
+      const { decoded, rawAt } = unescapeForUrl(raw);
       // Shapes are looked for only if undoing escapes changed the URL: otherwise textSpans finds
       // them in the text itself.
       for (const span of urlSpans(decoded, 0, sink, raw !== decoded)) {
         const atEnd = span.end === decoded.length;
         spans.push({
           ...span,
-          start: start + offsets[span.start]!,
-          end: start + offsets[span.end]! + (atEnd ? tail : 0),
+          start: start + rawAt(span.start),
+          end: start + rawAt(span.end) + (atEnd ? tail : 0),
         });
       }
       at = text.indexOf(mark, Math.max(end, at + mark.length));
@@ -735,19 +735,48 @@ export function urlInTextSpans(text: string, sink?: ValueSink): Span[] {
   return spans;
 }
 
-/** JSON's escapes undone, with each decoded index's offset in the raw text. */
-function unescapeForUrl(raw: string): { decoded: string; offsets: number[] } {
-  let decoded = '';
-  const offsets: number[] = [];
-  let i = 0;
-  while (i < raw.length) {
-    const escape = jsonEscape(raw, i);
-    offsets.push(i);
-    decoded += escape ? escape.char : raw[i]!;
-    i += escape ? escape.width : 1;
+/**
+ * JSON's escapes undone, and a map from an index in the result to one in `raw`. Built from the
+ * escapes alone, not per character: a URL in text can be megabytes long, and usually has none.
+ */
+function unescapeForUrl(raw: string): { decoded: string; rawAt: (i: number) => number } {
+  if (!raw.includes('\\')) return { decoded: raw, rawAt: (i) => i };
+  const parts: string[] = [];
+  /** For each escape: its index in the result, and how many more characters it took in `raw`. */
+  const starts: number[] = [];
+  const extras: number[] = [];
+  let from = 0;
+  let length = 0;
+  let extra = 0;
+  for (let at = raw.indexOf('\\'); at >= 0; at = raw.indexOf('\\', at)) {
+    const escape = jsonEscape(raw, at);
+    // Not reached today (a backslash that isn't an escape ends a URL in text), but kept as it is.
+    if (!escape) {
+      at += 1;
+      continue;
+    }
+    parts.push(raw.slice(from, at), escape.char);
+    length += at - from;
+    starts.push(length);
+    extra += escape.width - 1;
+    extras.push(extra);
+    length += 1;
+    from = at + escape.width;
+    at = from;
   }
-  offsets.push(raw.length);
-  return { decoded, offsets };
+  parts.push(raw.slice(from));
+  // An index maps past every escape that comes before it in the result.
+  const rawAt = (i: number): number => {
+    let low = 0;
+    let high = starts.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (starts[mid]! < i) low = mid + 1;
+      else high = mid;
+    }
+    return i + (low > 0 ? extras[low - 1]! : 0);
+  };
+  return { decoded: parts.join(''), rawAt };
 }
 
 /** Spans in plain text: token shapes and URLs. */
