@@ -962,11 +962,13 @@ describe('KnownValues.inBytes', () => {
     // Sized so a small run takes about 10 ms, then 8 times as much, alternated.
     let size = 10_000;
     while (time(size) < 10 && size < 50_000_000) size *= 2;
-    let small = 0;
-    let large = 0;
-    for (let i = 0; i < 3; i++) {
-      small += time(size);
-      large += time(size * 8);
+    // The fastest of five each, alternated, as the other timing tests do: a busy machine
+    // slows some runs, rarely all of them.
+    let small = Infinity;
+    let large = Infinity;
+    for (let i = 0; i < 5; i++) {
+      small = Math.min(small, time(size));
+      large = Math.min(large, time(size * 8));
     }
     expect(large / small).toBeLessThan(20);
     // Values alike past the few checked can't all be found in bytes, and say so.
