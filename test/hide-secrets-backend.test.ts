@@ -37,7 +37,7 @@ describe('Hide Secrets: bodies masked by the backend', () => {
       headers: { authorization: `Bearer ${BEARER}` },
     });
     ids.json = await api.completed('/json');
-    for (const name of ['echo', 'blob', 'png', 'broken', 'app.js', 'broken.js', 'utf16']) {
+    for (const name of ['echo', 'blob', 'png', 'broken', 'app.js', 'broken.js', 'utf16', 'many.xml']) {
       await requestViaProxy(backend.proxyPort, `${base}/${name}`, ca);
       ids[name] = await api.completed(`/${name}`);
     }
@@ -77,6 +77,14 @@ describe('Hide Secrets: bodies masked by the backend', () => {
       'content-type': 'application/javascript',
       'content-encoding': 'gzip',
     });
+    // More secrets than it will look for again once formatted.
+    await upstream
+      .forGet('/many.xml')
+      .thenReply(
+        200,
+        `<r>${Array.from({ length: 5_001 }, (_, i) => `<password>v${i}Zq9Xw8Vu7Ts6</password>`).join('')}</r>`,
+        { 'content-type': 'application/xml' },
+      );
     // ASCII in UTF-16 with no BOM: valid UTF-8 too.
     await upstream.forGet('/utf16').thenReply(200, Buffer.from(`user=bob&password=${PASSWORD}`, 'utf16le'), {
       'content-type': 'application/x-www-form-urlencoded',
@@ -166,6 +174,20 @@ describe('Hide Secrets: bodies masked by the backend', () => {
     const body = await get(ids.json!, 'response', false);
     expect(body.masked).toBeUndefined();
     expect(bytesOf(body).toString()).toContain(ACCESS);
+  });
+
+  it('refuses to show code formatted when it can’t find every secret again', async () => {
+    await ready();
+    const masked = await api.send<FormattedBody>({
+      command: 'formatBody',
+      exchangeId: ids['many.xml']!,
+      side: 'response',
+      mask: true,
+    });
+    expect(masked).toEqual({
+      ok: false,
+      reason: 'some secrets in it couldn’t be found again once formatted',
+    });
   });
 
   it('masks UTF-16 with no BOM, in its bytes', async () => {

@@ -195,6 +195,17 @@ describe('maskBytes: UTF-16 without a BOM, and text it can’t read', () => {
     });
   });
 
+  it('hides a body with a UTF-16 BOM it can’t read, whatever its type', () => {
+    const body = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from(`password=${PASSWORD}`, 'utf16le'),
+      Buffer.from([0x41]),
+    ]);
+    expect(maskBytes(body, 'application/octet-stream', false, new KnownValues())).toEqual({
+      hidden: HIDDEN_UNREADABLE,
+    });
+  });
+
   it('hides text full of NULs in no pattern, but shows such bytes of a type that isn’t text', () => {
     const body = Buffer.from(
       `\u0000\u0000\u0000ab\u0000\u0000cd\u0000\u0000\u0000password=${PASSWORD}\u0000\u0000\u0000\u0000\u0000`,
