@@ -9,7 +9,7 @@ Wirescry is a desktop tool for seeing, debugging and rewriting HTTP traffic, in 
 
 ## Status
 
-**Checked November 20, 2026, against `main` at v0.1.37 and `wirescry-pro` `main`.** The check covered the source, the two READMEs and the commit history. It did not cover hands-on use. Each item below is marked:
+**Checked November 20, 2026, against `main` at v0.1.37 and `wirescry-pro` `main`; updated November 21 for v0.1.38 (redaction, Hide Secrets and the MCP server).** The check covered the source, the two READMEs and the commit history. It did not cover hands-on use. Each item below is marked:
 
 - **Shipped:** in release builds.
 - **Partly:** shipped, with the gaps listed.
@@ -18,6 +18,7 @@ Wirescry is a desktop tool for seeing, debugging and rewriting HTTP traffic, in 
 Stages 1 and 2 are mostly shipped, and most of Stage 3 too. Android, Java and Docker setup shipped in the free app, as [PRICING.md](https://github.com/casazium/wirescry-pro/blob/main/docs/PRICING.md) recommended.
 
 **Left to do, in roadmap order:**
+- MCP tools that change traffic (Pro), behind approval in the app
 - Rules: find and replace and JSON edits, groups, WebSocket rules, and body matching beyond 64 KB
 - Breakpoints: large request bodies, noticing a client that gives up, and WebSocket messages
 - Saved sessions
@@ -79,6 +80,18 @@ Launched as 0.1.1 on November 1, 2026.
   - `=`, `!=`, `~`, comparisons and `status=4xx`
   - negation with `-` and quoted terms
   - fields for size, time, gRPC status and rule
+- Redaction of secrets (free). **Shipped** in 0.1.38:
+  - Export HAR redacts secrets by default (headers, cookies, URLs, and bodies best effort), with a notice of what was redacted; Export HAR Without Redaction writes everything
+  - View → Hide Secrets masks the list, details, bodies (Hex too), WebSocket messages and Server-Sent Events on screen; Copy copies what's shown
+  - one set of rules, plus values seen in any request's URL or headers, for export, the screen and MCP
+
+### AI agents
+- **MCP server for AI coding agents** (free, read-only). **Shipped** in 0.1.38:
+  - Streamable HTTP on 127.0.0.1, off by default, with a token; refuses web pages
+  - tools to list requests and read headers, bodies, WebSocket messages and Server-Sent Events, always masked
+  - Setup section with settings for Claude Code, Cursor and VS Code, recent calls, and an "Agent active" badge
+- **MCP tools that change traffic** (Pro): create and toggle rules, set breakpoints, read decoded gRPC and API-spec results, each needing approval in the app. **Not started.**
+- **A stdio command** for MCP clients that can't use HTTP. **Not started.**
 
 ### Pro
 - **Rules engine**: **Partly.**
