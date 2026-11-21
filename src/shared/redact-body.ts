@@ -1070,6 +1070,14 @@ function formBodySpans(text: string, known: KnownValues | undefined): Span[] {
   return spans;
 }
 
+/** XML's rules: the text rules, then elements and attributes with secret names. */
+function xmlSpans(text: string, known: KnownValues | undefined): Span[] {
+  const spans = plainSpans(text, known, true);
+  for (const span of xmlElementSpans(text, known)) spans.push(span);
+  for (const span of tagSpans(text, known)) spans.push(span);
+  return spans;
+}
+
 /** Spans by the rules for a body's kind, known values included. */
 function kindSpans(
   text: string,
@@ -1089,16 +1097,33 @@ function kindSpans(
     case 'sse':
       // `data:` lines' values, with the one space after the colon left out.
       return lineSpans(text, known, (line) => (line.startsWith('data:') ? (line[5] === ' ' ? 6 : 5) : -1));
-    case 'form':
+    case 'form': {
+      // Some clients send JSON or XML labeled as a form; the window shows it as what it is. (\s
+      // matches a BOM.) The same prefixes as JSON sent as text: `)]}'`, `for(;;);`, `while(1);`.
+      if (/^\s*[[{)fw]/.test(text)) {
+        const json = prefixedJsonSpans(text, known);
+        if (json) return json;
+      }
+      // Only looks like JSON (broken, cut, one value per line, or a form whose first name
+      // starts with a bracket): the form rules, each line as JSON or text, and JSON's as far as it
+      // goes.
+      if (/^\s*[[{)]/.test(text)) {
+        const spans = formBodySpans(text, known);
+        for (const span of lineSpans(text, known, () => 0)) spans.push(span);
+        for (const span of prefixedJsonSpans(text, known, true) ?? []) spans.push(span);
+        return spans;
+      }
+      if (/^\s*</.test(text)) {
+        const spans = xmlSpans(text, known);
+        for (const span of formBodySpans(text, known)) spans.push(span);
+        return spans;
+      }
       return formBodySpans(text, known);
+    }
     case 'multipart':
       return multipartSpans(text, mediaType, known, notScanned, depth);
-    case 'xml': {
-      const spans = plainSpans(text, known, true);
-      for (const span of xmlElementSpans(text, known)) spans.push(span);
-      for (const span of tagSpans(text, known)) spans.push(span);
-      return spans;
-    }
+    case 'xml':
+      return xmlSpans(text, known);
     case 'html': {
       const code = codeRanges(text);
       // The ranges are in order and don't overlap: the last one starting at or before the span.

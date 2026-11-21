@@ -962,11 +962,13 @@ describe('KnownValues.inBytes', () => {
     // Sized so a small run takes about 10 ms, then 8 times as much, alternated.
     let size = 10_000;
     while (time(size) < 10 && size < 50_000_000) size *= 2;
-    let small = 0;
-    let large = 0;
-    for (let i = 0; i < 3; i++) {
-      small += time(size);
-      large += time(size * 8);
+    // The fastest of five each, alternated, as the other timing tests do: a busy machine
+    // slows some runs, rarely all of them.
+    let small = Infinity;
+    let large = Infinity;
+    for (let i = 0; i < 5; i++) {
+      small = Math.min(small, time(size));
+      large = Math.min(large, time(size * 8));
     }
     expect(large / small).toBeLessThan(20);
     // Values alike past the few checked can't all be found in bytes, and say so.
@@ -978,5 +980,103 @@ describe('KnownValues.inBytes', () => {
     for (let i = 0; i < 2000; i++) known.add(`${String(i).padStart(8, '0')}xQ`);
     expect(known.inBytes(Buffer.from('xx00001999xQ'))).toBe(true);
     expect(known.full).toBe(false);
+  });
+});
+
+describe('JSON or XML labeled as a form', () => {
+  const FORM = 'application/x-www-form-urlencoded';
+
+  it('redacts JSON by the JSON rules, escaped values included', () => {
+    expect(redact('{"password":"correcthorsebattery","page":2}', FORM)).toBe(
+      '{"password":"[redacted]","page":2}',
+    );
+    const escaped = `{"note":"${JWT.replace(/\./g, '\\u002e')}"}`;
+    expect(redact(escaped, FORM)).toBe('{"note":"[redacted]"}');
+    expect(redact(`\uFEFF  [{"token":"${SESSION}"}]`, FORM)).toBe('\uFEFF  [{"token":"[redacted]"}]');
+  });
+
+  it('redacts XML by the XML rules', () => {
+    expect(redact('<login><password>correcthorsebattery</password><user>bob</user></login>', FORM)).toBe(
+      '<login><password>[redacted]</password><user>bob</user></login>',
+    );
+  });
+
+  it('is still a form when it only starts like JSON or XML', () => {
+    expect(redact('{x}=1&password=correcthorsebattery', FORM)).toBe('{x}=1&password=[redacted]');
+    expect(redact('<a>=1&password=correcthorsebattery', FORM)).toContain('password=[redacted]');
+  });
+
+  it('gives broken JSON, and a form that only looks like JSON or XML, the form and text rules too', () => {
+    expect(redact('{"password":"correcthorsebattery", broken', FORM)).not.toContain('correcthorsebattery');
+    expect(redact('<a>=1&code=abc123def', FORM)).toBe('<a>=1&code=[redacted]');
+    const form = '[1]=x&code=abc123def&client_secret=s3cr3tvalue99';
+    expect(applySpans(form, redactBody(form, FORM, undefined, { cut: true }).spans)).toBe(
+      '[1]=x&code=[redacted]&client_secret=[redacted]',
+    );
+    expect(redact(form, FORM)).toBe('[1]=x&code=[redacted]&client_secret=[redacted]');
+  });
+
+  it('redacts JSON values one per line, almost-JSON, and prefixed JSON, labeled as a form', () => {
+    const lines = `{"a":1}\n{"session":"${SESSION}"}\n{"sessionid":"${SESSION}","pin":1234}`;
+    expect(redact(lines, FORM)).toBe(
+      '{"a":1}\n{"session":"[redacted]"}\n{"sessionid":"[redacted]","pin":"[redacted]"}',
+    );
+    expect(redact(`{"session":"${SESSION}",}`, FORM)).toBe('{"session":"[redacted]",}');
+    expect(redact(`)]}',\n{"password":"correcthorsebattery"}`, FORM)).toBe(
+      `)]}',\n{"password":"[redacted]"}`,
+    );
+  });
+
+  it('treats valid JSON as JSON only, even with name=value text inside a string', () => {
+    const text = '{"redirect":"/cb?next=a&page=2","keep":"me"}';
+    expect(redact(text, FORM)).toBe(text);
+  });
+
+  it('pins: valid JSON keeps a form-like secret name inside a string, as application/json does', () => {
+    const text = '{"redirect":"/cb?code=abc123def&state=1"}';
+    expect(redact(text, FORM)).toBe(text);
+    expect(redact(text, 'application/json')).toBe(text);
+  });
+
+  it("reads JSON after a for(;;); or while(1); prefix, and almost-JSON after )]}'", () => {
+    expect(redact(`for(;;);{"session":"${SESSION}"}`, FORM)).toBe('for(;;);{"session":"[redacted]"}');
+    expect(redact(`while(1);{"session":"${SESSION}"}`, FORM)).toBe('while(1);{"session":"[redacted]"}');
+    expect(redact(`)]}',\n{"session":"${SESSION}",}`, FORM)).toBe(`)]}',\n{"session":"[redacted]",}`);
+  });
+
+  it('finds a private key across lines in broken JSON labeled as a form', () => {
+    const pem = `-----BEGIN PRIVATE KEY-----\n${rep('MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 3)}\n-----END PRIVATE KEY-----`;
+    expect(redact(`{"note": ${pem}`, FORM)).not.toContain('MIIEvQIBADANBgkq');
+  });
+
+  it('still reads a form that starts with f or w as a form', () => {
+    expect(redact('foo=bar&password=correcthorsebattery', FORM)).toBe('foo=bar&password=[redacted]');
+    expect(redact('w=1&token=abcdefgh12345678', FORM)).toBe('w=1&token=[redacted]');
+  });
+
+  it('finds a value known from elsewhere in a broken-JSON form body', () => {
+    const known = new KnownValues();
+    known.add(SESSION);
+    expect(redact(`{"note":"${SESSION}", broken`, FORM, known)).toBe('{"note":"[redacted]", broken');
+  });
+
+  it('redacts cut XML labeled as a form', () => {
+    const text = '<login><password>correcthorsebattery</password><user>bo';
+    expect(applySpans(text, redactBody(text, FORM, undefined, { cut: true }).spans)).toBe(
+      '<login><password>[redacted]</password><user>bo',
+    );
+  });
+
+  it('redacts the start of cut JSON labeled as a form', () => {
+    // `session` isn't one of the names the text rules look for, so only the JSON rules find it.
+    const text = `{"session":"${SESSION}","items":[1,2,`;
+    expect(applySpans(text, redactBody(text, FORM, undefined, { cut: true }).spans)).toBe(
+      '{"session":"[redacted]","items":[1,2,',
+    );
+  });
+
+  it('leaves a form’s ordinary fields, and JSON’s ordinary values, as they are', () => {
+    expect(redact('user=bob&page=2', FORM)).toBe('user=bob&page=2');
+    expect(redact('{"user":"bob","page":2}', FORM)).toBe('{"user":"bob","page":2}');
   });
 });
