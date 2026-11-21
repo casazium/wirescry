@@ -3,7 +3,7 @@
  * setMcp, every tool called over HTTP as a 2026-07-28 client, and every answer searched for the
  * secrets. Also its settings: off by default, the token, reset, port changes, a port in use.
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -118,6 +118,30 @@ describe('the MCP server, end to end', () => {
     await backend.importHar(file);
     await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(1);
     ids.ws = exchangesIn(api.messages).find((e) => e.imported)!.id;
+    const late = path.join(dir, 'ws-late.har');
+    await writeFile(
+      late,
+      JSON.stringify({
+        log: {
+          entries: [
+            {
+              startedDateTime: new Date(t * 1000).toISOString(),
+              _resourceType: 'websocket',
+              request: { method: 'GET', url: 'wss://example.com/late', headers: [] },
+              response: { status: 101, statusText: 'Switching Protocols' },
+              _webSocketMessages: [
+                { type: 'receive', time: t, opcode: 1, data: JSON.stringify({ token: ACCESS }) },
+                { type: 'receive', time: t + 1, opcode: 1, data: 'nothing here' },
+                { type: 'receive', time: t + 2, opcode: 1, data: `later ${ACCESS}` },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await backend.importHar(late);
+    await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(2);
+    ids.wsLate = exchangesIn(api.messages).find((e) => e.imported && e.id !== ids.ws)!.id;
     status = await api.send<McpStatus>({ command: 'setMcp', enabled: true, port: await freePort() });
   };
 
@@ -214,6 +238,13 @@ describe('the MCP server, end to end', () => {
     expect(events.text).toContain('[redacted]');
   });
 
+  it('reads a WebSocket first from partway, with what its first message taught', async () => {
+    await ready();
+    const out = await call('get_websocket_messages', { id: ids.wsLate, after: 1 });
+    expect(leaked(out.text)).toEqual([]);
+    expect(out.text).toContain('later [redacted]');
+  });
+
   it('refuses header and body terms, and can’t find a secret by searching for it', async () => {
     await ready();
     for (const query of [`body~${ACCESS}`, `header.authorization~${BEARER}`]) {
@@ -271,6 +302,21 @@ describe('the MCP server, end to end', () => {
     await expect(api.send({ command: 'setMcp', port: 80 })).rejects.toThrow(/1024 to 65535/);
     status = await api.send<McpStatus>({ command: 'setMcp', port: await freePort() });
     expect(status.listening).toBe(true);
+  });
+
+  it('still changes the token when the settings can’t be saved', async () => {
+    if (process.platform === 'win32') return; // Folder permissions work differently there.
+    await ready();
+    const old = status.token!;
+    await chmod(dataDir, 0o500);
+    try {
+      await expect(api.send({ command: 'setMcp', resetToken: true })).rejects.toThrow();
+    } finally {
+      await chmod(dataDir, 0o700);
+    }
+    expect((await call('list_exchanges', {}, old)).http).toBe(401);
+    status = await api.send<McpStatus>({ command: 'getMcp' });
+    expect((await call('list_exchanges', {})).http).toBe(200);
   });
 
   it('stops listening when turned off, keeping the token for next time', async () => {

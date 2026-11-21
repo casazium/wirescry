@@ -215,7 +215,9 @@ export class Masker {
 
   private pump(): void {
     if (this.running || this.closed) return;
-    const next = this.queue.shift();
+    // The window's jobs first: an agent's (MCP) wait, so it can't keep the window waiting.
+    const windowJob = this.queue.findIndex((w) => !w.group.startsWith(AGENT_GROUP));
+    const [next] = this.queue.splice(windowJob === -1 ? 0 : windowJob, 1);
     if (!next) return;
     this.running = true;
     void this.run(next.job)

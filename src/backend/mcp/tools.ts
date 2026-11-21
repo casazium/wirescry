@@ -71,7 +71,7 @@ export interface Call {
 }
 
 /** Text of Wirescry's own with anything that looks secret hidden: for error messages. */
-function sweep(text: string): string {
+export function sweep(text: string): string {
   try {
     return applySpans(text, redactBody(text, 'text/plain').spans);
   } catch {

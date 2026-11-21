@@ -4,7 +4,14 @@
  */
 import net from 'node:net';
 import { afterEach, describe, expect, it } from 'vitest';
-import { hasToken, isOwnHost, MAX_BODY, McpHttpServer, type Activity } from '../src/backend/mcp/http';
+import {
+  hasToken,
+  isOwnHost,
+  MAX_BODY,
+  MAX_BUSY,
+  McpHttpServer,
+  type Activity,
+} from '../src/backend/mcp/http';
 import { Reader, type ReaderBackend } from '../src/backend/mcp/reader';
 
 const TOKEN = 'A'.repeat(42) + 'b';
@@ -24,7 +31,7 @@ const backend: ReaderBackend = {
     },
   ],
   detail: () => undefined,
-  maskFields: async (fields) => ({ fields: fields.map((f) => f.value) }),
+  maskFields: async (fields) => ({ fields: fields.map((f) => f.value), full: false }),
   part: () => ({}),
   body: async () => null,
   wsPage: () => ({ messages: [], dropped: 0, total: 0 }),
@@ -67,18 +74,36 @@ const modern = {
   'mcp-name': 'list_exchanges',
 };
 
-/** A raw HTTP/1.1 request, so Host and Origin can be anything. */
-function raw(port: number, lines: string[], body = ''): Promise<{ status: number; text: string }> {
+/**
+ * A raw HTTP/1.1 request, so Host and Origin can be anything. The answer is read even if the
+ * server closes before the whole body is sent (as it does for one too large). `chunked` sends the
+ * body without a Content-Length.
+ */
+function raw(
+  port: number,
+  lines: string[],
+  body = '',
+  chunked = false,
+): Promise<{ status: number; text: string }> {
   return new Promise((resolve, reject) => {
-    const socket = net.connect(port, '127.0.0.1', () => {
-      socket.write(
-        [...lines, `Content-Length: ${Buffer.byteLength(body)}`, 'Connection: close', '', body].join('\r\n'),
-      );
-    });
     let data = '';
+    const socket = net.connect(port, '127.0.0.1', () => {
+      const head = [
+        ...lines,
+        chunked ? 'Transfer-Encoding: chunked' : `Content-Length: ${Buffer.byteLength(body)}`,
+        'Connection: close',
+        '',
+        '',
+      ].join('\r\n');
+      const payload = chunked ? `${Buffer.byteLength(body).toString(16)}\r\n${body}\r\n0\r\n\r\n` : body;
+      socket.write(head + payload);
+    });
     socket.on('data', (chunk) => (data += chunk.toString('utf8')));
-    socket.on('end', () => resolve({ status: Number(/^HTTP\/1\.1 (\d+)/.exec(data)?.[1] ?? 0), text: data }));
-    socket.on('error', reject);
+    socket.on('close', () =>
+      resolve({ status: Number(/^HTTP\/1\.1 (\d+)/.exec(data)?.[1] ?? 0), text: data }),
+    );
+    // A reset after the answer came is fine; before it, it's a failure.
+    socket.on('error', (error) => (data ? undefined : reject(error)));
   });
 }
 
@@ -226,11 +251,74 @@ describe('the listener', () => {
       params: { ...listCall.params, arguments: { query: 'x'.repeat(MAX_BODY) } },
     });
     expect((await post(port, { body: big })).status).toBe(413);
+    // Without a Content-Length: read until it's too much, then answered just the same.
+    const chunked = await raw(
+      port,
+      [
+        'POST /mcp HTTP/1.1',
+        `Host: 127.0.0.1:${port}`,
+        `Authorization: Bearer ${TOKEN}`,
+        'Content-Type: application/json',
+      ],
+      big,
+      true,
+    );
+    expect(chunked.status).toBe(413);
     const listen = await post(port, {
       headers: { 'mcp-method': 'subscriptions/listen', 'mcp-name': '' },
       body: { jsonrpc: '2.0', id: 3, method: 'subscriptions/listen', params: { _meta: META } },
     });
     expect(listen.status).toBe(404);
+    // With a BOM, as the SDK would still read it.
+    const bom = await post(port, {
+      headers: { 'mcp-method': 'subscriptions/listen', 'mcp-name': '' },
+      body:
+        '\uFEFF' +
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 4,
+          method: 'subscriptions/listen',
+          params: { _meta: META, notifications: { toolsListChanged: true } },
+        }),
+    });
+    expect(bom.status).toBe(404);
+  });
+
+  it('just closes the connection when a too-large body keeps coming', async () => {
+    const { port } = await started();
+    const huge = 'x'.repeat(20 * 1024 * 1024);
+    const outcome = await post(port, { body: huge }).then(
+      (r) => r.status,
+      () => 'closed',
+    );
+    // No answer, or one cut off: never a 200.
+    expect([0, 'closed']).toContain(outcome);
+  });
+
+  it('tells an agent to slow down past a few calls at once', async () => {
+    calls = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const slow: ReaderBackend = {
+      ...backend,
+      maskFields: async (fields) => (await gate, { fields: fields.map((f) => f.value), full: false }),
+    };
+    const server = new McpHttpServer({
+      reader: new Reader(slow),
+      log: () => undefined,
+      onCall: () => undefined,
+    });
+    servers.push(server);
+    await server.start(0, TOKEN);
+    const port = server.listening!;
+    const all = Array.from({ length: MAX_BUSY + 3 }, () => post(port));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    release();
+    const statuses = (await Promise.all(all)).map((r) => r.status);
+    expect(statuses.filter((s) => s === 200)).toHaveLength(MAX_BUSY);
+    expect(statuses.filter((s) => s === 429)).toHaveLength(3);
+    // Once they're done, it takes more.
+    expect((await post(port)).status).toBe(200);
   });
 
   it('listens on 127.0.0.1 only', async () => {

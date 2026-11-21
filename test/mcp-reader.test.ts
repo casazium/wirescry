@@ -4,7 +4,7 @@
  * taught everything before.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { Reader, ReadError, type ReaderBackend } from '../src/backend/mcp/reader';
+import { Reader, ReadError, StreamLost, type ReaderBackend } from '../src/backend/mcp/reader';
 import type { ExchangeDetail, ExchangeSummary, WebSocketMessages } from '../src/shared/api';
 
 const SECRET = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
@@ -39,7 +39,7 @@ function backend(list: ExchangeSummary[], more: Partial<ReaderBackend> = {}): Re
           } as ExchangeDetail)
         : undefined;
     },
-    maskFields: async (fields) => ({ fields: fields.map((f) => mask(f.value)) }),
+    maskFields: async (fields) => ({ fields: fields.map((f) => mask(f.value)), full: false }),
     part: () => ({}),
     body: async () => null,
     wsPage: () => ({ messages: [], dropped: 0, total: 0 }),
@@ -96,7 +96,7 @@ describe('list', () => {
     for (const q of [
       'header~authorization',
       `reqheader.authorization~${SECRET}`,
-      'resheader.x-echo=*',
+      'resheader.x-echo=abc',
       `header.authorization!=x`,
       `body~${SECRET}`,
       `-body~${SECRET}`,
@@ -110,6 +110,35 @@ describe('list', () => {
   it('takes plain words that only look like those terms, matched over what’s masked', async () => {
     const r = new Reader(backend(list));
     expect((await r.list(`header:${SECRET}`, 50, undefined)).exchanges).toEqual([]);
+  });
+
+  it('refuses wildcards, which could take minutes to match', async () => {
+    const r = new Reader(backend(list));
+    for (const q of ['url=*a*a*a*b', 'path=/a?', 'host=*.test']) {
+      await expect(r.list(q, 50, undefined), q).rejects.toThrow(/Wildcards/);
+    }
+    expect((await r.list('host~.test', 50, undefined)).exchanges).toHaveLength(3);
+  });
+
+  it('notes when the list of values seen is full, and not otherwise', async () => {
+    const full = new Reader(
+      backend(list, { maskFields: async (f) => ({ fields: f.map((x) => mask(x.value)), full: true }) }),
+    );
+    expect((await full.list(undefined, 50, undefined)).note).toMatch(/may not be hidden/);
+    expect((await new Reader(backend(list)).list(undefined, 50, undefined)).note).toBeUndefined();
+  });
+
+  it('masks a known value even in the method and a header name', async () => {
+    const odd = [summary('m', { method: SECRET })];
+    const b = backend(odd, {
+      detail: () =>
+        ({ summary: odd[0]!, requestHeaders: [[`x-${SECRET}`, 'v']], timing: {} }) as ExchangeDetail,
+    });
+    const r = new Reader(b);
+    expect(JSON.stringify(await r.list(undefined, 50, undefined))).not.toContain(SECRET);
+    const detail = await r.get('m');
+    expect(JSON.stringify(detail)).not.toContain(SECRET);
+    expect(detail.requestHeaders).toEqual([['x-[redacted]', 'v']]);
   });
 
   it('refuses a query with errors, or too long', async () => {
@@ -258,6 +287,38 @@ describe('streams read from partway', () => {
     await r.messages('w', 1_150, 5);
     expect(taught[0]).toEqual([0, 499, true]);
     expect(taught.at(-1)).toEqual([1151, 1155, false]);
+  });
+
+  it('teaches it all again from the start when the worker lost the stream, and gives up the second time', async () => {
+    const taught: Array<[number, boolean]> = [];
+    let lose = 1;
+    const b = backend([summary('w', { websocket: true, messageCount: N })], {
+      wsPage: page,
+      maskMessages: async (_d, p, fresh) => {
+        taught.push([p.messages[0]!.index, fresh]);
+        if (!fresh && lose > 0 && p.messages[0]!.index === 1001) {
+          lose -= 1;
+          throw new StreamLost();
+        }
+        return p;
+      },
+    });
+    const r = new Reader(b);
+    await r.messages('w', 1_000, 5);
+    // The page was lost: everything again, from the start, then the page.
+    expect(taught.filter(([, fresh]) => fresh)).toHaveLength(2);
+    expect(taught.at(-1)).toEqual([1001, false]);
+    lose = 2;
+    const always = new Reader(
+      backend([summary('w', { websocket: true, messageCount: N })], {
+        wsPage: page,
+        maskMessages: async (_d, p, fresh) => {
+          if (!fresh) throw new StreamLost();
+          return p;
+        },
+      }),
+    );
+    await expect(always.messages('w', 600, 5)).rejects.toThrow(/Couldn’t check this stream/);
   });
 
   it('from the start, teaches nothing extra', async () => {

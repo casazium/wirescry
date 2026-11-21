@@ -16,12 +16,16 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createMcpHandler, type McpHttpHandler } from '@modelcontextprotocol/server';
 import type { Reader } from './reader';
-import { createServer, type Call } from './tools';
+import { createServer, sweep, type Call } from './tools';
 
 export const MCP_PATH = '/mcp';
 export const MAX_BODY = 1024 * 1024;
 /** Calls kept for the app's activity list. */
 export const MAX_ACTIVITY = 50;
+/** At most this much more of a too-large body is read (and dropped) before answering 413. */
+const DRAIN_LIMIT = 16 * 1024 * 1024;
+/** Requests served at once, and waiting, before an agent is told to slow down (429). */
+export const MAX_BUSY = 8;
 
 export interface Activity extends Call {
   /** When it finished, ms since the epoch. */
@@ -48,7 +52,8 @@ export function isOwnHost(host: string | undefined, port: number): boolean {
 /** Whether a JSON-RPC body asks for a subscription stream, which this server doesn't serve. */
 function asksToListen(body: Buffer): boolean {
   try {
-    const parsed = JSON.parse(body.toString('utf8')) as unknown;
+    // As the SDK reads it: a leading BOM is dropped.
+    const parsed = JSON.parse(body.toString('utf8').replace(/^\uFEFF/, '')) as unknown;
     const messages = Array.isArray(parsed) ? parsed : [parsed];
     return messages.some(
       (m) =>
@@ -75,11 +80,14 @@ function readBody(req: http.IncomingMessage, max: number): Promise<Buffer | unde
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let length = 0;
+    let over = false;
     req.on('data', (chunk: Buffer) => {
+      if (over) return; // Read and dropped, so the answer can be sent; the connection closes after.
       length += chunk.length;
       if (length > max) {
+        over = true;
+        chunks.length = 0;
         resolve(undefined);
-        req.destroy();
         return;
       }
       chunks.push(chunk);
@@ -120,17 +128,26 @@ export class McpHttpServer {
     const handler = createMcpHandler(
       (ctx) => {
         // Per request: the client that sent it.
-        const client = (ctx.requestInfo?.headers.get('user-agent') ?? '').slice(0, 100);
+        // The client's own words: printable characters only, short, and swept like any message.
+        const client = sweep(
+          (ctx.requestInfo?.headers.get('user-agent') ?? '').replace(/[^\x20-\x7e]/g, '').slice(0, 100),
+        );
         return createServer(this.options.reader, (call) => this.called(call, client));
       },
       {
         responseMode: 'json',
         maxRequestBodySize: MAX_BODY,
+        // No subscription streams: nothing here changes for a client to hear about.
+        maxSubscriptions: 0,
         keepAliveMs: 0,
         onerror: (error) => this.options.log(`MCP: ${error.message}`),
       },
     );
     const server = http.createServer((req, res) => void this.serve(req, res, handler));
+    // An agent is one or two clients: no need for many connections, or for slow ones to linger.
+    server.maxConnections = 16;
+    server.headersTimeout = 10_000;
+    server.requestTimeout = 60_000;
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, '127.0.0.1', () => {
@@ -158,6 +175,9 @@ export class McpHttpServer {
       server.closeAllConnections();
     });
   }
+
+  /** Calls being served, and waiting: an agent can't queue unbounded work. */
+  private busy = 0;
 
   private called(call: Call, client: string): void {
     const activity: Activity = { ...call, at: Date.now(), client };
@@ -189,10 +209,38 @@ export class McpHttpServer {
       }
       if (url.pathname !== MCP_PATH) return refuse(res, 404, `Not found: the MCP endpoint is ${MCP_PATH}.`);
       if (req.method !== 'POST') return refuse(res, 405, 'Method not allowed: POST only.', { allow: 'POST' });
-      if (Number(req.headers['content-length'] ?? 0) > MAX_BODY) return refuse(res, 413, 'Too large.');
+      // Too large: the rest of the body read and dropped, then answered, then the connection closed.
+      // Answering first would close it with data still arriving, which resets it, and the client can
+      // lose the answer. At most 16 MB more and 5 s: past that, the connection is just closed.
+      const tooLarge = (): void => {
+        let dropped = 0;
+        const timer = setTimeout(() => req.socket.destroy(), 5000);
+        timer.unref();
+        req.on('data', (chunk: Buffer) => {
+          dropped += chunk.length;
+          if (dropped > DRAIN_LIMIT) req.socket.destroy();
+        });
+        const answer = (): void => {
+          clearTimeout(timer);
+          if (!res.headersSent && !req.socket.destroyed)
+            refuse(res, 413, 'Too large.', { connection: 'close' });
+        };
+        if (req.readableEnded) answer();
+        else req.on('end', answer);
+        req.on('close', () => clearTimeout(timer));
+        req.resume();
+      };
+      if (Number(req.headers['content-length'] ?? 0) > MAX_BODY) return tooLarge();
       const body = await readBody(req, MAX_BODY);
-      if (body === undefined) return refuse(res, 413, 'Too large.');
+      if (body === undefined) return tooLarge();
       if (asksToListen(body)) return refuse(res, 404, 'Not found: this server has no subscriptions.');
+      if (this.busy >= MAX_BUSY) {
+        return refuse(res, 429, 'Too many requests at once: wait for the others to finish.', {
+          'retry-after': '1',
+        });
+      }
+      this.busy += 1;
+      res.on('close', () => (this.busy -= 1));
 
       const abort = new AbortController();
       res.on('close', () => {

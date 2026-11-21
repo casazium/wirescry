@@ -53,7 +53,7 @@ import {
 import { applySpans, redactHeaders } from '../shared/redact';
 import { assembleEvents, assembleMessages } from './mask-streams';
 import { MAX_ACTIVITY, MCP_PATH, McpHttpServer } from './mcp/http';
-import { Reader } from './mcp/reader';
+import { Reader, StreamLost } from './mcp/reader';
 import type { SseItem } from '../shared/sse';
 
 /** A new token for the MCP server: 32 random bytes, base64url (43 characters). */
@@ -959,6 +959,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     try {
       answer = await run(page.messages, fresh);
       if (!('failed' in answer) && answer.lost) {
+        // An agent's reader teaches the whole stream again itself (reader.ts): exact, not the last 2,000.
+        if (agent) throw new StreamLost();
         const first = page.messages[0]!.index;
         const earlier = websockets
           .get(id, -1, Number.MAX_SAFE_INTEGER)
@@ -968,7 +970,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         answer = 'failed' in again ? again : { ...again, messages: again.messages.slice(earlier.length) };
       }
     } catch (error) {
-      if (error instanceof Superseded) throw error;
+      if (error instanceof Superseded || error instanceof StreamLost) throw error;
       answer = undefined;
     }
     return assembleMessages(page, answer);
@@ -994,6 +996,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     try {
       answer = await run(view.items, fresh);
       if (!('failed' in answer) && answer.lost) {
+        // An agent's reader teaches the whole stream again itself (reader.ts): exact, not the last 2,000.
+        if (agent) throw new StreamLost();
         const first = view.items[0]!.index;
         const kept = await sse.read(id, 0);
         const earlier =
@@ -1004,7 +1008,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         answer = 'failed' in again ? again : { ...again, items: again.items.slice(earlier.length) };
       }
     } catch (error) {
-      if (error instanceof Superseded) throw error;
+      if (error instanceof Superseded || error instanceof StreamLost) throw error;
       answer = undefined;
     }
     return assembleEvents(view, answer, sweepText);
@@ -1617,8 +1621,12 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
             token: command.resetToken === true || !current ? newMcpToken() : current.token,
           };
           settings = { ...settings, mcp: next };
-          await saveSettings(dataDir, settings);
-          await applyMcp();
+          try {
+            await saveSettings(dataDir, settings);
+          } finally {
+            // Even if it couldn't be saved: the listener matches what the window is told.
+            await applyMcp();
+          }
           const result = mcpStatus();
           broadcast({ type: 'mcp', status: result });
           return result;
@@ -1819,8 +1827,9 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   ownPorts = () => [proxy.port, api.port, ...listeners.list().map((l) => l.port)];
   broadcast = api.broadcast;
   step('API');
-  // Off unless the user turned it on; a port in use is reported in Setup, not fatal.
-  await applyMcp();
+  // Off unless the user turned it on; a port in use is reported in Setup, not fatal. In turn with
+  // setMcp, which the window can send as soon as the API is up.
+  await exclusive(applyMcp);
   if (settings.mcp?.enabled) step('MCP server');
 
   await pluginHost.startAll();

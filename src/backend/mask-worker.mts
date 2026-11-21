@@ -80,7 +80,7 @@ export type MaskResponse =
   /** `lost`: nothing was learned from this stream's earlier pages (see streamKnown). */
   | { id: number; ok: true; messages: MaskedMessage[]; full: boolean; lost: boolean }
   | { id: number; ok: true; items: SseItem[]; full: boolean; lost: boolean }
-  | { id: number; ok: true; fields: string[] }
+  | { id: number; ok: true; fields: string[]; full: boolean }
   | { id: number; ok: false; error: string };
 
 const session = new KnownValues();
@@ -156,7 +156,9 @@ function handle(message: MaskRequest): MaskResponse {
     }
   }
   known.addAll(session);
-  if (message.op === 'fields') return { id: message.id, ok: true, fields: maskFields(message.fields, known) };
+  if (message.op === 'fields') {
+    return { id: message.id, ok: true, fields: maskFields(message.fields, known), full: known.full };
+  }
   const { bytes, mediaType, cut } = message.body;
   const result = maskBytes(bytes, mediaType, cut, known);
   let formatted: string | null | undefined;

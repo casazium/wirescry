@@ -44,6 +44,13 @@ export interface ReaderBackend {
 /** Why something can't be given: shown to the agent as the tool's error. */
 export class ReadError extends Error {}
 
+/** The mask worker no longer has what a stream taught it (restarted, or let it go for others). */
+export class StreamLost extends Error {
+  constructor() {
+    super('The stream’s learned values were lost.');
+  }
+}
+
 export const MAX_LIST = 200;
 export const MAX_CHARS = 100_000;
 export const MAX_MESSAGES = 200;
@@ -93,6 +100,8 @@ function summaryFields(s: ExchangeSummary): { fields: MaskField[]; build(masked:
     { kind: 'url', value: s.url },
     { kind: 'url', value: s.path },
     { kind: 'host', value: s.host },
+    // Not a secret by any rule, but the client chose it: a known value is hidden there too.
+    { kind: 'host', value: s.method },
   ];
   const at = (field: MaskField | undefined): number | undefined => {
     if (!field) return undefined;
@@ -118,7 +127,7 @@ function summaryFields(s: ExchangeSummary): { fields: MaskField[]; build(masked:
       const get = (i: number | undefined): string | undefined => (i === undefined ? undefined : m[i]);
       return {
         id: s.id,
-        method: s.method,
+        method: m[3]!,
         url: m[0]!,
         path: m[1]!,
         host: m[2]!,
@@ -169,7 +178,12 @@ function summaryFields(s: ExchangeSummary): { fields: MaskField[]; build(masked:
 }
 
 /** The masked strings, or an error saying they couldn't be checked: never the originals. */
-async function masked(backend: ReaderBackend, fields: MaskField[], own: Json): Promise<string[]> {
+async function masked(
+  backend: ReaderBackend,
+  fields: MaskField[],
+  own: Json,
+  full?: { full: boolean },
+): Promise<string[]> {
   if (fields.length === 0) return [];
   let answer: FieldsAnswer;
   try {
@@ -181,14 +195,19 @@ async function masked(backend: ReaderBackend, fields: MaskField[], own: Json): P
   if (answer.fields.length !== fields.length || answer.fields.some((f) => typeof f !== 'string')) {
     throw new ReadError('Couldn’t check this for secrets. Try again.');
   }
+  if (full && answer.full === true) full.full = true;
   return answer.fields;
 }
 
 /** Summaries masked, in one worker job. */
-async function maskSummaries(backend: ReaderBackend, list: ExchangeSummary[]): Promise<AgentSummary[]> {
+async function maskSummaries(
+  backend: ReaderBackend,
+  list: ExchangeSummary[],
+  full?: { full: boolean },
+): Promise<AgentSummary[]> {
   const parts = list.map(summaryFields);
   const all = parts.flatMap((p) => p.fields);
-  const out = await masked(backend, all, {});
+  const out = await masked(backend, all, {}, full);
   let at = 0;
   return parts.map((p) => {
     const mine = out.slice(at, at + p.fields.length);
@@ -205,7 +224,11 @@ export interface ListResult {
   /** Pass back to get the next page. */
   nextCursor?: string;
   total: number;
+  /** Set when some values seen earlier may not be hidden: Wirescry's list of them is full. */
+  note?: string;
 }
+
+const FULL_NOTE = 'Some values seen earlier may not be hidden: Wirescry’s list of them is full.';
 
 export class Reader {
   /** For each agent stream key, the last index taught and the worker generation it was taught in. */
@@ -225,6 +248,12 @@ export class Reader {
     const q = (query ?? '').trim();
     if (q.length > MAX_QUERY_LENGTH)
       throw new ReadError(`The query is longer than ${MAX_QUERY_LENGTH} characters.`);
+    // Wildcards make patterns that can take minutes on one long URL, on the proxy's own thread.
+    if (/[*?]/.test(q)) {
+      throw new ReadError(
+        'Wildcards (* and ?) can’t be used here: use ~ to match part of a value, as in path~/users.',
+      );
+    }
     const compiled = q ? compileQuery(q) : undefined;
     if (compiled && compiled.errors.length > 0) throw new ReadError(compiled.errors.join(' '));
     if (compiled?.needsDetail) {
@@ -241,11 +270,13 @@ export class Reader {
       start = at + 1;
     }
     const n = Math.max(1, Math.min(MAX_LIST, Math.floor(limit)));
+    const full = { full: false };
+    const note = (): { note?: string } => (full.full ? { note: FULL_NOTE } : {});
     if (!compiled) {
       const page = all.slice(start, start + n);
-      const exchanges = await maskSummaries(this.backend, page);
+      const exchanges = await maskSummaries(this.backend, page, full);
       const next = start + n < all.length ? page.at(-1)?.id : undefined;
-      return { exchanges, total: all.length, ...(next ? { nextCursor: next } : {}) };
+      return { exchanges, total: all.length, ...(next ? { nextCursor: next } : {}), ...note() };
     }
     // Matched over what the agent would see: masked.
     const found: AgentSummary[] = [];
@@ -253,7 +284,7 @@ export class Reader {
     let more = false;
     while (i < all.length) {
       const batch = all.slice(i, i + LIST_BATCH);
-      const shown = await maskSummaries(this.backend, batch);
+      const shown = await maskSummaries(this.backend, batch, full);
       for (let j = 0; j < shown.length; j++) {
         if (!compiled.matches(asSummary(batch[j]!, shown[j]!))) continue;
         if (found.length === n) {
@@ -269,6 +300,7 @@ export class Reader {
       exchanges: found,
       total: all.length,
       ...(more && found.length > 0 ? { nextCursor: found.at(-1)!.id } : {}),
+      ...note(),
     };
   }
 
@@ -285,11 +317,15 @@ export class Reader {
     const starts: number[] = [];
     for (const list of lists) {
       starts.push(fields.length);
-      for (const [name, value] of list ?? []) fields.push({ kind: 'header', name, value });
+      for (const [name, value] of list ?? []) {
+        fields.push({ kind: 'header', name, value });
+        // The name too: a known value can turn up as one.
+        fields.push({ kind: 'host', value: name });
+      }
     }
     const out = await masked(this.backend, fields, this.backend.part(detail));
     const headers = (k: number): Header[] | undefined =>
-      lists[k]?.map(([name], j): Header => [name, out[starts[k]! + j]!]);
+      lists[k]?.map((_, j): Header => [out[starts[k]! + 2 * j + 1]!, out[starts[k]! + 2 * j]!]);
     const summary = build(out);
     let query: Header[] = [];
     try {
@@ -351,17 +387,21 @@ export class Reader {
     const n = Math.max(1, Math.min(MAX_MESSAGES, Math.floor(limit)));
     const from = Math.max(-1, Math.floor(after));
     const key = `ws:${id}`;
-    await this.catchUp(key, from, async (taughtTo, fresh) => {
-      const page = this.backend.wsPage(id, taughtTo, TEACH_PAGE);
-      const upTo = page.messages.filter((m) => m.index <= from);
-      if (upTo.length === 0) return undefined;
-      await this.backend.maskMessages(detail, { ...page, messages: upTo }, fresh);
-      return upTo.at(-1)!.index;
-    });
     const page = this.backend.wsPage(id, from, n);
-    const shown = await this.backend.maskMessages(detail, page, from < 0 && !this.taught.has(key));
-    const last = page.messages.at(-1)?.index;
-    if (last !== undefined) this.taught.set(key, { index: last, generation: this.backend.generation() });
+    const shown = await this.afresh(key, async () => {
+      await this.catchUp(key, from, async (taughtTo, fresh) => {
+        const chunk = this.backend.wsPage(id, taughtTo, TEACH_PAGE);
+        const upTo = chunk.messages.filter((m) => m.index <= from);
+        if (upTo.length === 0) return undefined;
+        await this.backend.maskMessages(detail, { ...chunk, messages: upTo }, fresh);
+        return upTo.at(-1)!.index;
+      });
+      const generation = this.backend.generation();
+      const masked = await this.backend.maskMessages(detail, page, from < 0 && !this.taught.has(key));
+      const last = page.messages.at(-1)?.index;
+      if (last !== undefined) this.remember(key, { index: last, generation });
+      return masked;
+    });
     return {
       total: page.total,
       dropped: page.dropped,
@@ -392,17 +432,21 @@ export class Reader {
     const first = await this.backend.sseRead(id, from);
     if (!first) throw new ReadError('That event stream can’t be read.');
     const key = `sse:${id}:${first.serial}`;
-    await this.catchUp(key, from, async (taughtTo, fresh) => {
-      const kept = await this.backend.sseRead(id, Math.max(0, taughtTo));
-      if (!kept || kept.serial !== first.serial) return undefined;
-      const upTo = kept.items.filter((item) => item.index <= from).slice(0, TEACH_PAGE);
-      if (upTo.length === 0) return undefined;
-      await this.backend.maskEvents(detail, { ...kept, items: upTo }, fresh);
-      return upTo.at(-1)!.index;
+    const shown = await this.afresh(key, async () => {
+      await this.catchUp(key, from, async (taughtTo, fresh) => {
+        const kept = await this.backend.sseRead(id, Math.max(0, taughtTo));
+        if (!kept || kept.serial !== first.serial) return undefined;
+        const upTo = kept.items.filter((item) => item.index <= from).slice(0, TEACH_PAGE);
+        if (upTo.length === 0) return undefined;
+        await this.backend.maskEvents(detail, { ...kept, items: upTo }, fresh);
+        return upTo.at(-1)!.index;
+      });
+      const generation = this.backend.generation();
+      const masked = await this.backend.maskEvents(detail, first, from === 0 && !this.taught.has(key));
+      const last = first.items.at(-1)?.index;
+      if (last !== undefined) this.remember(key, { index: last, generation });
+      return masked;
     });
-    const shown = await this.backend.maskEvents(detail, first, from === 0 && !this.taught.has(key));
-    const last = first.items.at(-1)?.index;
-    if (last !== undefined) this.taught.set(key, { index: last, generation: this.backend.generation() });
     return {
       total: shown.total,
       receiving: shown.receiving,
@@ -427,11 +471,36 @@ export class Reader {
     if (state && state.generation !== this.backend.generation()) state = undefined;
     let at = state?.index ?? -1;
     while (at < upTo) {
+      // Before the job: a restart during it means what it taught is gone.
+      const generation = this.backend.generation();
       const last = await teach(at, at === -1);
       if (last === undefined || last <= at) break;
       at = last;
-      this.taught.set(key, { index: at, generation: this.backend.generation() });
+      this.remember(key, { index: at, generation });
     }
+  }
+
+  /** Records how far a stream was taught: for the 100 streams read most recently. */
+  private remember(key: string, state: { index: number; generation: number }): void {
+    this.taught.delete(key);
+    this.taught.set(key, state);
+    while (this.taught.size > 100) this.taught.delete(this.taught.keys().next().value!);
+  }
+
+  /**
+   * Runs `read`, and if the worker lost the stream partway, forgets what it was taught and runs it
+   * once more, teaching it from the start. Lost twice: an error, never what wasn't checked.
+   */
+  private async afresh<T>(key: string, read: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return await read();
+      } catch (error) {
+        if (!(error instanceof StreamLost)) throw error;
+        this.taught.delete(key);
+      }
+    }
+    throw new ReadError('Couldn’t check this stream for secrets: Wirescry is busy. Try again.');
   }
 
   private async maskBody(detail: ExchangeDetail, side: BodySide): Promise<MaskedBodyText> {
