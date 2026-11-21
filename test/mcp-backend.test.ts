@@ -142,6 +142,47 @@ describe('the MCP server, end to end', () => {
     await backend.importHar(late);
     await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(2);
     ids.wsLate = exchangesIn(api.messages).find((e) => e.imported && e.id !== ids.ws)!.id;
+    // A long WebSocket (more than the 2,000 a lost stream's replay would cover), with a token found
+    // in its first message and bare in its last; and 20 others, to make the worker let it go.
+    const long = path.join(dir, 'ws-long.har');
+    const many = 2_100;
+    const socket = (url: string, messages: Array<{ data: string }>) => ({
+      startedDateTime: new Date(t * 1000).toISOString(),
+      _resourceType: 'websocket',
+      request: { method: 'GET', url, headers: [] },
+      response: { status: 101, statusText: 'Switching Protocols' },
+      _webSocketMessages: messages.map((m, i) => ({
+        type: 'receive',
+        time: t + i / 1000,
+        opcode: 1,
+        data: m.data,
+      })),
+    });
+    await writeFile(
+      long,
+      JSON.stringify({
+        log: {
+          entries: [
+            socket('wss://example.com/long', [
+              { data: JSON.stringify({ token: ACCESS }) },
+              ...Array.from({ length: many - 2 }, (_, i) => ({ data: `tick ${i}` })),
+              { data: `bare ${ACCESS}` },
+            ]),
+            ...Array.from({ length: 20 }, (_, i) =>
+              socket(`wss://example.com/other${i}`, [{ data: 'hello' }]),
+            ),
+          ],
+        },
+      }),
+    );
+    await backend.importHar(long);
+    await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(23);
+    const imported = exchangesIn(api.messages).filter((e) => e.imported);
+    ids.wsLong = imported.find((e) => e.url.endsWith('/long'))!.id;
+    ids.others = imported
+      .filter((e) => /\/other\d+$/.test(e.url))
+      .map((e) => e.id)
+      .join(',');
     status = await api.send<McpStatus>({ command: 'setMcp', enabled: true, port: await freePort() });
   };
 
@@ -243,6 +284,19 @@ describe('the MCP server, end to end', () => {
     const out = await call('get_websocket_messages', { id: ids.wsLate, after: 1 });
     expect(leaked(out.text)).toEqual([]);
     expect(out.text).toContain('later [redacted]');
+  });
+
+  it('teaches a long stream again from the start when the worker let it go, not just its last 2,000', async () => {
+    await ready();
+    const first = await call('get_websocket_messages', { id: ids.wsLong, after: 2_000, limit: 5 });
+    expect(leaked(first.text)).toEqual([]);
+    // The window reads 20 other streams, masked: the worker keeps 20, so it lets the agent's go.
+    for (const other of ids.others!.split(',')) {
+      await api.send({ command: 'getWebSocketMessages', exchangeId: other, mask: true });
+    }
+    const last = await call('get_websocket_messages', { id: ids.wsLong, after: 2_097 });
+    expect(leaked(last.text)).toEqual([]);
+    expect(last.text).toContain('bare [redacted]');
   });
 
   it('refuses header and body terms, and can’t find a secret by searching for it', async () => {
