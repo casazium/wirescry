@@ -1,14 +1,17 @@
 import { useState } from 'react';
-import type { BrowserInfo, ProxyStatus } from '../../shared/api';
+import type { BrowserInfo, McpStatus, ProxyStatus } from '../../shared/api';
 import type { Command } from './api-client';
 import { CertificateTrust } from './CertificateTrust';
 import { AndroidSection } from './AndroidSection';
 import { DockerSection } from './DockerSection';
 import { JavaSection } from './JavaSection';
+import { McpSection } from './McpSection';
 import { TerminalSection } from './TerminalSection';
 
 interface Props {
   status: ProxyStatus;
+  /** The MCP server for AI agents, once known. */
+  mcp?: McpStatus;
   connected: boolean;
   send(command: Command): Promise<unknown>;
   onLaunched(): void;
@@ -66,7 +69,14 @@ function useAction(): [string | undefined, string | undefined, (task: () => Prom
 }
 
 /** Ways to send traffic through Wirescry, plus the proxy port and certificate settings. */
-export function SetupPage({ status, connected, send, onLaunched, onShowTraffic }: Props): React.JSX.Element {
+export function SetupPage({
+  status,
+  mcp,
+  connected,
+  send,
+  onLaunched,
+  onShowTraffic,
+}: Props): React.JSX.Element {
   const address = `127.0.0.1:${status.proxyPort}`;
   const proxyUrl = `http://${address}`;
   const certPath = status.certificate.path;
@@ -346,6 +356,8 @@ export function SetupPage({ status, connected, send, onLaunched, onShowTraffic }
         )}
         {certNote && <p className="note">{certNote}</p>}
       </section>
+
+      <McpSection mcp={mcp} connected={connected} send={send} />
     </div>
   );
 }

@@ -20,6 +20,30 @@ export interface Settings {
    * when Wirescry attaches its agent, so Attach no longer asks.
    */
   javaAttachWarningOk?: boolean;
+  /** The MCP server for AI agents (src/backend/mcp): off unless turned on in Setup. */
+  mcp?: McpSettings;
+}
+
+export interface McpSettings {
+  enabled: boolean;
+  port: number;
+  /** The bearer token agents send: 32 random bytes, base64url. */
+  token: string;
+}
+
+/** The MCP server's port unless the user picks another. */
+export const DEFAULT_MCP_PORT = 45450;
+
+/** A token as Wirescry makes them: 43 base64url characters. */
+export function isMcpToken(token: unknown): token is string {
+  return typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token);
+}
+
+function mcpOf(raw: unknown): McpSettings | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const { enabled, port, token } = raw as Record<string, unknown>;
+  if (!isValidPort(port) || !isMcpToken(token)) return undefined;
+  return { enabled: enabled === true, port, token };
 }
 
 const FILE = 'settings.json';
@@ -38,6 +62,7 @@ export async function loadSettings(dir: string): Promise<Settings> {
       ...(raw.androidSetup === false ? { androidSetup: false } : {}),
       ...(raw.javaAgentStartup === true ? { javaAgentStartup: true } : {}),
       ...(raw.javaAttachWarningOk === true ? { javaAttachWarningOk: true } : {}),
+      ...(mcpOf(raw.mcp) ? { mcp: mcpOf(raw.mcp) } : {}),
       ...(typeof raw.adbPath === 'string' && path.isAbsolute(raw.adbPath) && raw.adbPath.length < 1000
         ? { adbPath: raw.adbPath }
         : {}),

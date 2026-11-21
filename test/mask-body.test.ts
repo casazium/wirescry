@@ -12,6 +12,7 @@ import {
   EVENT_FAILED,
   MESSAGE_FAILED,
   maskBytes,
+  maskFields,
   maskFormatted,
   maskMessages,
   maskSseItems,
@@ -532,5 +533,48 @@ describe('maskSseItems', () => {
   it('reads JSON by the text rules, as export does', () => {
     expect(maskString(`{"session":"${ACCESS}"}`, new KnownValues())).toBe('{"session":"[redacted]"}');
     expect(maskString(`token=${ACCESS}`, new KnownValues())).toBe('token=[redacted]');
+  });
+});
+
+describe('maskFields', () => {
+  it('masks each kind by its rules and the known values', () => {
+    const out = maskFields(
+      [
+        { kind: 'url', value: `https://a.test/x?api_key=${ACCESS}` },
+        { kind: 'header', name: 'authorization', value: `Bearer ${BEARER}` },
+        { kind: 'text', value: `password=${PASSWORD}` },
+      ],
+      new KnownValues(),
+    );
+    expect(out).toEqual(['https://a.test/x?api_key=[redacted]', 'Bearer [redacted]', 'password=[redacted]']);
+  });
+
+  it('hides a value found in a later field in an earlier one, and in a host or a method', () => {
+    const out = maskFields(
+      [
+        { kind: 'url', value: `https://a.test/users/${BEARER}` },
+        { kind: 'host', value: `${BEARER}.a.test` },
+        { kind: 'host', value: BEARER },
+        { kind: 'header', name: 'x-echo', value: BEARER },
+        { kind: 'header', name: 'authorization', value: `Bearer ${BEARER}` },
+      ],
+      new KnownValues(),
+    );
+    expect(out).toEqual([
+      'https://a.test/users/[redacted]',
+      '[redacted].a.test',
+      '[redacted]',
+      '[redacted]',
+      'Bearer [redacted]',
+    ]);
+  });
+
+  it('checks a host or a name against known values only, not the text rules', () => {
+    expect(maskFields([{ kind: 'host', value: 'password=hunter2' }], new KnownValues())).toEqual([
+      'password=hunter2',
+    ]);
+    expect(maskFields([{ kind: 'host', value: 'api.example.com' }], known(BEARER))).toEqual([
+      'api.example.com',
+    ]);
   });
 });

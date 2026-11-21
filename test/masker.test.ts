@@ -418,3 +418,17 @@ describe('Masker: what a stream learns, page to page', () => {
     expect(texts(next)).toEqual(['x [redacted]']);
   });
 });
+
+describe('Masker: an agent’s jobs and the window’s', () => {
+  it('runs the window’s waiting jobs before an agent’s, and drops neither', async () => {
+    const masker = make(session().source, FAKE);
+    const order: string[] = [];
+    const track = (name: string, p: Promise<unknown>) => p.then(() => order.push(name));
+    const running = track('agent 1', masker.mask('mcp:a', job({ mode: 'slow' }, 'a')));
+    const agent2 = track('agent 2', masker.mask('mcp:b', job({}, 'b')));
+    const agent3 = track('agent 3', masker.mask('mcp:c', job({}, 'c')));
+    const window = track('window', masker.mask('w', job({}, 'w')));
+    await Promise.all([running, agent2, agent3, window]);
+    expect(order).toEqual(['agent 1', 'window', 'agent 2', 'agent 3']);
+  });
+});

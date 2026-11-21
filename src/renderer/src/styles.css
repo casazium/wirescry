@@ -285,6 +285,30 @@ button.pill.secrets-hidden {
   color: var(--accent);
 }
 
+/* An AI agent read traffic through MCP in the last minute: click for Setup's section. */
+button.pill.agent-active {
+  color: var(--warn);
+}
+
+/* Setup's AI agents (MCP) section. */
+.switch-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.config {
+  margin: 8px 0;
+}
+
+.config-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
 /* Traffic list: a grid of fixed-height rows; only visible rows are rendered. */
 .traffic {
   flex: 1;
