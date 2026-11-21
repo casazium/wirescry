@@ -27,6 +27,20 @@ const redactJson = (text: string, known?: KnownValues): string => {
   return applySpans(text, spans);
 };
 
+/**
+ * The fastest of three runs, in ms. These limits catch work that grows faster than the input
+ * (seconds or minutes, every run); a busy machine slows some runs, rarely all three.
+ */
+function fastest(run: () => void): number {
+  let best = Infinity;
+  for (let i = 0; i < 3; i++) {
+    const start = performance.now();
+    run();
+    best = Math.min(best, performance.now() - start);
+  }
+  return best;
+}
+
 describe('JSON', () => {
   it('redacts values under secret names, leaving every other byte as it was', () => {
     const text =
@@ -227,9 +241,7 @@ describe('the assignment rule', () => {
 
   it('reads repeated assignments with no end quickly', () => {
     for (const text of [rep('password=', 200_000), rep('password="', 200_000), rep("secret='x", 200_000)]) {
-      const start = performance.now();
-      assignmentSpans(text);
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(fastest(() => assignmentSpans(text))).toBeLessThan(1500);
     }
   });
 
@@ -759,16 +771,12 @@ describe('time, after the A2 review', () => {
     const known = new KnownValues();
     for (let i = 0; i < 8; i++) known.add(`${rep('abcd.', 6)}Z${i}`);
     const text = rep('.abcd', 200_000);
-    const start = performance.now();
-    redactBody(text, 'text/plain', known);
-    expect(performance.now() - start).toBeLessThan(2000);
+    expect(fastest(() => redactBody(text, 'text/plain', known))).toBeLessThan(2000);
   });
 
   it('handles many small JSON strings within a budget', () => {
     const text = `[${rep('"ab",', 200_000)}"ab"]`;
-    const start = performance.now();
-    redactBody(text, 'application/json', new KnownValues());
-    expect(performance.now() - start).toBeLessThan(2000);
+    expect(fastest(() => redactBody(text, 'application/json', new KnownValues()))).toBeLessThan(2000);
   });
 });
 
@@ -869,9 +877,7 @@ describe('fixes from the second A2 review', () => {
       [rep('<Password><![CDATA[', 100_000), 'application/xml'],
       [rep('<textarea name="password"><![CDATA[', 60_000), 'text/html'],
     ] as const) {
-      const start = performance.now();
-      redactBody(text, type);
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(fastest(() => redactBody(text, type))).toBeLessThan(1500);
     }
   });
 });
