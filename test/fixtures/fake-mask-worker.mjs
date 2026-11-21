@@ -25,7 +25,11 @@ parentPort.on('message', (message) => {
   const answer = () =>
     reply({
       ok: true,
-      masked: { bytes: message.body.bytes, ranges: [], text: JSON.stringify({ taught, worker: workerNumber }) },
+      masked: {
+        bytes: message.body.bytes,
+        ranges: [],
+        text: JSON.stringify({ taught, worker: workerNumber }),
+      },
       full: false,
     });
   if (mode === 'slow') setTimeout(answer, 300);
