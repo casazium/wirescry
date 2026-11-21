@@ -1,7 +1,8 @@
-import { memo, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { memo, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { SseEventsView as View } from '../../shared/api';
 import type { SseItem } from '../../shared/sse';
 import type { Command } from './api-client';
+import { maskText, SecretsHidden } from './secrets';
 
 /** Items kept in view: the newest. */
 const MAX_SHOWN = 2000;
@@ -23,6 +24,8 @@ interface Props {
 
 /** A Server-Sent Events stream's events, as they arrive and after it ends. Mount one per exchange (key it by id). */
 export function SseEventsView({ exchangeId, responding, received, size, send }: Props): React.JSX.Element {
+  // Read once: the view is mounted afresh when the switch changes (DetailPane keys it).
+  const [hideSecrets] = useState(useContext(SecretsHidden));
   const [shown, setShown] = useState<{ view: View; items: SseItem[] } | undefined>();
   const [error, setError] = useState<string>();
   const poll = useRef<() => void>(() => undefined);
@@ -43,6 +46,7 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
         command: 'getSseEvents',
         exchangeId,
         after: items.at(-1)?.index ?? 0,
+        ...(hideSecrets ? { mask: true } : {}),
       })) as View | null;
       if (!active || !view) return;
       if (serial !== undefined && view.serial !== serial && items.length > 0 && !restarted) {
@@ -79,7 +83,7 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
       }
       busy = true;
       read()
-        .catch((e: Error) => active && setError(e.message))
+        .catch((e: Error) => active && setError(hideSecrets ? maskText(e.message) : e.message))
         .finally(() => {
           busy = false;
           if (again) {
@@ -91,7 +95,7 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
     return () => {
       active = false;
     };
-  }, [exchangeId, send]);
+  }, [exchangeId, send, hideSecrets]);
 
   // The first look, then again whenever more arrived or it ended.
   useEffect(() => poll.current(), [received, size]);

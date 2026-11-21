@@ -32,9 +32,17 @@ export interface MaskSource {
 }
 
 export type MaskBody = Omit<Extract<MaskJob, { op: 'mask' }>, 'op'>;
-export type Masked = Extract<MaskResponse, { masked: unknown }>;
+/** The worker's answer, without its id. */
+type Reply = MaskResponse extends infer R ? (R extends unknown ? Omit<R, 'id'> : never) : never;
+/** A job for the worker other than teaching it. */
+type WorkJob = Exclude<MaskJob, { op: 'teach' }>;
+type Answered<K extends string> = Omit<Extract<MaskResponse, Record<K, unknown>>, 'id' | 'ok'>;
 /** A body masked, or why it can't be shown. */
-export type MaskAnswer = Omit<Masked, 'id' | 'ok'> | { failed: string };
+export type MaskAnswer = Answered<'masked'> | { failed: string };
+/** A page of WebSocket messages masked, or why it can't be shown. */
+export type MessagesAnswer = Answered<'messages'> | { failed: string };
+/** A page of Server-Sent Events items masked, or why it can't be shown. */
+export type EventsAnswer = Answered<'items'> | { failed: string };
 
 /** Why a body isn't shown when checking it went wrong. */
 export const MASK_FAILED = 'Couldn’t check this body for secrets.';
@@ -57,9 +65,16 @@ class WorkerGone extends Error {
   }
 }
 
-/** A body's time to mask: 20 s, plus 3 s for each MB of text in the job. Waiting doesn't count. */
-export function maskTimeLimitMs(job: MaskBody): number {
-  const chars = job.body.bytes.length + (job.request?.bytes.length ?? 0) + (job.formatted?.length ?? 0);
+/** A job's time: 20 s, plus 3 s for each MB of text in it. Waiting doesn't count. */
+export function maskTimeLimitMs(job: MaskBody | WorkJob): number {
+  let chars = 0;
+  if ('messages' in job) for (const m of job.messages) chars += m.bytes.length;
+  else if ('items' in job) {
+    for (const item of job.items) {
+      if (item.kind === 'event') chars += item.data.length + item.type.length + (item.id?.length ?? 0);
+      else if (item.kind === 'comment') chars += item.text.length;
+    }
+  } else chars = job.body.bytes.length + (job.request?.bytes.length ?? 0) + (job.formatted?.length ?? 0);
   return 20_000 + Math.ceil(chars / 1e6) * 3_000;
 }
 
@@ -72,8 +87,10 @@ const KEPT_GROUPS = 2;
 
 interface Waiting {
   group: string;
-  job: MaskBody;
-  resolve(answer: MaskAnswer): void;
+  job: WorkJob;
+  /** Not dropped for another exchange's: a stream's view waits for its pages in order. */
+  keep: boolean;
+  resolve(answer: Reply | { failed: string }): void;
   reject(error: Error): void;
 }
 
@@ -101,7 +118,7 @@ export class Masker {
   constructor(
     private readonly source: MaskSource,
     private readonly file = workerFile(),
-    private readonly limits: { timeLimitMs?: (job: MaskBody) => number; teachChunk?: number } = {},
+    private readonly limits: { timeLimitMs?: (job: WorkJob) => number; teachChunk?: number } = {},
   ) {}
 
   /** An exchange was added or changed: its values are taught before the next job. */
@@ -118,7 +135,42 @@ export class Masker {
    * A body masked. Resolves `failed` if it can't be checked; rejects with Superseded if the window
    * asked for two other exchanges' bodies before its turn came.
    */
-  mask(group: string, job: MaskBody): Promise<MaskAnswer> {
+  async mask(group: string, job: MaskBody): Promise<MaskAnswer> {
+    return this.answer(await this.enqueue(group, { op: 'mask', ...job }), 'masked');
+  }
+
+  /** A page of a WebSocket's messages masked, in order; as `mask` otherwise. */
+  async maskMessages(
+    group: string,
+    job: Omit<Extract<MaskJob, { op: 'messages' }>, 'op'>,
+  ): Promise<MessagesAnswer> {
+    return this.answer(await this.enqueue(group, { op: 'messages', ...job }), 'messages');
+  }
+
+  /** A page of a Server-Sent Events stream's items masked, in order; as `mask` otherwise. */
+  async maskEvents(
+    group: string,
+    job: Omit<Extract<MaskJob, { op: 'events' }>, 'op'>,
+  ): Promise<EventsAnswer> {
+    return this.answer(await this.enqueue(group, { op: 'events', ...job }), 'items');
+  }
+
+  /** The worker's answer of the kind asked for; any other is a fault: the worker is stopped. */
+  private answer<K extends 'masked' | 'messages' | 'items'>(
+    response: Reply | { failed: string },
+    key: K,
+  ): Answered<K> | { failed: string } {
+    if ('failed' in response) return response;
+    if (!response.ok || !(key in response)) {
+      this.stop(new WorkerGone(response.ok ? 'the worker answered out of turn' : response.error));
+      return { failed: MASK_FAILED };
+    }
+    const { ok: _ok, ...answer } = response;
+    void _ok;
+    return answer as unknown as Answered<K>;
+  }
+
+  private enqueue(group: string, job: WorkJob): Promise<Reply | { failed: string }> {
     if (this.closed) return Promise.reject(new Error('Wirescry is stopping.'));
     this.started = true;
     const at = this.recent.indexOf(group);
@@ -127,13 +179,13 @@ export class Masker {
     this.recent.length = Math.min(this.recent.length, KEPT_GROUPS);
     for (let i = this.queue.length - 1; i >= 0; i--) {
       const waiting = this.queue[i]!;
-      if (!this.recent.includes(waiting.group)) {
+      if (!waiting.keep && !this.recent.includes(waiting.group)) {
         this.queue.splice(i, 1);
         waiting.reject(new Superseded());
       }
     }
-    return new Promise<MaskAnswer>((resolve, reject) => {
-      this.queue.push({ group, job, resolve, reject });
+    return new Promise((resolve, reject) => {
+      this.queue.push({ group, job, keep: job.op !== 'mask', resolve, reject });
       this.pump();
     });
   }
@@ -159,7 +211,7 @@ export class Masker {
       });
   }
 
-  private async run(job: MaskBody): Promise<MaskAnswer> {
+  private async run(job: WorkJob): Promise<Reply | { failed: string }> {
     let worker: Worker;
     try {
       worker = await this.taught();
@@ -169,17 +221,12 @@ export class Masker {
     const timeLimit = (this.limits.timeLimitMs ?? maskTimeLimitMs)(job);
     let response: MaskResponse;
     try {
-      response = await this.send(worker, { op: 'mask', ...job }, timeLimit);
+      response = await this.send(worker, job, timeLimit);
     } catch (error) {
       return { failed: error instanceof WorkerGone && error.timedOut ? MASK_TOO_SLOW : MASK_FAILED };
     }
-    if (!response.ok || !('masked' in response)) {
-      this.stop(new WorkerGone(response.ok ? 'the worker answered out of turn' : response.error));
-      return { failed: MASK_FAILED };
-    }
-    const { id: _id, ok: _ok, ...answer } = response;
+    const { id: _id, ...answer } = response;
     void _id;
-    void _ok;
     return answer;
   }
 

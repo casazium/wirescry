@@ -99,7 +99,7 @@ const socket = summary('w', {
   url: `wss://api.test/socket?access_token=${ACCESS}`,
   protocol: 'wss',
   websocket: true,
-  messageCount: 1,
+  messageCount: 2,
   responseSize: undefined,
   status: 101,
 });
@@ -168,20 +168,56 @@ beforeEach(() => {
     if (command.command === 'getExchange') return detailOf(s);
     if (command.command === 'getBody')
       return command.mask ? maskedBody(command.side as string) : realBody(command.side as string);
-    if (command.command === 'getWebSocketMessages')
+    if (command.command === 'getWebSocketMessages') {
+      const hi = `hi ${BEARER}`;
+      const binary = Buffer.concat([Buffer.from([0xff, 0, 0, 0xc0]), Buffer.from(BEARER)]);
+      const meta = (index: number, size: number, isBinary: boolean) => ({
+        index,
+        fromClient: false,
+        time: index,
+        size,
+        isBinary,
+      });
+      return command.mask
+        ? {
+            messages: [
+              {
+                ...meta(0, hi.length, false),
+                base64: b64(hi.replace(BEARER, '*'.repeat(BEARER.length))),
+                masked: { text: 'hi [redacted]', ranges: [[3, 3 + BEARER.length]] },
+              },
+              {
+                ...meta(1, binary.length, true),
+                base64: '',
+                masked: { hidden: 'This body isn’t text and holds a value hidden elsewhere.' },
+              },
+            ],
+            dropped: 0,
+            total: 2,
+          }
+        : {
+            messages: [
+              { ...meta(0, hi.length, false), base64: b64(hi) },
+              { ...meta(1, binary.length, true), base64: binary.toString('base64') },
+            ],
+            dropped: 0,
+            total: 2,
+          };
+    }
+    if (command.command === 'getSseEvents')
       return {
-        messages: [
-          {
-            index: 0,
-            direction: 'received',
-            time: 1,
-            size: 10,
-            isBinary: false,
-            base64: b64(`hi ${BEARER}`),
-          },
-        ],
-        dropped: 0,
-        total: 1,
+        serial: 1,
+        total: 2,
+        receiving: false,
+        items: command.mask
+          ? [
+              { kind: 'event', index: 1, type: 'login', data: '{"access_token":"[redacted]"}' },
+              { kind: 'comment', index: 2, text: 'seen [redacted]' },
+            ]
+          : [
+              { kind: 'event', index: 1, type: 'login', data: `{"access_token":"${ACCESS}"}` },
+              { kind: 'comment', index: 2, text: `seen ${ACCESS}` },
+            ],
       };
     return undefined;
   };
@@ -344,24 +380,43 @@ describe('Hide Secrets: the window shows none', () => {
     expect(leaked(everything())).toEqual([]);
   });
 
-  it('hides a stream’s events without fetching them', async () => {
-    const stream = summary('s', {
-      path: '/events',
-      url: 'https://api.test/events',
-      contentType: 'text/event-stream',
-      responseSize: undefined,
-    });
+  const streamSummary = summary('s', {
+    path: '/events',
+    url: 'https://api.test/events',
+    contentType: 'text/event-stream',
+    responseSize: undefined,
+  });
+  const withStream = () => {
     const answer = fake.answer!;
     fake.answer = (command) =>
       command.exchangeId === 's' && command.command === 'getExchange'
-        ? { ...detailOf(stream), requestBody: undefined, responseBody: undefined }
+        ? { ...detailOf(streamSummary), requestBody: undefined, responseBody: undefined }
         : answer(command);
-    await started([stream]);
+  };
+
+  it('shows a stream’s events masked, asking for them masked', async () => {
+    withStream();
+    await started([streamSummary]);
     await toggle();
     await select(0);
     await settle();
-    expect(screen.getByText('Events are hidden while View › Hide Secrets is on.')).toBeTruthy();
-    expect(commands.some((c) => c.command === 'getSseEvents')).toBe(false);
+    expect(screen.getByText('{"access_token":"[redacted]"}')).toBeTruthy();
+    expect(screen.getByText(/seen \[redacted\]/)).toBeTruthy();
+    const looks = commands.filter((c) => c.command === 'getSseEvents');
+    expect(looks.length).toBeGreaterThan(0);
+    expect(looks.every((c) => c.mask === true)).toBe(true);
+    expect(leaked(everything())).toEqual([]);
+  });
+
+  it('shows a stream’s events afresh, real, when turned off', async () => {
+    withStream();
+    await started([streamSummary]);
+    await toggle();
+    await select(0);
+    await settle();
+    await toggle();
+    await settle();
+    expect(leaked(everything())).toContain('ACCESS');
   });
 
   it('hides a failure’s message and detail', async () => {
@@ -373,14 +428,63 @@ describe('Hide Secrets: the window shows none', () => {
     expect(screen.getByRole('alert').textContent).toContain('[redacted]');
   });
 
-  it('hides a WebSocket’s messages without fetching them', async () => {
+  it('shows a WebSocket’s messages masked: previews, the message opened, and search', async () => {
     await started();
     await toggle();
     await select(2);
     await settle();
-    expect(screen.getByText('Message content is hidden while View › Hide Secrets is on.')).toBeTruthy();
-    expect(commands.some((c) => c.command === 'getWebSocketMessages')).toBe(false);
+    const messages = () => screen.getAllByTestId('ws-message');
+    expect(messages().map((m) => m.textContent)).toEqual([
+      expect.stringContaining('hi [redacted]'),
+      expect.stringContaining('Hidden: This body isn’t text'),
+    ]);
+    const asked = commands.filter((c) => c.command === 'getWebSocketMessages');
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((c) => c.mask === true)).toBe(true);
+    // Each opened, in each view.
+    for (const index of [0, 1]) {
+      await act(async () => void fireEvent.click(messages()[index]!));
+      for (const tab of ['Text', 'Hex']) {
+        for (const button of screen.queryAllByRole('button', { name: tab })) {
+          await act(async () => void fireEvent.click(button));
+        }
+      }
+      expect(leaked(everything()), `message ${index}`).toEqual([]);
+      await act(async () => void fireEvent.click(messages()[index]!));
+    }
+    // The view's search runs over what it shows: a hidden value finds nothing.
+    const search = screen.getByRole('searchbox', { name: 'Search messages' });
+    await act(async () => void fireEvent.change(search, { target: { value: BEARER } }));
+    expect(screen.queryAllByTestId('ws-message')).toHaveLength(0);
+    await act(async () => void fireEvent.change(search, { target: { value: 'redacted' } }));
+    expect(screen.queryAllByTestId('ws-message')).toHaveLength(1);
+  });
+
+  it('fetches a WebSocket’s messages afresh, masked, when turned on while it’s shown', async () => {
+    await started();
+    await select(2);
+    await settle();
+    expect(leaked(everything())).toContain('BEARER');
+    commands.length = 0;
+    await toggle();
+    await settle();
     expect(leaked(everything())).toEqual([]);
+    expect(commands.filter((c) => c.command === 'getWebSocketMessages').every((c) => c.mask === true)).toBe(
+      true,
+    );
+  });
+
+  it('masks a WebSocket view’s error', async () => {
+    const answer = fake.answer!;
+    fake.answer = (command) => {
+      if (command.command === 'getWebSocketMessages') throw new Error(`failed: password=${PASSWORD}`);
+      return answer(command);
+    };
+    await started();
+    await toggle();
+    await select(2);
+    await settle();
+    expect(screen.getByText('failed: password=[redacted]')).toBeTruthy();
   });
 
   it('copies what’s shown: the URL and a body masked; Copy as curl real', async () => {

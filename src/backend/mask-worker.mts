@@ -11,7 +11,17 @@
 import { parentPort } from 'node:worker_threads';
 import { KnownValues } from '../shared/redact-body.ts';
 import { collectKnown } from './har-redact.ts';
-import { learnFrom, maskBytes, maskFormatted, type MaskedBytes } from './mask-body.ts';
+import {
+  learnFrom,
+  maskBytes,
+  maskFormatted,
+  maskMessages,
+  maskSseItems,
+  type MaskedBytes,
+  type MaskedMessage,
+  type MessageBytes,
+} from './mask-body.ts';
+import type { SseItem } from '../shared/sse.ts';
 
 type Json = Record<string, unknown>;
 
@@ -34,7 +44,20 @@ export type MaskJob =
       body: BodyBytes;
       /** The body formatted, to mask the same way. */
       formatted?: string;
-    };
+    }
+  /** A page of a WebSocket's messages, in order. */
+  | { op: 'messages'; own: Json; stream: Stream; messages: MessageBytes[] }
+  /** A page of a Server-Sent Events stream's items, in order. */
+  | { op: 'events'; own: Json; stream: Stream; items: SseItem[] };
+
+/**
+ * Which stream a page is from, so what's learned in one page is hidden in the next. `fresh` when
+ * the window reads it from the start: it reads in order, so what it was shown stays the same.
+ */
+export interface Stream {
+  key: string;
+  fresh: boolean;
+}
 export type MaskRequest = MaskJob & { id: number };
 
 export type MaskResponse =
@@ -50,9 +73,34 @@ export type MaskResponse =
       /** A value was turned away for want of room, so one seen earlier may not be hidden. */
       full: boolean;
     }
+  | { id: number; ok: true; messages: MaskedMessage[]; full: boolean }
+  | { id: number; ok: true; items: SseItem[]; full: boolean }
   | { id: number; ok: false; error: string };
 
 const session = new KnownValues();
+
+/** What each stream has learned, for the streams read most recently. */
+const streams = new Map<string, KnownValues>();
+const MAX_STREAMS = 20;
+
+/** A stream's known values: its exchange's and the session's, and what its pages taught. */
+function streamKnown(stream: Stream, own: Json): KnownValues {
+  let known = stream.fresh ? undefined : streams.get(stream.key);
+  streams.delete(stream.key);
+  if (!known) {
+    known = new KnownValues();
+    try {
+      collectKnown(own, known);
+    } catch {
+      // Nothing learned from them.
+    }
+  }
+  // The session's values, those taught since the last page too.
+  known.addAll(session);
+  streams.set(stream.key, known);
+  if (streams.size > MAX_STREAMS) streams.delete(streams.keys().next().value!);
+  return known;
+}
 
 function handle(message: MaskRequest): MaskResponse {
   if (message.op === 'teach') {
@@ -64,6 +112,14 @@ function handle(message: MaskRequest): MaskResponse {
       }
     }
     return { id: message.id, ok: true, taught: true };
+  }
+  if (message.op === 'messages') {
+    const known = streamKnown(message.stream, message.own);
+    return { id: message.id, ok: true, messages: maskMessages(message.messages, known), full: known.full };
+  }
+  if (message.op === 'events') {
+    const known = streamKnown(message.stream, message.own);
+    return { id: message.id, ok: true, items: maskSseItems(message.items, known), full: known.full };
   }
   const known = new KnownValues();
   // Headers or a request body that can't be read teach nothing; the body is still masked.

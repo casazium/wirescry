@@ -560,16 +560,10 @@ export function DetailPane({
         ))}
 
         {/* Server-Sent Events, as they arrive and after. Not for an exchange from before a restart. */}
-        {/* Hide Secrets: events and messages aren't shown at all (not yet masked), nor fetched. */}
-        {isEventStream(summary.contentType) && !stale && hideSecrets && (
-          <section className="sse">
-            <h2>Events</h2>
-            <p className="note">Events are hidden while View › Hide Secrets is on.</p>
-          </section>
-        )}
-        {isEventStream(summary.contentType) && !stale && !hideSecrets && (
+        {/* Keyed by the switch too: mounted afresh, so nothing fetched one way is shown the other. */}
+        {isEventStream(summary.contentType) && !stale && (
           <SseEventsView
-            key={summary.id}
+            key={`${summary.id}:${mode}`}
             exchangeId={summary.id}
             responding={summary.responding === true}
             received={summary.responseReceived}
@@ -579,15 +573,16 @@ export function DetailPane({
         )}
 
         {/* An old connection's messages can't be fetched; one that was open keeps what it showed. */}
-        {summary.websocket && (!stale || detail) && hideSecrets && (
+        {/* An old connection's messages can't be fetched again, so can't be checked. */}
+        {summary.websocket && stale && hideSecrets && (
           <section className="ws">
             <h2>Messages ({(summary.messageCount ?? 0).toLocaleString()})</h2>
-            <p className="note">Message content is hidden while View › Hide Secrets is on.</p>
+            <p className="note">Can’t be checked for secrets: the proxy that had these messages restarted.</p>
           </section>
         )}
-        {summary.websocket && (!stale || detail) && !hideSecrets && (
+        {summary.websocket && (!stale || detail) && !(stale && hideSecrets) && (
           <WebSocketMessagesView
-            key={summary.id}
+            key={`${summary.id}:${mode}`}
             exchangeId={summary.id}
             messageCount={summary.messageCount ?? 0}
             send={send}

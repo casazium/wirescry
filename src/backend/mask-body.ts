@@ -10,6 +10,7 @@
 import { applySpans, mergeSpans, type Span } from '../shared/redact.ts';
 import { bodyKind, isTextual, KnownValues, redactBody } from '../shared/redact-body.ts';
 import { textOfBytes, type Encoding } from './har-redact.ts';
+import type { SseItem } from '../shared/sse.ts';
 
 /** A byte range in a body, [start, end). */
 export type ByteRange = [number, number];
@@ -170,6 +171,9 @@ export function maskBytes(
     return { bytes, ranges: [], binary: true, literals: [] };
   }
   const { text, encoding } = decoded;
+  // Read as UTF-16 (by a BOM or NULs that may be chance in binary): a known value written as plain
+  // UTF-8 bytes in it wouldn't be found in the text, so the body isn't shown.
+  if (encoding !== 'utf8' && encoding !== 'latin1' && known.inBytes(bytes)) return { hidden: HIDDEN_BINARY };
   const spans = mergeSpans(redactBody(text, rulesType(mediaType), known, { cut }).spans);
   const ranges = byteRanges(text, spans, encoding);
   // A secret running to a cut end runs on into the cut-off character's bytes.
@@ -259,4 +263,100 @@ export function maskFormatted(
   }
   for (const span of redactBody(formatted, rulesType(mediaType), known).spans) spans.push(span);
   return applySpans(formatted, spans);
+}
+
+// ---------------------------------------------------------------- messages and events
+
+/** A WebSocket message to mask: its kept bytes, whether it's binary, and whether it was cut. */
+export interface MessageBytes {
+  bytes: Uint8Array;
+  binary: boolean;
+  cut: boolean;
+}
+
+/** A message masked: as a body is, without the literals. */
+export type MaskedMessage =
+  { hidden: string } | { bytes: Uint8Array; text?: string; ranges: ByteRange[]; binary?: true };
+
+/** Why a message or event isn't shown when checking it went wrong. */
+export const MESSAGE_FAILED = 'Couldn’t check this message for secrets.';
+export const EVENT_FAILED = 'Couldn’t check this event for secrets.';
+
+/**
+ * A page of WebSocket messages masked, in order, with the stream's known values. Read twice: once
+ * to learn, so a value found in any message of the page is hidden in all of them, and in later
+ * pages. A binary message is checked as text when it is text (JSON in binary frames is common);
+ * otherwise it's hidden if it holds a known value. One that can't be checked is hidden alone.
+ */
+export function maskMessages(messages: readonly MessageBytes[], known: KnownValues): MaskedMessage[] {
+  const type = (binary: boolean): string => (binary ? 'application/octet-stream' : 'text/plain');
+  for (const { bytes, binary, cut } of messages) {
+    try {
+      learnFrom(bytes, type(binary), cut, known);
+    } catch {
+      // Learned nothing from it; it's hidden below if it fails again.
+    }
+  }
+  return messages.map(({ bytes, binary, cut }): MaskedMessage => {
+    try {
+      const result = maskBytes(bytes, type(binary), cut, known);
+      if ('hidden' in result) return result;
+      const { literals: _literals, ...masked } = result;
+      void _literals;
+      return masked;
+    } catch {
+      return { hidden: MESSAGE_FAILED };
+    }
+  });
+}
+
+/** Text with secrets replaced, by the text rules (which read JSON where they find it), as export does. */
+export function maskString(text: string, known: KnownValues, cut = false): string {
+  return applySpans(text, redactBody(text, 'text/plain', known, { cut }).spans);
+}
+
+/**
+ * Server-Sent Events items masked, in order, with the stream's known values: an event's data, type
+ * and ID, and a comment's text. A retry is a number. One that can't be checked says so.
+ */
+export function maskSseItems(items: readonly SseItem[], known: KnownValues): SseItem[] {
+  const each = (item: SseItem): SseItem => {
+    if (item.kind === 'comment') return { ...item, text: maskString(item.text, known) };
+    if (item.kind === 'retry') return item;
+    return {
+      ...item,
+      type: maskString(item.type, known),
+      data: maskString(item.data, known, item.cut === true),
+      ...(item.id !== undefined ? { id: maskString(item.id, known) } : {}),
+    };
+  };
+  // Once to learn, so a value found in any item is hidden in all of them.
+  for (const item of items) {
+    try {
+      each(item);
+    } catch {
+      // Learned nothing from it.
+    }
+  }
+  return items.map((item) => {
+    try {
+      return each(item);
+    } catch {
+      return failedItem(item);
+    }
+  });
+}
+
+/** An item that couldn't be checked: its text replaced, saying so. */
+export function failedItem(item: SseItem): SseItem {
+  if (item.kind === 'comment') return { ...item, text: EVENT_FAILED };
+  if (item.kind === 'retry') return item;
+  const { cut: _cut, ...rest } = item;
+  void _cut;
+  return {
+    ...rest,
+    type: '[redacted]',
+    data: EVENT_FAILED,
+    ...(item.id !== undefined ? { id: '[redacted]' } : {}),
+  };
 }

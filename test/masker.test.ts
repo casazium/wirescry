@@ -244,3 +244,80 @@ describe('Masker queue', () => {
     ).toBe(20_000 + 4 * 3_000);
   });
 });
+
+describe('Masker: pages of messages and events', () => {
+  it('masks a WebSocket page with its own exchange’s values and the session’s', async () => {
+    const masker = make(session({ a: part('a', SECRET) }).source);
+    const answer = await masker.maskMessages('w', {
+      own: part('w', OTHER),
+      stream: { key: 'w', fresh: true },
+      messages: [
+        { bytes: utf8(`hi ${SECRET}`), binary: false, cut: false },
+        { bytes: utf8(`{"echo":"${OTHER}"}`), binary: false, cut: false },
+      ],
+    });
+    if ('failed' in answer) throw new Error(answer.failed);
+    expect(answer.messages.map((m) => ('hidden' in m ? m.hidden : m.text))).toEqual([
+      'hi [redacted]',
+      '{"echo":"[redacted]"}',
+    ]);
+  });
+
+  it('masks a page of events with the session’s values', async () => {
+    const masker = make(session({ a: part('a', SECRET) }).source);
+    const answer = await masker.maskEvents('s', {
+      own: part('s'),
+      stream: { key: 's', fresh: true },
+      items: [{ kind: 'event', index: 1, type: 'message', data: `x ${SECRET}` }],
+    });
+    if ('failed' in answer) throw new Error(answer.failed);
+    expect(answer.items).toEqual([{ kind: 'event', index: 1, type: 'message', data: 'x [redacted]' }]);
+  });
+
+  it('fails closed on an answer of the wrong kind, and starts a new worker', async () => {
+    const masker = make(session().source, FAKE);
+    // The fake answers every job as a body.
+    expect(
+      await masker.maskMessages('w', { own: {}, stream: { key: 'w', fresh: true }, messages: [] }),
+    ).toEqual({ failed: MASK_FAILED });
+    expect(await masker.maskEvents('s', { own: {}, stream: { key: 's', fresh: true }, items: [] })).toEqual({
+      failed: MASK_FAILED,
+    });
+    expect(await started()).toBe(2);
+  });
+
+  it('fails closed when a page runs out of time', async () => {
+    const masker = make(session().source, FAKE, { timeLimitMs: () => 200 });
+    expect(
+      await masker.maskMessages('w', {
+        own: { mode: 'hang' },
+        stream: { key: 'w', fresh: true },
+        messages: [],
+      }),
+    ).toEqual({
+      failed: MASK_TOO_SLOW,
+    });
+  });
+
+  it('gives a page 20 s and 3 s more for each MB', () => {
+    expect(
+      maskTimeLimitMs({
+        op: 'messages',
+        own: {},
+        stream: { key: 'w', fresh: true },
+        messages: [{ bytes: new Uint8Array(1_500_000), binary: false, cut: false }],
+      }),
+    ).toBe(26_000);
+    expect(
+      maskTimeLimitMs({
+        op: 'events',
+        own: {},
+        stream: { key: 's', fresh: true },
+        items: [
+          { kind: 'event', index: 1, type: 'm', data: 'x'.repeat(999_999) },
+          { kind: 'comment', index: 2, text: 'yy' },
+        ],
+      }),
+    ).toBe(26_000);
+  });
+});
