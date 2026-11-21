@@ -572,8 +572,10 @@ export function DetailPane({
           />
         )}
 
-        {/* An old connection's messages can't be fetched; one that was open keeps what it showed. */}
-        {/* An old connection's messages can't be fetched again, so can't be checked. */}
+        {/*
+          An old connection's messages can't be fetched; one that was open keeps what it showed. With
+          Hide Secrets on, they can't be fetched again masked, so can't be checked.
+        */}
         {summary.websocket && stale && hideSecrets && (
           <section className="ws">
             <h2>Messages ({(summary.messageCount ?? 0).toLocaleString()})</h2>
