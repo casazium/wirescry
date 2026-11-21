@@ -112,12 +112,16 @@ describe('list', () => {
     expect((await r.list(`header:${SECRET}`, 50, undefined)).exchanges).toEqual([]);
   });
 
-  it('refuses wildcards, which could take minutes to match', async () => {
+  it('refuses wildcards with = or !=, which could take minutes to match; takes * and ? otherwise', async () => {
     const r = new Reader(backend(list));
-    for (const q of ['url=*a*a*a*b', 'path=/a?', 'host=*.test']) {
+    for (const q of ['url=*a*a*a*b', 'path=/a?', 'host=*.test', '-host!=*.test', 'method=G*']) {
       await expect(r.list(q, 50, undefined), q).rejects.toThrow(/Wildcards/);
     }
+    // A ? in a URL is just a character with ~, and in plain words.
+    expect((await r.list('path~/a?token', 50, undefined)).exchanges.map((e) => e.id)).toEqual(['a']);
     expect((await r.list('host~.test', 50, undefined)).exchanges).toHaveLength(3);
+    expect((await r.list('what?', 50, undefined)).exchanges).toEqual([]);
+    expect((await r.list('status=500', 50, undefined)).exchanges.map((e) => e.id)).toEqual(['c']);
   });
 
   it('notes when the list of values seen is full, and not otherwise', async () => {
