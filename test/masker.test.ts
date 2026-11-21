@@ -137,7 +137,8 @@ describe('Masker with the real worker, from source', () => {
     });
     if ('failed' in answer) throw new Error(answer.failed);
     expect(answer.formatted).toBe('var a = "[redacted]";');
-    const many = Array.from({ length: 20 }, (_, i) => `abcd${i}Zq9Xw8Vu7`);
+    // More values masked than it will look for again: refused, not shown in part.
+    const many = Array.from({ length: 5_001 }, (_, i) => `v${i}Zq9Xw8Vu7Ts6`);
     const hidden = await masker.mask('b', {
       ...job(part('b'), many.map((v) => `password=${v}`).join('\n')),
       formatted: 'anything',
