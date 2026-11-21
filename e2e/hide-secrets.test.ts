@@ -6,6 +6,8 @@
  * first), with its own data folder.
  */
 import http from 'node:http';
+import net from 'node:net';
+import { WebSocketServer } from 'ws';
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import os from 'node:os';
@@ -49,6 +51,11 @@ beforeAll(async () => {
       } else if (req.url === '/echo') {
         res.setHeader('content-type', 'text/plain');
         res.end(`you sent ${BEARER}`);
+      } else if (req.url === '/events') {
+        res.setHeader('content-type', 'text/event-stream');
+        res.end(
+          `event: login\nid: 1\ndata: {"access_token":"${ACCESS}"}\n\n: saw ${BEARER}\n\ndata: all good\n\n`,
+        );
       } else if (req.url === '/utf16') {
         res.setHeader('content-type', 'application/x-www-form-urlencoded');
         res.end(Buffer.from(`user=ada&password=${PASSWORD}`, 'utf16le'));
@@ -58,6 +65,15 @@ beforeAll(async () => {
       }
     });
   });
+  // A WebSocket that sends secrets as soon as it opens: in text, in JSON, and in a binary frame.
+  const sockets = new WebSocketServer({ noServer: true });
+  upstream.on('upgrade', (req, socket, head) =>
+    sockets.handleUpgrade(req, socket, head, (ws) => {
+      ws.send(`welcome ${BEARER}`);
+      ws.send(JSON.stringify({ token: ACCESS }));
+      ws.send(Buffer.from(JSON.stringify({ password: PASSWORD })), { binary: true });
+    }),
+  );
   await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
   upstreamPort = (upstream.address() as AddressInfo).port;
   userData = await mkdtemp(path.join(os.tmpdir(), 'wirescry-hide-secrets-'));
@@ -71,6 +87,44 @@ afterAll(async () => {
   upstream?.close();
   await rm(userData, { recursive: true, force: true }).catch(() => undefined);
 });
+
+/**
+ * Opens a WebSocket through Wirescry's proxy (plain HTTP, so the proxy sees the upgrade), sends one
+ * message, reads what the server sends, and closes.
+ */
+function webSocketViaProxy(proxyPort: number, send: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(proxyPort, '127.0.0.1', () => {
+      socket.write(
+        [
+          `GET http://127.0.0.1:${upstreamPort}/socket HTTP/1.1`,
+          `Host: 127.0.0.1:${upstreamPort}`,
+          'Upgrade: websocket',
+          'Connection: Upgrade',
+          'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+          'Sec-WebSocket-Version: 13',
+          '',
+          '',
+        ].join('\r\n'),
+      );
+    });
+    let upgraded = false;
+    socket.on('data', (chunk: Buffer) => {
+      if (upgraded || !chunk.toString('latin1').startsWith('HTTP/1.1 101')) return;
+      upgraded = true;
+      // One masked text frame from the client (payload under 126 bytes).
+      const payload = Buffer.from(send);
+      const key = Buffer.from([1, 2, 3, 4]);
+      const masked = Buffer.from(payload.map((b, i) => b ^ key[i % 4]!));
+      socket.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), key, masked]));
+      setTimeout(() => {
+        socket.end();
+        resolve();
+      }, 1000);
+    });
+    socket.on('error', reject);
+  });
+}
 
 /** Sends a request through Wirescry's proxy to the local upstream. */
 function viaProxy(
@@ -202,7 +256,9 @@ it('hides secrets in the real window, copies what it shows, and keeps the switch
     }),
   ).toBe(200);
   expect(await viaProxy(proxyPort, '/utf16')).toBe(200);
-  await expect.poll(() => rows().count(), { timeout: 30_000 }).toBe(4);
+  expect(await viaProxy(proxyPort, '/events')).toBe(200);
+  await webSocketViaProxy(proxyPort, JSON.stringify({ password: PASSWORD }));
+  await expect.poll(() => rows().count(), { timeout: 30_000 }).toBe(6);
 
   // Off: the secrets show (so the checks below can find them).
   expect(await menuItem()).toEqual({ enabled: true, checked: false });
@@ -219,6 +275,27 @@ it('hides secrets in the real window, copies what it shows, and keeps the switch
     await checkEveryView(name);
     await shot(`2-on-${name.replace(/\W/g, '')}`);
   }
+
+  // A WebSocket's messages and an event stream's events, masked: each message opened, in each view.
+  await open('/socket');
+  const messages = page.getByTestId('ws-message');
+  await expect.poll(() => messages.count(), { timeout: 30_000 }).toBe(4);
+  expect(await page.locator('.ws').innerText()).toContain('welcome [redacted]');
+  for (let i = 0; i < 4; i++) {
+    await messages.nth(i).click();
+    await checkEveryView(`/socket message ${i}`);
+    await messages.nth(i).click();
+  }
+  await page.getByRole('searchbox', { name: 'Search messages' }).fill(BEARER.slice(0, 8));
+  await expect.poll(() => messages.count()).toBe(0);
+  await page.getByRole('searchbox', { name: 'Search messages' }).fill('');
+  await shot('2-on-socket');
+  await open('/events');
+  await expect
+    .poll(async () => page.locator('.sse').innerText(), { timeout: 30_000 })
+    .toContain('[redacted]');
+  await checkEveryView('/events');
+  await shot('2-on-events');
 
   // Copy URL copies the masked URL; Copy as curl, the real request.
   await open('/login?');

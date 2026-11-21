@@ -2,15 +2,15 @@
  * View › Hide Secrets in the backend, end to end: real traffic through a real backend, bodies
  * asked for masked (getBody and formatBody with `mask`), and searched for the secrets.
  */
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { generateCACertificate, getLocal, type Mockttp } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { loadOrCreateCA } from '../src/backend/ca';
-import type { BodyContent, FormattedBody } from '../src/shared/api';
-import { apiClient, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import type { BodyContent, FormattedBody, SseEventsView, WebSocketMessages } from '../src/shared/api';
+import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
 
 // Fake tokens, built at run time so the file itself holds nothing a secret scanner flags.
 const ACCESS = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
@@ -37,7 +37,17 @@ describe('Hide Secrets: bodies masked by the backend', () => {
       headers: { authorization: `Bearer ${BEARER}` },
     });
     ids.json = await api.completed('/json');
-    for (const name of ['echo', 'blob', 'png', 'broken', 'app.js', 'broken.js', 'utf16', 'many.xml']) {
+    for (const name of [
+      'echo',
+      'blob',
+      'png',
+      'broken',
+      'app.js',
+      'broken.js',
+      'utf16',
+      'many.xml',
+      'events',
+    ]) {
       await requestViaProxy(backend.proxyPort, `${base}/${name}`, ca);
       ids[name] = await api.completed(`/${name}`);
     }
@@ -47,6 +57,67 @@ describe('Hide Secrets: bodies masked by the backend', () => {
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
     });
     ids.login = await api.completed('/login');
+    // A WebSocket, imported: text frames with secrets, a binary one holding a known value, one without.
+    const t = Date.parse('2026-11-20T12:00:00.000Z') / 1000;
+    const file = path.join(dir, 'ws.har');
+    await writeFile(
+      file,
+      JSON.stringify({
+        log: {
+          entries: [
+            {
+              startedDateTime: new Date(t * 1000).toISOString(),
+              _resourceType: 'websocket',
+              request: {
+                method: 'GET',
+                url: 'wss://example.com/socket',
+                headers: [{ name: 'Authorization', value: `Bearer ${PASSWORD}` }],
+              },
+              response: { status: 101, statusText: 'Switching Protocols' },
+              _webSocketMessages: [
+                { type: 'send', time: t, opcode: 1, data: JSON.stringify({ token: ACCESS }) },
+                { type: 'receive', time: t + 1, opcode: 1, data: `welcome ${PASSWORD}` },
+                {
+                  type: 'receive',
+                  time: t + 2,
+                  opcode: 2,
+                  data: Buffer.concat([Buffer.from([7, 0]), Buffer.from(PASSWORD)]).toString('base64'),
+                },
+                { type: 'receive', time: t + 3, opcode: 2, data: Buffer.from([1, 2, 3]).toString('base64') },
+                { type: 'receive', time: t + 4, opcode: 1, data: 'ping' },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await backend.importHar(file);
+    await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(1);
+    ids.ws = exchangesIn(api.messages).find((e) => e.imported)!.id;
+    // Another, read only from partway: a token in its first message, plain in its second.
+    const late = path.join(dir, 'ws-late.har');
+    await writeFile(
+      late,
+      JSON.stringify({
+        log: {
+          entries: [
+            {
+              startedDateTime: new Date(t * 1000).toISOString(),
+              _resourceType: 'websocket',
+              request: { method: 'GET', url: 'wss://example.com/late', headers: [] },
+              response: { status: 101, statusText: 'Switching Protocols' },
+              _webSocketMessages: [
+                { type: 'receive', time: t, opcode: 1, data: JSON.stringify({ token: ACCESS }) },
+                { type: 'receive', time: t + 1, opcode: 1, data: `again ${ACCESS}` },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await backend.importHar(late);
+    await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(2);
+    ids.wsLate = exchangesIn(api.messages).find((e) => e.imported && e.id !== ids.ws)!.id;
   };
 
   beforeAll(async () => {
@@ -84,6 +155,13 @@ describe('Hide Secrets: bodies masked by the backend', () => {
         200,
         `<r>${Array.from({ length: 5_001 }, (_, i) => `<password>v${i}Zq9Xw8Vu7Ts6</password>`).join('')}</r>`,
         { 'content-type': 'application/xml' },
+      );
+    await upstream
+      .forGet('/events')
+      .thenReply(
+        200,
+        `event: login\nid: 7\ndata: {"access_token":"${ACCESS}"}\n\n: seen ${ACCESS}\n\ndata: plain message\n\n`,
+        { 'content-type': 'text/event-stream' },
       );
     // ASCII in UTF-16 with no BOM: valid UTF-8 too.
     await upstream.forGet('/utf16').thenReply(200, Buffer.from(`user=bob&password=${PASSWORD}`, 'utf16le'), {
@@ -214,6 +292,73 @@ describe('Hide Secrets: bodies masked by the backend', () => {
       side: 'response',
     });
     expect(real.ok).toBe(true);
+  });
+
+  it('masks WebSocket messages, binary ones that read as text too, and leaves the rest', async () => {
+    await ready();
+    const page = await api.send<WebSocketMessages>({
+      command: 'getWebSocketMessages',
+      exchangeId: ids.ws!,
+      mask: true,
+    });
+    expect(page.messages.map((m) => m.masked)).toEqual([
+      { text: '{"token":"[redacted]"}', ranges: [[10, 10 + ACCESS.length]] },
+      { text: 'welcome [redacted]', ranges: [[8, 8 + PASSWORD.length]] },
+      // Binary, but it reads as text: checked as text.
+      { text: `\u0007\u0000[redacted]`, ranges: [[2, 2 + PASSWORD.length]] },
+      // Bytes that read as UTF-8: checked as text; nothing in them.
+      { text: '\u0001\u0002\u0003', ranges: [] },
+      { text: 'ping', ranges: [] },
+    ]);
+    const all = page.messages.map((m) => Buffer.from(m.base64, 'base64').toString('latin1')).join('\n');
+    expect(all).not.toContain(ACCESS);
+    expect(all).not.toContain(PASSWORD);
+    // Without `mask`, as before.
+    const real = await api.send<WebSocketMessages>({ command: 'getWebSocketMessages', exchangeId: ids.ws! });
+    expect(real.messages.every((m) => m.masked === undefined)).toBe(true);
+    expect(Buffer.from(real.messages[0]!.base64, 'base64').toString()).toContain(ACCESS);
+  });
+
+  it('reads a WebSocket from partway with what its earlier messages taught, though never read before', async () => {
+    await ready();
+    // Message 0 is {"token":ACCESS}: found by a rule. Read from message 2 on, never from the start:
+    // the worker has nothing for this stream, so it's taught the earlier messages first.
+    const fresh = await api.send<WebSocketMessages>({
+      command: 'getWebSocketMessages',
+      exchangeId: ids.wsLate!,
+      after: 0,
+      mask: true,
+    });
+    expect(fresh.messages.map((m) => m.masked && 'text' in m.masked && m.masked.text)).toEqual([
+      `again [redacted]`,
+    ]);
+  });
+
+  it('masks an event stream’s data, IDs and comments', async () => {
+    await ready();
+    const view = await api.send<SseEventsView>({
+      command: 'getSseEvents',
+      exchangeId: ids.events!,
+      after: 0,
+      mask: true,
+    });
+    expect(JSON.stringify(view)).not.toContain(ACCESS);
+    expect(view.items).toEqual([
+      expect.objectContaining({
+        kind: 'event',
+        type: 'login',
+        id: '7',
+        data: '{"access_token":"[redacted]"}',
+      }),
+      expect.objectContaining({ kind: 'comment', text: 'seen [redacted]' }),
+      expect.objectContaining({ kind: 'event', type: 'message', data: 'plain message' }),
+    ]);
+    const real = await api.send<SseEventsView>({
+      command: 'getSseEvents',
+      exchangeId: ids.events!,
+      after: 0,
+    });
+    expect(JSON.stringify(real)).toContain(ACCESS);
   });
 
   // A value another request's header held, found in the code before and after formatting.

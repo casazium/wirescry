@@ -35,6 +35,7 @@ import {
   shared,
   statusOf,
   type Run,
+  waitForAgent,
   waitForOutput,
   waitForLines,
 } from './java-agent-helpers';
@@ -149,10 +150,18 @@ afterAll(() => {
 const VERIFY = ['-XX:+UnlockDiagnosticVMOptions', '-XX:+BytecodeVerificationLocal'];
 const UNKNOWN_HOST = /^FAIL java\.net\.UnknownHostException/;
 
-/** A ProxyProbe, ready for commands. */
+/**
+ * An agent folder whose heartbeat moves, as while Wirescry runs. Without it the agent takes Wirescry
+ * as gone after about 15 s and turns off, and a test a slow machine stretches past that (Java 21
+ * on a Windows runner took 31 s) sends its next request direct.
+ */
+const beatingFolder = (change: Parameters<typeof agentFolder>[0]) => agentFolder(change, { beat: true });
+
+/** A ProxyProbe, ready for commands, its agent on if it should be (see waitForAgent). */
 async function probe(java: string, jvm: string[] = []): Promise<Run> {
   const r = run(java, [...VERIFY, ...jvm, '-cp', probes, 'ProxyProbe'], { stdin: true });
   await waitForOutput(r, 'ready', 15_000);
+  await waitForAgent(jvm, r.child.pid);
   return r;
 }
 
@@ -179,7 +188,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
     describe(`on Java ${major}`, () => {
       it('sends http and https through Wirescry’s proxy', async () => {
         const proxy = await standIn();
-        const agent = await agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256 });
+        const agent = await beatingFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256 });
         const r = await probe(java, [`-javaagent:${agent.stub}`]);
         expect(await ask(r, 'get http://proxied.test/a?b=1')).toBe('OK proxied http://proxied.test/a?b=1');
         // Through a CONNECT tunnel, with the trust hook accepting the stand-in's certificate.
@@ -199,7 +208,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       });
 
       it('chooses Wirescry for other hosts, whatever their spelling', async () => {
-        const agent = await agentFolder({ proxyPort: 4567 });
+        const agent = await beatingFolder({ proxyPort: 4567 });
         const r = await probe(java, [
           `-javaagent:${agent.stub}`,
           '-Dhttp.nonProxyHosts=*.corp.test|exact.test',
@@ -227,7 +236,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       });
 
       it('leaves this computer, other schemes and the program’s exclusions alone', async () => {
-        const agent = await agentFolder({ proxyPort: 4567 });
+        const agent = await beatingFolder({ proxyPort: 4567 });
         const r = await probe(java, [
           `-javaagent:${agent.stub}`,
           '-Dhttp.nonProxyHosts=*.corp.test|EXACT.test|*inner*|start*|under_score.test',
@@ -263,7 +272,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       });
 
       it('leaves loopback alone even when the program excludes nothing', async () => {
-        const agent = await agentFolder({ proxyPort: 4567 });
+        const agent = await beatingFolder({ proxyPort: 4567 });
         // The JDK's empty value turns off its own loopback defaults.
         const r = await probe(java, [`-javaagent:${agent.stub}`, '-Dhttp.nonProxyHosts=']);
         const uris = ['http://localhost/', 'http://127.0.0.1/', 'http://[::1]/'];
@@ -272,7 +281,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       });
 
       it('keeps a proxy the program’s settings name', async () => {
-        const agent = await agentFolder({ proxyPort: 4567 });
+        const agent = await beatingFolder({ proxyPort: 4567 });
         const company = await probe(java, [
           `-javaagent:${agent.stub}`,
           '-Dhttp.proxyHost=company.test',
@@ -295,7 +304,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       it('keeps a connection’s own proxy, or NO_PROXY', async () => {
         const proxy = await standIn();
         const theirs = await standIn();
-        const agent = await agentFolder({ proxyPort: proxy.port });
+        const agent = await beatingFolder({ proxyPort: proxy.port });
         const r = await probe(java, [`-javaagent:${agent.stub}`]);
         expect(await ask(r, 'direct http://proxied.test/')).toMatch(UNKNOWN_HOST);
         expect(await ask(r, `via ${theirs.port} http://proxied.test/x`)).toBe(
@@ -307,7 +316,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
 
       it('keeps the program’s own selector, and says so', async () => {
         const proxy = await standIn();
-        const agent = await agentFolder({ proxyPort: proxy.port });
+        const agent = await beatingFolder({ proxyPort: proxy.port });
         const r = await probe(java, [`-javaagent:${agent.stub}`]);
         expect(await ask(r, 'select http://proxied.test/')).toBe(`HTTP 127.0.0.1:${proxy.port}`);
         expect(await ask(r, 'own')).toBe('set');
@@ -324,7 +333,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
           major,
           'http.proxyHost=company.test\nhttp.proxyPort=3128\nhttp.nonProxyHosts=internal.test',
         );
-        const agent = await agentFolder({ proxyPort: 4567 });
+        const agent = await beatingFolder({ proxyPort: 4567 });
         const uris = [
           'http://internal.test/',
           'https://internal.test/',
@@ -353,7 +362,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       });
 
       it('reaches a selector another agent loaded first', async () => {
-        const agent = await agentFolder({ proxyPort: 4567 });
+        const agent = await beatingFolder({ proxyPort: 4567 });
         const r = await probe(java, [`-javaagent:${earlyAgent}`, `-javaagent:${agent.stub}`]);
         // Once the agent's control thread has changed the class, a second after the start.
         await expect
@@ -366,7 +375,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       });
 
       it.skipIf(!posix)('changes nothing when its weaver can’t load, and says so', async () => {
-        const agent = await agentFolder({ proxyPort: 4567 });
+        const agent = await beatingFolder({ proxyPort: 4567 });
         await chmod(path.join(agent.dir, agent.impl.replace(/\.jar$/, '-weaver.jar')), 0o664);
         const r = await probe(java, [`-javaagent:${agent.stub}`]);
         expect(await ask(r, 'select http://proxied.test/')).toBe('DIRECT');
@@ -377,7 +386,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       });
 
       it('goes direct while the agent is off, and follows a new port', async () => {
-        const agent = await agentFolder({ proxyPort: 4567, enabled: false });
+        const agent = await beatingFolder({ proxyPort: 4567, enabled: false });
         const r = await probe(java, [`-javaagent:${agent.stub}`]);
         expect(await ask(r, 'select http://proxied.test/')).toBe('DIRECT');
         await agent.update({ enabled: true, seq: 2 });
@@ -394,7 +403,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
 
       it('goes direct when the agent is off with Wirescry still on', async () => {
         // On for attached programs, off for those started with the agent.
-        const agent = await agentFolder({ proxyPort: 4567, startup: false });
+        const agent = await beatingFolder({ proxyPort: 4567, startup: false });
         const r = await probe(java, [`-javaagent:${agent.stub}`]);
         expect(await ask(r, 'select http://proxied.test/')).toBe('DIRECT');
         await expect
@@ -404,7 +413,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
       });
 
       it('says the hook is waiting until the program first asks for a proxy', async () => {
-        const agent = await agentFolder({ proxyPort: 4567 });
+        const agent = await beatingFolder({ proxyPort: 4567 });
         const r = await probe(java, [`-javaagent:${agent.stub}`]);
         await expect
           .poll(() => statusOf(agent.dir, r.child.pid), { timeout: 10_000 })
@@ -417,7 +426,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
 
       it('reaches a selector loaded before it was attached', async () => {
         const proxy = await standIn();
-        const agent = await agentFolder({ proxyPort: proxy.port });
+        const agent = await beatingFolder({ proxyPort: proxy.port });
         const r = await probe(java);
         expect(await ask(r, 'select http://proxied.test/')).toBe('DIRECT');
         expectAttached(['load', String(r.child.pid), agent.stub, `id=${newId()}`]);
@@ -430,7 +439,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
 
       it.skipIf(major < 11)('reaches Java’s HttpClient, even one built before the attach', async () => {
         const proxy = await standIn();
-        const agent = await agentFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256 });
+        const agent = await beatingFolder({ proxyPort: proxy.port, caPath: ca.file, caSha256: ca.sha256 });
         const client = run(java, [...VERIFY, '-cp', probes, 'TlsProbeHttpClient', 'https://proxied.test/'], {
           stdin: true,
         });

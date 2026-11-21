@@ -11,7 +11,17 @@
 import { parentPort } from 'node:worker_threads';
 import { KnownValues } from '../shared/redact-body.ts';
 import { collectKnown } from './har-redact.ts';
-import { learnFrom, maskBytes, maskFormatted, type MaskedBytes } from './mask-body.ts';
+import {
+  learnFrom,
+  maskBytes,
+  maskFormatted,
+  maskMessages,
+  maskSseItems,
+  type MaskedBytes,
+  type MaskedMessage,
+  type MessageBytes,
+} from './mask-body.ts';
+import type { SseItem } from '../shared/sse.ts';
 
 type Json = Record<string, unknown>;
 
@@ -34,7 +44,20 @@ export type MaskJob =
       body: BodyBytes;
       /** The body formatted, to mask the same way. */
       formatted?: string;
-    };
+    }
+  /** A page of a WebSocket's messages, in order. */
+  | { op: 'messages'; own: Json; stream: Stream; messages: MessageBytes[] }
+  /** A page of a Server-Sent Events stream's items, in order. */
+  | { op: 'events'; own: Json; stream: Stream; items: SseItem[] };
+
+/**
+ * Which stream a page is from, so what's learned in one page is hidden in the next. `fresh` when
+ * it's read from the start: nothing earlier to have learned from.
+ */
+export interface Stream {
+  key: string;
+  fresh: boolean;
+}
 export type MaskRequest = MaskJob & { id: number };
 
 export type MaskResponse =
@@ -50,9 +73,45 @@ export type MaskResponse =
       /** A value was turned away for want of room, so one seen earlier may not be hidden. */
       full: boolean;
     }
+  /** `lost`: nothing was learned from this stream's earlier pages (see streamKnown). */
+  | { id: number; ok: true; messages: MaskedMessage[]; full: boolean; lost: boolean }
+  | { id: number; ok: true; items: SseItem[]; full: boolean; lost: boolean }
   | { id: number; ok: false; error: string };
 
 const session = new KnownValues();
+
+/** What each stream has learned, for the streams read most recently. */
+/** What each stream has learned, for the streams read most recently, and the session it has. */
+const streams = new Map<string, { known: KnownValues; taught: number }>();
+const MAX_STREAMS = 20;
+/** Teaches so far: a stream takes the session's values again only after one. */
+let teaches = 0;
+
+/**
+ * A stream's known values: its exchange's and the session's, and what its pages taught. Never
+ * forgotten while the worker runs (learning again from the start changes nothing); `lost` when a
+ * page from partway through finds nothing learned (the worker restarted, or too many streams
+ * since), so the caller can teach it the earlier pages.
+ */
+function streamKnown(stream: Stream, own: Json): { known: KnownValues; lost: boolean } {
+  let entry = streams.get(stream.key);
+  streams.delete(stream.key);
+  const lost = !entry && !stream.fresh;
+  entry ??= { known: new KnownValues(), taught: -1 };
+  // Its exchange's own values each time: response headers and trailers can arrive later.
+  try {
+    collectKnown(own, entry.known);
+  } catch {
+    // Nothing learned from them.
+  }
+  if (entry.taught !== teaches) {
+    entry.known.addAll(session);
+    entry.taught = teaches;
+  }
+  streams.set(stream.key, entry);
+  if (streams.size > MAX_STREAMS) streams.delete(streams.keys().next().value!);
+  return { known: entry.known, lost };
+}
 
 function handle(message: MaskRequest): MaskResponse {
   if (message.op === 'teach') {
@@ -63,7 +122,18 @@ function handle(message: MaskRequest): MaskResponse {
         // A part that can't be read teaches nothing.
       }
     }
+    teaches += 1;
     return { id: message.id, ok: true, taught: true };
+  }
+  if (message.op === 'messages') {
+    const { known, lost } = streamKnown(message.stream, message.own);
+    const messages = maskMessages(message.messages, known);
+    return { id: message.id, ok: true, messages, full: known.full, lost };
+  }
+  if (message.op === 'events') {
+    const { known, lost } = streamKnown(message.stream, message.own);
+    const items = maskSseItems(message.items, known);
+    return { id: message.id, ok: true, items, full: known.full, lost };
   }
   const known = new KnownValues();
   // Headers or a request body that can't be read teach nothing; the body is still masked.

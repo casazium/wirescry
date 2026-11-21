@@ -20,6 +20,7 @@ import type {
   ProxyStatus,
   RefusedConnections,
   ServerMessage,
+  SseEventsView,
   WebSocketMessages,
 } from '../shared/api';
 import { startApiServer, type CommandContext } from './api';
@@ -39,8 +40,13 @@ import { BodyMemo, Nudger } from './body-memo';
 import { headerValue, toBodyContent, writeBodyToFile, type WrittenBody } from './body-content';
 import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
-import { Masker, Superseded, type MaskAnswer } from './masker';
+import { Masker, Superseded, type EventsAnswer, type MaskAnswer, type MessagesAnswer } from './masker';
 import { applySpans, redactHeaders } from '../shared/redact';
+import { assembleEvents, assembleMessages } from './mask-streams';
+import type { SseItem } from '../shared/sse';
+
+/** Earlier messages or events taught again, at most, when the mask worker lost a stream's. */
+const MAX_REPLAYED = 2_000;
 import { redactBody } from '../shared/redact-body';
 import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
@@ -910,6 +916,79 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     };
   };
 
+  /**
+   * A page of WebSocket messages as the window shows them while Hide Secrets is on. Fails closed.
+   * If the worker lost what the stream's earlier pages taught (it restarted), they're taught again.
+   */
+  const maskedMessages = async (
+    exchange: ExchangeDetail,
+    page: WebSocketMessages,
+    fresh: boolean,
+  ): Promise<WebSocketMessages> => {
+    if (page.messages.length === 0) return page;
+    const id = exchange.summary.id;
+    const run = (messages: WebSocketMessages['messages'], fromStart: boolean) =>
+      masker.maskMessages(id, {
+        own: maskPart(exchange),
+        stream: { key: `ws:${id}`, fresh: fromStart },
+        messages: messages.map((m) => {
+          const bytes = Buffer.from(m.base64, 'base64');
+          return { bytes, binary: m.isBinary, cut: bytes.length < m.size };
+        }),
+      });
+    let answer: MessagesAnswer | undefined;
+    try {
+      answer = await run(page.messages, fresh);
+      if (!('failed' in answer) && answer.lost) {
+        const first = page.messages[0]!.index;
+        const earlier = websockets
+          .get(id, -1, Number.MAX_SAFE_INTEGER)
+          .messages.filter((m) => m.index < first)
+          .slice(-MAX_REPLAYED);
+        const again = await run([...earlier, ...page.messages], true);
+        answer = 'failed' in again ? again : { ...again, messages: again.messages.slice(earlier.length) };
+      }
+    } catch (error) {
+      if (error instanceof Superseded) throw error;
+      answer = undefined;
+    }
+    return assembleMessages(page, answer);
+  };
+
+  /** A page of an event stream's items as the window shows them while Hide Secrets is on. Fails closed. */
+  const maskedEvents = async (
+    exchange: ExchangeDetail,
+    view: SseEventsView,
+    fresh: boolean,
+  ): Promise<SseEventsView> => {
+    if (view.items.length === 0) return assembleEvents(view, undefined, sweepText);
+    const id = exchange.summary.id;
+    const run = (items: SseItem[], fromStart: boolean) =>
+      masker.maskEvents(id, {
+        own: maskPart(exchange),
+        stream: { key: `sse:${id}:${view.serial}`, fresh: fromStart },
+        items,
+      });
+    let answer: EventsAnswer | undefined;
+    try {
+      answer = await run(view.items, fresh);
+      if (!('failed' in answer) && answer.lost) {
+        const first = view.items[0]!.index;
+        const kept = await sse.read(id, 0);
+        const earlier =
+          kept && kept.serial === view.serial
+            ? kept.items.filter((item) => item.index < first).slice(-MAX_REPLAYED)
+            : [];
+        const again = await run([...earlier, ...view.items], true);
+        answer = 'failed' in again ? again : { ...again, items: again.items.slice(earlier.length) };
+      }
+    } catch (error) {
+      if (error instanceof Superseded) throw error;
+      answer = undefined;
+    }
+    return assembleEvents(view, answer, sweepText);
+  };
+
   /** A body for a HAR file; an error reading it is noted rather than failing the export. */
   const harBody = async (
     exchange: ExchangeDetail,
@@ -1562,16 +1641,22 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         return pluginHost.call(command.plugin, command.name, command.args);
       }
       case 'getSseEvents': {
-        if (!store.get(command.exchangeId)) throw new Error('Exchange not found');
+        const exchange = store.get(command.exchangeId);
+        if (!exchange) throw new Error('Exchange not found');
         if (!Number.isSafeInteger(command.after) || command.after < 0) {
           throw new Error('after must be a whole number, 0 or more');
         }
-        return sse.read(command.exchangeId, command.after);
+        const view = await sse.read(command.exchangeId, command.after);
+        if (command.mask !== true || !view) return view;
+        // Read from the start: the stream's learned values start afresh too.
+        return maskedEvents(exchange, view, command.after === 0);
       }
       case 'getWebSocketMessages': {
-        if (!store.get(command.exchangeId)) throw new Error('Exchange not found');
+        const exchange = store.get(command.exchangeId);
+        if (!exchange) throw new Error('Exchange not found');
         const result: WebSocketMessages = websockets.get(command.exchangeId, command.after);
-        return result;
+        if (command.mask !== true) return result;
+        return maskedMessages(exchange, result, command.after === undefined || command.after < 0);
       }
       case 'formatBody': {
         const { exchangeId, side } = command;

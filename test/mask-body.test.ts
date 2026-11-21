@@ -9,8 +9,13 @@ import {
   decodeForMask,
   HIDDEN_BINARY,
   HIDDEN_UNREADABLE,
+  EVENT_FAILED,
+  MESSAGE_FAILED,
   maskBytes,
   maskFormatted,
+  maskMessages,
+  maskSseItems,
+  maskString,
   MAX_LITERALS,
 } from '../src/backend/mask-body';
 import { KnownValues } from '../src/shared/redact-body';
@@ -222,6 +227,34 @@ describe('maskBytes: UTF-16 without a BOM, and text it can’t read', () => {
 });
 
 describe('maskBytes: not text', () => {
+  it('hides binary that reads as UTF-16 by chance but holds a secret the rules find byte for byte', () => {
+    const body = Buffer.concat([
+      Buffer.from([0xff, 0xfe, 1, 0]),
+      Buffer.from(`"password":"${PASSWORD}"`),
+      Buffer.from([0, 0, 0]),
+    ]);
+    // Even, so it reads as UTF-16 whole: hidden for what's in it, not for being unreadable.
+    expect(body.length % 2).toBe(0);
+    expect(maskBytes(body, 'application/octet-stream', false, new KnownValues())).toEqual({
+      hidden: HIDDEN_BINARY,
+    });
+    // Real UTF-16 text isn't hidden for it: read byte for byte, its letters have NULs between.
+    const real = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from(`"password":"${PASSWORD}"`, 'utf16le'),
+    ]);
+    expect(maskBytes(real, 'application/octet-stream', false, new KnownValues())).not.toHaveProperty(
+      'hidden',
+    );
+  });
+
+  it('hides binary that reads as UTF-16 by chance but holds a known value’s bytes', () => {
+    const body = Buffer.concat([Buffer.from([0xff, 0xfe, 1, 0]), Buffer.from(BEARER), Buffer.from([0, 0])]);
+    expect(maskBytes(body, 'application/octet-stream', false, known(BEARER))).toEqual({
+      hidden: HIDDEN_BINARY,
+    });
+  });
+
   it('hides a body that holds a value known from elsewhere', () => {
     const body = Buffer.concat([Buffer.from([0, 1, 0xff]), Buffer.from(BEARER), Buffer.from([0xfe])]);
     expect(maskBytes(body, 'application/octet-stream', false, known(BEARER))).toEqual({
@@ -338,5 +371,166 @@ describe('maskFormatted', () => {
   it('leaves formatted text with nothing secret as it was', () => {
     const formatted = 'function f() {\n  return 1;\n}';
     expect(maskFormatted(formatted, 'application/javascript', [], new KnownValues())).toBe(formatted);
+  });
+});
+
+describe('maskMessages: a page of WebSocket messages', () => {
+  const text = (t: string, cut = false) => ({ bytes: utf8(t), binary: false, cut });
+
+  it('masks JSON and text messages, and finds a value from an earlier message in later ones', () => {
+    const out = maskMessages(
+      [
+        text(`{"access_token":"${ACCESS}"}`),
+        text(`echo ${ACCESS} done`),
+        text('  [{"password":"x' + PASSWORD + '"}]'),
+      ],
+      new KnownValues(),
+    );
+    expect(out.map((m) => ('hidden' in m ? m.hidden : m.text))).toEqual([
+      '{"access_token":"[redacted]"}',
+      'echo [redacted] done',
+      '  [{"password":"[redacted]"}]',
+    ]);
+    const first = out[0] as Exclude<(typeof out)[0], { hidden: string }>;
+    expect(Buffer.from(first.bytes).toString()).not.toContain(ACCESS);
+  });
+
+  it('masks a message cut short to its end', () => {
+    const [out] = maskMessages([text(`password=${PASSWORD}`.slice(0, 20), true)], new KnownValues());
+    expect(out).toMatchObject({ text: 'password=[redacted]' });
+  });
+
+  it('checks a binary message that is text, as text: JSON in binary frames is common', () => {
+    const [out] = maskMessages(
+      [{ bytes: utf8(`{"password":"${PASSWORD}"}`), binary: true, cut: false }],
+      new KnownValues(),
+    );
+    expect(out).toMatchObject({ text: '{"password":"[redacted]"}' });
+  });
+
+  it('masks a known value in a binary message that reads as text, even with a stray NUL', () => {
+    const bytes = Buffer.concat([Buffer.from([7, 0]), Buffer.from(BEARER)]);
+    const [out] = maskMessages([{ bytes, binary: true, cut: false }], known(BEARER));
+    expect(out).toMatchObject({ ranges: [[2, 2 + BEARER.length]] });
+  });
+
+  it('hides a binary message that isn’t text and holds a known value, and shows one without, unchecked', () => {
+    const holding = Buffer.concat([
+      Buffer.from([0xff, 0xfe, 0, 0, 0, 0xc0]),
+      Buffer.from(BEARER),
+      Buffer.from([0, 0, 0, 0xff]),
+    ]);
+    const out = maskMessages(
+      [
+        { bytes: holding, binary: true, cut: false },
+        { bytes: Buffer.from([0xff, 0, 0, 0, 0xfe, 0, 0, 0, 0xc0]), binary: true, cut: false },
+      ],
+      known(BEARER),
+    );
+    expect(out[0]).toEqual({ hidden: HIDDEN_BINARY });
+    expect(out[1]).toMatchObject({ binary: true, ranges: [] });
+  });
+
+  it('hides a value learned later in the page in earlier messages too, and in later pages', () => {
+    const k = new KnownValues();
+    const page = maskMessages([text(`first ${ACCESS}`), text(`{"access_token":"${ACCESS}"}`)], k);
+    expect(page.map((m) => ('hidden' in m ? m.hidden : m.text))).toEqual([
+      'first [redacted]',
+      '{"access_token":"[redacted]"}',
+    ]);
+    const [next] = maskMessages([text(`again ${ACCESS}`)], k);
+    expect(next).toMatchObject({ text: 'again [redacted]' });
+  });
+
+  it('hides only the message it couldn’t check', () => {
+    const out = maskMessages(
+      [text('one'), text('two'), text('three')],
+      new KnownValues(),
+      (bytes, type, cut, k) => {
+        if (Buffer.from(bytes).toString() === 'two') throw new Error('broke');
+        return maskBytes(bytes, type, cut, k);
+      },
+    );
+    expect(out.map((m) => ('hidden' in m ? m.hidden : m.text))).toEqual(['one', MESSAGE_FAILED, 'three']);
+  });
+
+  it('leaves ordinary messages as they were', () => {
+    const page = [text('{"type":"ping","n":2}'), text('hello there')];
+    const out = maskMessages(page, new KnownValues());
+    expect(out.map((m) => ('hidden' in m ? undefined : m.bytes))).toEqual(page.map((m) => m.bytes));
+    expect(out.every((m) => !('hidden' in m) && m.ranges.length === 0)).toBe(true);
+  });
+});
+
+describe('maskSseItems', () => {
+  it('masks an event’s data, type and ID, and a comment, in order with what it learned', () => {
+    const out = maskSseItems(
+      [
+        {
+          kind: 'event',
+          index: 1,
+          type: 'token',
+          data: `{"access_token":"${ACCESS}"}`,
+          id: `password=${PASSWORD}`,
+        },
+        { kind: 'comment', index: 2, text: `seen ${ACCESS}` },
+        { kind: 'event', index: 3, type: `api_key=${BEARER}`, data: `plain ${ACCESS}` },
+        { kind: 'retry', index: 4, ms: 3000 },
+      ],
+      new KnownValues(),
+    );
+    expect(out).toEqual([
+      {
+        kind: 'event',
+        index: 1,
+        type: 'token',
+        data: '{"access_token":"[redacted]"}',
+        id: 'password=[redacted]',
+      },
+      { kind: 'comment', index: 2, text: 'seen [redacted]' },
+      { kind: 'event', index: 3, type: 'api_key=[redacted]', data: 'plain [redacted]' },
+      { kind: 'retry', index: 4, ms: 3000 },
+    ]);
+  });
+
+  it('hides in an earlier event a value a later one shows to be secret', () => {
+    const out = maskSseItems(
+      [
+        { kind: 'event', index: 1, type: 'message', data: `first ${ACCESS}` },
+        { kind: 'event', index: 2, type: 'message', data: `{"access_token":"${ACCESS}"}` },
+      ],
+      new KnownValues(),
+    );
+    expect(out.map((item) => item.kind === 'event' && item.data)).toEqual([
+      'first [redacted]',
+      '{"access_token":"[redacted]"}',
+    ]);
+  });
+
+  it('marks only the item it couldn’t check', () => {
+    const items = [
+      { kind: 'event' as const, index: 1, type: 'message', data: 'fine' },
+      { kind: 'event' as const, index: 2, type: 'message', data: 'broken' },
+    ];
+    const out = maskSseItems(items, new KnownValues(), (text, k, cut) => {
+      if (text === 'broken') throw new Error('broke');
+      return maskString(text, k, cut);
+    });
+    expect(out).toEqual([items[0], { kind: 'event', index: 2, type: '[redacted]', data: EVENT_FAILED }]);
+  });
+
+  it('masks cut data to its end, and leaves ordinary events alone', () => {
+    const [cut] = maskSseItems(
+      [{ kind: 'event', index: 1, type: 'message', data: `password=${PASSWORD.slice(0, 6)}`, cut: true }],
+      new KnownValues(),
+    );
+    expect(cut).toMatchObject({ data: 'password=[redacted]', cut: true });
+    const plain = { kind: 'event' as const, index: 2, type: 'message', data: '{"n":1,"status":"ok"}' };
+    expect(maskSseItems([plain], new KnownValues())).toEqual([plain]);
+  });
+
+  it('reads JSON by the text rules, as export does', () => {
+    expect(maskString(`{"session":"${ACCESS}"}`, new KnownValues())).toBe('{"session":"[redacted]"}');
+    expect(maskString(`token=${ACCESS}`, new KnownValues())).toBe('token=[redacted]');
   });
 });

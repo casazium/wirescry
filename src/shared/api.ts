@@ -190,8 +190,11 @@ export interface WebSocketMessage {
 }
 
 export interface WebSocketMessages {
-  /** Each message with its content as base64 (cut to 64 KB). */
-  messages: Array<WebSocketMessage & { base64: string }>;
+  /**
+   * Each message with its content as base64 (cut to 64 KB). Asked for with `mask`, each says how
+   * it was masked, as a body does (BodyContent's `masked`).
+   */
+  messages: Array<WebSocketMessage & { base64: string; masked?: MaskedBody }>;
   /** Messages dropped from the start to stay within Wirescry's memory budget. */
   dropped: number;
   /** Messages seen on this connection. */
@@ -266,7 +269,8 @@ export interface SseEventsView {
   /** This look stopped at its limits before the end of what has arrived: ask again for the rest. */
   more?: true;
   /** Why reading stopped, if it did. */
-  problem?: string;
+  problem?: string; /** Masked (View › Hide Secrets): Wirescry's list of values seen is full, so one may not be hidden. */
+  full?: true;
 }
 
 /** A BodyRange for the UI, its bytes as base64. */
@@ -595,10 +599,16 @@ export type ClientCommand =
   | { id: number; command: 'androidShowCertificates'; deviceId: string }
   | { id: number; command: 'resetCertificate' }
   | { id: number; command: 'launchTerminal'; terminalId: string }
-  /** WebSocket messages with index greater than `after` (default: from the start). */
-  | { id: number; command: 'getWebSocketMessages'; exchangeId: string; after?: number }
-  /** An event stream's items after `after` (an index), as SseEventsView, or null if it isn't one. */
-  | { id: number; command: 'getSseEvents'; exchangeId: string; after: number }
+  /**
+   * WebSocket messages with index greater than `after` (default: from the start). With `mask`,
+   * masked for View › Hide Secrets.
+   */
+  | { id: number; command: 'getWebSocketMessages'; exchangeId: string; after?: number; mask?: boolean }
+  /**
+   * An event stream's items after `after` (an index), as SseEventsView, or null if it isn't one.
+   * With `mask`, masked for View › Hide Secrets.
+   */
+  | { id: number; command: 'getSseEvents'; exchangeId: string; after: number; mask?: boolean }
   /** A call from a plugin's UI to its backend half. */
   | { id: number; command: 'plugin'; plugin: string; name: string; args?: unknown }
   | { id: number; command: 'getExchange'; exchangeId: string }

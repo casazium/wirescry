@@ -1,13 +1,25 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { BodyContent, FormattedBody, WebSocketMessage, WebSocketMessages } from '../../shared/api';
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type {
+  BodyContent,
+  FormattedBody,
+  MaskedBody,
+  WebSocketMessage,
+  WebSocketMessages,
+} from '../../shared/api';
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
-import { base64ToBytes, bytesToText, formatBytes } from './bytes';
+import { base64ToBytes, bytesToText, formatBytes, looksLikeText } from './bytes';
+import { maskText, SecretsHidden } from './secrets';
 
 /** The UI keeps at most this many messages per connection; older ones are still in the backend. */
 const MAX_SHOWN = 2000;
 
-type Message = WebSocketMessage & { base64: string; text?: string };
+type Message = WebSocketMessage & {
+  base64: string;
+  text?: string;
+  /** With Hide Secrets on: how the backend masked it (see BodyContent's `masked`). */
+  masked?: MaskedBody;
+};
 type Direction = 'all' | 'sent' | 'received';
 
 interface Props {
@@ -21,11 +33,24 @@ function formatTime(ms: number): string {
   return ms < 1000 ? `+${ms} ms` : `+${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
 }
 
+/** Whether text is JSON (a message wholly redacted reads `[redacted]`, which isn't). */
+function parsesAsJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const NOT_FORMATTED: () => Promise<FormattedBody> = () =>
   Promise.resolve({ ok: false, reason: 'not available for WebSocket messages' });
 
 /** Live list of a WebSocket connection's messages, with the selected message's content. */
 export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props): React.JSX.Element {
+  // Read once: the view is mounted afresh when the switch changes (DetailPane keys it), so nothing
+  // fetched one way is shown the other.
+  const [hideSecrets] = useState(useContext(SecretsHidden));
   const [messages, setMessages] = useState<Message[]>([]);
   const [dropped, setDropped] = useState(0);
   const [error, setError] = useState<string>();
@@ -44,11 +69,26 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
   useEffect(() => {
     if (loading.current || messageCount <= lastIndex.current + 1) return;
     loading.current = true;
-    send({ command: 'getWebSocketMessages', exchangeId, after: lastIndex.current }).then(
+    send({
+      command: 'getWebSocketMessages',
+      exchangeId,
+      after: lastIndex.current,
+      ...(hideSecrets ? { mask: true } : {}),
+    }).then(
       (value) => {
         loading.current = false;
         const result = value as WebSocketMessages;
         const added: Message[] = result.messages.map((m) => {
+          // Masked: its text from the backend, never the bytes (which have secrets overwritten).
+          if (hideSecrets) {
+            const masked = m.masked ?? { hidden: 'Couldn’t check this message for secrets.' };
+            // Binary shows as binary, as it does with the switch off; BodyView has the text.
+            const text =
+              m.isBinary || 'hidden' in masked || masked.text === undefined
+                ? undefined
+                : looksLikeText(masked.text.replace(/^\uFEFF/, ''));
+            return { ...m, masked, ...(text !== undefined ? { text } : {}) };
+          }
           const text = m.isBinary ? undefined : bytesToText(base64ToBytes(m.base64));
           return { ...m, text };
         });
@@ -61,10 +101,10 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
       },
       (e: Error) => {
         loading.current = false;
-        setError(e.message);
+        setError(hideSecrets ? maskText(e.message) : e.message);
       },
     );
-  }, [exchangeId, messageCount, send, fetches]);
+  }, [exchangeId, messageCount, send, fetches, hideSecrets]);
 
   const shown = useMemo(() => {
     const words = search.toLowerCase().split(/\s+/).filter(Boolean);
@@ -90,10 +130,11 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
     size: current.size,
     contentType: current.isBinary
       ? 'application/octet-stream'
-      : current.text !== undefined && /^\s*[[{]/.test(current.text)
+      : current.text !== undefined && /^\s*[[{]/.test(current.text) && parsesAsJson(current.text)
         ? 'application/json'
         : 'text/plain',
     truncated: base64ToBytes(current.base64).length < current.size,
+    ...(current.masked ? { masked: current.masked } : {}),
   };
   const hidden = dropped + Math.max(0, messageCount - dropped - messages.length);
 
@@ -152,7 +193,11 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
               {m.fromClient ? '↑' : '↓'}
             </span>
             <span className="ws-preview">
-              {m.isBinary || m.text === undefined ? `Binary, ${formatBytes(m.size)}` : m.text.slice(0, 200)}
+              {m.masked && 'hidden' in m.masked
+                ? `Hidden: ${m.masked.hidden}`
+                : m.isBinary || m.text === undefined
+                  ? `Binary, ${formatBytes(m.size)}`
+                  : m.text.slice(0, 200)}
             </span>
             <span className="ws-size">{formatBytes(m.size)}</span>
             <span className="ws-time">{formatTime(m.time)}</span>
