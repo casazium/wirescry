@@ -173,7 +173,12 @@ export function maskBytes(
   const { text, encoding } = decoded;
   // Read as UTF-16 (by a BOM or NULs that may be chance in binary): a known value written as plain
   // UTF-8 bytes in it wouldn't be found in the text, so the body isn't shown.
-  if (encoding !== 'utf8' && encoding !== 'latin1' && known.inBytes(bytes)) return { hidden: HIDDEN_BINARY };
+  if (encoding !== 'utf8' && encoding !== 'latin1') {
+    if (known.inBytes(bytes)) return { hidden: HIDDEN_BINARY };
+    // Nor would a secret the rules find in it read byte for byte (the Hex view's ASCII column).
+    const asBytes = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).toString('latin1');
+    if (redactBody(asBytes, 'text/plain', known).spans.length > 0) return { hidden: HIDDEN_BINARY };
+  }
   const spans = mergeSpans(redactBody(text, rulesType(mediaType), known, { cut }).spans);
   const ranges = byteRanges(text, spans, encoding);
   // A secret running to a cut end runs on into the cut-off character's bytes.

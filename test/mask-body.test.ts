@@ -225,6 +225,27 @@ describe('maskBytes: UTF-16 without a BOM, and text it can’t read', () => {
 });
 
 describe('maskBytes: not text', () => {
+  it('hides binary that reads as UTF-16 by chance but holds a secret the rules find byte for byte', () => {
+    const body = Buffer.concat([
+      Buffer.from([0xff, 0xfe, 1, 0]),
+      Buffer.from(`"password":"${PASSWORD}"`),
+      Buffer.from([0, 0, 0]),
+    ]);
+    // Even, so it reads as UTF-16 whole: hidden for what's in it, not for being unreadable.
+    expect(body.length % 2).toBe(0);
+    expect(maskBytes(body, 'application/octet-stream', false, new KnownValues())).toEqual({
+      hidden: HIDDEN_BINARY,
+    });
+    // Real UTF-16 text isn't hidden for it: read byte for byte, its letters have NULs between.
+    const real = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from(`"password":"${PASSWORD}"`, 'utf16le'),
+    ]);
+    expect(maskBytes(real, 'application/octet-stream', false, new KnownValues())).not.toHaveProperty(
+      'hidden',
+    );
+  });
+
   it('hides binary that reads as UTF-16 by chance but holds a known value’s bytes', () => {
     const body = Buffer.concat([Buffer.from([0xff, 0xfe, 1, 0]), Buffer.from(BEARER), Buffer.from([0, 0])]);
     expect(maskBytes(body, 'application/octet-stream', false, known(BEARER))).toEqual({

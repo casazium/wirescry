@@ -42,10 +42,11 @@ import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
 import { Masker, Superseded, type EventsAnswer, type MaskAnswer, type MessagesAnswer } from './masker';
 import { applySpans, redactHeaders } from '../shared/redact';
-import { failedItem } from './mask-body';
+import { assembleEvents, assembleMessages } from './mask-streams';
+import type { SseItem } from '../shared/sse';
 
-/** Why messages or events aren't shown when checking them went wrong. */
-const MESSAGES_FAILED = 'Couldn’t check this message for secrets.';
+/** Earlier messages or events taught again, at most, when the mask worker lost a stream's. */
+const MAX_REPLAYED = 2_000;
 import { redactBody } from '../shared/redact-body';
 import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
@@ -915,55 +916,43 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     };
   };
 
-  /** A page of WebSocket messages as the window shows them while Hide Secrets is on. Fails closed. */
+  /**
+   * A page of WebSocket messages as the window shows them while Hide Secrets is on. Fails closed.
+   * If the worker lost what the stream's earlier pages taught (it restarted), they're taught again.
+   */
   const maskedMessages = async (
     exchange: ExchangeDetail,
     page: WebSocketMessages,
     fresh: boolean,
   ): Promise<WebSocketMessages> => {
-    const hide = (m: WebSocketMessages['messages'][number], why: string) => ({
-      ...m,
-      base64: '',
-      masked: { hidden: why },
-    });
     if (page.messages.length === 0) return page;
-    let answer: MessagesAnswer;
-    try {
-      answer = await masker.maskMessages(exchange.summary.id, {
+    const id = exchange.summary.id;
+    const run = (messages: WebSocketMessages['messages'], fromStart: boolean) =>
+      masker.maskMessages(id, {
         own: maskPart(exchange),
-        stream: { key: `ws:${exchange.summary.id}`, fresh },
-        messages: page.messages.map((m) => {
+        stream: { key: `ws:${id}`, fresh: fromStart },
+        messages: messages.map((m) => {
           const bytes = Buffer.from(m.base64, 'base64');
           return { bytes, binary: m.isBinary, cut: bytes.length < m.size };
         }),
       });
+    let answer: MessagesAnswer | undefined;
+    try {
+      answer = await run(page.messages, fresh);
+      if (!('failed' in answer) && answer.lost) {
+        const first = page.messages[0]!.index;
+        const earlier = websockets
+          .get(id, -1, Number.MAX_SAFE_INTEGER)
+          .messages.filter((m) => m.index < first)
+          .slice(-MAX_REPLAYED);
+        const again = await run([...earlier, ...page.messages], true);
+        answer = 'failed' in again ? again : { ...again, messages: again.messages.slice(earlier.length) };
+      }
     } catch (error) {
       if (error instanceof Superseded) throw error;
-      return { ...page, messages: page.messages.map((m) => hide(m, MESSAGES_FAILED)) };
+      answer = undefined;
     }
-    const masked = 'failed' in answer ? [] : answer.messages;
-    const full = !('failed' in answer) && answer.full;
-    const why = 'failed' in answer ? answer.failed : MESSAGES_FAILED;
-    return {
-      ...page,
-      // Each of our own messages, with the worker's answer for it; anything amiss is hidden.
-      messages: page.messages.map((m, i) => {
-        const one = masked.length === page.messages.length ? masked[i] : undefined;
-        if (!one) return hide(m, why);
-        if ('hidden' in one) return hide(m, one.hidden);
-        if (!(one.bytes instanceof Uint8Array) || !Array.isArray(one.ranges)) return hide(m, MESSAGES_FAILED);
-        return {
-          ...m,
-          base64: Buffer.from(one.bytes).toString('base64'),
-          masked: {
-            ...(one.text !== undefined ? { text: one.text } : {}),
-            ranges: one.ranges,
-            ...(one.binary ? { binary: true as const } : {}),
-            ...(full ? { full: true as const } : {}),
-          },
-        };
-      }),
-    };
+    return assembleMessages(page, answer);
   };
 
   /** A page of an event stream's items as the window shows them while Hide Secrets is on. Fails closed. */
@@ -972,23 +961,32 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     view: SseEventsView,
     fresh: boolean,
   ): Promise<SseEventsView> => {
-    const problem = view.problem === undefined ? {} : { problem: sweepText(view.problem) };
-    // Each item says it couldn't be checked, so the note stays with it after later looks.
-    const hideAll = (): SseEventsView => ({ ...view, items: view.items.map(failedItem), ...problem });
-    if (view.items.length === 0) return { ...view, ...problem };
-    let answer: EventsAnswer;
-    try {
-      answer = await masker.maskEvents(exchange.summary.id, {
+    if (view.items.length === 0) return assembleEvents(view, undefined, sweepText);
+    const id = exchange.summary.id;
+    const run = (items: SseItem[], fromStart: boolean) =>
+      masker.maskEvents(id, {
         own: maskPart(exchange),
-        stream: { key: `sse:${exchange.summary.id}:${view.serial}`, fresh },
-        items: view.items,
+        stream: { key: `sse:${id}:${view.serial}`, fresh: fromStart },
+        items,
       });
+    let answer: EventsAnswer | undefined;
+    try {
+      answer = await run(view.items, fresh);
+      if (!('failed' in answer) && answer.lost) {
+        const first = view.items[0]!.index;
+        const kept = await sse.read(id, 0);
+        const earlier =
+          kept && kept.serial === view.serial
+            ? kept.items.filter((item) => item.index < first).slice(-MAX_REPLAYED)
+            : [];
+        const again = await run([...earlier, ...view.items], true);
+        answer = 'failed' in again ? again : { ...again, items: again.items.slice(earlier.length) };
+      }
     } catch (error) {
       if (error instanceof Superseded) throw error;
-      return hideAll();
+      answer = undefined;
     }
-    if ('failed' in answer || answer.items.length !== view.items.length) return hideAll();
-    return { ...view, items: answer.items, ...problem };
+    return assembleEvents(view, answer, sweepText);
   };
 
   /** A body for a HAR file; an error reading it is noted rather than failing the export. */

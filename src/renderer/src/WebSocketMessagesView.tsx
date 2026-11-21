@@ -33,6 +33,16 @@ function formatTime(ms: number): string {
   return ms < 1000 ? `+${ms} ms` : `+${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
 }
 
+/** Whether text is JSON (a message wholly redacted reads `[redacted]`, which isn't). */
+function parsesAsJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const NOT_FORMATTED: () => Promise<FormattedBody> = () =>
   Promise.resolve({ ok: false, reason: 'not available for WebSocket messages' });
 
@@ -120,7 +130,7 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
     size: current.size,
     contentType: current.isBinary
       ? 'application/octet-stream'
-      : current.text !== undefined && /^\s*[[{]/.test(current.text)
+      : current.text !== undefined && /^\s*[[{]/.test(current.text) && parsesAsJson(current.text)
         ? 'application/json'
         : 'text/plain',
     truncated: base64ToBytes(current.base64).length < current.size,

@@ -52,7 +52,7 @@ export type MaskJob =
 
 /**
  * Which stream a page is from, so what's learned in one page is hidden in the next. `fresh` when
- * the window reads it from the start: it reads in order, so what it was shown stays the same.
+ * it's read from the start: nothing earlier to have learned from.
  */
 export interface Stream {
   key: string;
@@ -73,33 +73,44 @@ export type MaskResponse =
       /** A value was turned away for want of room, so one seen earlier may not be hidden. */
       full: boolean;
     }
-  | { id: number; ok: true; messages: MaskedMessage[]; full: boolean }
-  | { id: number; ok: true; items: SseItem[]; full: boolean }
+  /** `lost`: nothing was learned from this stream's earlier pages (see streamKnown). */
+  | { id: number; ok: true; messages: MaskedMessage[]; full: boolean; lost: boolean }
+  | { id: number; ok: true; items: SseItem[]; full: boolean; lost: boolean }
   | { id: number; ok: false; error: string };
 
 const session = new KnownValues();
 
 /** What each stream has learned, for the streams read most recently. */
-const streams = new Map<string, KnownValues>();
+/** What each stream has learned, for the streams read most recently, and the session it has. */
+const streams = new Map<string, { known: KnownValues; taught: number }>();
 const MAX_STREAMS = 20;
+/** Teaches so far: a stream takes the session's values again only after one. */
+let teaches = 0;
 
-/** A stream's known values: its exchange's and the session's, and what its pages taught. */
-function streamKnown(stream: Stream, own: Json): KnownValues {
-  let known = stream.fresh ? undefined : streams.get(stream.key);
+/**
+ * A stream's known values: its exchange's and the session's, and what its pages taught. Never
+ * forgotten while the worker runs (learning again from the start changes nothing); `lost` when a
+ * page from partway through finds nothing learned (the worker restarted, or too many streams
+ * since), so the caller can teach it the earlier pages.
+ */
+function streamKnown(stream: Stream, own: Json): { known: KnownValues; lost: boolean } {
+  let entry = streams.get(stream.key);
   streams.delete(stream.key);
-  if (!known) {
-    known = new KnownValues();
-    try {
-      collectKnown(own, known);
-    } catch {
-      // Nothing learned from them.
-    }
+  const lost = !entry && !stream.fresh;
+  entry ??= { known: new KnownValues(), taught: -1 };
+  // Its exchange's own values each time: response headers and trailers can arrive later.
+  try {
+    collectKnown(own, entry.known);
+  } catch {
+    // Nothing learned from them.
   }
-  // The session's values, those taught since the last page too.
-  known.addAll(session);
-  streams.set(stream.key, known);
+  if (entry.taught !== teaches) {
+    entry.known.addAll(session);
+    entry.taught = teaches;
+  }
+  streams.set(stream.key, entry);
   if (streams.size > MAX_STREAMS) streams.delete(streams.keys().next().value!);
-  return known;
+  return { known: entry.known, lost };
 }
 
 function handle(message: MaskRequest): MaskResponse {
@@ -111,15 +122,18 @@ function handle(message: MaskRequest): MaskResponse {
         // A part that can't be read teaches nothing.
       }
     }
+    teaches += 1;
     return { id: message.id, ok: true, taught: true };
   }
   if (message.op === 'messages') {
-    const known = streamKnown(message.stream, message.own);
-    return { id: message.id, ok: true, messages: maskMessages(message.messages, known), full: known.full };
+    const { known, lost } = streamKnown(message.stream, message.own);
+    const messages = maskMessages(message.messages, known);
+    return { id: message.id, ok: true, messages, full: known.full, lost };
   }
   if (message.op === 'events') {
-    const known = streamKnown(message.stream, message.own);
-    return { id: message.id, ok: true, items: maskSseItems(message.items, known), full: known.full };
+    const { known, lost } = streamKnown(message.stream, message.own);
+    const items = maskSseItems(message.items, known);
+    return { id: message.id, ok: true, items, full: known.full, lost };
   }
   const known = new KnownValues();
   // Headers or a request body that can't be read teach nothing; the body is still masked.

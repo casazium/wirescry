@@ -269,7 +269,8 @@ export interface SseEventsView {
   /** This look stopped at its limits before the end of what has arrived: ask again for the rest. */
   more?: true;
   /** Why reading stopped, if it did. */
-  problem?: string;
+  problem?: string; /** Masked (View › Hide Secrets): Wirescry's list of values seen is full, so one may not be hidden. */
+  full?: true;
 }
 
 /** A BodyRange for the UI, its bytes as base64. */

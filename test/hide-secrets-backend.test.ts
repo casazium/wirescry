@@ -94,6 +94,30 @@ describe('Hide Secrets: bodies masked by the backend', () => {
     await backend.importHar(file);
     await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(1);
     ids.ws = exchangesIn(api.messages).find((e) => e.imported)!.id;
+    // Another, read only from partway: a token in its first message, plain in its second.
+    const late = path.join(dir, 'ws-late.har');
+    await writeFile(
+      late,
+      JSON.stringify({
+        log: {
+          entries: [
+            {
+              startedDateTime: new Date(t * 1000).toISOString(),
+              _resourceType: 'websocket',
+              request: { method: 'GET', url: 'wss://example.com/late', headers: [] },
+              response: { status: 101, statusText: 'Switching Protocols' },
+              _webSocketMessages: [
+                { type: 'receive', time: t, opcode: 1, data: JSON.stringify({ token: ACCESS }) },
+                { type: 'receive', time: t + 1, opcode: 1, data: `again ${ACCESS}` },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+    await backend.importHar(late);
+    await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(2);
+    ids.wsLate = exchangesIn(api.messages).find((e) => e.imported && e.id !== ids.ws)!.id;
   };
 
   beforeAll(async () => {
@@ -293,6 +317,21 @@ describe('Hide Secrets: bodies masked by the backend', () => {
     const real = await api.send<WebSocketMessages>({ command: 'getWebSocketMessages', exchangeId: ids.ws! });
     expect(real.messages.every((m) => m.masked === undefined)).toBe(true);
     expect(Buffer.from(real.messages[0]!.base64, 'base64').toString()).toContain(ACCESS);
+  });
+
+  it('reads a WebSocket from partway with what its earlier messages taught, though never read before', async () => {
+    await ready();
+    // Message 0 is {"token":ACCESS}: found by a rule. Read from message 2 on, never from the start:
+    // the worker has nothing for this stream, so it's taught the earlier messages first.
+    const fresh = await api.send<WebSocketMessages>({
+      command: 'getWebSocketMessages',
+      exchangeId: ids.wsLate!,
+      after: 0,
+      mask: true,
+    });
+    expect(fresh.messages.map((m) => m.masked && 'text' in m.masked && m.masked.text)).toEqual([
+      `again [redacted]`,
+    ]);
   });
 
   it('masks an event stream’s data, IDs and comments', async () => {

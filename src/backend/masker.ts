@@ -88,8 +88,6 @@ const KEPT_GROUPS = 2;
 interface Waiting {
   group: string;
   job: WorkJob;
-  /** Not dropped for another exchange's: a stream's view waits for its pages in order. */
-  keep: boolean;
   resolve(answer: Reply | { failed: string }): void;
   reject(error: Error): void;
 }
@@ -179,13 +177,13 @@ export class Masker {
     this.recent.length = Math.min(this.recent.length, KEPT_GROUPS);
     for (let i = this.queue.length - 1; i >= 0; i--) {
       const waiting = this.queue[i]!;
-      if (!waiting.keep && !this.recent.includes(waiting.group)) {
+      if (!this.recent.includes(waiting.group)) {
         this.queue.splice(i, 1);
         waiting.reject(new Superseded());
       }
     }
     return new Promise((resolve, reject) => {
-      this.queue.push({ group, job, keep: job.op !== 'mask', resolve, reject });
+      this.queue.push({ group, job, resolve, reject });
       this.pump();
     });
   }

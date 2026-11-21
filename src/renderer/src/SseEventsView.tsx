@@ -164,6 +164,9 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
         <p className="muted">{view.receiving ? 'No events yet.' : 'No events.'}</p>
       )}
       {view?.problem && <p className="note">{view.problem}</p>}
+      {view?.full && (
+        <p className="note">Some values seen earlier may not be hidden: Wirescry’s list of them is full.</p>
+      )}
     </section>
   );
 }

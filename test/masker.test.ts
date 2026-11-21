@@ -321,3 +321,100 @@ describe('Masker: pages of messages and events', () => {
     ).toBe(26_000);
   });
 });
+
+describe('Masker: what a stream learns, page to page', () => {
+  const page = (text: string) => [{ bytes: utf8(text), binary: false, cut: false }];
+  const texts = (answer: Awaited<ReturnType<Masker['maskMessages']>>) => {
+    if ('failed' in answer) throw new Error(answer.failed);
+    return answer.messages.map((m) => ('hidden' in m ? m.hidden : m.text));
+  };
+  const learned = `{"token":"${SECRET}"}`;
+
+  it('hides in a later page a value an earlier page found by a rule', async () => {
+    const masker = make(session().source);
+    await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: true },
+      messages: page(learned),
+    });
+    const next = await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: false },
+      messages: page(`resumed ${SECRET}`),
+    });
+    expect(texts(next)).toEqual(['resumed [redacted]']);
+    expect('lost' in next && next.lost).toBe(false);
+  });
+
+  it('keeps what a stream learned when it’s read from the start again, and doesn’t share it with another', async () => {
+    const masker = make(session().source);
+    await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: true },
+      messages: page(learned),
+    });
+    const again = await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: true },
+      messages: page(`x ${SECRET}`),
+    });
+    expect(texts(again)).toEqual(['x [redacted]']);
+    const other = await masker.maskMessages('v', {
+      own: part('v'),
+      stream: { key: 'b', fresh: true },
+      messages: page(`x ${SECRET}`),
+    });
+    expect(texts(other)).toEqual([`x ${SECRET}`]);
+  });
+
+  it('says a stream was lost when a page from partway finds nothing learned: after a restart, or 20 other streams', async () => {
+    const masker = make(session().source);
+    const first = await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: false },
+      messages: page('x'),
+    });
+    expect('lost' in first && first.lost).toBe(true);
+    // Now it has something: not lost.
+    const second = await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: false },
+      messages: page('y'),
+    });
+    expect('lost' in second && second.lost).toBe(false);
+    masker.reset();
+    const restarted = await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: false },
+      messages: page('z'),
+    });
+    expect('lost' in restarted && restarted.lost).toBe(true);
+    for (let i = 0; i < 20; i++) {
+      await masker.maskEvents('s', { own: part('s'), stream: { key: `other${i}`, fresh: true }, items: [] });
+    }
+    const evicted = await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: false },
+      messages: page('z'),
+    });
+    expect('lost' in evicted && evicted.lost).toBe(true);
+  });
+
+  it('takes the session’s values taught between pages', async () => {
+    const { parts, source } = session();
+    const masker = make(source);
+    await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: true },
+      messages: page('hello'),
+    });
+    parts.b = part('b', OTHER);
+    masker.touched('b');
+    const next = await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: false },
+      messages: page(`x ${OTHER}`),
+    });
+    expect(texts(next)).toEqual(['x [redacted]']);
+  });
+});
