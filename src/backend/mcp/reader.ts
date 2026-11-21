@@ -12,7 +12,7 @@ import type {
   SseEventsView,
   WebSocketMessages,
 } from '../../shared/api';
-import { compileQuery, MAX_QUERY_LENGTH } from '../../shared/query';
+import { compileQuery, MAX_QUERY_LENGTH, tokenize } from '../../shared/query';
 import { isEventStream, type SseItem } from '../../shared/sse';
 import type { MaskField } from '../mask-body';
 import type { FieldsAnswer } from '../masker';
@@ -50,6 +50,9 @@ export class StreamLost extends Error {
     super('The stream’s learned values were lost.');
   }
 }
+
+/** A field term compared with = or != whose value has a wildcard. */
+const WILDCARD_TERM = /^[a-z]+!?=.*[*?]/i;
 
 export const MAX_LIST = 200;
 export const MAX_CHARS = 100_000;
@@ -248,10 +251,11 @@ export class Reader {
     const q = (query ?? '').trim();
     if (q.length > MAX_QUERY_LENGTH)
       throw new ReadError(`The query is longer than ${MAX_QUERY_LENGTH} characters.`);
-    // Wildcards make patterns that can take minutes on one long URL, on the proxy's own thread.
-    if (/[*?]/.test(q)) {
+    // A wildcard in an = or != term (`url=*a*a*b`) becomes a pattern that can take minutes on one
+    // long URL, on the proxy's own thread. ~ terms and plain words take * and ? as they are.
+    if (tokenize(q).some((token) => WILDCARD_TERM.test(token.replace(/^-/, '')))) {
       throw new ReadError(
-        'Wildcards (* and ?) can’t be used here: use ~ to match part of a value, as in path~/users.',
+        'Wildcards (* and ?) can’t be used with = or != here: use ~ to match part of a value, as in path~/users.',
       );
     }
     const compiled = q ? compileQuery(q) : undefined;

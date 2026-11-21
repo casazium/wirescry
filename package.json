@@ -49,6 +49,7 @@
     "@casazium/license-sdk": "^0.5.0",
     "@electron/get": "^5.1.0",
     "@eslint/js": "^10.0.1",
+    "@modelcontextprotocol/client": "^2.4.0",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
     "@types/js-beautify": "^1.14.3",
