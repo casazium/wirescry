@@ -226,8 +226,14 @@ describe('the toolbar badge', () => {
     );
     await act(async () => undefined);
     expect(badge()).toBeTruthy();
+    // jsdom has no scrollIntoView: a stand-in, to see the section brought into view.
+    const scrolled = vi.fn();
+    Element.prototype.scrollIntoView = scrolled;
     await act(async () => void fireEvent.click(badge()!));
+    await act(async () => new Promise((resolve) => requestAnimationFrame(() => resolve(undefined))));
     expect(document.getElementById('mcp-section')).toBeTruthy();
+    expect(scrolled).toHaveBeenCalled();
+    expect(scrolled.mock.contexts[0]).toBe(document.getElementById('mcp-section'));
   });
 
   it('doesn’t show for a call over a minute ago', async () => {
