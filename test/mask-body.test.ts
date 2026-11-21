@@ -8,6 +8,7 @@ import {
   cutUtf8Tail,
   decodeForMask,
   HIDDEN_BINARY,
+  HIDDEN_UNREADABLE,
   maskBytes,
   maskFormatted,
   MAX_LITERALS,
@@ -156,6 +157,59 @@ describe('maskBytes: text that isn’t UTF-8', () => {
   });
 });
 
+describe('maskBytes: UTF-16 without a BOM, and text it can’t read', () => {
+  const secretBytes = (bytes: Uint8Array, ranges: Array<[number, number]>, encoding: BufferEncoding) =>
+    ranges.map(([s, e]) => Buffer.from(bytes.subarray(s, e)).toString(encoding));
+
+  it('reads ASCII in UTF-16LE as UTF-16, though it’s valid UTF-8 too, whatever its type', () => {
+    for (const type of [
+      'application/x-www-form-urlencoded',
+      'text/plain; charset=utf-16le',
+      'application/octet-stream',
+    ]) {
+      const body = Buffer.from(`user=bob&password=${PASSWORD}`, 'utf16le');
+      const result = shown(maskBytes(body, type, false, new KnownValues()));
+      expect(secretBytes(body, result.ranges, 'utf16le'), type).toEqual([PASSWORD]);
+      expect(Buffer.from(result.bytes).toString('utf16le'), type).not.toContain(PASSWORD);
+    }
+  });
+
+  it('reads UTF-16BE, and finds a known value in it', () => {
+    const body = Buffer.from(`hello ${BEARER} there`, 'utf16le').swap16();
+    const result = shown(maskBytes(body, 'text/plain; charset=utf-16be', false, known(BEARER)));
+    expect(result.ranges).toEqual([[12, 12 + BEARER.length * 2]]);
+    expect(Buffer.from(result.bytes).swap16().toString('utf16le')).not.toContain(BEARER);
+  });
+
+  it('hides text said to be UTF-16 that can’t be read so', () => {
+    // Odd length, not cut.
+    const odd = Buffer.concat([Buffer.from(`password=${PASSWORD}`, 'utf16le'), Buffer.from([0x41])]);
+    expect(maskBytes(odd, 'text/plain; charset=utf-16le', false, new KnownValues())).toEqual({
+      hidden: HIDDEN_UNREADABLE,
+    });
+    // UTF-16 with no order to be found.
+    expect(
+      maskBytes(Buffer.from(`password=${PASSWORD}`), 'text/plain; charset=utf-16', false, new KnownValues()),
+    ).toEqual({
+      hidden: HIDDEN_UNREADABLE,
+    });
+  });
+
+  it('hides text full of NULs in no pattern, but shows such bytes of a type that isn’t text', () => {
+    const body = Buffer.from(
+      `\u0000\u0000\u0000ab\u0000\u0000cd\u0000\u0000\u0000password=${PASSWORD}\u0000\u0000\u0000\u0000\u0000`,
+    );
+    expect(maskBytes(body, 'text/plain', false, new KnownValues())).toEqual({ hidden: HIDDEN_UNREADABLE });
+    expect(shown(maskBytes(body, 'application/octet-stream', false, new KnownValues())).binary).toBe(true);
+  });
+
+  it('still reads UTF-8 with a stray NUL as UTF-8 text', () => {
+    const body = utf8(`a\u0000 b password=${PASSWORD} and more ordinary text here`);
+    const result = shown(maskBytes(body, 'text/plain', false, new KnownValues()));
+    expect(result.text).toBe('a\u0000 b password=[redacted] and more ordinary text here');
+  });
+});
+
 describe('maskBytes: not text', () => {
   it('hides a body that holds a value known from elsewhere', () => {
     const body = Buffer.concat([Buffer.from([0, 1, 0xff]), Buffer.from(BEARER), Buffer.from([0xfe])]);
@@ -249,8 +303,6 @@ describe('maskFormatted', () => {
   it('gives up, rather than show some, with too many values to look for', () => {
     const many = Array.from({ length: MAX_LITERALS + 1 }, (_, i) => `value${i}x`);
     expect(maskFormatted('anything', 'text/plain', many, new KnownValues())).toBeUndefined();
-    const samePrefix = Array.from({ length: 17 }, (_, i) => `abcd${i}efgh`);
-    expect(maskFormatted('anything', 'text/plain', samePrefix, new KnownValues())).toBeUndefined();
     const short = Array.from({ length: 33 }, (_, i) => `${i}`);
     expect(maskFormatted('anything', 'text/plain', short, new KnownValues())).toBeUndefined();
   });
@@ -258,6 +310,18 @@ describe('maskFormatted', () => {
   it('gives up, rather than run long, on a body built to make matching slow', () => {
     const literal = 'a'.repeat(60_000);
     expect(maskFormatted('a'.repeat(1_000_000), 'text/plain', [literal], new KnownValues())).toBeUndefined();
+  });
+
+  it('finds many values that start alike, as a page of tokens has', () => {
+    const tokens = Array.from({ length: 40 }, (_, i) => `eyJh${i}Zq9Xw8Vu7Ts6`);
+    const out = maskFormatted(tokens.join('\n'), 'text/plain', tokens, new KnownValues())!;
+    expect(out).toBe(tokens.map(() => '[redacted]').join('\n'));
+  });
+
+  it('joins values that overlap', () => {
+    expect(
+      maskFormatted('x abcdefgh1234zz y', 'text/plain', ['abcdefgh1234', 'cdefgh1234zz'], new KnownValues()),
+    ).toBe('x [redacted] y');
   });
 
   it('leaves formatted text with nothing secret as it was', () => {

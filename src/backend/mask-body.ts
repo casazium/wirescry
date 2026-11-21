@@ -32,6 +32,9 @@ export type MaskedBytes =
     };
 
 /** Why a body that isn't text is left out: a secret found elsewhere is in its bytes. */
+/** Why a body said to be text that can't be read as text is left out. */
+export const HIDDEN_UNREADABLE = 'This body couldn’t be read as text, so it can’t be checked for secrets.';
+
 export const HIDDEN_BINARY =
   'This body isn’t text and holds a value hidden elsewhere, so it isn’t shown while View › Hide Secrets is on.';
 
@@ -59,12 +62,41 @@ interface Decoded {
   length: number;
 }
 
+/** Whether bytes say they're UTF-16: a byte-order mark, or a charset. */
+function saysUtf16(bytes: Uint8Array, mediaType: string): boolean {
+  const bom = (bytes[0] === 0xff && bytes[1] === 0xfe) || (bytes[0] === 0xfe && bytes[1] === 0xff);
+  return bom || /charset\s*=\s*"?utf-16/i.test(mediaType);
+}
+
+/** UTF-16 or Latin-1 text, as HAR export reads it, allowing for a cut after half a character. */
+function otherText(bytes: Uint8Array, mediaType: string, cut: boolean): Decoded | undefined {
+  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length);
+  const whole = textOfBytes(buffer, mediaType);
+  if (whole) return { ...whole, length: bytes.length };
+  if (cut && bytes.length % 2 === 1) {
+    const even = textOfBytes(buffer.subarray(0, bytes.length - 1), mediaType);
+    if (even && even.encoding !== 'latin1') return { ...even, length: bytes.length - 1 };
+  }
+  return undefined;
+}
+
 /**
  * A body's text, read as the window reads it (UTF-8) where it can be, else as HAR export reads a
  * text body (UTF-16 or Latin-1), so its bytes can still be masked in the Hex view. A BOM is kept as
- * a character, so offsets match the bytes. Undefined if it isn't text.
+ * a character, so offsets match the bytes. Undefined if it isn't text, or can't be read surely.
+ *
+ * UTF-16 comes first: ASCII written in UTF-16 is valid UTF-8 too, with a NUL in every other byte,
+ * and read as UTF-8 nothing in it would be found.
  */
 export function decodeForMask(bytes: Uint8Array, mediaType: string, cut: boolean): Decoded | undefined {
+  let nuls = 0;
+  for (const byte of bytes) if (byte === 0) nuls++;
+  if (nuls > 0 || saysUtf16(bytes, mediaType)) {
+    const other = otherText(bytes, mediaType, cut);
+    if (other && other.encoding !== 'latin1') return other;
+    // Said to be UTF-16 but can't be read so, or NULs in no pattern UTF-16 shows: not text.
+    if (!other) return undefined;
+  }
   const tail = cut ? cutUtf8Tail(bytes) : 0;
   try {
     const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
@@ -75,15 +107,7 @@ export function decodeForMask(bytes: Uint8Array, mediaType: string, cut: boolean
     // Not UTF-8: maybe text in another encoding.
   }
   if (!isTextual(mediaType)) return undefined;
-  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length);
-  const whole = textOfBytes(buffer, mediaType);
-  if (whole) return { ...whole, length: bytes.length };
-  // UTF-16 cut after half a character.
-  if (cut && bytes.length % 2 === 1) {
-    const even = textOfBytes(buffer.subarray(0, bytes.length - 1), mediaType);
-    if (even && even.encoding !== 'latin1') return { ...even, length: bytes.length - 1 };
-  }
-  return undefined;
+  return otherText(bytes, mediaType, cut);
 }
 
 /**
@@ -140,6 +164,8 @@ export function maskBytes(
 ): MaskedBytes {
   const decoded = decodeForMask(bytes, mediaType, cut);
   if (!decoded) {
+    // Text it can't read: its secrets can't be found, so it isn't shown.
+    if (isTextual(mediaType) || saysUtf16(bytes, mediaType)) return { hidden: HIDDEN_UNREADABLE };
     if (known.inBytes(bytes)) return { hidden: HIDDEN_BINARY };
     return { bytes, ranges: [], binary: true, literals: [] };
   }
@@ -171,8 +197,7 @@ export function learnFrom(bytes: Uint8Array, mediaType: string, cut: boolean, kn
 /** At most this many values masked in a body are looked for in it formatted, each this long. */
 export const MAX_LITERALS = 5_000;
 export const MAX_LITERAL_LENGTH = 64 * 1024;
-/** At most this many of them start with the same four characters, and this many are shorter. */
-const MAX_PER_PREFIX = 16;
+/** At most this many are shorter than four characters. */
 const MAX_SHORT = 32;
 /** Characters compared, at most, finding them: a hostile body can't make it slow. */
 const MAX_COMPARED = 50_000_000;
@@ -206,7 +231,6 @@ export function maskFormatted(
     }
     const key = literal.slice(0, PREFIX);
     const list = byPrefix.get(key) ?? [];
-    if (list.length >= MAX_PER_PREFIX) return undefined;
     list.push(literal);
     byPrefix.set(key, list);
   }

@@ -87,7 +87,7 @@ export function buildMenu(actions: {
     {
       label: 'View',
       submenu: [
-        // Ticked by the window (see updateMenu); works with no window too: nothing to hide then.
+        // Enabled and ticked by the window (see updateMenu); works whether or not the proxy is running.
         {
           id: 'hide-secrets',
           label: 'Hide Secrets',

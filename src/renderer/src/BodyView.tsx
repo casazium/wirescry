@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useMemo, useState } from 'react';
 import type { BodyContent, FormattedBody } from '../../shared/api';
 import { exchangeType } from '../../shared/exchange-type';
 import { base64ToBytes, bytesToText, formatBytes, hexDump, looksLikeText } from './bytes';
 import { fieldsText, formFields, type FormField } from '../../shared/form-fields';
+import { maskText, SecretsHidden } from './secrets';
 
 type Kind = 'json' | 'image' | 'code' | 'form' | 'text' | 'binary';
 type Mode = 'formatted' | 'text' | 'hex';
@@ -70,6 +71,7 @@ function FormattedCode({
   onFormatted(text: string | undefined): void;
 }): React.JSX.Element {
   const [result, setResult] = useState<FormattedBody>();
+  const hideSecrets = useContext(SecretsHidden);
   useEffect(() => {
     let active = true;
     format().then(
@@ -78,12 +80,13 @@ function FormattedCode({
         setResult(value);
         onFormatted(value.ok ? value.text : undefined);
       },
-      (error: Error) => active && setResult({ ok: false, reason: error.message }),
+      (error: Error) =>
+        active && setResult({ ok: false, reason: hideSecrets ? maskText(error.message) : error.message }),
     );
     return () => {
       active = false;
     };
-  }, [format, onFormatted]);
+  }, [format, onFormatted, hideSecrets]);
 
   if (!result) return <p className="muted">Formatting…</p>;
   if (!result.ok) {

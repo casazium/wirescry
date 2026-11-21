@@ -14,7 +14,7 @@ import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
 import { bodyFileName } from './body-file-name';
 import { fetchCurlCommand } from './curl-command';
-import { maskHeaders, maskSummary, maskUrl, SecretsHidden } from './secrets';
+import { maskHeaders, maskSummary, maskText, maskUrl, SecretsHidden } from './secrets';
 import { REDACTED } from '../../shared/redact';
 import { protocolText } from './protocol-text';
 import { redirectTarget } from './redirect';
@@ -229,8 +229,13 @@ export function DetailPane({
         (value) =>
           active &&
           setBodies((b) => ({ ...keepCurrent(b), [key]: { content: value as BodyContent | null } })),
+        // An error's text could quote something: masked like any other message while on.
         (error: Error) =>
-          active && setBodies((b) => ({ ...keepCurrent(b), [key]: { error: error.message } })),
+          active &&
+          setBodies((b) => ({
+            ...keepCurrent(b),
+            [key]: { error: mode === 'masked' ? maskText(error.message) : error.message },
+          })),
       );
     };
     load('request', requestSize);

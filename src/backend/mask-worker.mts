@@ -66,10 +66,19 @@ function handle(message: MaskRequest): MaskResponse {
     return { id: message.id, ok: true, taught: true };
   }
   const known = new KnownValues();
-  collectKnown(message.own, known);
+  // Headers or a request body that can't be read teach nothing; the body is still masked.
+  try {
+    collectKnown(message.own, known);
+  } catch {
+    // Nothing learned from them.
+  }
   if (message.request) {
     const { bytes, mediaType, cut } = message.request;
-    learnFrom(bytes, mediaType, cut, known);
+    try {
+      learnFrom(bytes, mediaType, cut, known);
+    } catch {
+      // Nothing learned from it.
+    }
   }
   known.addAll(session);
   const { bytes, mediaType, cut } = message.body;

@@ -289,6 +289,79 @@ describe('Hide Secrets: the window shows none', () => {
       expect(leaked(everything()), tab).toEqual([]);
     }
     expect(document.querySelector('.hex')?.textContent).toContain('••');
+    // The text from the backend, with markers, not the overwritten bytes.
+    for (const button of screen.getAllByRole('button', { name: 'Text' })) {
+      await act(async () => void fireEvent.click(button));
+    }
+    expect(document.body.textContent).toContain('{"password":"[redacted]"}');
+    expect(document.body.textContent).not.toContain('***');
+  });
+
+  it('masks a body’s load error', async () => {
+    const answer = fake.answer!;
+    fake.answer = (command) => {
+      if (command.command === 'getBody') throw new Error(`failed: password=${PASSWORD}`);
+      return answer(command);
+    };
+    await started();
+    await toggle();
+    await select(0);
+    await settle();
+    expect(screen.getAllByText('failed: password=[redacted]').length).toBeGreaterThan(0);
+    expect(leaked(everything())).toEqual([]);
+  });
+
+  it('formats code masked, asking the backend for it masked', async () => {
+    const answer = fake.answer!;
+    const js = `var p="${PASSWORD}";`;
+    fake.answer = (command) => {
+      if (command.command === 'getBody' && command.side === 'response')
+        return command.mask
+          ? {
+              base64: b64(js.replace(PASSWORD, '*'.repeat(PASSWORD.length))),
+              size: 20,
+              contentType: 'application/javascript',
+              truncated: false,
+              masked: { text: 'var p="[redacted]";', ranges: [[7, 7 + PASSWORD.length]] },
+            }
+          : { base64: b64(js), size: 20, contentType: 'application/javascript', truncated: false };
+      if (command.command === 'formatBody') {
+        commands.push(command);
+        return command.mask
+          ? { ok: true, language: 'js', text: 'var p = "[redacted]";' }
+          : { ok: true, language: 'js', text: `var p = "${PASSWORD}";` };
+      }
+      return answer(command);
+    };
+    await started();
+    await toggle();
+    await select(0);
+    await settle();
+    expect(screen.getByText('var p = "[redacted]";')).toBeTruthy();
+    const formats = commands.filter((c) => c.command === 'formatBody');
+    expect(formats.length).toBeGreaterThan(0);
+    expect(formats.every((c) => c.mask === true)).toBe(true);
+    expect(leaked(everything())).toEqual([]);
+  });
+
+  it('hides a stream’s events without fetching them', async () => {
+    const stream = summary('s', {
+      path: '/events',
+      url: 'https://api.test/events',
+      contentType: 'text/event-stream',
+      responseSize: undefined,
+    });
+    const answer = fake.answer!;
+    fake.answer = (command) =>
+      command.exchangeId === 's' && command.command === 'getExchange'
+        ? { ...detailOf(stream), requestBody: undefined, responseBody: undefined }
+        : answer(command);
+    await started([stream]);
+    await toggle();
+    await select(0);
+    await settle();
+    expect(screen.getByText('Events are hidden while View › Hide Secrets is on.')).toBeTruthy();
+    expect(commands.some((c) => c.command === 'getSseEvents')).toBe(false);
   });
 
   it('hides a failure’s message and detail', async () => {
@@ -325,6 +398,7 @@ describe('Hide Secrets: the window shows none', () => {
     await settle();
     expect(copied()).toContain(BEARER);
     expect(copied()).toContain(PASSWORD);
+    expect(copied()).toContain(ACCESS);
   });
 
   it('copies the masked URL from a row’s menu, and real curl', async () => {

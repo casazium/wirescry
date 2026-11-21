@@ -256,8 +256,8 @@ export class Masker {
   /** Fails what's in the worker and drops it; the next job starts a new one, taught afresh. */
   private stop(error: WorkerGone): void {
     const worker = this.worker;
+    // The next worker is taught everything (see start).
     this.worker = undefined;
-    this.needsAll = true;
     this.dirty.clear();
     for (const job of this.pending.values()) {
       clearTimeout(job.timer);

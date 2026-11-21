@@ -1590,6 +1590,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         if (!info || !bodies.read(exchangeId, side)) return result({ ok: false, reason: 'no body' });
         const content = (await readBody(exchange, side, MAX_FORMAT_INPUT))!;
         if (content.truncated) return result({ ok: false, reason: 'too large to format (over 2 MB)' });
+        // Still compressed: it can't be checked for secrets, so it isn't formatted to be shown.
+        if (command.mask === true && content.decodeError) {
+          return result({ ok: false, reason: 'it couldn’t be decoded, so it can’t be checked for secrets' });
+        }
         const text = Buffer.from(content.base64, 'base64').toString('utf8');
         let formatted: string;
         try {
