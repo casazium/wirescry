@@ -41,6 +41,10 @@ type Answered<K extends string> = Omit<Extract<MaskResponse, Record<K, unknown>>
 export type MaskAnswer = Answered<'masked'> | { failed: string };
 /** A page of WebSocket messages masked, or why it can't be shown. */
 export type MessagesAnswer = Answered<'messages'> | { failed: string };
+/** Fields masked, or why they can't be shown. */
+export type FieldsAnswer = Answered<'fields'> | { failed: string };
+/** Groups starting with this are an agent's (MCP): never superseded. */
+export const AGENT_GROUP = 'mcp:';
 /** A page of Server-Sent Events items masked, or why it can't be shown. */
 export type EventsAnswer = Answered<'items'> | { failed: string };
 
@@ -68,7 +72,8 @@ class WorkerGone extends Error {
 /** A job's time: 20 s, plus 3 s for each MB of text in it. Waiting doesn't count. */
 export function maskTimeLimitMs(job: MaskBody | WorkJob): number {
   let chars = 0;
-  if ('messages' in job) for (const m of job.messages) chars += m.bytes.length;
+  if ('fields' in job) for (const f of job.fields) chars += f.value.length;
+  else if ('messages' in job) for (const m of job.messages) chars += m.bytes.length;
   else if ('items' in job) {
     for (const item of job.items) {
       if (item.kind === 'event') chars += item.data.length + item.type.length + (item.id?.length ?? 0);
@@ -112,6 +117,7 @@ export class Masker {
   private readonly pending = new Map<number, Pending>();
   private nextId = 1;
   private closed = false;
+  private workers = 0;
 
   constructor(
     private readonly source: MaskSource,
@@ -138,6 +144,14 @@ export class Masker {
   }
 
   /** A page of a WebSocket's messages masked, in order; as `mask` otherwise. */
+  /** An exchange's summary and header fields masked, in order; as `mask` otherwise. */
+  async maskFields(
+    group: string,
+    job: Omit<Extract<MaskJob, { op: 'fields' }>, 'op'>,
+  ): Promise<FieldsAnswer> {
+    return this.answer(await this.enqueue(group, { op: 'fields', ...job }), 'fields');
+  }
+
   async maskMessages(
     group: string,
     job: Omit<Extract<MaskJob, { op: 'messages' }>, 'op'>,
@@ -154,7 +168,7 @@ export class Masker {
   }
 
   /** The worker's answer of the kind asked for; any other is a fault: the worker is stopped. */
-  private answer<K extends 'masked' | 'messages' | 'items'>(
+  private answer<K extends 'masked' | 'messages' | 'items' | 'fields'>(
     response: Reply | { failed: string },
     key: K,
   ): Answered<K> | { failed: string } {
@@ -171,13 +185,16 @@ export class Masker {
   private enqueue(group: string, job: WorkJob): Promise<Reply | { failed: string }> {
     if (this.closed) return Promise.reject(new Error('Wirescry is stopping.'));
     this.started = true;
-    const at = this.recent.indexOf(group);
-    if (at !== -1) this.recent.splice(at, 1);
-    this.recent.unshift(group);
-    this.recent.length = Math.min(this.recent.length, KEPT_GROUPS);
+    // An agent's jobs (MCP) wait their turn: the window's choices don't drop them, nor they the window's.
+    if (!group.startsWith(AGENT_GROUP)) {
+      const at = this.recent.indexOf(group);
+      if (at !== -1) this.recent.splice(at, 1);
+      this.recent.unshift(group);
+      this.recent.length = Math.min(this.recent.length, KEPT_GROUPS);
+    }
     for (let i = this.queue.length - 1; i >= 0; i--) {
       const waiting = this.queue[i]!;
-      if (!this.recent.includes(waiting.group)) {
+      if (!waiting.group.startsWith(AGENT_GROUP) && !this.recent.includes(waiting.group)) {
         this.queue.splice(i, 1);
         waiting.reject(new Superseded());
       }
@@ -198,7 +215,9 @@ export class Masker {
 
   private pump(): void {
     if (this.running || this.closed) return;
-    const next = this.queue.shift();
+    // The window's jobs first: an agent's (MCP) wait, so it can't keep the window waiting.
+    const windowJob = this.queue.findIndex((w) => !w.group.startsWith(AGENT_GROUP));
+    const [next] = this.queue.splice(windowJob === -1 ? 0 : windowJob, 1);
     if (!next) return;
     this.running = true;
     void this.run(next.job)
@@ -276,7 +295,13 @@ export class Masker {
     });
   }
 
+  /** How many workers have started: a stream's learned values are lost when this changes. */
+  get generation(): number {
+    return this.workers;
+  }
+
   private start(): Worker {
+    this.workers += 1;
     const worker = new Worker(this.file);
     worker.unref();
     worker.on('message', (message: MaskResponse) => {

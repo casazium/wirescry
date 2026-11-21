@@ -16,6 +16,8 @@ import type {
   FormatLanguage,
   FormattedBody,
   Header,
+  McpActivity,
+  McpStatus,
   PluginStatus,
   ProxyStatus,
   RefusedConnections,
@@ -40,10 +42,22 @@ import { BodyMemo, Nudger } from './body-memo';
 import { headerValue, toBodyContent, writeBodyToFile, type WrittenBody } from './body-content';
 import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
-import { Masker, Superseded, type EventsAnswer, type MaskAnswer, type MessagesAnswer } from './masker';
+import {
+  AGENT_GROUP,
+  Masker,
+  Superseded,
+  type EventsAnswer,
+  type MaskAnswer,
+  type MessagesAnswer,
+} from './masker';
 import { applySpans, redactHeaders } from '../shared/redact';
 import { assembleEvents, assembleMessages } from './mask-streams';
+import { MAX_ACTIVITY, MCP_PATH, McpHttpServer } from './mcp/http';
+import { Reader, StreamLost } from './mcp/reader';
 import type { SseItem } from '../shared/sse';
+
+/** A new token for the MCP server: 32 random bytes, base64url (43 characters). */
+const newMcpToken = (): string => randomBytes(32).toString('base64url');
 
 /** Earlier messages or events taught again, at most, when the mask worker lost a stream's. */
 const MAX_REPLAYED = 2_000;
@@ -73,7 +87,7 @@ import type { EgressGuardOptions } from './egress-guard';
 import { deviceListenerSet, type DeviceListeners } from './device-listeners';
 import { startProxy, type RunningProxy } from './proxy';
 import { cleanHost, Refusals } from './refusals';
-import { isValidPort, loadSettings, saveSettings, type Settings } from './settings';
+import { DEFAULT_MCP_PORT, isValidPort, loadSettings, saveSettings, type Settings } from './settings';
 import { findAgentJars, JAVA_AGENT_DIR, JavaAgentHost, type AgentJars } from './java/agent-host';
 import { JavaAttach, type JavaAttachOptions } from './java/attach-manager';
 import type { FileOps } from './java/agent-files';
@@ -844,6 +858,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     side: BodySide,
     content: BodyContent,
     formatted?: string,
+    /** For an agent (MCP): its own queue group, never dropped for the window's. */
+    agent = false,
   ): Promise<MaskAnswer> => {
     let request: { bytes: Uint8Array; mediaType: string; cut: boolean } | undefined;
     if (side === 'response') {
@@ -860,7 +876,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         // Its values just aren't learned.
       }
     }
-    return masker.mask(exchange.summary.id, {
+    return masker.mask(agent ? `${AGENT_GROUP}${exchange.summary.id}` : exchange.summary.id, {
       own: maskPart(exchange),
       ...(request ? { request } : {}),
       body: {
@@ -880,6 +896,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     exchange: ExchangeDetail,
     side: BodySide,
     content: BodyContent,
+    agent = false,
   ): Promise<BodyContent> => {
     const [type, encoding] = redactHeaders([
       ['content-type', content.contentType ?? ''],
@@ -896,7 +913,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     if (decodeError) return hidden(`This body couldn’t be decoded, so it can’t be checked for secrets.`);
     let answer: MaskAnswer;
     try {
-      answer = await maskJob(exchange, side, content);
+      answer = await maskJob(exchange, side, content, undefined, agent);
     } catch (error) {
       if (error instanceof Superseded) throw error;
       return hidden('Couldn’t check this body for secrets.');
@@ -924,13 +941,15 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     exchange: ExchangeDetail,
     page: WebSocketMessages,
     fresh: boolean,
+    agent = false,
   ): Promise<WebSocketMessages> => {
     if (page.messages.length === 0) return page;
     const id = exchange.summary.id;
+    const prefix = agent ? AGENT_GROUP : '';
     const run = (messages: WebSocketMessages['messages'], fromStart: boolean) =>
-      masker.maskMessages(id, {
+      masker.maskMessages(`${prefix}${id}`, {
         own: maskPart(exchange),
-        stream: { key: `ws:${id}`, fresh: fromStart },
+        stream: { key: `${prefix}ws:${id}`, fresh: fromStart },
         messages: messages.map((m) => {
           const bytes = Buffer.from(m.base64, 'base64');
           return { bytes, binary: m.isBinary, cut: bytes.length < m.size };
@@ -940,6 +959,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     try {
       answer = await run(page.messages, fresh);
       if (!('failed' in answer) && answer.lost) {
+        // An agent's reader teaches the whole stream again itself (reader.ts): exact, not the last 2,000.
+        if (agent) throw new StreamLost();
         const first = page.messages[0]!.index;
         const earlier = websockets
           .get(id, -1, Number.MAX_SAFE_INTEGER)
@@ -949,7 +970,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         answer = 'failed' in again ? again : { ...again, messages: again.messages.slice(earlier.length) };
       }
     } catch (error) {
-      if (error instanceof Superseded) throw error;
+      if (error instanceof Superseded || error instanceof StreamLost) throw error;
       answer = undefined;
     }
     return assembleMessages(page, answer);
@@ -960,19 +981,23 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     exchange: ExchangeDetail,
     view: SseEventsView,
     fresh: boolean,
+    agent = false,
   ): Promise<SseEventsView> => {
     if (view.items.length === 0) return assembleEvents(view, undefined, sweepText);
     const id = exchange.summary.id;
+    const prefix = agent ? AGENT_GROUP : '';
     const run = (items: SseItem[], fromStart: boolean) =>
-      masker.maskEvents(id, {
+      masker.maskEvents(`${prefix}${id}`, {
         own: maskPart(exchange),
-        stream: { key: `sse:${id}:${view.serial}`, fresh: fromStart },
+        stream: { key: `${prefix}sse:${id}:${view.serial}`, fresh: fromStart },
         items,
       });
     let answer: EventsAnswer | undefined;
     try {
       answer = await run(view.items, fresh);
       if (!('failed' in answer) && answer.lost) {
+        // An agent's reader teaches the whole stream again itself (reader.ts): exact, not the last 2,000.
+        if (agent) throw new StreamLost();
         const first = view.items[0]!.index;
         const kept = await sse.read(id, 0);
         const earlier =
@@ -983,10 +1008,70 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         answer = 'failed' in again ? again : { ...again, items: again.items.slice(earlier.length) };
       }
     } catch (error) {
-      if (error instanceof Superseded) throw error;
+      if (error instanceof Superseded || error instanceof StreamLost) throw error;
       answer = undefined;
     }
     return assembleEvents(view, answer, sweepText);
+  };
+
+  // ---------------------------------------------------------------- MCP server for AI agents
+
+  /** What the MCP tools read: masked, through the mask worker as an agent's jobs (reader.ts). */
+  const mcpReader = new Reader({
+    summaries: () => store.list(),
+    detail: (id) => store.get(id),
+    maskFields: (fields, own) => masker.maskFields(`${AGENT_GROUP}fields`, { own, fields }),
+    part: maskPart,
+    body: async (exchange, side) => {
+      const content = await readBody(exchange, side);
+      return content ? maskedBody(exchange, side, content, true) : null;
+    },
+    wsPage: (id, after, limit) => websockets.get(id, after, limit),
+    maskMessages: (exchange, page, fresh) => maskedMessages(exchange, page, fresh, true),
+    sseRead: (id, after) => sse.read(id, after),
+    maskEvents: (exchange, view, fresh) => maskedEvents(exchange, view, fresh, true),
+    generation: () => masker.generation,
+  });
+  const mcpActivity: McpActivity[] = [];
+  let mcpProblem: string | undefined;
+  const mcpServer = new McpHttpServer({
+    reader: mcpReader,
+    log: (line) => console.log(`[wirescry] ${line}`),
+    onCall: (call) => {
+      mcpActivity.unshift(call);
+      mcpActivity.length = Math.min(mcpActivity.length, MAX_ACTIVITY);
+      broadcast({ type: 'mcp', status: mcpStatus() });
+    },
+  });
+  const mcpStatus = (): McpStatus => {
+    const port = settings.mcp?.port ?? DEFAULT_MCP_PORT;
+    return {
+      enabled: settings.mcp?.enabled === true,
+      port,
+      url: `http://127.0.0.1:${port}${MCP_PATH}`,
+      ...(settings.mcp ? { token: settings.mcp.token } : {}),
+      listening: mcpServer.listening !== undefined,
+      ...(mcpProblem ? { problem: mcpProblem } : {}),
+      activity: [...mcpActivity],
+    };
+  };
+  /** Starts or stops the listener to match the settings. Never throws: a problem is reported. */
+  const applyMcp = async (): Promise<void> => {
+    mcpProblem = undefined;
+    const mcp = settings.mcp;
+    if (!mcp?.enabled) {
+      await mcpServer.stop();
+      return;
+    }
+    try {
+      await mcpServer.start(mcp.port, mcp.token);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      mcpProblem =
+        code === 'EADDRINUSE'
+          ? `Port ${mcp.port} is in use by another program. Choose another port.`
+          : `Couldn’t listen on port ${mcp.port}: ${(error as Error).message}`;
+    }
   };
 
   /** A body for a HAR file; an error reading it is noted rather than failing the export. */
@@ -1518,6 +1603,34 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           broadcast({ type: 'status', status: status() });
           return undefined;
         });
+      case 'getMcp':
+        return mcpStatus();
+      case 'setMcp':
+        return exclusive(async () => {
+          const current = settings.mcp;
+          if (command.port !== undefined && !isValidPort(command.port)) {
+            throw new Error('The port must be a whole number from 1024 to 65535.');
+          }
+          if (command.enabled !== undefined && typeof command.enabled !== 'boolean') {
+            throw new Error('enabled must be true or false');
+          }
+          const next = {
+            enabled: command.enabled ?? current?.enabled ?? false,
+            port: command.port ?? current?.port ?? DEFAULT_MCP_PORT,
+            // Made the first time it's turned on, or when asked for anew.
+            token: command.resetToken === true || !current ? newMcpToken() : current.token,
+          };
+          settings = { ...settings, mcp: next };
+          try {
+            await saveSettings(dataDir, settings);
+          } finally {
+            // Even if it couldn't be saved: the listener matches what the window is told.
+            await applyMcp();
+          }
+          const result = mcpStatus();
+          broadcast({ type: 'mcp', status: result });
+          return result;
+        });
       case 'resetCertificate':
         return exclusive(async () => {
           ca = await resetCA(dataDir);
@@ -1714,6 +1827,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   ownPorts = () => [proxy.port, api.port, ...listeners.list().map((l) => l.port)];
   broadcast = api.broadcast;
   step('API');
+  // Off unless the user turned it on; a port in use is reported in Setup, not fatal. In turn with
+  // setMcp, which the window can send as soon as the API is up.
+  await exclusive(applyMcp);
+  if (settings.mcp?.enabled) step('MCP server');
 
   await pluginHost.startAll();
   step('plugins');
@@ -1769,6 +1886,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         devices.stopAll(),
         formatter.close(),
         masker.close(),
+        mcpServer.stop(),
         docker.stop(),
       ]);
       await bodies.close();

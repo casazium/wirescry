@@ -3,6 +3,7 @@ import type {
   BodyContent,
   ExchangeDetail,
   ExchangeSummary,
+  McpStatus,
   ProxyStatus,
   ServerMessage,
 } from '../../shared/api';
@@ -29,6 +30,8 @@ export interface BackendView {
   /** Badges plugins put on their tabs, by `${plugin}:${viewId}`. */
   badges: Record<string, TabBadge>;
   status?: ProxyStatus;
+  /** The MCP server for AI agents, once known. */
+  mcp?: McpStatus;
   exchanges: ExchangeSummary[];
   paused: boolean;
   send(command: Command): Promise<unknown>;
@@ -87,6 +90,8 @@ export function useBackend(showView: (key: string) => void): BackendView {
   // The backend start that last said hello; a different one means a new backend.
   const greeted = useRef<unknown>(undefined);
   const [status, setStatus] = useState<ProxyStatus>();
+  /** The MCP server for AI agents: from getMcp on connecting, then each `mcp` message. */
+  const [mcp, setMcp] = useState<McpStatus>();
   const [exchanges, setExchanges] = useState<ExchangeSummary[]>([]);
   const [paused, setPaused] = useState(false);
   // Badges plugins put on their tabs, by `${plugin}:${viewId}`.
@@ -156,6 +161,10 @@ export function useBackend(showView: (key: string) => void): BackendView {
         case 'hello':
           setStatus(message.status);
           setPaused(message.paused);
+          clientRef.current
+            ?.send({ command: 'getMcp' })
+            .then((value) => setMcp(value as McpStatus))
+            .catch(() => undefined);
           if (greeted.current !== undefined && greeted.current !== generation) {
             // A new backend: keep what the old one had captured, and say what happened.
             const before = latest.current;
@@ -236,6 +245,9 @@ export function useBackend(showView: (key: string) => void): BackendView {
           break;
         case 'status':
           setStatus(message.status);
+          break;
+        case 'mcp':
+          setMcp(message.status);
           break;
         case 'plugin':
           for (const listener of pluginListeners.current.get(message.plugin)?.get(message.event) ?? []) {
@@ -367,6 +379,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
     backendState,
     connected,
     status,
+    mcp,
     exchanges,
     paused,
     send,
