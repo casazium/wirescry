@@ -138,7 +138,9 @@ it('lets an agent read captured traffic, masked, once turned on in Setup', async
   await page.locator('nav.views button', { hasText: 'Setup' }).click();
   const box = page.getByRole('checkbox', { name: 'Let AI agents read captured traffic' });
   await box.scrollIntoViewIfNeeded();
-  await box.check();
+  // Ticked once the backend says it's on, not on the click itself.
+  await box.click();
+  await expect.poll(() => box.isChecked(), { timeout: 15_000 }).toBe(true);
   await page.getByText('Recent calls').waitFor({ timeout: 30_000 });
   const mcp = (await mcpSettings())!;
   expect(mcp).toMatchObject({ enabled: true, port: 45450 });
@@ -172,7 +174,8 @@ it('lets an agent read captured traffic, masked, once turned on in Setup', async
   if (shots) await page.screenshot({ path: path.join(shots, 'mcp-active.png') });
 
   // Turned off: it stops listening.
-  await box.uncheck();
+  await box.click();
+  await expect.poll(() => box.isChecked(), { timeout: 15_000 }).toBe(false);
   await expect.poll(async () => (await mcpSettings())?.enabled).toBe(false);
   await expect(fetch(url, { method: 'POST' })).rejects.toThrow();
 });
