@@ -39,6 +39,9 @@ import { BodyMemo, Nudger } from './body-memo';
 import { headerValue, toBodyContent, writeBodyToFile, type WrittenBody } from './body-content';
 import { exchangeType } from '../shared/exchange-type';
 import { Formatter, MAX_FORMAT_INPUT } from './formatter';
+import { Masker, Superseded, type MaskAnswer } from './masker';
+import { applySpans, redactHeaders } from '../shared/redact';
+import { redactBody } from '../shared/redact-body';
 import { HybridBodyStore } from './body-store';
 import { detectBrowsers, launchChromium } from './browsers';
 import { writeShellScripts, writeTerminalConfig, type TerminalConfig } from './ca-bundle';
@@ -362,7 +365,31 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     sse.delete(id);
     void bodies.delete(id).catch(() => undefined);
   };
-  const store = new InMemoryRequestStore(STORE_LIMIT, forget);
+  /** An exchange's URL, headers and trailers, as HAR parts, for the mask worker to learn. */
+  const maskPart = (exchange: ExchangeDetail): Record<string, unknown> => {
+    const har = (headers: Header[] | undefined) => headers?.map(([name, value]) => ({ name, value }));
+    return {
+      request: {
+        url: exchange.summary.url,
+        headers: har(exchange.requestHeaders),
+        _trailers: har(exchange.requestTrailers),
+      },
+      response: { headers: har(exchange.responseHeaders), _trailers: har(exchange.responseTrailers) },
+    };
+  };
+  // Declared before the store, which tells it of each change; `store` is set below.
+  const masker = new Masker({
+    all: () =>
+      store.list().flatMap((summary) => {
+        const exchange = store.get(summary.id);
+        return exchange ? [maskPart(exchange)] : [];
+      }),
+    part: (id) => {
+      const exchange = store.get(id);
+      return exchange && maskPart(exchange);
+    },
+  });
+  const store = new InMemoryRequestStore(STORE_LIMIT, forget, (id) => masker.touched(id));
 
   const status = (): ProxyStatus => ({
     proxyPort: proxy.port,
@@ -802,6 +829,87 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     );
   };
 
+  /** Text of Wirescry's own (an error, a reason) with anything that looks secret hidden. */
+  const sweepText = (text: string): string => applySpans(text, redactBody(text, 'text/plain').spans);
+
+  /** A body masked in the worker, its request body's values learned first for a response. */
+  const maskJob = async (
+    exchange: ExchangeDetail,
+    side: BodySide,
+    content: BodyContent,
+    formatted?: string,
+  ): Promise<MaskAnswer> => {
+    let request: { bytes: Uint8Array; mediaType: string; cut: boolean } | undefined;
+    if (side === 'response') {
+      try {
+        const body = await readBody(exchange, 'request');
+        if (body && !body.decodeError) {
+          request = {
+            bytes: Buffer.from(body.base64, 'base64'),
+            mediaType: body.contentType ?? '',
+            cut: body.truncated,
+          };
+        }
+      } catch {
+        // Its values just aren't learned.
+      }
+    }
+    return masker.mask(exchange.summary.id, {
+      own: maskPart(exchange),
+      ...(request ? { request } : {}),
+      body: {
+        bytes: Buffer.from(content.base64, 'base64'),
+        mediaType: content.contentType ?? '',
+        cut: content.truncated,
+      },
+      ...(formatted !== undefined ? { formatted } : {}),
+    });
+  };
+
+  /**
+   * A body as the window shows it while View › Hide Secrets is on. Fails closed: a body that can't
+   * be checked comes back hidden, with no bytes.
+   */
+  const maskedBody = async (
+    exchange: ExchangeDetail,
+    side: BodySide,
+    content: BodyContent,
+  ): Promise<BodyContent> => {
+    const [type, encoding] = redactHeaders([
+      ['content-type', content.contentType ?? ''],
+      ['content-encoding', content.encoding ?? ''],
+    ]).headers;
+    const { decodeError, ...rest } = content;
+    const shown: BodyContent = {
+      ...rest,
+      ...(content.contentType !== undefined ? { contentType: type![1] } : {}),
+      ...(content.encoding !== undefined ? { encoding: encoding![1] } : {}),
+    };
+    const hidden = (why: string): BodyContent => ({ ...shown, base64: '', masked: { hidden: why } });
+    // Still compressed: it can't be read, so it can't be checked.
+    if (decodeError) return hidden(`This body couldn’t be decoded, so it can’t be checked for secrets.`);
+    let answer: MaskAnswer;
+    try {
+      answer = await maskJob(exchange, side, content);
+    } catch (error) {
+      if (error instanceof Superseded) throw error;
+      return hidden('Couldn’t check this body for secrets.');
+    }
+    if ('failed' in answer) return hidden(answer.failed);
+    const { masked, full } = answer;
+    if ('hidden' in masked) return hidden(masked.hidden);
+    return {
+      ...shown,
+      base64: Buffer.from(masked.bytes).toString('base64'),
+      masked: {
+        ...(masked.text !== undefined ? { text: masked.text } : {}),
+        ranges: masked.ranges,
+        ...(masked.binary ? { binary: true as const } : {}),
+        ...(full ? { full: true as const } : {}),
+      },
+    };
+  };
+
   /** A body for a HAR file; an error reading it is noted rather than failing the export. */
   const harBody = async (
     exchange: ExchangeDetail,
@@ -1203,6 +1311,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         nudges.clear();
         updates.reset();
         store.clear();
+        // The session's values go with its traffic.
+        masker.reset();
         completed.clear();
         for (const timer of completionTimers.values()) clearTimeout(timer);
         completionTimers.clear();
@@ -1423,7 +1533,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         const exchange = store.get(command.exchangeId);
         if (!exchange) throw new Error('Exchange not found');
         const content: BodyContent | null = await readBody(exchange, command.side);
-        return content;
+        if (command.mask !== true || !content) return content;
+        return maskedBody(exchange, command.side, content);
       }
       case 'getBodyRange': {
         if (command.side !== 'request' && command.side !== 'response') {
@@ -1480,15 +1591,22 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         const content = (await readBody(exchange, side, MAX_FORMAT_INPUT))!;
         if (content.truncated) return result({ ok: false, reason: 'too large to format (over 2 MB)' });
         const text = Buffer.from(content.base64, 'base64').toString('utf8');
+        let formatted: string;
         try {
-          return result({
-            ok: true,
-            language: type satisfies FormatLanguage,
-            text: await formatter.format(type, text),
-          });
+          formatted = await formatter.format(type, text);
         } catch (error) {
-          return result({ ok: false, reason: (error as Error).message });
+          const reason = (error as Error).message;
+          // A formatter's message could quote the body.
+          return result({ ok: false, reason: command.mask === true ? sweepText(reason) : reason });
         }
+        if (command.mask !== true)
+          return result({ ok: true, language: type satisfies FormatLanguage, text: formatted });
+        const answer = await maskJob(exchange, side, content, formatted);
+        if ('failed' in answer) return result({ ok: false, reason: answer.failed });
+        if (typeof answer.formatted !== 'string') {
+          return result({ ok: false, reason: 'some secrets in it couldn’t be found again once formatted' });
+        }
+        return result({ ok: true, language: type satisfies FormatLanguage, text: answer.formatted });
       }
       default:
         throw new Error('Unknown command');
@@ -1556,7 +1674,14 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
-      await Promise.all([api.stop(), proxy.stop(), devices.stopAll(), formatter.close(), docker.stop()]);
+      await Promise.all([
+        api.stop(),
+        proxy.stop(),
+        devices.stopAll(),
+        formatter.close(),
+        masker.close(),
+        docker.stop(),
+      ]);
       await bodies.close();
     },
   };

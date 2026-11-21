@@ -102,6 +102,12 @@ export class KnownValues implements ValueSink {
     else this.byRun.set(longest.run, [{ value, at: longest.at }]);
   }
 
+  /** Adds another set's values, in the order it learned them; `full` carries over. */
+  addAll(other: KnownValues): void {
+    for (const value of other.values) this.add(value);
+    if (other.full) this.full = true;
+  }
+
   /**
    * Spans of known values in text, as written or percent-encoded (and, in a form, with `+` for a
    * space).
