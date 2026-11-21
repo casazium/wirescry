@@ -7,7 +7,7 @@
  * Runs in a worker thread (mask-worker.mts), so its imports carry `.ts` and are pure: Node loads
  * them from source in tests.
  */
-import { applySpans, mergeSpans, type Span } from '../shared/redact.ts';
+import { applySpans, mergeSpans, redactHeader, redactUrl, type Span } from '../shared/redact.ts';
 import { bodyKind, isTextual, KnownValues, redactBody } from '../shared/redact-body.ts';
 import { textOfBytes, type Encoding } from './har-redact.ts';
 import type { SseItem } from '../shared/sse.ts';
@@ -374,4 +374,54 @@ export function failedItem(item: SseItem): SseItem {
     data: EVENT_FAILED,
     ...(item.id !== undefined ? { id: '[redacted]' } : {}),
   };
+}
+
+// ---------------------------------------------------------------- summary and header fields
+
+/** A piece of an exchange's summary or headers to mask, by what it is. */
+export type MaskField =
+  | { kind: 'url'; value: string }
+  | { kind: 'header'; name: string; value: string }
+  /** A host name: not a secret by any rule, but a known value can turn up in one. */
+  | { kind: 'host'; value: string }
+  | { kind: 'text'; value: string };
+
+/** Known values left in text after the rules: masked too. */
+function withKnown(text: string, known: KnownValues): string {
+  return applySpans(text, known.scan(text));
+}
+
+function maskField(field: MaskField, known: KnownValues): string {
+  switch (field.kind) {
+    case 'url':
+      return withKnown(redactUrl(field.value, known).url, known);
+    case 'header':
+      return withKnown(redactHeader(field.name, field.value, known).value, known);
+    case 'host':
+      return withKnown(field.value, known);
+    case 'text':
+      return maskString(field.value, known);
+  }
+}
+
+/**
+ * Fields masked by the rules and the known values, read twice: once to learn, so a value found in
+ * any field (an Authorization header, say) is hidden in all of them (a path, another header).
+ * One that can't be masked is hidden whole.
+ */
+export function maskFields(fields: readonly MaskField[], known: KnownValues): string[] {
+  for (const field of fields) {
+    try {
+      maskField(field, known);
+    } catch {
+      // Learned nothing from it.
+    }
+  }
+  return fields.map((field) => {
+    try {
+      return maskField(field, known);
+    } catch {
+      return '[redacted]';
+    }
+  });
 }

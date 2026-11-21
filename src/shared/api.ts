@@ -529,8 +529,38 @@ export type ServerMessage =
   | { type: 'status'; status: ProxyStatus }
   /** An event from a plugin's backend half to its UI. */
   | { type: 'plugin'; plugin: string; event: string; data: unknown }
+  /** The MCP server for AI agents changed: turned on or off, or a call came in. */
+  | { type: 'mcp'; status: McpStatus }
   | { type: 'result'; id: number; ok: true; value?: unknown }
   | { type: 'result'; id: number; ok: false; error: string };
+
+/** A call an AI agent made through the MCP server, for Setup's activity list. Never what it read. */
+export interface McpActivity {
+  tool: string;
+  /** Its arguments, summarized and cut short. */
+  args: string;
+  ok: boolean;
+  /** ms since the epoch. */
+  at: number;
+  /** What the client called itself, cut short: its own words. */
+  client: string;
+}
+
+/** The MCP server for AI agents (src/backend/mcp). */
+export interface McpStatus {
+  enabled: boolean;
+  port: number;
+  /** Where agents connect: http://127.0.0.1:<port>/mcp. */
+  url: string;
+  /** The bearer token agents send; absent until first turned on. */
+  token?: string;
+  /** Listening now. */
+  listening: boolean;
+  /** Why it isn't listening though on, e.g. the port is taken. */
+  problem?: string;
+  /** Newest first, at most 50. */
+  activity: McpActivity[];
+}
 
 /** Commands the UI sends to the backend. Each gets a `result` reply. */
 export type ClientCommand =
@@ -552,6 +582,13 @@ export type ClientCommand =
   | { id: number; command: 'setPaused'; paused: boolean }
   /** A port from 1024 to 65535, or null to pick one automatically. */
   | { id: number; command: 'setProxyPort'; port: number | null }
+  /** The MCP server's state: McpStatus. */
+  | { id: number; command: 'getMcp' }
+  /**
+   * Turns the MCP server on or off, moves it to `port`, or makes a new token (the old one stops at
+   * once). Replies McpStatus; a port that can't be had is its `problem`.
+   */
+  | { id: number; command: 'setMcp'; enabled?: boolean; port?: number; resetToken?: boolean }
   /** Turns setting up Docker containers on or off. Off, new terminals don't get DOCKER_HOST, and the relay passes containers on as written. */
   | { id: number; command: 'setDockerSetup'; enabled: boolean }
   | { id: number; command: 'setJavaAgentStartup'; enabled: boolean }

@@ -14,11 +14,13 @@ import { collectKnown } from './har-redact.ts';
 import {
   learnFrom,
   maskBytes,
+  maskFields,
   maskFormatted,
   maskMessages,
   maskSseItems,
   type MaskedBytes,
   type MaskedMessage,
+  type MaskField,
   type MessageBytes,
 } from './mask-body.ts';
 import type { SseItem } from '../shared/sse.ts';
@@ -48,7 +50,9 @@ export type MaskJob =
   /** A page of a WebSocket's messages, in order. */
   | { op: 'messages'; own: Json; stream: Stream; messages: MessageBytes[] }
   /** A page of a Server-Sent Events stream's items, in order. */
-  | { op: 'events'; own: Json; stream: Stream; items: SseItem[] };
+  | { op: 'events'; own: Json; stream: Stream; items: SseItem[] }
+  /** Summary and header fields of one exchange, with its own values and the session's. */
+  | { op: 'fields'; own: Json; fields: MaskField[] };
 
 /**
  * Which stream a page is from, so what's learned in one page is hidden in the next. `fresh` when
@@ -76,6 +80,7 @@ export type MaskResponse =
   /** `lost`: nothing was learned from this stream's earlier pages (see streamKnown). */
   | { id: number; ok: true; messages: MaskedMessage[]; full: boolean; lost: boolean }
   | { id: number; ok: true; items: SseItem[]; full: boolean; lost: boolean }
+  | { id: number; ok: true; fields: string[] }
   | { id: number; ok: false; error: string };
 
 const session = new KnownValues();
@@ -142,7 +147,7 @@ function handle(message: MaskRequest): MaskResponse {
   } catch {
     // Nothing learned from them.
   }
-  if (message.request) {
+  if (message.op === 'mask' && message.request) {
     const { bytes, mediaType, cut } = message.request;
     try {
       learnFrom(bytes, mediaType, cut, known);
@@ -151,6 +156,7 @@ function handle(message: MaskRequest): MaskResponse {
     }
   }
   known.addAll(session);
+  if (message.op === 'fields') return { id: message.id, ok: true, fields: maskFields(message.fields, known) };
   const { bytes, mediaType, cut } = message.body;
   const result = maskBytes(bytes, mediaType, cut, known);
   let formatted: string | null | undefined;
