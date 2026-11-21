@@ -88,7 +88,12 @@ function failed(error: unknown): CallToolResult {
   return { content: [{ type: 'text', text: sweep(message) }], isError: true };
 }
 
-const short = (text: string, n: number): string => (text.length > n ? `${text.slice(0, n)}…` : text);
+/**
+ * An id for the activity list: itself if it names a captured exchange, else not shown. The
+ * agent's own text (an id it made up, a query) could hold anything, a secret it found elsewhere
+ * included, so it isn't written into the app or its log.
+ */
+const idOf = (reader: Reader, id: string): string => (reader.knows(id) ? id : 'an unknown id');
 
 /**
  * The server for one request (the SDK serves each on a new one), with the tools. `record` is told
@@ -119,8 +124,10 @@ export function createServer(reader: Reader, record: (call: Call) => void): McpS
       annotations: READ_ONLY,
     },
     async ({ query, limit, cursor }) =>
-      run('list_exchanges', short(`query=${query ?? ''} limit=${limit ?? 50}`, 100), () =>
-        reader.list(query, limit ?? 50, cursor),
+      run(
+        'list_exchanges',
+        `${query ? `a query of ${query.length} characters, ` : ''}limit ${limit ?? 50}`,
+        () => reader.list(query, limit ?? 50, cursor),
       ),
   );
   server.registerTool(
@@ -131,7 +138,7 @@ export function createServer(reader: Reader, record: (call: Call) => void): McpS
       inputSchema: getInput,
       annotations: READ_ONLY,
     },
-    async ({ id }) => run('get_exchange', short(id, 40), () => reader.get(id)),
+    async ({ id }) => run('get_exchange', idOf(reader, id), () => reader.get(id)),
   );
   server.registerTool(
     'get_body',
@@ -142,7 +149,7 @@ export function createServer(reader: Reader, record: (call: Call) => void): McpS
       annotations: READ_ONLY,
     },
     async ({ id, side, offset, maxChars }) =>
-      run('get_body', short(`${id} ${side} offset=${offset ?? 0}`, 80), () =>
+      run('get_body', `${idOf(reader, id)}, ${side}, offset ${offset ?? 0}`, () =>
         reader.body(id, side, offset ?? 0, maxChars ?? 20_000),
       ),
   );
@@ -155,7 +162,7 @@ export function createServer(reader: Reader, record: (call: Call) => void): McpS
       annotations: READ_ONLY,
     },
     async ({ id, after, limit }) =>
-      run('get_websocket_messages', short(`${id} after=${after ?? -1}`, 80), () =>
+      run('get_websocket_messages', `${idOf(reader, id)}, after ${after ?? -1}`, () =>
         reader.messages(id, after ?? -1, limit ?? 50),
       ),
   );
@@ -168,7 +175,7 @@ export function createServer(reader: Reader, record: (call: Call) => void): McpS
       annotations: READ_ONLY,
     },
     async ({ id, after }) =>
-      run('get_sse_events', short(`${id} after=${after ?? 0}`, 80), () => reader.events(id, after ?? 0)),
+      run('get_sse_events', `${idOf(reader, id)}, after ${after ?? 0}`, () => reader.events(id, after ?? 0)),
   );
   return server;
 }

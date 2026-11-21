@@ -215,6 +215,11 @@ export class Reader {
 
   constructor(private readonly backend: ReaderBackend) {}
 
+  /** Whether `id` names a captured exchange. */
+  knows(id: string): boolean {
+    return typeof id === 'string' && this.backend.detail(id) !== undefined;
+  }
+
   /** Exchanges, newest first, that match `query` as masked. */
   async list(query: string | undefined, limit: number, cursor: string | undefined): Promise<ListResult> {
     const q = (query ?? '').trim();
