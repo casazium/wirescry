@@ -293,7 +293,12 @@ export const EVENT_FAILED = 'Couldn’t check this event for secrets.';
  * pages. A binary message is checked as text when it is text (JSON in binary frames is common);
  * otherwise it's hidden if it holds a known value. One that can't be checked is hidden alone.
  */
-export function maskMessages(messages: readonly MessageBytes[], known: KnownValues): MaskedMessage[] {
+export function maskMessages(
+  messages: readonly MessageBytes[],
+  known: KnownValues,
+  /** For tests: how one message is masked. */
+  maskOne: typeof maskBytes = maskBytes,
+): MaskedMessage[] {
   const type = (binary: boolean): string => (binary ? 'application/octet-stream' : 'text/plain');
   for (const { bytes, binary, cut } of messages) {
     try {
@@ -304,7 +309,7 @@ export function maskMessages(messages: readonly MessageBytes[], known: KnownValu
   }
   return messages.map(({ bytes, binary, cut }): MaskedMessage => {
     try {
-      const result = maskBytes(bytes, type(binary), cut, known);
+      const result = maskOne(bytes, type(binary), cut, known);
       if ('hidden' in result) return result;
       const { literals: _literals, ...masked } = result;
       void _literals;
@@ -324,15 +329,20 @@ export function maskString(text: string, known: KnownValues, cut = false): strin
  * Server-Sent Events items masked, in order, with the stream's known values: an event's data, type
  * and ID, and a comment's text. A retry is a number. One that can't be checked says so.
  */
-export function maskSseItems(items: readonly SseItem[], known: KnownValues): SseItem[] {
+export function maskSseItems(
+  items: readonly SseItem[],
+  known: KnownValues,
+  /** For tests: how one string is masked. */
+  maskText: typeof maskString = maskString,
+): SseItem[] {
   const each = (item: SseItem): SseItem => {
-    if (item.kind === 'comment') return { ...item, text: maskString(item.text, known) };
+    if (item.kind === 'comment') return { ...item, text: maskText(item.text, known) };
     if (item.kind === 'retry') return item;
     return {
       ...item,
-      type: maskString(item.type, known),
-      data: maskString(item.data, known, item.cut === true),
-      ...(item.id !== undefined ? { id: maskString(item.id, known) } : {}),
+      type: maskText(item.type, known),
+      data: maskText(item.data, known, item.cut === true),
+      ...(item.id !== undefined ? { id: maskText(item.id, known) } : {}),
     };
   };
   // Once to learn, so a value found in any item is hidden in all of them.

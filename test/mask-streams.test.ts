@@ -103,6 +103,15 @@ describe('assembleEvents', () => {
       undefined,
       { items: [view.items[0]!], full: false, lost: false },
       { items: [view.items[1]!, view.items[0]!], full: false, lost: false },
+      // The same kinds, in the wrong places.
+      {
+        items: [
+          { ...view.items[0]!, index: 7 },
+          { ...view.items[1]!, index: 8 },
+        ] as never,
+        full: false,
+        lost: false,
+      },
     ];
     for (const answer of wrong) {
       const out = assembleEvents(view, answer, sweep);

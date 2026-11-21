@@ -9,6 +9,8 @@ import {
   decodeForMask,
   HIDDEN_BINARY,
   HIDDEN_UNREADABLE,
+  EVENT_FAILED,
+  MESSAGE_FAILED,
   maskBytes,
   maskFormatted,
   maskMessages,
@@ -440,6 +442,18 @@ describe('maskMessages: a page of WebSocket messages', () => {
     expect(next).toMatchObject({ text: 'again [redacted]' });
   });
 
+  it('hides only the message it couldn’t check', () => {
+    const out = maskMessages(
+      [text('one'), text('two'), text('three')],
+      new KnownValues(),
+      (bytes, type, cut, k) => {
+        if (Buffer.from(bytes).toString() === 'two') throw new Error('broke');
+        return maskBytes(bytes, type, cut, k);
+      },
+    );
+    expect(out.map((m) => ('hidden' in m ? m.hidden : m.text))).toEqual(['one', MESSAGE_FAILED, 'three']);
+  });
+
   it('leaves ordinary messages as they were', () => {
     const page = [text('{"type":"ping","n":2}'), text('hello there')];
     const out = maskMessages(page, new KnownValues());
@@ -477,6 +491,32 @@ describe('maskSseItems', () => {
       { kind: 'event', index: 3, type: 'api_key=[redacted]', data: 'plain [redacted]' },
       { kind: 'retry', index: 4, ms: 3000 },
     ]);
+  });
+
+  it('hides in an earlier event a value a later one shows to be secret', () => {
+    const out = maskSseItems(
+      [
+        { kind: 'event', index: 1, type: 'message', data: `first ${ACCESS}` },
+        { kind: 'event', index: 2, type: 'message', data: `{"access_token":"${ACCESS}"}` },
+      ],
+      new KnownValues(),
+    );
+    expect(out.map((item) => item.kind === 'event' && item.data)).toEqual([
+      'first [redacted]',
+      '{"access_token":"[redacted]"}',
+    ]);
+  });
+
+  it('marks only the item it couldn’t check', () => {
+    const items = [
+      { kind: 'event' as const, index: 1, type: 'message', data: 'fine' },
+      { kind: 'event' as const, index: 2, type: 'message', data: 'broken' },
+    ];
+    const out = maskSseItems(items, new KnownValues(), (text, k, cut) => {
+      if (text === 'broken') throw new Error('broke');
+      return maskString(text, k, cut);
+    });
+    expect(out).toEqual([items[0], { kind: 'event', index: 2, type: '[redacted]', data: EVENT_FAILED }]);
   });
 
   it('masks cut data to its end, and leaves ordinary events alone', () => {

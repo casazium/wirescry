@@ -452,6 +452,14 @@ describe('Hide Secrets: the window shows none', () => {
       expect(leaked(everything()), `message ${index}`).toEqual([]);
       await act(async () => void fireEvent.click(messages()[index]!));
     }
+    // The message opened shows the backend's text, with markers, not the overwritten bytes.
+    await act(async () => void fireEvent.click(messages()[0]!));
+    for (const button of screen.queryAllByRole('button', { name: 'Text' })) {
+      await act(async () => void fireEvent.click(button));
+    }
+    expect(document.querySelector('.ws-detail')?.textContent).toContain('hi [redacted]');
+    expect(document.querySelector('.ws-detail')?.textContent).not.toContain('***');
+    await act(async () => void fireEvent.click(messages()[0]!));
     // The view's search runs over what it shows: a hidden value finds nothing.
     const search = screen.getByRole('searchbox', { name: 'Search messages' });
     await act(async () => void fireEvent.change(search, { target: { value: BEARER } }));
