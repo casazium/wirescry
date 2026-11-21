@@ -46,10 +46,13 @@ export class InMemoryRequestStore implements RequestStore {
     private readonly limit = 10_000,
     /** Called with the id of each exchange dropped to stay under the limit. */
     private readonly onEvict: (id: string) => void = () => undefined,
+    /** Called with the id of each exchange added or changed. */
+    private readonly onUpsert: (id: string) => void = () => undefined,
   ) {}
 
   upsert(exchange: ExchangeDetail, { keepLive = true }: UpsertOptions = {}): void {
     this.exchanges.set(exchange.summary.id, exchange);
+    this.onUpsert(exchange.summary.id);
     if (this.exchanges.size > this.limit) {
       const victim = keepLive ? this.oldestToDrop() : this.exchanges.keys().next().value;
       if (victim !== undefined) {

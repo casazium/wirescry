@@ -71,8 +71,16 @@ export interface UiExchangeSection {
   label: string;
   /** Whether to show it for this exchange. Shown for every exchange if left out. */
   appliesTo?(exchange: ExchangeSummary): boolean;
-  /** Rendered again when the exchange changes (e.g. its response arrives). */
-  component: ComponentType<{ exchange: ExchangeSummary; api: UiPluginApi }>;
+  /**
+   * Rendered again when the exchange changes (e.g. its response arrives). `secretsHidden` is set
+   * while View › Hide Secrets is on, for a section that declares `masksSecrets`.
+   */
+  component: ComponentType<{ exchange: ExchangeSummary; api: UiPluginApi; secretsHidden?: boolean }>;
+  /**
+   * True if the section hides secrets itself while `secretsHidden` is set. Without it, the section
+   * isn't shown while View › Hide Secrets is on.
+   */
+  masksSecrets?: boolean;
 }
 
 export interface UiPluginView {

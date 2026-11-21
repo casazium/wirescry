@@ -204,13 +204,21 @@ export interface SaveBodyResult {
 
 /** Commands from the app menu to the window. */
 export type MenuCommand =
-  'import-har' | 'export-har' | 'export-har-unredacted' | 'toggle-recording' | 'clear' | 'find';
+  | 'import-har'
+  | 'export-har'
+  | 'export-har-unredacted'
+  | 'toggle-recording'
+  | 'clear'
+  | 'find'
+  | 'toggle-hide-secrets';
 
 /** What the window tells the app menu, so its commands are enabled and ticked to match. */
 export interface MenuState {
   connected: boolean;
   canExport: boolean;
   paused: boolean;
+  /** View › Hide Secrets is on. */
+  secretsHidden: boolean;
 }
 
 /** An item in a menu the UI shows with showMenu. */

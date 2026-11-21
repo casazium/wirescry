@@ -209,7 +209,14 @@ function createWindow(): void {
     if (mainWindow === window) mainWindow = undefined;
     // Nothing for the menu's commands to act on until a window opens again.
     const menu = Menu.getApplicationMenu();
-    if (menu) updateMenu(menu, { connected: false, canExport: false, paused: false });
+    if (menu)
+      updateMenu(menu, {
+        connected: false,
+        canExport: false,
+        paused: false,
+        secretsHidden: false,
+        window: false,
+      });
   });
 
   // Right-click: the usual edit menu in text fields, and Copy for selected text.
@@ -311,6 +318,7 @@ app.whenReady().then(() => {
       connected: s.connected === true,
       canExport: s.canExport === true,
       paused: s.paused === true,
+      secretsHidden: s.secretsHidden === true,
     });
   });
 

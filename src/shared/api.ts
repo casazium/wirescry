@@ -210,7 +210,27 @@ export interface BodyContent {
   encoding?: string;
   decodeError?: string;
   truncated: boolean;
+  /** How the body was masked, when asked for with `mask` (View › Hide Secrets). */
+  masked?: MaskedBody;
 }
+
+/**
+ * A body masked for the window: secrets found by HAR export's rules, and values seen in the
+ * session's URLs and headers, hidden. Best effort, as export is.
+ */
+export type MaskedBody =
+  /** Not shown at all: `base64` is empty. */
+  | { hidden: string }
+  | {
+      /** The body as UTF-8 text with each secret replaced by `[redacted]`; absent if it isn't. */
+      text?: string;
+      /** Where secrets were in the bytes, [start, end): overwritten with `*` in `base64`. */
+      ranges: Array<[number, number]>;
+      /** Not text, so not checked. */
+      binary?: true;
+      /** Wirescry's list of values seen is full, so one seen earlier may not be hidden. */
+      full?: true;
+    };
 
 /** Part of a body's stored bytes, read while it arrives or after it has finished. */
 export interface BodyRange {
@@ -605,7 +625,8 @@ export type ClientCommand =
     }
   /** Stops the search with this name, started on this connection, if it's still running. */
   | { id: number; command: 'cancelMatch'; searchId: string }
-  | { id: number; command: 'getBody'; exchangeId: string; side: BodySide }
+  /** With `mask`, masked for View › Hide Secrets (BodyContent's `masked`). */
+  | { id: number; command: 'getBody'; exchangeId: string; side: BodySide; mask?: boolean }
   /** Part of a body's stored bytes, while it arrives or after: BodyRangeContent, or null. At most 1 MB. */
   | {
       id: number;
@@ -615,7 +636,8 @@ export type ClientCommand =
       offset: number;
       maxBytes: number;
     }
-  | { id: number; command: 'formatBody'; exchangeId: string; side: BodySide };
+  /** With `mask`, the formatted text masked as getBody masks the body. */
+  | { id: number; command: 'formatBody'; exchangeId: string; side: BodySide; mask?: boolean };
 
 /** WebSocket subprotocol prefix used to carry the API token. Browsers can't set headers on WebSockets. */
 export const TOKEN_PROTOCOL_PREFIX = 'wirescry.token.';

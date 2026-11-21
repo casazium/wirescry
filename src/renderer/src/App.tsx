@@ -30,6 +30,7 @@ import {
 import { uiPlugins } from '@wirescry/pro/ui';
 import { PLUGIN_API_VERSION } from '../../plugin-api/version';
 import { followingRequest } from './redirect';
+import { maskSummary, readHideSecrets, SecretsHidden, writeHideSecrets } from './secrets';
 import { alreadyDismissed, REFUSED_HELP_URL, refusedSummary, refusedWhy } from './refused-text';
 import { SetupPage } from './SetupPage';
 import { loadDetailSize, saveDetailSize, useStacked } from './detail-size';
@@ -103,6 +104,12 @@ export function App(): React.JSX.Element {
   const [uncancellable, setUncancellable] = useState<ReadonlySet<string>>(new Set());
   const [search, setSearch] = useState('');
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
+  // View › Hide Secrets, remembered across restarts.
+  const [hideSecrets, setHideSecrets] = useState(() => readHideSecrets());
+  const changeHideSecrets = (on: boolean): void => {
+    writeHideSecrets(on);
+    setHideSecrets(on);
+  };
   const searchRef = useRef<HTMLInputElement>(null);
   const helpButtonRef = useRef<HTMLButtonElement>(null);
   const mainRef = useRef<HTMLDivElement>(null);
@@ -184,6 +191,8 @@ export function App(): React.JSX.Element {
       ),
     [allExchanges, shown, staleIds, detailMatch],
   );
+  // The list as shown: masked while Hide Secrets is on. Filtering and search use real values.
+  const listRows = useMemo(() => (hideSecrets ? rows.map(maskSummary) : rows), [rows, hideSecrets]);
   // Only those in the list: not ones a Clear is hiding while it can be undone.
   const unsearchable = useMemo(
     () => (shown.needsDetail ? allExchanges.filter((e) => staleIds.has(e.id)).length : 0),
@@ -285,13 +294,19 @@ export function App(): React.JSX.Element {
           })
           .map(({ plugin, section }) => {
             const Section = section.component;
+            const masks = section.masksSecrets === true;
             return {
               key: `${plugin}:${section.id}`,
               label: section.label,
+              masksSecrets: masks,
               content: (
                 // Reset per exchange, so one that broke doesn't stay broken for the next.
                 <PluginErrorBoundary key={`${plugin}:${session}:${exchange.id}`} label={section.label}>
-                  <Section exchange={exchange} api={pluginApi(plugin)} />
+                  <Section
+                    exchange={exchange}
+                    api={pluginApi(plugin)}
+                    {...(masks ? { secretsHidden: hideSecrets } : {})}
+                  />
                 </PluginErrorBoundary>
               ),
             };
@@ -365,7 +380,9 @@ export function App(): React.JSX.Element {
       return;
     }
     try {
-      if (chosen === 'copy-url') await navigator.clipboard.writeText(exchange.url);
+      // What's shown: masked while Hide Secrets is on. Copy as curl repeats the real request.
+      if (chosen === 'copy-url')
+        await navigator.clipboard.writeText(hideSecrets ? maskSummary(exchange).url : exchange.url);
       else if (chosen === 'copy-curl')
         await navigator.clipboard.writeText(await fetchCurlCommand(exchange, send));
       else actions.find((a) => a.key === chosen)?.run();
@@ -477,6 +494,9 @@ export function App(): React.JSX.Element {
           searchRef.current?.focus();
           searchRef.current?.select();
         });
+      } else if (command === 'toggle-hide-secrets') {
+        // About the screen, so it works with no proxy too.
+        changeHideSecrets(!hideSecrets);
       } else if (!connected) {
         return;
       } else if (command === 'import-har') {
@@ -493,528 +513,556 @@ export function App(): React.JSX.Element {
         if (!typing) clearAll();
       }
       // The menu ticks Pause Recording itself when clicked; put it back if nothing changed.
-      window.wirescry.setMenuState({ connected, canExport: exportable.length > 0 && !harBusy, paused });
+      window.wirescry.setMenuState({
+        connected,
+        canExport: exportable.length > 0 && !harBusy,
+        paused,
+        secretsHidden: hideSecrets,
+      });
     };
   });
   useEffect(() => window.wirescry.onMenuCommand((command) => menuHandlers.current(command)), []);
   useEffect(() => {
-    window.wirescry.setMenuState({ connected, canExport: exportable.length > 0 && !harBusy, paused });
-  }, [connected, exportable.length, harBusy, paused]);
+    window.wirescry.setMenuState({
+      connected,
+      canExport: exportable.length > 0 && !harBusy,
+      paused,
+      secretsHidden: hideSecrets,
+    });
+  }, [connected, exportable.length, harBusy, paused, hideSecrets]);
+  const composedShown = composed && hideSecrets ? maskSummary(composed) : composed;
 
   return (
-    <div className="app">
-      <header className="toolbar">
-        <h1>Wirescry</h1>
-        {connected && status ? (
-          <button
-            type="button"
-            className="pill live"
-            data-testid="proxy-status"
-            title="Copy the proxy address"
-            onClick={() => {
-              const show = (result: 'Copied' | 'Couldn’t copy'): void => {
-                setPillCopied(result);
-                setTimeout(() => setPillCopied(undefined), 1500);
-              };
-              navigator.clipboard.writeText(`127.0.0.1:${status.proxyPort}`).then(
-                () => show('Copied'),
-                () => show('Couldn’t copy'),
-              );
-            }}
-          >
-            {pillCopied ?? stateLabel}
-          </button>
-        ) : (
-          <span className="pill" data-testid="proxy-status">
-            {stateLabel}
-          </span>
-        )}
-        {paused && <span className="pill paused">Recording paused</span>}
-        <nav className="views" aria-label="View">
-          <button
-            type="button"
-            className={`tab ${view === 'traffic' ? 'active' : ''}`}
-            aria-current={view === 'traffic' ? 'page' : undefined}
-            onClick={() => setView('traffic')}
-          >
-            Traffic
-          </button>
-          <button
-            type="button"
-            className={`tab ${view === 'compose' ? 'active' : ''}`}
-            aria-current={view === 'compose' ? 'page' : undefined}
-            onClick={() => setView('compose')}
-          >
-            Compose
-          </button>
-          <button
-            type="button"
-            className={`tab ${view === 'setup' ? 'active' : ''}`}
-            aria-current={view === 'setup' ? 'page' : undefined}
-            onClick={() => setView('setup')}
-          >
-            Setup
-          </button>
-          {pluginViews.map((p) => (
+    <SecretsHidden.Provider value={hideSecrets}>
+      <div className="app">
+        <header className="toolbar">
+          <h1>Wirescry</h1>
+          {connected && status ? (
             <button
-              key={p.key}
               type="button"
-              className={`tab ${view === p.key ? 'active' : ''}`}
-              aria-current={view === p.key ? 'page' : undefined}
-              onClick={() => setView(p.key)}
+              className="pill live"
+              data-testid="proxy-status"
+              title="Copy the proxy address"
+              onClick={() => {
+                const show = (result: 'Copied' | 'Couldn’t copy'): void => {
+                  setPillCopied(result);
+                  setTimeout(() => setPillCopied(undefined), 1500);
+                };
+                navigator.clipboard.writeText(`127.0.0.1:${status.proxyPort}`).then(
+                  () => show('Copied'),
+                  () => show('Couldn’t copy'),
+                );
+              }}
             >
-              {p.view.label}
-              {badges[p.key] && (
-                <>
-                  <span className={`tab-badge ${badges[p.key]!.tag ? 'tag' : ''}`} aria-hidden="true">
-                    {badges[p.key]!.text}
-                  </span>
-                  {/* Read with the tab's name, e.g. "Breakpoints, 2 waiting". */}
-                  <span className="visually-hidden">
-                    {', '}
-                    {badges[p.key]!.label ??
-                      (badges[p.key]!.tag ? badges[p.key]!.text : `${badges[p.key]!.text} waiting`)}
-                  </span>
-                </>
-              )}
+              {pillCopied ?? stateLabel}
             </button>
-          ))}
-        </nav>
-        <div className="toolbar-actions">
-          {browsers.length > 0 ? (
-            <>
-              {browsers.length > 1 && (
-                <select
-                  aria-label="Browser"
-                  value={browserId}
-                  onChange={(e) => setSelectedBrowser(e.target.value)}
-                >
-                  {browsers.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.name}
-                    </option>
-                  ))}
-                </select>
-              )}
+          ) : (
+            <span className="pill" data-testid="proxy-status">
+              {stateLabel}
+            </span>
+          )}
+          {paused && <span className="pill paused">Recording paused</span>}
+          <nav className="views" aria-label="View">
+            <button
+              type="button"
+              className={`tab ${view === 'traffic' ? 'active' : ''}`}
+              aria-current={view === 'traffic' ? 'page' : undefined}
+              onClick={() => setView('traffic')}
+            >
+              Traffic
+            </button>
+            <button
+              type="button"
+              className={`tab ${view === 'compose' ? 'active' : ''}`}
+              aria-current={view === 'compose' ? 'page' : undefined}
+              onClick={() => setView('compose')}
+            >
+              Compose
+            </button>
+            <button
+              type="button"
+              className={`tab ${view === 'setup' ? 'active' : ''}`}
+              aria-current={view === 'setup' ? 'page' : undefined}
+              onClick={() => setView('setup')}
+            >
+              Setup
+            </button>
+            {pluginViews.map((p) => (
+              <button
+                key={p.key}
+                type="button"
+                className={`tab ${view === p.key ? 'active' : ''}`}
+                aria-current={view === p.key ? 'page' : undefined}
+                onClick={() => setView(p.key)}
+              >
+                {p.view.label}
+                {badges[p.key] && (
+                  <>
+                    <span className={`tab-badge ${badges[p.key]!.tag ? 'tag' : ''}`} aria-hidden="true">
+                      {badges[p.key]!.text}
+                    </span>
+                    {/* Read with the tab's name, e.g. "Breakpoints, 2 waiting". */}
+                    <span className="visually-hidden">
+                      {', '}
+                      {badges[p.key]!.label ??
+                        (badges[p.key]!.tag ? badges[p.key]!.text : `${badges[p.key]!.text} waiting`)}
+                    </span>
+                  </>
+                )}
+              </button>
+            ))}
+          </nav>
+          <div className="toolbar-actions">
+            {hideSecrets && (
               <button
                 type="button"
-                onClick={launch}
-                disabled={!connected}
-                aria-label={`Launch ${browsers.find((b) => b.id === browserId)?.name ?? 'browser'}`}
+                className="pill secrets-hidden"
+                title="Secrets are hidden in the traffic list and details. Compose, Edit and resend, and plugin views show real values. Click to show secrets."
+                onClick={() => changeHideSecrets(false)}
               >
-                {/* With a browser menu beside it, the menu already names the browser. */}
-                {browsers.length > 1 ? 'Launch' : `Launch ${browsers[0]?.name ?? 'browser'}`}
+                Secrets hidden
               </button>
-            </>
-          ) : (
-            <button type="button" className="secondary" onClick={() => setView('setup')}>
-              Set up traffic
-            </button>
-          )}
-        </div>
-      </header>
+            )}
+            {browsers.length > 0 ? (
+              <>
+                {browsers.length > 1 && (
+                  <select
+                    aria-label="Browser"
+                    value={browserId}
+                    onChange={(e) => setSelectedBrowser(e.target.value)}
+                  >
+                    {browsers.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <button
+                  type="button"
+                  onClick={launch}
+                  disabled={!connected}
+                  aria-label={`Launch ${browsers.find((b) => b.id === browserId)?.name ?? 'browser'}`}
+                >
+                  {/* With a browser menu beside it, the menu already names the browser. */}
+                  {browsers.length > 1 ? 'Launch' : `Launch ${browsers[0]?.name ?? 'browser'}`}
+                </button>
+              </>
+            ) : (
+              <button type="button" className="secondary" onClick={() => setView('setup')}>
+                Set up traffic
+              </button>
+            )}
+          </div>
+        </header>
 
-      {/* Plugin views stay mounted while hidden, so switching tabs keeps unsaved edits. */}
-      {pluginViews.map((p) => (
-        <div key={`${p.key}:${session}`} hidden={view !== p.key} className="plugin-view-host">
-          <PluginView
-            view={p.view}
-            status={status?.plugins.find((s) => s.name === p.plugin)}
-            api={pluginApi(p.plugin)}
+        {/* Plugin views stay mounted while hidden, so switching tabs keeps unsaved edits. */}
+        {pluginViews.map((p) => (
+          <div key={`${p.key}:${session}`} hidden={view !== p.key} className="plugin-view-host">
+            <PluginView
+              view={p.view}
+              status={status?.plugins.find((s) => s.name === p.plugin)}
+              api={pluginApi(p.plugin)}
+            />
+          </div>
+        ))}
+
+        {/* Kept mounted while hidden, so plugin panels keep their state. */}
+        <div hidden={view !== 'compose'} className="plugin-view-host">
+          <ComposerView
+            draft={draft}
+            onChange={setDraft}
+            note={draftNote}
+            onDismissNote={() => {
+              setDraftNote(undefined);
+              setReplacedDraft(undefined);
+            }}
+            onUndo={
+              replacedDraft
+                ? () => {
+                    setDraft(replacedDraft);
+                    setReplacedDraft(undefined);
+                    setDraftNote(undefined);
+                  }
+                : undefined
+            }
+            announcement={
+              !composed
+                ? undefined
+                : composed.failure
+                  ? 'The request failed.'
+                  : composed.status !== undefined
+                    ? `Response: ${`${composed.status} ${composedShown?.statusMessage ?? ''}`.trim()}${
+                        composed.responding && !staleIds.has(composed.id) ? ', still receiving' : ''
+                      }`
+                    : 'Waiting for the response…'
+            }
+            connected={connected}
+            onSend={sendComposed}
+            onCancel={
+              // Until the response has fully arrived, so a stream or long download can be stopped too.
+              composed && canCancel(composed, staleIds.has(composed.id), uncancellable)
+                ? () => {
+                    const id = composed.id;
+                    void send({ command: 'composeCancel', exchangeId: id })
+                      .catch(() => undefined)
+                      // Cancelled, or nothing left to cancel: either way Cancel has done its job.
+                      .then(() => setUncancellable((ids) => new Set(ids).add(id)));
+                  }
+                : undefined
+            }
+            response={
+              composed && (
+                <DetailPane
+                  summary={composed}
+                  send={send}
+                  onClose={() => setComposedId(undefined)}
+                  actions={actionsFor(composed)}
+                  stale={staleIds.has(composed.id)}
+                  sections={sectionsFor(composed)}
+                  responseFirst
+                />
+              )
+            }
+            panels={activeComposerExtensions.flatMap(({ plugin, extension }) => {
+              const Panel = extension.panel;
+              if (!Panel) return [];
+              return [
+                <PluginErrorBoundary key={`${plugin}:${session}`} label="Compose panel">
+                  <Panel
+                    api={pluginApi(plugin)}
+                    request={draftToRequest(draft)}
+                    setRequest={(request) => {
+                      const loaded = requestToDraft(request);
+                      setDraft(loaded);
+                      setSettledDraft(loaded);
+                      setDraftNote(undefined);
+                      setReplacedDraft(undefined);
+                    }}
+                  />
+                </PluginErrorBoundary>,
+              ];
+            })}
           />
         </div>
-      ))}
 
-      {/* Kept mounted while hidden, so plugin panels keep their state. */}
-      <div hidden={view !== 'compose'} className="plugin-view-host">
-        <ComposerView
-          draft={draft}
-          onChange={setDraft}
-          note={draftNote}
-          onDismissNote={() => {
-            setDraftNote(undefined);
-            setReplacedDraft(undefined);
-          }}
-          onUndo={
-            replacedDraft
-              ? () => {
-                  setDraft(replacedDraft);
-                  setReplacedDraft(undefined);
-                  setDraftNote(undefined);
-                }
-              : undefined
-          }
-          announcement={
-            !composed
-              ? undefined
-              : composed.failure
-                ? 'The request failed.'
-                : composed.status !== undefined
-                  ? `Response: ${`${composed.status} ${composed.statusMessage ?? ''}`.trim()}${
-                      composed.responding && !staleIds.has(composed.id) ? ', still receiving' : ''
-                    }`
-                  : 'Waiting for the response…'
-          }
-          connected={connected}
-          onSend={sendComposed}
-          onCancel={
-            // Until the response has fully arrived, so a stream or long download can be stopped too.
-            composed && canCancel(composed, staleIds.has(composed.id), uncancellable)
-              ? () => {
-                  const id = composed.id;
-                  void send({ command: 'composeCancel', exchangeId: id })
-                    .catch(() => undefined)
-                    // Cancelled, or nothing left to cancel: either way Cancel has done its job.
-                    .then(() => setUncancellable((ids) => new Set(ids).add(id)));
-                }
-              : undefined
-          }
-          response={
-            composed && (
-              <DetailPane
-                summary={composed}
-                send={send}
-                onClose={() => setComposedId(undefined)}
-                actions={actionsFor(composed)}
-                stale={staleIds.has(composed.id)}
-                sections={sectionsFor(composed)}
-                responseFirst
-              />
-            )
-          }
-          panels={activeComposerExtensions.flatMap(({ plugin, extension }) => {
-            const Panel = extension.panel;
-            if (!Panel) return [];
-            return [
-              <PluginErrorBoundary key={`${plugin}:${session}`} label="Compose panel">
-                <Panel
-                  api={pluginApi(plugin)}
-                  request={draftToRequest(draft)}
-                  setRequest={(request) => {
-                    const loaded = requestToDraft(request);
-                    setDraft(loaded);
-                    setSettledDraft(loaded);
-                    setDraftNote(undefined);
-                    setReplacedDraft(undefined);
-                  }}
-                />
-              </PluginErrorBoundary>,
-            ];
-          })}
-        />
-      </div>
+        {view === 'setup' && status && (
+          <SetupPage
+            status={status}
+            connected={connected}
+            send={send}
+            onLaunched={() => setView('traffic')}
+            onShowTraffic={(query) => {
+              // Added to what's there, so a search in progress isn't lost.
+              setSearch((current) =>
+                current.includes(query) ? current : `${current.trim()} ${query}`.trim(),
+              );
+              setView('traffic');
+            }}
+          />
+        )}
 
-      {view === 'setup' && status && (
-        <SetupPage
-          status={status}
-          connected={connected}
-          send={send}
-          onLaunched={() => setView('traffic')}
-          onShowTraffic={(query) => {
-            // Added to what's there, so a search in progress isn't lost.
-            setSearch((current) => (current.includes(query) ? current : `${current.trim()} ${query}`.trim()));
-            setView('traffic');
-          }}
-        />
-      )}
-
-      {view === 'traffic' && (
-        <>
-          <div className="filterbar">
-            <input
-              ref={searchRef}
-              type="search"
-              className="search"
-              placeholder="Search, or filter: status>=400 host=api.*"
-              aria-label="Search traffic"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') setSearch('');
-              }}
-            />
-            <button
-              type="button"
-              className="icon help-button"
-              aria-label="Search syntax"
-              aria-expanded={showHelp}
-              aria-controls={showHelp ? 'filter-help' : undefined}
-              ref={helpButtonRef}
-              onClick={() => setShowHelp((v) => !v)}
-            >
-              ?
-            </button>
-            <div className="chips" role="radiogroup" aria-label="Quick filter" onKeyDown={onChipKey}>
-              {QUICK_FILTERS.map((f) => (
-                <button
-                  key={f.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={quickFilter === f.id}
-                  // One Tab stop for the group; arrow keys move between chips.
-                  tabIndex={quickFilter === f.id ? 0 : -1}
-                  className={`chip ${quickFilter === f.id ? 'active' : ''}`}
-                  onClick={() => setQuickFilter(f.id)}
-                >
-                  {f.label}
-                </button>
-              ))}
-            </div>
-            {/* In narrower windows, the chips become a menu. */}
-            <select
-              className="quick-select"
-              aria-label="Quick filter"
-              value={quickFilter}
-              onChange={(e) => setQuickFilter(e.target.value as QuickFilter)}
-            >
-              {QUICK_FILTERS.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.id === 'all' ? 'All types' : f.label}
-                </option>
-              ))}
-            </select>
-            <div className="filter-actions">
-              <span className="muted count" data-testid="row-count">
-                {searchingHeaders
-                  ? searchingLabel
-                  : filtered
-                    ? `${rows.length.toLocaleString()} of ${allExchanges.length.toLocaleString()}`
-                    : `${allExchanges.length.toLocaleString()} ${allExchanges.length === 1 ? 'request' : 'requests'}`}
-              </span>
-              <button
-                type="button"
-                className="secondary"
-                title="Open a HAR file, e.g. one saved from a browser's developer tools"
-                onClick={() => void importHar()}
-                disabled={!connected || harBusy}
-              >
-                Import HAR
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                title={
-                  (filtered ? 'Save the requests shown as a HAR file' : 'Save all requests as a HAR file') +
-                  ', with secrets redacted. File › Export HAR Without Redaction keeps them.'
-                }
-                onClick={() => void exportHar()}
-                disabled={!connected || harBusy || exportable.length === 0}
-              >
-                Export HAR
-              </button>
-              <button
-                type="button"
-                className="secondary"
-                // Recording only: breakpoints, which pause requests, are a different thing.
-                onClick={() => void send({ command: 'setPaused', paused: !paused })}
-                disabled={!connected}
-              >
-                {paused ? 'Resume recording' : 'Pause recording'}
-              </button>
-              <button type="button" className="secondary" onClick={clearAll} disabled={!connected}>
-                Clear
-              </button>
-            </div>
-          </div>
-          {(compiled.errors.length > 0 ||
-            compiled.hints.length > 0 ||
-            unsearchable > 0 ||
-            partlySearched > 0 ||
-            detailError) && (
-            <div className="filter-notes" role="status">
-              {compiled.errors.map((e) => (
-                <span key={e} className="error">
-                  {e}
-                </span>
-              ))}
-              {detailError && <span className="error">Couldn&apos;t search headers: {detailError}</span>}
-              {compiled.hints.map((h) => (
-                <span key={h} className="muted">
-                  {h}
-                </span>
-              ))}
-              {partlySearched > 0 && (
-                <span className="muted">
-                  {partlySearched.toLocaleString()}{' '}
-                  {partlySearched === 1 ? "request wasn't" : "requests weren't"} fully searched: their bodies
-                  are over {MAX_SEARCHED_MB} MB decoded, weren&apos;t kept in full, or couldn&apos;t be
-                  decoded.
-                </span>
-              )}
-              {unsearchable > 0 && (
-                <span className="muted">
-                  {unsearchable.toLocaleString()} {unsearchable === 1 ? 'request' : 'requests'} from before
-                  the restart can&apos;t be searched by header or body.
-                </span>
-              )}
-            </div>
-          )}
-          {showHelp && (
-            // Zero-height anchor, so the popup opens just below the toolbar and any notes.
-            <div className="filter-help-anchor">
-              <FilterHelp
-                onPick={(query) => {
-                  setSearch(query);
-                  setShowHelp(false);
-                  searchRef.current?.focus();
+        {view === 'traffic' && (
+          <>
+            <div className="filterbar">
+              <input
+                ref={searchRef}
+                type="search"
+                className="search"
+                placeholder="Search, or filter: status>=400 host=api.*"
+                aria-label="Search traffic"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setSearch('');
                 }}
-                onClose={closeHelp}
-                toggle={helpButtonRef}
               />
+              <button
+                type="button"
+                className="icon help-button"
+                aria-label="Search syntax"
+                aria-expanded={showHelp}
+                aria-controls={showHelp ? 'filter-help' : undefined}
+                ref={helpButtonRef}
+                onClick={() => setShowHelp((v) => !v)}
+              >
+                ?
+              </button>
+              <div className="chips" role="radiogroup" aria-label="Quick filter" onKeyDown={onChipKey}>
+                {QUICK_FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={quickFilter === f.id}
+                    // One Tab stop for the group; arrow keys move between chips.
+                    tabIndex={quickFilter === f.id ? 0 : -1}
+                    className={`chip ${quickFilter === f.id ? 'active' : ''}`}
+                    onClick={() => setQuickFilter(f.id)}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              {/* In narrower windows, the chips become a menu. */}
+              <select
+                className="quick-select"
+                aria-label="Quick filter"
+                value={quickFilter}
+                onChange={(e) => setQuickFilter(e.target.value as QuickFilter)}
+              >
+                {QUICK_FILTERS.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.id === 'all' ? 'All types' : f.label}
+                  </option>
+                ))}
+              </select>
+              <div className="filter-actions">
+                <span className="muted count" data-testid="row-count">
+                  {searchingHeaders
+                    ? searchingLabel
+                    : filtered
+                      ? `${rows.length.toLocaleString()} of ${allExchanges.length.toLocaleString()}`
+                      : `${allExchanges.length.toLocaleString()} ${allExchanges.length === 1 ? 'request' : 'requests'}`}
+                </span>
+                <button
+                  type="button"
+                  className="secondary"
+                  title="Open a HAR file, e.g. one saved from a browser's developer tools"
+                  onClick={() => void importHar()}
+                  disabled={!connected || harBusy}
+                >
+                  Import HAR
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  title={
+                    (filtered ? 'Save the requests shown as a HAR file' : 'Save all requests as a HAR file') +
+                    ', with secrets redacted. File › Export HAR Without Redaction keeps them.'
+                  }
+                  onClick={() => void exportHar()}
+                  disabled={!connected || harBusy || exportable.length === 0}
+                >
+                  Export HAR
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  // Recording only: breakpoints, which pause requests, are a different thing.
+                  onClick={() => void send({ command: 'setPaused', paused: !paused })}
+                  disabled={!connected}
+                >
+                  {paused ? 'Resume recording' : 'Pause recording'}
+                </button>
+                <button type="button" className="secondary" onClick={clearAll} disabled={!connected}>
+                  Clear
+                </button>
+              </div>
             </div>
-          )}
-        </>
-      )}
+            {(compiled.errors.length > 0 ||
+              compiled.hints.length > 0 ||
+              unsearchable > 0 ||
+              partlySearched > 0 ||
+              detailError) && (
+              <div className="filter-notes" role="status">
+                {compiled.errors.map((e) => (
+                  <span key={e} className="error">
+                    {e}
+                  </span>
+                ))}
+                {detailError && <span className="error">Couldn&apos;t search headers: {detailError}</span>}
+                {compiled.hints.map((h) => (
+                  <span key={h} className="muted">
+                    {h}
+                  </span>
+                ))}
+                {partlySearched > 0 && (
+                  <span className="muted">
+                    {partlySearched.toLocaleString()}{' '}
+                    {partlySearched === 1 ? "request wasn't" : "requests weren't"} fully searched: their
+                    bodies are over {MAX_SEARCHED_MB} MB decoded, weren&apos;t kept in full, or couldn&apos;t
+                    be decoded.
+                  </span>
+                )}
+                {unsearchable > 0 && (
+                  <span className="muted">
+                    {unsearchable.toLocaleString()} {unsearchable === 1 ? 'request' : 'requests'} from before
+                    the restart can&apos;t be searched by header or body.
+                  </span>
+                )}
+              </div>
+            )}
+            {showHelp && (
+              // Zero-height anchor, so the popup opens just below the toolbar and any notes.
+              <div className="filter-help-anchor">
+                <FilterHelp
+                  onPick={(query) => {
+                    setSearch(query);
+                    setShowHelp(false);
+                    searchRef.current?.focus();
+                  }}
+                  onClose={closeHelp}
+                  toggle={helpButtonRef}
+                />
+              </div>
+            )}
+          </>
+        )}
 
-      {backendState.state === 'failed' && (
-        <div className="banner error actions" role="alert">
-          <span>{backendState.message}</span>
-          <button type="button" onClick={() => void window.wirescry.restartBackend()}>
-            Restart proxy
-          </button>
-          <button type="button" className="secondary" onClick={() => void window.wirescry.showLog()}>
-            Show log
-          </button>
-        </div>
-      )}
-      {restartNotice && backendState.state !== 'failed' && (
-        <div className="banner notice restart-notice" role="status">
-          <span>
-            {restartNotice.crashed
-              ? `Wirescry's proxy stopped unexpectedly at ${new Date(restartNotice.at).toLocaleTimeString()} and restarted.`
-              : `Wirescry's proxy restarted.`}
-            {restartNotice.kept > 0 &&
-              ` The ${restartNotice.kept === 1 ? 'request' : `${restartNotice.kept.toLocaleString()} requests`} from before ${restartNotice.kept === 1 ? 'is' : 'are'} still listed, dimmed, but ${restartNotice.kept === 1 ? 'its' : 'their'} headers and bodies were lost.`}
-            {restartNotice.dropped > 0 &&
-              ` ${restartNotice.dropped === 1 ? 'One paused request was' : `${restartNotice.dropped} paused requests were`} let go.`}
-          </span>
-          {restartNotice.crashed && (
+        {backendState.state === 'failed' && (
+          <div className="banner error actions" role="alert">
+            <span>{backendState.message}</span>
+            <button type="button" onClick={() => void window.wirescry.restartBackend()}>
+              Restart proxy
+            </button>
             <button type="button" className="secondary" onClick={() => void window.wirescry.showLog()}>
               Show log
             </button>
-          )}
-          <button type="button" className="icon" aria-label="Dismiss" onClick={dismissRestartNotice}>
-            ×
-          </button>
-        </div>
-      )}
-      {message && (
-        <div className="banner error" role="alert">
-          <span>{message}</span>
-          <button type="button" className="icon" aria-label="Dismiss" onClick={() => setMessage(undefined)}>
-            ×
-          </button>
-        </div>
-      )}
-      {clearing.pending && (
-        <div
-          className="banner notice"
-          role="status"
-          // Undo stays offered while the pointer or focus is on it.
-          onMouseEnter={() => clearing.hold(true)}
-          onMouseLeave={() => clearing.hold(false)}
-          onFocus={() => clearing.hold(true)}
-          onBlur={() => clearing.hold(false)}
-        >
-          <span>
-            Cleared{' '}
-            {clearing.pending.ids.size === 1
-              ? 'one request'
-              : `${clearing.pending.ids.size.toLocaleString()} requests`}
-            .
-          </span>
-          <button type="button" className="secondary" onClick={clearing.undo}>
-            Undo
-          </button>
-          <button type="button" className="icon" aria-label="Dismiss" onClick={clearing.dismiss}>
-            ×
-          </button>
-        </div>
-      )}
-      {/* Announced once as it appears, not each time its count changes. */}
-      <div className="visually-hidden" role="status">
-        {refusedShown ? 'Some HTTPS connections refused Wirescry’s certificate.' : ''}
-      </div>
-      {refusedShown && status?.refused && (
-        <div className="banner notice refused-notice">
-          <span>
-            {refusedSummary(status.refused)} {refusedWhy(status.refused.count)}{' '}
-            <a href={REFUSED_HELP_URL} target="_blank" rel="noreferrer">
-              How to fix this
-            </a>
-          </span>
-          <button
-            type="button"
-            className="icon"
-            aria-label="Dismiss"
-            onClick={() => setRefusedDismissed(status.refused)}
+          </div>
+        )}
+        {restartNotice && backendState.state !== 'failed' && (
+          <div className="banner notice restart-notice" role="status">
+            <span>
+              {restartNotice.crashed
+                ? `Wirescry's proxy stopped unexpectedly at ${new Date(restartNotice.at).toLocaleTimeString()} and restarted.`
+                : `Wirescry's proxy restarted.`}
+              {restartNotice.kept > 0 &&
+                ` The ${restartNotice.kept === 1 ? 'request' : `${restartNotice.kept.toLocaleString()} requests`} from before ${restartNotice.kept === 1 ? 'is' : 'are'} still listed, dimmed, but ${restartNotice.kept === 1 ? 'its' : 'their'} headers and bodies were lost.`}
+              {restartNotice.dropped > 0 &&
+                ` ${restartNotice.dropped === 1 ? 'One paused request was' : `${restartNotice.dropped} paused requests were`} let go.`}
+            </span>
+            {restartNotice.crashed && (
+              <button type="button" className="secondary" onClick={() => void window.wirescry.showLog()}>
+                Show log
+              </button>
+            )}
+            <button type="button" className="icon" aria-label="Dismiss" onClick={dismissRestartNotice}>
+              ×
+            </button>
+          </div>
+        )}
+        {message && (
+          <div className="banner error" role="alert">
+            <span>{message}</span>
+            <button type="button" className="icon" aria-label="Dismiss" onClick={() => setMessage(undefined)}>
+              ×
+            </button>
+          </div>
+        )}
+        {clearing.pending && (
+          <div
+            className="banner notice"
+            role="status"
+            // Undo stays offered while the pointer or focus is on it.
+            onMouseEnter={() => clearing.hold(true)}
+            onMouseLeave={() => clearing.hold(false)}
+            onFocus={() => clearing.hold(true)}
+            onBlur={() => clearing.hold(false)}
           >
-            ×
-          </button>
+            <span>
+              Cleared{' '}
+              {clearing.pending.ids.size === 1
+                ? 'one request'
+                : `${clearing.pending.ids.size.toLocaleString()} requests`}
+              .
+            </span>
+            <button type="button" className="secondary" onClick={clearing.undo}>
+              Undo
+            </button>
+            <button type="button" className="icon" aria-label="Dismiss" onClick={clearing.dismiss}>
+              ×
+            </button>
+          </div>
+        )}
+        {/* Announced once as it appears, not each time its count changes. */}
+        <div className="visually-hidden" role="status">
+          {refusedShown ? 'Some HTTPS connections refused Wirescry’s certificate.' : ''}
         </div>
-      )}
-      {notice && (
-        <div className="banner notice" role="status">
-          <span>{notice}</span>
-          <button type="button" className="icon" aria-label="Dismiss" onClick={() => setNotice(undefined)}>
-            ×
-          </button>
-        </div>
-      )}
+        {refusedShown && status?.refused && (
+          <div className="banner notice refused-notice">
+            <span>
+              {refusedSummary(status.refused)} {refusedWhy(status.refused.count)}{' '}
+              <a href={REFUSED_HELP_URL} target="_blank" rel="noreferrer">
+                How to fix this
+              </a>
+            </span>
+            <button
+              type="button"
+              className="icon"
+              aria-label="Dismiss"
+              onClick={() => setRefusedDismissed(status.refused)}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {notice && (
+          <div className="banner notice" role="status">
+            <span>{notice}</span>
+            <button type="button" className="icon" aria-label="Dismiss" onClick={() => setNotice(undefined)}>
+              ×
+            </button>
+          </div>
+        )}
 
-      {view === 'traffic' && (
-        <div
-          className="main"
-          ref={mainRef}
-          style={{ '--detail-size': `${(detailSize * 100).toFixed(1)}%` } as React.CSSProperties}
-        >
-          <TrafficList
-            rows={rows}
-            staleIds={staleIds}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onKeyDown={onListKey}
-            onContextMenu={(exchange) => void showRowMenu(exchange)}
-            empty={
-              !connected ? null : allExchanges.length === 0 ? (
-                <>
-                  No traffic yet. Launch a browser, or see{' '}
-                  <button type="button" className="link" onClick={() => setView('setup')}>
-                    Setup
-                  </button>{' '}
-                  for other ways to send traffic through 127.0.0.1:{status?.proxyPort}.
-                </>
-              ) : searchingHeaders ? (
-                <>{searchingLabel}</>
-              ) : (
-                <>No requests match the current search or filter.</>
-              )
-            }
-          />
-          {selected && (
-            <>
-              <Splitter
-                stacked={stacked}
-                size={detailSize}
-                onChange={resizeDetail}
-                onCommit={(size) => saveDetailSize(sizeKey, size ?? detailSize)}
-                container={mainRef}
-              />
-              <DetailPane
-                summary={selected}
-                send={send}
-                onClose={() => setSelectedId(undefined)}
-                actions={actionsFor(selected)}
-                stale={staleIds.has(selected.id)}
-                sections={sectionsFor(selected)}
-                // Only what the list shows: a request the search hides would open with no row to go with it.
-                followingRequest={(target) => followingRequest(rows, selected, target)}
-                onSelectExchange={setSelectedId}
-              />
-            </>
-          )}
-        </div>
-      )}
-    </div>
+        {view === 'traffic' && (
+          <div
+            className="main"
+            ref={mainRef}
+            style={{ '--detail-size': `${(detailSize * 100).toFixed(1)}%` } as React.CSSProperties}
+          >
+            <TrafficList
+              rows={listRows}
+              staleIds={staleIds}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onKeyDown={onListKey}
+              // The row as captured, not as shown: its actions and Copy as curl use real values.
+              onContextMenu={(exchange) =>
+                void showRowMenu(rows.find((r) => r.id === exchange.id) ?? exchange)
+              }
+              empty={
+                !connected ? null : allExchanges.length === 0 ? (
+                  <>
+                    No traffic yet. Launch a browser, or see{' '}
+                    <button type="button" className="link" onClick={() => setView('setup')}>
+                      Setup
+                    </button>{' '}
+                    for other ways to send traffic through 127.0.0.1:{status?.proxyPort}.
+                  </>
+                ) : searchingHeaders ? (
+                  <>{searchingLabel}</>
+                ) : (
+                  <>No requests match the current search or filter.</>
+                )
+              }
+            />
+            {selected && (
+              <>
+                <Splitter
+                  stacked={stacked}
+                  size={detailSize}
+                  onChange={resizeDetail}
+                  onCommit={(size) => saveDetailSize(sizeKey, size ?? detailSize)}
+                  container={mainRef}
+                />
+                <DetailPane
+                  summary={selected}
+                  send={send}
+                  onClose={() => setSelectedId(undefined)}
+                  actions={actionsFor(selected)}
+                  stale={staleIds.has(selected.id)}
+                  sections={sectionsFor(selected)}
+                  // Only what the list shows: a request the search hides would open with no row to go with it.
+                  followingRequest={(target) => followingRequest(rows, selected, target)}
+                  onSelectExchange={setSelectedId}
+                />
+              </>
+            )}
+          </div>
+        )}
+      </div>
+    </SecretsHidden.Provider>
   );
 }

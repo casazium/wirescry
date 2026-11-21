@@ -89,7 +89,7 @@ export function knownPart(entry: Json): Json {
 // ---------------------------------------------------------------- text from bytes
 
 /** How a body's bytes were turned into text, to turn them back. */
-type Encoding = 'latin1' | 'utf16le' | 'utf16be';
+export type Encoding = 'latin1' | 'utf16le' | 'utf16be';
 
 /**
  * Whether bytes look like UTF-16 without a BOM: NULs in most of one byte position (the high byte
@@ -115,7 +115,10 @@ function looksUtf16(bytes: Buffer): 'utf16le' | 'utf16be' | undefined {
  * charset, or how its NULs fall; otherwise Latin-1, which maps every byte to one character and
  * back (NULs and all).
  */
-function textOfBytes(bytes: Buffer, mediaType: string): { text: string; encoding: Encoding } | undefined {
+export function textOfBytes(
+  bytes: Buffer,
+  mediaType: string,
+): { text: string; encoding: Encoding } | undefined {
   const charset = /charset\s*=\s*"?([\w-]+)/i.exec(mediaType)?.[1]?.toLowerCase();
   const bomLE = bytes[0] === 0xff && bytes[1] === 0xfe;
   const bomBE = bytes[0] === 0xfe && bytes[1] === 0xff;

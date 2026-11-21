@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   BodyContent,
   BodyInfo,
@@ -13,7 +13,9 @@ import type { Command } from './api-client';
 import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
 import { bodyFileName } from './body-file-name';
-import { curlCommand } from './curl-command';
+import { fetchCurlCommand } from './curl-command';
+import { maskHeaders, maskSummary, maskText, maskUrl, SecretsHidden } from './secrets';
+import { REDACTED } from '../../shared/redact';
 import { protocolText } from './protocol-text';
 import { redirectTarget } from './redirect';
 import { WebSocketMessagesView } from './WebSocketMessagesView';
@@ -50,6 +52,8 @@ export interface DetailSection {
   key: string;
   label: string;
   content: React.ReactNode;
+  /** It hides secrets itself; otherwise it isn't shown while View › Hide Secrets is on. */
+  masksSecrets?: boolean;
 }
 
 type BodyState = { content: BodyContent | null } | { error: string };
@@ -60,7 +64,11 @@ function HeaderTable({ headers, grpc }: { headers: Header[]; grpc?: boolean }): 
       <tbody>
         {headers.map(([name, value], i) => {
           // gRPC sends binary metadata base64-encoded in headers whose names end in -bin.
-          const hex = grpc && name.toLowerCase().endsWith('-bin') ? binaryHeaderHex(value) : undefined;
+          // Not for a value Hide Secrets masked: there's nothing to decode.
+          const hex =
+            grpc && name.toLowerCase().endsWith('-bin') && !value.includes(REDACTED)
+              ? binaryHeaderHex(value)
+              : undefined;
           return (
             <tr key={i}>
               <th>{name}</th>
@@ -86,12 +94,16 @@ function Body({
   info,
   format,
   onSave,
+  unavailable,
 }: {
   state: BodyState | undefined;
   info: BodyInfo | undefined;
   format: () => Promise<FormattedBody>;
   onSave?: () => Promise<string | undefined>;
+  /** Why it can't be shown, if it can't. */
+  unavailable?: string;
 }): React.JSX.Element {
+  const hideSecrets = useContext(SecretsHidden);
   const notes = (
     <>
       {info?.incomplete && <p className="note">The connection closed before the whole body arrived.</p>}
@@ -102,13 +114,20 @@ function Body({
       )}
     </>
   );
-  if (!state) return <p className="muted">Loading…</p>;
+  if (unavailable) return <p className="note">{unavailable}</p>;
+  if (!state) return <p className="muted">{hideSecrets ? 'Hiding secrets…' : 'Loading…'}</p>;
   if ('error' in state) return <p className="note error">{state.error}</p>;
   if (!state.content) return <p className="muted">No body</p>;
   return (
     <>
       {notes}
-      <BodyView content={state.content} format={format} onSave={onSave} />
+      {/* Afresh when the switch changes, so nothing formatted before is kept. */}
+      <BodyView
+        key={hideSecrets ? 'masked' : 'real'}
+        content={state.content}
+        format={format}
+        onSave={onSave}
+      />
     </>
   );
 }
@@ -129,6 +148,9 @@ export function DetailPane({
   followingRequest,
   onSelectExchange,
 }: Props): React.JSX.Element {
+  const hideSecrets = useContext(SecretsHidden);
+  // What's shown: masked while Hide Secrets is on. Copy as curl and actions use the real summary.
+  const shown = hideSecrets ? maskSummary(summary) : summary;
   const [loaded, setDetail] = useState<ExchangeDetail>();
   // Only this exchange's details, never the last one's while the next loads.
   const detail = loaded?.summary.id === summary.id ? loaded : undefined;
@@ -153,7 +175,19 @@ export function DetailPane({
     };
   }, [send, summary.id, summaryKey, stale]);
 
+  // Headers as shown.
+  const headers = useMemo(() => {
+    const show = (h: Header[] | undefined): Header[] | undefined => (h && hideSecrets ? maskHeaders(h) : h);
+    return {
+      request: show(detail?.requestHeaders),
+      response: show(detail?.responseHeaders),
+      requestTrailers: show(detail?.requestTrailers),
+      responseTrailers: show(detail?.responseTrailers),
+    };
+  }, [detail, hideSecrets]);
+
   const redirect = detail?.responseHeaders ? redirectTarget(summary, detail.responseHeaders) : undefined;
+  const redirectShown = redirect !== undefined && hideSecrets ? maskUrl(redirect) : redirect;
   // A gRPC call its client canceled: routine, so not shown as a failure.
   const canceled = isGrpcClientCancel(summary);
   // How long a gRPC client gives the call, from its grpc-timeout.
@@ -171,22 +205,37 @@ export function DetailPane({
   // The server never answered, so the response shown is the error reply Wirescry sent.
   const byWirescry = !!summary.failure && !summary.failure.partial && summary.status !== undefined;
 
-  // Loaded bodies, keyed by exchange, side and size so a changed body is fetched again.
-  const bodyKey = (side: BodySide, size: number | undefined): string => `${summary.id}:${side}:${size}`;
+  // Loaded bodies, keyed by exchange, side, size and whether masked, so a changed body is fetched
+  // again, and a body is never shown as it was while Hide Secrets is on.
+  const mode = hideSecrets ? 'masked' : 'real';
+  const bodyKey = (side: BodySide, size: number | undefined): string =>
+    `${summary.id}:${side}:${size}:${mode}`;
   useEffect(() => {
     let active = true;
     const load = (side: BodySide, size: number | undefined): void => {
       if (!size || stale) return;
-      const key = `${summary.id}:${side}:${size}`;
-      // Keep only this exchange's bodies; they can be megabytes each.
+      const key = `${summary.id}:${side}:${size}:${mode}`;
+      // Keep only this exchange's bodies, as now shown; they can be megabytes each.
       const keepCurrent = (b: Record<string, BodyState>): Record<string, BodyState> =>
-        Object.fromEntries(Object.entries(b).filter(([k]) => k.startsWith(`${summary.id}:`)));
-      send({ command: 'getBody', exchangeId: summary.id, side }).then(
+        Object.fromEntries(
+          Object.entries(b).filter(([k]) => k.startsWith(`${summary.id}:`) && k.endsWith(`:${mode}`)),
+        );
+      send({
+        command: 'getBody',
+        exchangeId: summary.id,
+        side,
+        ...(mode === 'masked' ? { mask: true } : {}),
+      }).then(
         (value) =>
           active &&
           setBodies((b) => ({ ...keepCurrent(b), [key]: { content: value as BodyContent | null } })),
+        // An error's text could quote something: masked like any other message while on.
         (error: Error) =>
-          active && setBodies((b) => ({ ...keepCurrent(b), [key]: { error: error.message } })),
+          active &&
+          setBodies((b) => ({
+            ...keepCurrent(b),
+            [key]: { error: mode === 'masked' ? maskText(error.message) : error.message },
+          })),
       );
     };
     load('request', requestSize);
@@ -194,7 +243,7 @@ export function DetailPane({
     return () => {
       active = false;
     };
-  }, [send, summary.id, requestSize, responseSize, stale]);
+  }, [send, summary.id, requestSize, responseSize, stale, mode]);
   const requestBody = bodies[bodyKey('request', requestSize)];
   const responseBody = bodies[bodyKey('response', responseSize)];
 
@@ -208,10 +257,15 @@ export function DetailPane({
     setTimeout(() => setCopied(undefined), 1500);
   };
 
+  // Real values, whatever's shown: it repeats the request. Fetched afresh, as the body shown may be masked.
   const copyCurl = async (): Promise<void> => {
     if (!detail) return;
-    const body = requestBody && 'content' in requestBody ? requestBody.content : undefined;
-    await copy('curl', curlCommand(summary, detail, body));
+    try {
+      await copy('curl', await fetchCurlCommand(summary, send));
+    } catch {
+      setCopied('Copy failed');
+      setTimeout(() => setCopied(undefined), 1500);
+    }
   };
 
   const timing = detail?.timing;
@@ -221,12 +275,13 @@ export function DetailPane({
     stale
       ? undefined
       : async () => {
-          const headers = side === 'request' ? detail?.requestHeaders : detail?.responseHeaders;
-          const contentType = headers?.find(([n]) => n.toLowerCase() === 'content-type')?.[1];
+          const sideHeaders = side === 'request' ? headers.request : headers.response;
+          const contentType = sideHeaders?.find(([n]) => n.toLowerCase() === 'content-type')?.[1];
           const result = await window.wirescry.saveBody({
             exchangeId: summary.id,
             side,
-            name: bodyFileName(summary.url, contentType, side),
+            // From what's shown: a name made from a masked URL.
+            name: bodyFileName(shown.url, contentType, side),
           });
           if (!result.name) return undefined;
           return result.decodeError
@@ -237,7 +292,7 @@ export function DetailPane({
   // Query parameters, parsed, when the URL has any.
   let query: Array<[string, string]> = [];
   try {
-    query = [...new URL(summary.url).searchParams];
+    query = [...new URL(shown.url).searchParams];
   } catch {
     // Not a URL we can parse; nothing to show.
   }
@@ -246,15 +301,25 @@ export function DetailPane({
   const formatBody = (side: BodySide): Promise<FormattedBody> =>
     stale
       ? Promise.resolve({ ok: false, reason: 'the proxy that had this body restarted.' })
-      : (send({ command: 'formatBody', exchangeId: summary.id, side }) as Promise<FormattedBody>);
+      : (send({
+          command: 'formatBody',
+          exchangeId: summary.id,
+          side,
+          ...(hideSecrets ? { mask: true } : {}),
+        }) as Promise<FormattedBody>);
+  // A stale exchange's body can't be fetched again masked.
+  const unavailable =
+    hideSecrets && stale
+      ? 'Can’t be checked for secrets: the proxy that had this body restarted.'
+      : undefined;
 
   // The response as it arrived: headers, then body. Compose puts it first, body first.
   const responseHeadersBlock = (
     <>
-      {detail?.responseHeaders && (
+      {headers.response && (
         <details open>
           <summary>Response headers{byWirescry && ' (sent by Wirescry)'}</summary>
-          <HeaderTable headers={detail.responseHeaders} grpc={summary.grpc} />
+          <HeaderTable headers={headers.response} grpc={summary.grpc} />
         </details>
       )}
     </>
@@ -275,6 +340,7 @@ export function DetailPane({
             info={detail?.responseBody}
             format={() => formatBody('response')}
             onSave={saveBody('response')}
+            unavailable={unavailable}
           />
         </details>
       )}
@@ -283,10 +349,10 @@ export function DetailPane({
   // Sent after the body; gRPC puts a call's status here.
   const responseTrailersBlock = (
     <>
-      {detail?.responseTrailers && detail.responseTrailers.length > 0 && (
+      {headers.responseTrailers && headers.responseTrailers.length > 0 && (
         <details open>
           <summary>Response trailers</summary>
-          <HeaderTable headers={detail.responseTrailers} grpc={summary.grpc} />
+          <HeaderTable headers={headers.responseTrailers} grpc={summary.grpc} />
         </details>
       )}
     </>
@@ -309,15 +375,15 @@ export function DetailPane({
     <aside className="detail" id={DETAIL_PANE_ID} aria-label="Exchange details">
       <div className="detail-header">
         <strong>{summary.method}</strong>
-        <span className="detail-url" title={summary.url}>
-          {summary.url}
+        <span className="detail-url" title={shown.url}>
+          {shown.url}
         </span>
         <button type="button" className="icon" aria-label="Close details" onClick={onClose}>
           ×
         </button>
       </div>
       <div className="detail-actions">
-        <button type="button" className="secondary" onClick={() => void copy('URL', summary.url)}>
+        <button type="button" className="secondary" onClick={() => void copy('URL', shown.url)}>
           Copy URL
         </button>
         {!summary.websocket && (
@@ -336,23 +402,23 @@ export function DetailPane({
         {canceled && (
           <p className="note">
             The client canceled the call.
-            {summary.failure?.partial &&
+            {shown.failure?.partial &&
               ' The server had started responding; below is what arrived before then.'}
           </p>
         )}
-        {summary.failure && !canceled && (
+        {shown.failure && !canceled && (
           <div className="failure" role="alert">
-            <strong>{summary.failure.message}</strong>
-            {summary.failure.detail && <code>{summary.failure.detail}</code>}
-            {summary.failure.partial ? (
+            <strong>{shown.failure.message}</strong>
+            {shown.failure.detail && <code>{shown.failure.detail}</code>}
+            {shown.failure.partial ? (
               <span className="muted">
                 The server had started responding. The body below is what arrived before the connection broke.
               </span>
             ) : (
-              summary.failure.kind !== 'client-closed' &&
+              shown.failure.kind !== 'client-closed' &&
               summary.status !== undefined && (
                 <span className="muted">
-                  {summary.failure.kind === 'blocked'
+                  {shown.failure.kind === 'blocked'
                     ? `Wirescry replied to the device with ${summary.status}.`
                     : `The server never answered, so Wirescry replied to the client with ${summary.status}.`}
                 </span>
@@ -377,14 +443,14 @@ export function DetailPane({
                 ? 'Canceled by the client'
                 : summary.grpcDeadlineExceeded && summary.grpcStatus === undefined
                   ? 'Deadline passed'
-                  : summary.failure
-                    ? `Failed (${summary.failure.code})`
-                    : summary.status !== undefined
+                  : shown.failure
+                    ? `Failed (${shown.failure.code})`
+                    : shown.status !== undefined
                       ? receiving
-                        ? `${`${summary.status} ${summary.statusMessage ?? ''}`.trim()} (receiving)`
+                        ? `${`${shown.status} ${shown.statusMessage ?? ''}`.trim()} (receiving)`
                         : neverFinished
-                          ? `${`${summary.status} ${summary.statusMessage ?? ''}`.trim()} (never finished: the proxy restarted)`
-                          : `${summary.status} ${summary.statusMessage ?? ''}`
+                          ? `${`${shown.status} ${shown.statusMessage ?? ''}`.trim()} (never finished: the proxy restarted)`
+                          : `${shown.status} ${shown.statusMessage ?? ''}`
                       : 'Waiting for response'}
             </dd>
             {deadline && (
@@ -398,7 +464,7 @@ export function DetailPane({
                 <dt>gRPC status</dt>
                 <dd>
                   {grpcStatusName(summary.grpcStatus)} ({summary.grpcStatus})
-                  {summary.grpcMessage ? `: ${summary.grpcMessage}` : ''}
+                  {shown.grpcMessage ? `: ${shown.grpcMessage}` : ''}
                 </dd>
               </>
             )}
@@ -416,10 +482,10 @@ export function DetailPane({
                         overviewHeading.current?.focus();
                       }}
                     >
-                      {redirect}
+                      {redirectShown}
                     </button>
                   ) : (
-                    redirect
+                    redirectShown
                   )}
                 </dd>
               </>
@@ -429,7 +495,7 @@ export function DetailPane({
                 <dt>Closed</dt>
                 <dd>
                   Code {summary.closeCode}
-                  {summary.closeReason ? `: ${summary.closeReason}` : ''}
+                  {shown.closeReason ? `: ${shown.closeReason}` : ''}
                 </dd>
               </>
             )}
@@ -439,10 +505,10 @@ export function DetailPane({
                 <dd>{detail.importedFrom}</dd>
               </>
             )}
-            {summary.handledBy && (
+            {shown.handledBy && (
               <>
                 <dt>Handled by</dt>
-                <dd>Rule “{summary.handledBy.label}”</dd>
+                <dd>Rule “{shown.handledBy.label}”</dd>
               </>
             )}
             <dt>Protocol</dt>
@@ -485,12 +551,23 @@ export function DetailPane({
         {sections.map((section) => (
           <details open key={section.key} className="plugin-section">
             <summary>{section.label}</summary>
-            {section.content}
+            {hideSecrets && !section.masksSecrets ? (
+              <p className="muted">Hidden while View › Hide Secrets is on.</p>
+            ) : (
+              section.content
+            )}
           </details>
         ))}
 
         {/* Server-Sent Events, as they arrive and after. Not for an exchange from before a restart. */}
-        {isEventStream(summary.contentType) && !stale && (
+        {/* Hide Secrets: events and messages aren't shown at all (not yet masked), nor fetched. */}
+        {isEventStream(summary.contentType) && !stale && hideSecrets && (
+          <section className="sse">
+            <h2>Events</h2>
+            <p className="note">Events are hidden while View › Hide Secrets is on.</p>
+          </section>
+        )}
+        {isEventStream(summary.contentType) && !stale && !hideSecrets && (
           <SseEventsView
             key={summary.id}
             exchangeId={summary.id}
@@ -502,7 +579,13 @@ export function DetailPane({
         )}
 
         {/* An old connection's messages can't be fetched; one that was open keeps what it showed. */}
-        {summary.websocket && (!stale || detail) && (
+        {summary.websocket && (!stale || detail) && hideSecrets && (
+          <section className="ws">
+            <h2>Messages ({(summary.messageCount ?? 0).toLocaleString()})</h2>
+            <p className="note">Message content is hidden while View › Hide Secrets is on.</p>
+          </section>
+        )}
+        {summary.websocket && (!stale || detail) && !hideSecrets && (
           <WebSocketMessagesView
             key={summary.id}
             exchangeId={summary.id}
@@ -519,8 +602,8 @@ export function DetailPane({
         )}
         <details open>
           <summary>Request headers</summary>
-          {detail ? (
-            <HeaderTable headers={detail.requestHeaders} grpc={summary.grpc} />
+          {headers.request ? (
+            <HeaderTable headers={headers.request} grpc={summary.grpc} />
           ) : (
             <p className="muted">{stale ? 'Lost when the proxy restarted.' : 'Loading…'}</p>
           )}
@@ -533,13 +616,14 @@ export function DetailPane({
               info={detail?.requestBody}
               format={() => formatBody('request')}
               onSave={saveBody('request')}
+              unavailable={unavailable}
             />
           </details>
         )}
-        {detail?.requestTrailers && detail.requestTrailers.length > 0 && (
+        {headers.requestTrailers && headers.requestTrailers.length > 0 && (
           <details open>
             <summary>Request trailers</summary>
-            <HeaderTable headers={detail.requestTrailers} grpc={summary.grpc} />
+            <HeaderTable headers={headers.requestTrailers} grpc={summary.grpc} />
           </details>
         )}
         {!responseFirst && response}

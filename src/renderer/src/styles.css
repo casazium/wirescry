@@ -280,6 +280,11 @@ button.chip.active {
   border-color: currentColor;
 }
 
+/* View › Hide Secrets is on: click to turn it off. */
+button.pill.secrets-hidden {
+  color: var(--accent);
+}
+
 /* Traffic list: a grid of fixed-height rows; only visible rows are rendered. */
 .traffic {
   flex: 1;
