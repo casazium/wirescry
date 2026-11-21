@@ -31,6 +31,7 @@ import { uiPlugins } from '@wirescry/pro/ui';
 import { PLUGIN_API_VERSION } from '../../plugin-api/version';
 import { followingRequest } from './redirect';
 import { maskSummary, readHideSecrets, SecretsHidden, writeHideSecrets } from './secrets';
+import { agentActive, ACTIVE_MS, MCP_SECTION_ID } from './mcp-config';
 import { alreadyDismissed, REFUSED_HELP_URL, refusedSummary, refusedWhy } from './refused-text';
 import { SetupPage } from './SetupPage';
 import { loadDetailSize, saveDetailSize, useStacked } from './detail-size';
@@ -62,6 +63,7 @@ export function App(): React.JSX.Element {
     backendState,
     connected,
     status,
+    mcp,
     exchanges,
     paused,
     send,
@@ -106,6 +108,20 @@ export function App(): React.JSX.Element {
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all');
   // View › Hide Secrets, remembered across restarts.
   const [hideSecrets, setHideSecrets] = useState(() => readHideSecrets());
+  // The time, ticking while an agent counts as active, so its badge goes when the minute is up.
+  const [now, setNow] = useState(() => Date.now());
+  const lastCall = mcp?.activity[0]?.at;
+  useEffect(() => {
+    if (lastCall === undefined) return;
+    const tick = (): void => setNow(Date.now());
+    const first = setTimeout(tick, 0);
+    const left = lastCall + ACTIVE_MS - Date.now();
+    const done = left > 0 ? setTimeout(tick, left + 50) : undefined;
+    return () => {
+      clearTimeout(first);
+      clearTimeout(done);
+    };
+  }, [lastCall]);
   const changeHideSecrets = (on: boolean): void => {
     writeHideSecrets(on);
     setHideSecrets(on);
@@ -613,6 +629,19 @@ export function App(): React.JSX.Element {
             ))}
           </nav>
           <div className="toolbar-actions">
+            {agentActive(mcp, now) && (
+              <button
+                type="button"
+                className="pill agent-active"
+                title="An AI agent read captured traffic in the last minute, through MCP. Click for details."
+                onClick={() => {
+                  setView('setup');
+                  requestAnimationFrame(() => document.getElementById(MCP_SECTION_ID)?.scrollIntoView());
+                }}
+              >
+                Agent active
+              </button>
+            )}
             {hideSecrets && (
               <button
                 type="button"
@@ -749,6 +778,7 @@ export function App(): React.JSX.Element {
         {view === 'setup' && status && (
           <SetupPage
             status={status}
+            mcp={mcp}
             connected={connected}
             send={send}
             onLaunched={() => setView('traffic')}
