@@ -14,6 +14,7 @@ type Item = {
   role?: string;
   accelerator?: string;
   enabled?: boolean;
+  type?: string;
   submenu?: Item[];
   click?: () => void;
 };
@@ -84,5 +85,44 @@ describe('File menu', () => {
     expect([state['export-har']!.enabled, state['export-har-unredacted']!.enabled]).toEqual([false, false]);
     updateMenu(menu, { connected: false, canExport: true, paused: false } as never);
     expect([state['export-har']!.enabled, state['export-har-unredacted']!.enabled]).toEqual([false, false]);
+  });
+});
+
+describe('View › Hide Secrets', () => {
+  const actions = () => ({
+    devTools: false,
+    showLogFile: vi.fn(),
+    checkForUpdates: vi.fn(),
+    showAbout: vi.fn(),
+    command: vi.fn(),
+    openDocumentation: vi.fn(),
+    openWebsite: vi.fn(),
+    reportProblem: vi.fn(),
+  });
+
+  it('is a checkbox in View that sends its command', () => {
+    const a = actions();
+    const view = (buildMenu(a) as unknown as Item[]).find((item) => item.label === 'View')!;
+    const item = view.submenu!.find((i) => i.id === 'hide-secrets')!;
+    expect(item).toMatchObject({ label: 'Hide Secrets', type: 'checkbox', enabled: false });
+    item.click!();
+    expect(a.command.mock.calls).toEqual([['toggle-hide-secrets']]);
+  });
+
+  it('is ticked from the window, with or without the proxy, and off with no window', () => {
+    const item = { enabled: false, checked: false };
+    const menu = { getMenuItemById: (id: string) => (id === 'hide-secrets' ? item : undefined) } as never;
+    updateMenu(menu, { connected: false, canExport: false, paused: false, secretsHidden: true });
+    expect(item).toEqual({ enabled: true, checked: true });
+    updateMenu(menu, { connected: true, canExport: false, paused: false, secretsHidden: false });
+    expect(item).toEqual({ enabled: true, checked: false });
+    updateMenu(menu, {
+      connected: false,
+      canExport: false,
+      paused: false,
+      secretsHidden: false,
+      window: false,
+    });
+    expect(item).toEqual({ enabled: false, checked: false });
   });
 });

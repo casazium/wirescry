@@ -409,6 +409,7 @@ describe('the app menu’s commands', () => {
       connected: true,
       canExport: false,
       paused: false,
+      secretsHidden: false,
     });
     await act(async () =>
       client().onMessage({ type: 'exchanges', exchanges: [a], removed: [] } as unknown as ServerMessage),
@@ -419,6 +420,7 @@ describe('the app menu’s commands', () => {
         connected: true,
         canExport: true,
         paused: false,
+        secretsHidden: false,
       }),
     );
   });

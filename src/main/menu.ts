@@ -87,6 +87,15 @@ export function buildMenu(actions: {
     {
       label: 'View',
       submenu: [
+        // Ticked by the window (see updateMenu); works with no window too: nothing to hide then.
+        {
+          id: 'hide-secrets',
+          label: 'Hide Secrets',
+          type: 'checkbox',
+          enabled: false,
+          click: command('toggle-hide-secrets'),
+        },
+        { type: 'separator' },
         { role: 'reload' },
         { role: 'forceReload' },
         ...(actions.devTools ? [{ role: 'toggleDevTools' as const }] : []),
@@ -118,7 +127,7 @@ export function buildMenu(actions: {
 }
 
 /** Enables and ticks the menu's commands to match the window, e.g. no Export with nothing to export. */
-export function updateMenu(menu: Menu, state: MenuState): void {
+export function updateMenu(menu: Menu, state: MenuState & { window?: boolean }): void {
   const set = (id: string, enabled: boolean, checked?: boolean): void => {
     const item = menu.getMenuItemById(id);
     if (!item) return;
@@ -130,4 +139,6 @@ export function updateMenu(menu: Menu, state: MenuState): void {
   set('export-har-unredacted', state.connected && state.canExport);
   set('pause-recording', state.connected, state.paused);
   set('clear', state.connected);
+  // About the screen, so with or without the proxy; off with no window to show anything in.
+  set('hide-secrets', state.window !== false, state.secretsHidden);
 }

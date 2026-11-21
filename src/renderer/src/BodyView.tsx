@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { BodyContent, FormattedBody } from '../../shared/api';
 import { exchangeType } from '../../shared/exchange-type';
-import { base64ToBytes, bytesToText, formatBytes, hexDump } from './bytes';
+import { base64ToBytes, bytesToText, formatBytes, hexDump, looksLikeText } from './bytes';
 import { fieldsText, formFields, type FormField } from '../../shared/form-fields';
 
 type Kind = 'json' | 'image' | 'code' | 'form' | 'text' | 'binary';
@@ -120,7 +120,16 @@ export function BodyView({
     if (text) setTimeout(() => setStatus((current) => (current === text ? undefined : current)), 4000);
   };
   const bytes = useMemo(() => base64ToBytes(content.base64), [content.base64]);
-  const text = useMemo(() => bytesToText(bytes), [bytes]);
+  // With Hide Secrets on, the backend masked it: its text has secrets replaced (and a BOM kept, for
+  // offsets), its bytes have them overwritten.
+  const masked = content.masked;
+  const hidden = masked && 'hidden' in masked ? masked.hidden : undefined;
+  const ranges = masked && !('hidden' in masked) ? masked.ranges : undefined;
+  const text = useMemo(() => {
+    if (!masked) return bytesToText(bytes);
+    if ('hidden' in masked || masked.text === undefined) return undefined;
+    return looksLikeText(masked.text.replace(/^\uFEFF/, ''));
+  }, [bytes, masked]);
   const kind = kindOf(content.contentType, text);
   const pretty = useMemo(() => (kind === 'json' && text ? prettyJson(text) : undefined), [kind, text]);
   const fields = useMemo(
@@ -150,7 +159,7 @@ export function BodyView({
   const copy = async (): Promise<void> => {
     const copyText =
       mode === 'hex'
-        ? hexDump(bytes)
+        ? hexDump(bytes, undefined, ranges)
         : mode === 'formatted'
           ? fields
             ? fieldsText(fields)
@@ -178,6 +187,29 @@ export function BodyView({
     decoded = ` ${content.encoding}, ${formatBytes(content.decodedSize)} decoded`;
   } else if (content.encoding && !content.decodeError) {
     decoded = ` ${content.encoding}`;
+  }
+
+  if (hidden !== undefined) {
+    return (
+      <div className="body-view">
+        <div className="body-meta">
+          <span className="body-type">{content.contentType ?? 'No content type'}</span>
+          <span className="body-size">{formatBytes(content.size)}</span>
+          <span className="spacer" />
+          {status && (
+            <span className="muted" role="status">
+              {status}
+            </span>
+          )}
+          {onSave && (
+            <button type="button" className="secondary small" onClick={() => void save()}>
+              Save…
+            </button>
+          )}
+        </div>
+        <p className="note">{hidden} Turn off View › Hide Secrets to see it.</p>
+      </div>
+    );
   }
 
   return (
@@ -230,6 +262,12 @@ export function BodyView({
       </div>
       {content.decodeError && <div className="note error">{content.decodeError}</div>}
       {content.truncated && <div className="note">Showing the first {formatBytes(bytes.length)}.</div>}
+      {masked && 'binary' in masked && <div className="note">Binary bodies aren’t checked for secrets.</div>}
+      {masked && 'full' in masked && (
+        <div className="note">
+          Some values seen earlier may not be hidden: Wirescry’s list of them is full.
+        </div>
+      )}
       {mode === 'formatted' && imageUrl && (
         <img
           className="body-image"
@@ -250,7 +288,7 @@ export function BodyView({
         <FormattedCode format={formatOnce} text={text} onFormatted={setFormattedCode} />
       )}
       {mode === 'text' && <pre className="code">{text}</pre>}
-      {mode === 'hex' && <pre className="code hex">{hexDump(bytes)}</pre>}
+      {mode === 'hex' && <pre className="code hex">{hexDump(bytes, undefined, ranges)}</pre>}
     </div>
   );
 }
