@@ -80,7 +80,7 @@ const exchange = summary('a', {
   statusMessage: `OK token=${STATUS}`,
   contentType: 'application/json',
   responseSize: 40,
-  handledBy: { id: 'r1', label: `mock api_key=${KEY}` } as ExchangeSummary['handledBy'],
+  handledBy: { plugin: 'pro', ruleId: 'r1', label: `mock api_key=${KEY}` },
   annotations: [{ plugin: 'pro', label: 'Spec', tone: 'warn', title: `Mismatch: ${BEARER}` }],
 });
 const failed = summary('f', {
@@ -88,7 +88,7 @@ const failed = summary('f', {
   url: 'https://api.test/f',
   status: undefined,
   failure: {
-    kind: 'connection',
+    kind: 'refused',
     code: 'ECONNRESET',
     message: `Couldn’t reach https://up.test/?api_key=${KEY}`,
     detail: `password=${PASSWORD}`,

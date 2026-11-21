@@ -110,14 +110,14 @@ describe('masking what the window shows', () => {
       statusMessage: `token=${BEARER}`,
       contentType: 'application/json',
       failure: {
-        kind: 'connection',
+        kind: 'refused',
         code: 'ECONNRESET',
         message: `password=${PASSWORD}`,
         detail: `https://b.test/?api_key=${ACCESS}`,
       } as ExchangeSummary['failure'],
       grpcMessage: `token=${BEARER}`,
       closeReason: `password=${PASSWORD}`,
-      handledBy: { id: 'r', label: `token=${BEARER}` } as ExchangeSummary['handledBy'],
+      handledBy: { plugin: 'pro', ruleId: 'r', label: `token=${BEARER}` },
       annotations: [{ plugin: 'pro', label: 'Spec', tone: 'warn', title: BEARER }],
     };
     const masked = maskSummary(s);
