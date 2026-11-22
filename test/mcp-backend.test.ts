@@ -13,7 +13,14 @@ import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { loadOrCreateCA } from '../src/backend/ca';
 import { loadSettings } from '../src/backend/settings';
 import type { McpStatus } from '../src/shared/api';
-import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  requestViaProxy,
+  startUpstreamOnPickedPort,
+  TOKEN,
+  UI_ORIGIN,
+} from './helpers';
 
 // Fake tokens, built at run time so the file itself holds nothing a secret scanner flags.
 const ACCESS = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
@@ -42,6 +49,7 @@ async function freePort(): Promise<number> {
 describe('the MCP server, end to end', () => {
   let dir: string;
   let upstream: Mockttp;
+  let upstreamStarted = false;
   let backend: RunningBackend;
   let api: Awaited<ReturnType<typeof apiClient>>;
   let dataDir: string;
@@ -52,7 +60,9 @@ describe('the MCP server, end to end', () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-mcp-'));
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    // Not Mockttp's own pick from 8000, where another test file's proxy can take its requests.
+    await startUpstreamOnPickedPort(upstream);
+    upstreamStarted = true;
     await upstream.forGet('/api').thenReply(200, JSON.stringify({ access_token: ACCESS, n: 1 }), {
       'content-type': 'application/json',
       'x-echo': BEARER,
@@ -76,7 +86,8 @@ describe('the MCP server, end to end', () => {
   afterAll(async () => {
     api?.close();
     await backend?.stop();
-    await upstream?.stop();
+    // Mockttp won't stop a server that never started (if no picked port could be used).
+    if (upstreamStarted) await upstream.stop();
     await rm(dir, { recursive: true, force: true });
   });
 
