@@ -3,7 +3,7 @@
  * system-picked port can be taken by another test file between being picked and being used (seen
  * on CI: EADDRINUSE starting the backend).
  */
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -402,51 +402,159 @@ describe('Starting an upstream on a system-picked port', () => {
 });
 
 /**
- * Test files whose upstreams must start on a picked port (startUpstreamOnPickedPort), not on
- * Mockttp's own pick from 8000. A flake there is rare, so no test run would catch a file going
- * back; this reads the source instead.
+ * The Mockttp servers that `source` starts on Mockttp's own pick from 8000 (`start()`,
+ * `start(undefined)` or a range), as "line: code". It knows a server by its name: a variable,
+ * parameter or class field typed `Mockttp` or given a `getLocal(…)` (through `as`, `!` or
+ * brackets too), or a `getLocal(…)` started in place. Other things with a `start()` (the Android
+ * setup, the backend supervisor) aren't Mockttp. Names aren't scoped, and servers passed around in
+ * other ways (factories, arrays, aliases) aren't followed. A collision is rare, so no test run would
+ * catch a file going back to Mockttp's pick; this reads the source instead.
  */
-const UPSTREAMS_ON_PICKED_PORTS = ['mcp-backend.test.ts'];
-
-/** Each `start()` with no port in `source`, as its line number: Mockttp's own pick from 8000. */
-function startsWithoutAPort(source: string): number[] {
+function startsOnMockttpsPick(source: string): string[] {
   const file = ts.createSourceFile('test.ts', source, ts.ScriptTarget.Latest, true);
-  const lines: number[] = [];
+  const unwrap = (node: ts.Node): ts.Node =>
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isTypeAssertionExpression(node)
+      ? unwrap(node.expression)
+      : node;
+  const isGetLocal = (node: ts.Node | undefined): boolean => {
+    if (!node) return false;
+    const call = unwrap(node);
+    return (
+      ts.isCallExpression(call) &&
+      ((ts.isIdentifier(call.expression) && call.expression.text === 'getLocal') ||
+        (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === 'getLocal'))
+    );
+  };
+  const isMockttpType = (type: ts.TypeNode | undefined): boolean =>
+    !!type &&
+    ts.isTypeReferenceNode(type) &&
+    (ts.isIdentifier(type.typeName) ? type.typeName.text : type.typeName.right.text) === 'Mockttp';
+  /** A server's name: `a`, or `this.a` for a class field. */
+  const nameOf = (node: ts.Node): string | undefined => {
+    const target = unwrap(node);
+    if (ts.isIdentifier(target)) return target.text;
+    if (ts.isPropertyAccessExpression(target) && target.expression.kind === ts.SyntaxKind.ThisKeyword) {
+      return `this.${target.name.text}`;
+    }
+    return undefined;
+  };
+  const servers = new Set<string>();
+  const findServers = (node: ts.Node): void => {
+    if ((ts.isVariableDeclaration(node) || ts.isParameter(node)) && ts.isIdentifier(node.name)) {
+      if (isMockttpType(node.type) || isGetLocal(node.initializer)) servers.add(node.name.text);
+    }
+    if (ts.isPropertyDeclaration(node) && ts.isIdentifier(node.name)) {
+      if (isMockttpType(node.type) || isGetLocal(node.initializer)) servers.add(`this.${node.name.text}`);
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      isGetLocal(node.right)
+    ) {
+      const name = nameOf(node.left);
+      if (name) servers.add(name);
+    }
+    ts.forEachChild(node, findServers);
+  };
+  findServers(file);
+  const found: string[] = [];
   const visit = (node: ts.Node): void => {
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === 'start' &&
-      node.arguments.length === 0
+      node.expression.name.text === 'start'
     ) {
-      lines.push(file.getLineAndCharacterOfPosition(node.getStart()).line + 1);
+      const receiver = node.expression.expression;
+      const name = nameOf(receiver);
+      const isServer = (name !== undefined && servers.has(name)) || isGetLocal(receiver);
+      const [port] = node.arguments;
+      const ownPick =
+        port === undefined ||
+        ts.isObjectLiteralExpression(port) ||
+        (ts.isIdentifier(port) && port.text === 'undefined');
+      if (isServer && ownPick) {
+        found.push(`${file.getLineAndCharacterOfPosition(node.getStart()).line + 1}: ${node.getText()}`);
+      }
     }
     ts.forEachChild(node, visit);
   };
   visit(file);
-  return lines;
+  return found;
 }
 
 describe('Upstreams on picked ports', () => {
-  it('finds a start() with no port, and nothing else', () => {
+  it('finds Mockttp servers started on Mockttp’s own pick', () => {
     const source = [
-      'await upstream.start();',
-      'await startUpstreamOnPickedPort(upstream);',
-      'await other.start(8080);',
-      '// upstream.start() in a comment',
-      "const text = 'upstream.start()';",
-      'await (await make()).start();',
+      'const a = getLocal({ https });',
+      'let b; b = mockttp.getLocal();',
+      'await a.start();',
+      'beforeEach(() => b.start());',
+      'await getLocal().start();',
+      'await a.start({ startPort: 8000, endPort: 9000 });',
+      'await a.start(undefined);',
+      'const c = getLocal() as Mockttp; beforeAll(() => (c).start());',
+      'let d: Mockttp; await d!.start();',
+      'function f(e: mockttp.Mockttp) { return e?.start(); }',
+      'class C { g = getLocal(); h!: Mockttp; async go() { await this.g.start(); await this.h.start(); } }',
+      'class D { constructor() { this.i = getLocal(); } go() { return this.i.start(); } }',
     ].join('\n');
-    expect(startsWithoutAPort(source)).toEqual([1, 6]);
+    expect(startsOnMockttpsPick(source)).toEqual([
+      '3: a.start()',
+      '4: b.start()',
+      '5: getLocal().start()',
+      '6: a.start({ startPort: 8000, endPort: 9000 })',
+      '7: a.start(undefined)',
+      '8: (c).start()',
+      '9: d!.start()',
+      '10: e?.start()',
+      '11: this.g.start()',
+      '11: this.h.start()',
+      '12: this.i.start()',
+    ]);
   });
 
-  it('covers mcp-backend.test.ts, where the flake was seen', () => {
-    expect(UPSTREAMS_ON_PICKED_PORTS).toContain('mcp-backend.test.ts');
+  it('leaves alone servers on a picked port, other things that start, comments and strings', () => {
+    const source = [
+      'const a = getLocal();',
+      'await startUpstreamOnPickedPort(a);',
+      'await a.start(0);',
+      'await a.start(port);',
+      'await setup.start();',
+      'const supervisor = makeSupervisor(); await supervisor.start();',
+      'const relay: Relay = makeRelay(); await relay.start();',
+      'function f(s: Pick<Mockttp, "start">) { return s.start(port); }',
+      'class E { j: Setup; go() { return this.j.start(); } }',
+      '// a.start() in a comment',
+      "const text = 'a.start()';",
+    ].join('\n');
+    expect(startsOnMockttpsPick(source)).toEqual([]);
   });
 
-  it.each(UPSTREAMS_ON_PICKED_PORTS)('%s starts no server on Mockttp’s own pick', (name) => {
-    const source = readFileSync(path.join(import.meta.dirname, name), 'utf8');
-    expect(source).toContain('startUpstreamOnPickedPort(');
-    expect(startsWithoutAPort(source)).toEqual([]);
+  // Every TypeScript file in the test folder and the end-to-end tests, helpers too, as paths from
+  // the repository root.
+  const root = path.join(import.meta.dirname, '..');
+  const testFiles = ['test', 'e2e'].flatMap((folder) =>
+    readdirSync(path.join(root, folder), { recursive: true, encoding: 'utf8' })
+      .filter((name) => /\.m?tsx?$/.test(name))
+      .map((name) => path.join(folder, name)),
+  );
+
+  it('reads every file, helpers, subfolders and the end-to-end tests too', () => {
+    expect(testFiles).toContain(path.join('test', 'helpers.ts'));
+    expect(testFiles).toContain(path.join('test', 'mcp-backend.test.ts'));
+    expect(testFiles).toContain(path.join('test', 'ui', 'app-actions.test.tsx'));
+    expect(testFiles).toContain(path.join('e2e', 'mcp.test.ts'));
+    expect(testFiles.length).toBeGreaterThan(100);
+  });
+
+  it('finds no file starting a Mockttp server on Mockttp’s own pick', () => {
+    const found = testFiles.flatMap((name) =>
+      startsOnMockttpsPick(readFileSync(path.join(root, name), 'utf8')).map((at) => `${name}:${at}`),
+    );
+    expect(found).toEqual([]);
   });
 });

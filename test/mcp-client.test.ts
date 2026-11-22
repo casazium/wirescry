@@ -13,7 +13,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { loadOrCreateCA } from '../src/backend/ca';
 import type { McpStatus } from '../src/shared/api';
-import { apiClient, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import { apiClient, requestViaProxy, TOKEN, UI_ORIGIN, startUpstreamOnPickedPort } from './helpers';
 
 // Fake tokens, built at run time so the file itself holds nothing a secret scanner flags.
 const ACCESS = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
@@ -43,7 +43,7 @@ describe('the MCP server with the official SDK client', () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-mcp-client-'));
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forGet('/login').thenReply(200, JSON.stringify({ access_token: ACCESS }), {
       'content-type': 'application/json',
       'x-echo': BEARER,

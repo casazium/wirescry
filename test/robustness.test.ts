@@ -20,6 +20,7 @@ import {
   requestViaProxy,
   TOKEN,
   UI_ORIGIN,
+  startUpstreamOnPickedPort,
 } from './helpers';
 
 /** Opens a CONNECT tunnel through the proxy. */
@@ -47,8 +48,8 @@ describe('upstream failures and WebSockets', () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-robust-test-'));
     upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forAnyWebSocket().thenEcho();
-    await upstream.start();
 
     // Accepts connections and never answers.
     silent = net.createServer(() => undefined);

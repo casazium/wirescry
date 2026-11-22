@@ -10,7 +10,14 @@ import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { MOUNT_POINT } from '../src/backend/docker/container';
 import { parseDockerHost, type DockerEndpoint } from '../src/backend/docker/endpoint';
 import type { ProxyStatus } from '../src/shared/api';
-import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  requestViaProxy,
+  TOKEN,
+  UI_ORIGIN,
+  startUpstreamOnPickedPort,
+} from './helpers';
 
 /** A daemon that records what it was asked to create. */
 async function fakeDaemon(socketPath: string, operatingSystem = 'Docker Desktop') {
@@ -87,7 +94,7 @@ describe('Docker setup in the backend', () => {
     daemon = await fakeDaemon(socketPath);
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream
       .forGet('/secure')
       .thenCallback((req) => ({ statusCode: 200, body: `secure, host ${req.headers.host}` }));

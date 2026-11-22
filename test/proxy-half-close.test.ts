@@ -19,6 +19,7 @@ import {
   startBackendOnPickedPort,
   TOKEN,
   UI_ORIGIN,
+  startUpstreamOnPickedPort,
 } from './helpers';
 
 interface Answer {
@@ -65,7 +66,7 @@ describe('A client that closes its side after its request', () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-half-close-'));
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forGet('/hello').thenReply(200, 'hello from upstream');
     backend = await startBackendOnPickedPort({
       dataDir,
@@ -114,7 +115,7 @@ describe('A client that closes its side after its request', () => {
   it('is taken as gone after a plain http:// URL, as when a browser cancels one', async () => {
     const api = await apiClient(backend.apiPort);
     const slow = getLocal();
-    await slow.start();
+    await startUpstreamOnPickedPort(slow);
     try {
       // Answers after the client closed its side: too late, the request was given up.
       await slow.forGet('/plain').thenCallback(async () => {

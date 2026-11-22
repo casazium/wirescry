@@ -23,6 +23,7 @@ import {
   startBackendOnPickedPort,
   TOKEN,
   UI_ORIGIN,
+  startUpstreamOnPickedPort,
 } from './helpers';
 
 const PIXEL: ExchangeSource = { kind: 'android', id: 'serial-123', label: 'Pixel 8' };
@@ -114,7 +115,7 @@ describe('What a device may reach', () => {
   beforeAll(async () => {
     upstreamCA = await mockttp.generateCACertificate();
     httpsUpstream = mockttp.getLocal({ https: upstreamCA });
-    await httpsUpstream.start();
+    await startUpstreamOnPickedPort(httpsUpstream);
     await httpsUpstream.forGet('/hello').thenReply(200, 'hello from upstream');
 
     plainSockets = new Set();

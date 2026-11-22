@@ -18,6 +18,7 @@ import {
   startBackendOnPickedPort,
   TOKEN,
   UI_ORIGIN,
+  startUpstreamOnPickedPort,
 } from './helpers';
 
 /** This machine's address on the local network, if it has one. */
@@ -57,7 +58,7 @@ describe('setup', () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-setup-test-'));
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forGet('/hello').thenReply(200, 'hello');
     // Kept across certificate resets: see startBackendOnPickedPort.
     backend = await startBackendOnPickedPort({

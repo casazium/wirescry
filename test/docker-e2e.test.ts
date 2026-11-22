@@ -9,7 +9,7 @@ import { generateCACertificate, getLocal, type Mockttp } from 'mockttp';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import type { ProxyStatus } from '../src/shared/api';
-import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
+import { apiClient, exchangesIn, TOKEN, UI_ORIGIN, startUpstreamOnPickedPort } from './helpers';
 
 const run = promisify(execFile);
 
@@ -79,7 +79,7 @@ describe.skipIf(!linuxDocker())('Docker containers through Wirescry (real Docker
     projectDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-e2e-project-'));
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     for (const route of ['/secure', '/node', '/python'])
       await upstream.forGet(route).thenReply(200, 'secure-ok');
     local = http.createServer((req, res) => res.end(`local-ok ${req.url}`));

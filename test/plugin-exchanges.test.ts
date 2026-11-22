@@ -14,7 +14,15 @@ import { PluginHost, validateAnnotation } from '../src/backend/plugin-host';
 import type { BackendPlugin, BackendPluginHost } from '../src/plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../src/plugin-api/version';
 import type { ExchangeSummary } from '../src/shared/api';
-import { apiClient, exchangesIn, httpViaProxy, NOTHING_LISTENS, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  httpViaProxy,
+  NOTHING_LISTENS,
+  TOKEN,
+  UI_ORIGIN,
+  startUpstreamOnPickedPort,
+} from './helpers';
 
 /** Room for slow CI runners (GitHub's Windows ones especially): the default is 1 s. */
 const SLOW_CI = { timeout: 10_000 };
@@ -231,7 +239,7 @@ describe('plugins and finished exchanges', () => {
 
   beforeAll(async () => {
     upstream = getLocal();
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forGet('/json').thenReply(200, gzipSync('{"a":1}'), {
       'content-type': 'application/json',
       'content-encoding': 'gzip',

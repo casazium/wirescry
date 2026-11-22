@@ -9,7 +9,7 @@ import WebSocket from 'ws';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { WebSocketStore } from '../src/backend/websocket-store';
 import type { WebSocketMessages } from '../src/shared/api';
-import { apiClient, exchangesIn, TOKEN, UI_ORIGIN } from './helpers';
+import { apiClient, exchangesIn, TOKEN, UI_ORIGIN, startUpstreamOnPickedPort } from './helpers';
 
 /** Opens a CONNECT tunnel through the proxy. */
 function tunnel(proxyPort: number, target: string): Promise<net.Socket> {
@@ -78,8 +78,8 @@ describe('WebSocket messages through the proxy', () => {
   beforeAll(async () => {
     dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-ws-test-'));
     upstream = getLocal();
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forAnyWebSocket().thenEcho();
-    await upstream.start();
     backend = await startBackend({ dataDir, token: TOKEN, allowedOrigins: [UI_ORIGIN] });
   });
 

@@ -11,7 +11,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { loadOrCreateCA } from '../src/backend/ca';
 import { REDACTED_LOG_COMMENT } from '../src/backend/har';
-import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  requestViaProxy,
+  TOKEN,
+  UI_ORIGIN,
+  startUpstreamOnPickedPort,
+} from './helpers';
 
 // Fake tokens, built at run time so the file itself holds nothing a secret scanner flags.
 const KEY = 'ak_' + 'Zx8Wv6Ut4Sr2Qp0n';
@@ -90,7 +97,7 @@ describe('Redacted HAR export', () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-har-redact-'));
     upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream
       .forGet('/api')
       .thenReply(200, JSON.stringify({ access_token: ACCESS, echo: BEARER, n: 1 }), {

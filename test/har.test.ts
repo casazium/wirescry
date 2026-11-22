@@ -9,7 +9,14 @@ import { loadOrCreateCA } from '../src/backend/ca';
 import { harEntry, harFrame, MAX_HAR_IMPORT_BYTES, parseHar, REDACTED_LOG_COMMENT } from '../src/backend/har';
 import type { BodyContent, ExchangeDetail, ServerMessage, WebSocketMessages } from '../src/shared/api';
 import { describeBlocked } from '../src/shared/failure';
-import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  requestViaProxy,
+  TOKEN,
+  UI_ORIGIN,
+  startUpstreamOnPickedPort,
+} from './helpers';
 
 const JSON_BODY = JSON.stringify({ users: [{ id: 1, name: 'Ada' }], note: 'héllo ✓' });
 // Not valid UTF-8, so it has to travel as base64.
@@ -38,7 +45,7 @@ describe('HAR export and import', () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-har-'));
     upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forGet('/json').thenReply(200, await encodeBuffer(Buffer.from(JSON_BODY), 'gzip'), {
       'content-type': 'application/json',
       'content-encoding': 'gzip',
