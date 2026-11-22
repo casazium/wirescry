@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { expectGrowthUnder, timeOnce as once } from './timing';
 import {
   applySpans,
   distinctive,
@@ -522,26 +523,6 @@ describe('collecting values to find elsewhere', () => {
 });
 
 describe('time', () => {
-  const once = (run: () => void): number => {
-    const start = performance.now();
-    run();
-    return performance.now() - start;
-  };
-
-  /**
-   * The best of five timings of each of `small` and `large`, taken in turn: a busy spell (the rest
-   * of the suite runs alongside) then slows both alike, rather than only one of them.
-   */
-  const timeBoth = (small: () => void, large: () => void): [number, number] => {
-    let bestSmall = Infinity;
-    let bestLarge = Infinity;
-    for (let i = 0; i < 5; i++) {
-      bestSmall = Math.min(bestSmall, once(small));
-      bestLarge = Math.min(bestLarge, once(large));
-    }
-    return [bestSmall, bestLarge];
-  };
-
   it.each([
     ['repeated eyJ', (n: number) => rep('eyJ', n)],
     ['repeated eyJ.', (n: number) => rep('eyJabcdefghij.', n)],
@@ -562,7 +543,7 @@ describe('time', () => {
     ['brackets and dots after a URL', (n: number) => 'http://a/' + rep(').', n)],
     ['a long escape run in a URL', (n: number) => 'https://a/?q=' + rep('\\u0041', n)],
     ['WebSocket protocols', (n: number) => rep('abcdefghijklmnopqrstu, ', n)],
-  ])('stays linear on %s', (_what, make) => {
+  ])('stays linear on %s', { timeout: 60_000 }, (_what, make) => {
     const run = (text: string) => () => {
       textSpans(text);
       redactUrl(text);
@@ -578,10 +559,9 @@ describe('time', () => {
     let n = 10_000;
     run(make(n))(); // Warm up.
     while (once(run(make(n))) < 10 && make(n).length < 2_000_000) n *= 2;
-    const [t1, t2] = timeBoth(run(make(n)), run(make(n * 8)));
     // Eight times the input should take about eight times as long; quadratic would take 64. The
-    // limit sits between them, with room for a busy machine.
-    expect(t2 / t1).toBeLessThan(20);
+    // limit sits between them, with room for a busy machine; a miss is timed again (see growth).
+    expectGrowthUnder(run(make(n)), run(make(n * 8)), 20);
   });
 });
 

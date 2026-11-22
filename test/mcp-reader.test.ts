@@ -344,3 +344,240 @@ describe('streams read from partway', () => {
     await expect(r.events('a', 0)).rejects.toThrow(/isn’t an event stream/);
   });
 });
+
+describe('a search’s pages', () => {
+  // 1,200 exchanges, every 100th a 500: the matches are spread across the batches masked at once.
+  const many = Array.from({ length: 1_200 }, (_, i) =>
+    summary(`e${i}`, i % 100 === 0 ? { status: 500 } : {}),
+  );
+
+  it('pages through what matches, across batches, with a cursor until the last', async () => {
+    const r = new Reader(backend(many));
+    const seen: string[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page = await r.list('status=500', 5, cursor);
+      seen.push(...page.exchanges.map((e) => e.id));
+      cursor = page.nextCursor;
+      pages += 1;
+    } while (cursor && pages < 10);
+    expect(seen).toEqual([
+      'e1100',
+      'e1000',
+      'e900',
+      'e800',
+      'e700',
+      'e600',
+      'e500',
+      'e400',
+      'e300',
+      'e200',
+      'e100',
+      'e0',
+    ]);
+    expect(pages).toBe(3);
+  });
+
+  it('gives no next page when what’s left doesn’t match, or the page took exactly the rest', async () => {
+    const r = new Reader(backend(many));
+    // 12 matches, 12 asked: nothing after.
+    expect((await r.list('status=500', 12, undefined)).nextCursor).toBeUndefined();
+    // After e0 there's nothing; after e100, only e0.
+    const last = await r.list('status=500', 5, 'e100');
+    expect(last.exchanges.map((e) => e.id)).toEqual(['e0']);
+    expect(last.nextCursor).toBeUndefined();
+    expect((await r.list('status=404', 5, undefined)).exchanges).toEqual([]);
+  });
+});
+
+describe('event streams read from partway', () => {
+  const N = 1_200;
+  // Items are numbered from 1; a read gives every kept item after the index asked for.
+  const items = Array.from({ length: N }, (_, i) => ({
+    kind: 'event' as const,
+    index: i + 1,
+    type: 'message',
+    data: `d${i + 1}`,
+  }));
+  const read =
+    (serial = 1) =>
+    async (_id: string, after: number) => ({
+      serial,
+      items: items.filter((item) => item.index > after),
+      total: N,
+      receiving: false,
+    });
+  const stream = [summary('s', { contentType: 'text/event-stream' })];
+
+  it('teaches every earlier item first, in pages, from the start; then only what’s new', async () => {
+    const taught: Array<[number, number, boolean]> = [];
+    let generation = 1;
+    const b = backend(stream, {
+      sseRead: read(),
+      maskEvents: async (_d, view, fresh) => {
+        taught.push([view.items[0]!.index, view.items.at(-1)!.index, fresh]);
+        return view;
+      },
+      generation: () => generation,
+    });
+    const r = new Reader(b);
+    const out = await r.events('s', 1_100);
+    expect(out.items[0]).toMatchObject({ index: 1_101, data: 'd1101' });
+    expect(taught).toEqual([
+      [1, 500, true],
+      [501, 1000, false],
+      [1001, 1100, false],
+      [1101, 1200, false],
+    ]);
+    // Already shown up to 1,200: nothing taught again.
+    taught.length = 0;
+    await r.events('s', 1_150);
+    expect(taught).toEqual([[1151, 1200, false]]);
+    // The worker restarted: taught again from the start.
+    taught.length = 0;
+    generation = 2;
+    await r.events('s', 1_150);
+    expect(taught[0]).toEqual([1, 500, true]);
+    expect(taught.at(-1)).toEqual([1151, 1200, false]);
+  });
+
+  it('from the start, teaches nothing extra', async () => {
+    const taught: boolean[] = [];
+    const b = backend(stream, {
+      sseRead: read(),
+      maskEvents: async (_d, view, fresh) => {
+        taught.push(fresh);
+        return view;
+      },
+    });
+    await new Reader(b).events('s', 0);
+    expect(taught).toEqual([true]);
+  });
+
+  it('stops teaching a stream whose body was replaced, and never teaches the new one’s items', async () => {
+    const taught: number[] = [];
+    let reads = 0;
+    const b = backend(stream, {
+      // The first read is the old body; every later one a new body.
+      sseRead: async (id, after) => read(reads++ === 0 ? 1 : 2)(id, after),
+      maskEvents: async (_d, view) => {
+        taught.push(view.items.length);
+        return view;
+      },
+    });
+    await new Reader(b).events('s', 600);
+    // Only the page itself: the replaced stream taught nothing.
+    expect(taught).toEqual([N - 600]);
+  });
+
+  it('says so when the stream can’t be read', async () => {
+    await expect(new Reader(backend(stream)).events('s', 0)).rejects.toThrow(/can’t be read/);
+  });
+});
+
+describe('what the reader keeps', () => {
+  it('keeps the 4 bodies read most recently, and masks one again once it’s let go', async () => {
+    const ids = ['a', 'b', 'c', 'd', 'e'];
+    const body = vi.fn(async () => ({
+      base64: '',
+      size: 1,
+      truncated: false,
+      contentType: 'text/plain',
+      masked: { text: 'x', ranges: [] },
+    }));
+    const r = new Reader(
+      backend(
+        ids.map((id) => summary(id)),
+        { body: body as never },
+      ),
+    );
+    for (const id of ids) await r.body(id, 'response', 0, 10);
+    expect(body).toHaveBeenCalledTimes(5);
+    // b to e are kept; a was let go.
+    for (const id of ['b', 'c', 'd', 'e']) await r.body(id, 'response', 0, 10);
+    expect(body).toHaveBeenCalledTimes(5);
+    await r.body('a', 'response', 0, 10);
+    expect(body).toHaveBeenCalledTimes(6);
+  });
+
+  it('reads a body again after reading it failed, and never shows why it failed', async () => {
+    let fail = true;
+    const body = vi.fn(async () => {
+      if (fail) throw new Error(`disk said ${SECRET}`);
+      return { base64: '', size: 1, truncated: false, masked: { text: 'ok', ranges: [] } };
+    });
+    const r = new Reader(backend([summary('a')], { body: body as never }));
+    const error = await r.body('a', 'request', 0, 10).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ReadError);
+    expect((error as Error).message).toBe('Couldn’t read that body.');
+    fail = false;
+    expect(await r.body('a', 'request', 0, 10)).toMatchObject({ kind: 'text', text: 'ok' });
+    // A ReadError from the backend is given as it is.
+    const said = new Reader(
+      backend([summary('a')], {
+        body: async () => {
+          throw new ReadError('That body is too big.');
+        },
+      }),
+    );
+    await expect(said.body('a', 'request', 0, 10)).rejects.toThrow('That body is too big.');
+  });
+
+  it('remembers how far the 100 streams read most recently were taught', async () => {
+    const N = 30;
+    const page = (_id: string, after: number, limit: number): WebSocketMessages => ({
+      messages: Array.from({ length: N }, (_, i) => ({
+        index: i,
+        fromClient: false,
+        isBinary: false,
+        time: i,
+        size: 1,
+        base64: 'eA==',
+      }))
+        .filter((m) => m.index > after)
+        .slice(0, limit),
+      dropped: 0,
+      total: N,
+    });
+    const ids = Array.from({ length: 101 }, (_, i) => `w${i}`);
+    const fresh: string[] = [];
+    const b = backend(
+      ids.map((id) => summary(id, { websocket: true, messageCount: N })),
+      {
+        wsPage: page,
+        maskMessages: async (d, p, isFresh) => {
+          if (isFresh) fresh.push(d.summary.id);
+          return p;
+        },
+      },
+    );
+    const r = new Reader(b);
+    for (const id of ids) await r.messages(id, 10, 5);
+    expect(fresh).toEqual(ids);
+    fresh.length = 0;
+    // w1 is still remembered: only what's new. w0 was let go: from the start again.
+    await r.messages('w1', 20, 5);
+    expect(fresh).toEqual([]);
+    await r.messages('w0', 20, 5);
+    expect(fresh).toEqual(['w0']);
+  });
+
+  it('passes on an error that isn’t a lost stream, without trying again', async () => {
+    const maskMessages = vi.fn(async () => {
+      throw new Error('broken');
+    });
+    const r = new Reader(
+      backend([summary('w', { websocket: true, messageCount: 1 })], {
+        wsPage: () => ({
+          messages: [{ index: 0, fromClient: false, isBinary: false, time: 0, size: 1, base64: 'eA==' }],
+          dropped: 0,
+          total: 1,
+        }),
+        maskMessages,
+      }),
+    );
+    await expect(r.messages('w', -1, 5)).rejects.toThrow('broken');
+    expect(maskMessages).toHaveBeenCalledTimes(1);
+  });
+});

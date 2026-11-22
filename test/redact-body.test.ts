@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { expectGrowthUnder, timeOnce as once } from './timing';
 import { applySpans, REDACTED } from '../src/shared/redact';
 import {
   assignmentSpans,
@@ -386,21 +387,6 @@ describe('bodies by kind', () => {
 });
 
 describe('time', () => {
-  const once = (run: () => void): number => {
-    const start = performance.now();
-    run();
-    return performance.now() - start;
-  };
-  const timeBoth = (small: () => void, large: () => void): [number, number] => {
-    let a = Infinity;
-    let b = Infinity;
-    for (let i = 0; i < 5; i++) {
-      a = Math.min(a, once(small));
-      b = Math.min(b, once(large));
-    }
-    return [a, b];
-  };
-
   it.each([
     ['repeated assignments', (n: number) => rep('password=', n), 'text/plain'],
     ['a long run of letters', (n: number) => rep('a', n * 8), 'text/plain'],
@@ -432,8 +418,7 @@ describe('time', () => {
     let n = 2_000;
     run(make(n))();
     while (once(run(make(n))) < 10 && make(n).length < 2_000_000) n *= 2;
-    const [t1, t2] = timeBoth(run(make(n)), run(make(n * 8)));
-    expect(t2 / t1).toBeLessThan(20);
+    expectGrowthUnder(run(make(n)), run(make(n * 8)), 20);
   });
 });
 
@@ -740,11 +725,6 @@ describe('fixes from the A2 review', () => {
 });
 
 describe('time, after the A2 review', () => {
-  const once = (run: () => void): number => {
-    const start = performance.now();
-    run();
-    return performance.now() - start;
-  };
   it.each([
     ['multipart parts, CRLF', (n: number) => rep('--b\r\n\r\nx\r\n', n)],
     ['multipart parts, LF', (n: number) => rep('--b\n\nx\n', n)],
@@ -757,14 +737,8 @@ describe('time, after the A2 review', () => {
     let n = 2_000;
     run(make(n))();
     while (once(run(make(n))) < 10 && make(n).length < 2_000_000) n *= 2;
-    let t1 = Infinity;
-    let t2 = Infinity;
-    for (let i = 0; i < 5; i++) {
-      t1 = Math.min(t1, once(run(make(n))));
-      t2 = Math.min(t2, once(run(make(n * 8))));
-    }
     // Linear gives about 8; even n^1.44 would pass 20, so the limit here is tighter.
-    expect(t2 / t1).toBeLessThan(14);
+    expectGrowthUnder(run(make(n)), run(make(n * 8)), 14);
   });
 
   it('finds known values quickly when they share a short run', () => {
@@ -956,30 +930,26 @@ describe('KnownValues.inBytes', () => {
     expect(known.inBytes(Buffer.from(later))).toBe(true);
   });
 
-  it('takes time in proportion to the bytes, with many values sharing their first bytes', () => {
-    const known = new KnownValues();
-    for (let i = 0; i < 2000; i++) known.add(`AAAA${String(i).padStart(6, '0')}xQ`);
-    const time = (size: number): number => {
-      const bytes = Buffer.alloc(size, 0x41);
-      const started = performance.now();
-      known.inBytes(bytes);
-      return performance.now() - started;
-    };
-    // Sized so a small run takes about 10 ms, then 8 times as much, alternated.
-    let size = 10_000;
-    while (time(size) < 10 && size < 50_000_000) size *= 2;
-    // The fastest of five each, alternated, as the other timing tests do: a busy machine
-    // slows some runs, rarely all of them.
-    let small = Infinity;
-    let large = Infinity;
-    for (let i = 0; i < 5; i++) {
-      small = Math.min(small, time(size));
-      large = Math.min(large, time(size * 8));
-    }
-    expect(large / small).toBeLessThan(20);
-    // Values alike past the few checked can't all be found in bytes, and say so.
-    expect(known.full).toBe(true);
-  });
+  it(
+    'takes time in proportion to the bytes, with many values sharing their first bytes',
+    { timeout: 60_000 },
+    () => {
+      const known = new KnownValues();
+      for (let i = 0; i < 2000; i++) known.add(`AAAA${String(i).padStart(6, '0')}xQ`);
+      const run = (size: number) => {
+        const bytes = Buffer.alloc(size, 0x41);
+        return () => {
+          known.inBytes(bytes);
+        };
+      };
+      // Sized so a small run takes about 10 ms, then 8 times as much, timed in turn (see growth).
+      let size = 10_000;
+      while (once(run(size)) < 10 && size < 50_000_000) size *= 2;
+      expectGrowthUnder(run(size), run(size * 8), 20);
+      // Values alike past the few checked can't all be found in bytes, and say so.
+      expect(known.full).toBe(true);
+    },
+  );
 
   it('isn’t full with values that differ in their first eight bytes', () => {
     const known = new KnownValues();

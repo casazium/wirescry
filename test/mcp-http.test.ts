@@ -359,3 +359,124 @@ describe('the listener', () => {
     holder.close();
   });
 });
+
+describe('when serving goes wrong', () => {
+  const SECRET = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
+  type Fetch = (request: Request) => Promise<Response>;
+
+  async function withHandler(fetch: Fetch): Promise<{ port: number; lines: string[] }> {
+    const lines: string[] = [];
+    const server = new McpHttpServer({
+      reader: new Reader(backend),
+      log: (l) => lines.push(l),
+      onCall: () => undefined,
+    });
+    servers.push(server);
+    await server.start(0, TOKEN);
+    (server as unknown as { handler: { fetch: Fetch } }).handler.fetch = fetch;
+    return { port: server.listening!, lines };
+  }
+
+  it('answers 500 when the SDK throws, and logs why without a secret', async () => {
+    const { port, lines } = await withHandler(async () => {
+      throw new Error(`bad input: password=${SECRET}`);
+    });
+    const answer = await post(port);
+    expect(answer.status).toBe(500);
+    expect(answer.text).toContain('Something went wrong.');
+    expect(answer.text).not.toContain(SECRET);
+    expect(lines.some((l) => l.startsWith('MCP: bad input'))).toBe(true);
+    expect(lines.join('\n')).not.toContain(SECRET);
+  });
+
+  it('closes the connection when the answer fails after it started', async () => {
+    const { port, lines } = await withHandler(
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(new Error('stream broke'));
+            },
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        ),
+    );
+    const answer = await post(port).catch(() => ({ status: -1, text: '' }));
+    // The answer had started, so it can only be cut off: the client gets a head and no body, or nothing.
+    expect(answer.text.split('\r\n\r\n')[1] ?? '').toBe('');
+    expect(answer.text).not.toMatch(/\r\n0\r\n/);
+    expect(lines).toContain('MCP: stream broke');
+  });
+
+  it('sweeps secrets out of every error it logs, Error or not', async () => {
+    const lines: string[] = [];
+    const server = new McpHttpServer({
+      reader: new Reader(backend),
+      log: (l) => lines.push(l),
+      onCall: () => undefined,
+    });
+    server.logError(new Error(`parse failed near password=${SECRET}`));
+    server.logError(`token=${SECRET}`);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^MCP: parse failed near password=/);
+    expect(lines[1]).toMatch(/^MCP: token=/);
+    expect(lines.join('\n')).not.toContain(SECRET);
+  });
+
+  it('answers 413 for a body over 1 MiB that keeps arriving in pieces', async () => {
+    const { port } = await started();
+    // Sent in pieces, without a Content-Length: the server reads past the limit and drops the rest.
+    const answer = await new Promise<{ status: number }>((resolve, reject) => {
+      let data = '';
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write(
+          [
+            'POST /mcp HTTP/1.1',
+            `Host: 127.0.0.1:${port}`,
+            `Authorization: Bearer ${TOKEN}`,
+            'Content-Type: application/json',
+            'Transfer-Encoding: chunked',
+            'Connection: close',
+            '',
+            '',
+          ].join('\r\n'),
+        );
+        const piece = 'x'.repeat(64 * 1024);
+        for (let i = 0; i < 40; i++) socket.write(`${piece.length.toString(16)}\r\n${piece}\r\n`);
+        socket.write('0\r\n\r\n');
+      });
+      socket.on('data', (chunk) => (data += chunk.toString('utf8')));
+      socket.on('close', () => resolve({ status: Number(/^HTTP\/1\.1 (\d+)/.exec(data)?.[1] ?? 0) }));
+      socket.on('error', (error) => (data ? undefined : reject(error)));
+    });
+    expect(answer.status).toBe(413);
+  });
+
+  it('closes a too-large request that stops sending, within a few seconds', { timeout: 15_000 }, async () => {
+    const { port } = await started();
+    const start = Date.now();
+    const closed = await new Promise<{ ms: number; data: string }>((resolve) => {
+      let data = '';
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write(
+          [
+            'POST /mcp HTTP/1.1',
+            `Host: 127.0.0.1:${port}`,
+            `Authorization: Bearer ${TOKEN}`,
+            'Content-Type: application/json',
+            `Content-Length: ${MAX_BODY * 2}`,
+            '',
+            'x'.repeat(1000),
+          ].join('\r\n'),
+        );
+        // ...and then nothing more.
+      });
+      socket.on('data', (chunk) => (data += chunk.toString('utf8')));
+      socket.on('error', () => undefined);
+      socket.on('close', () => resolve({ ms: Date.now() - start, data }));
+    });
+    expect(closed.ms).toBeGreaterThanOrEqual(4_500);
+    // Just closed: no answer at all, not even a 413.
+    expect(closed.data).toBe('');
+  });
+});
