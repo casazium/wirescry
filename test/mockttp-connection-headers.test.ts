@@ -8,6 +8,7 @@ import path from 'node:path';
 import * as mockttp from 'mockttp';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { CONNECTION_HELPER } from '../scripts/patch-mockttp.mjs';
+import { startUpstreamOnPickedPort } from './helpers';
 
 // HTTP/2 forbids headers that apply to one connection only (RFC 9113, section 8.2.2). Node takes them
 // as a response's headers are set, but refuses them as it sends the head, and keeps them, so even
@@ -118,7 +119,7 @@ describe('Mockttp replies over HTTP/2 with per-connection headers', () => {
     await rm(dir, { recursive: true, force: true });
   });
   beforeEach(async () => {
-    await server.start();
+    await startUpstreamOnPickedPort(server);
     recorded = [];
     await server.on('response', (response) => recorded.push(response));
   });
@@ -271,7 +272,9 @@ describe('Mockttp forwarding to an HTTP/1.1 server, over HTTP/2', () => {
     upstreamUrl = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`;
   });
   afterAll(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
-  beforeEach(() => server.start());
+  beforeEach(async () => {
+    await startUpstreamOnPickedPort(server);
+  });
   afterEach(() => server.stop());
 
   it("passes on the server's trailers without them", async () => {
@@ -304,7 +307,9 @@ describe('Mockttp forwarding to an HTTP/1.1 server, over HTTP/2', () => {
 
 describe('Mockttp replies over HTTP/1.1 with the same headers', () => {
   const server = mockttp.getLocal();
-  beforeEach(() => server.start());
+  beforeEach(async () => {
+    await startUpstreamOnPickedPort(server);
+  });
   afterEach(() => server.stop());
 
   it('sends them as given, as before', async () => {

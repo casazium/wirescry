@@ -10,7 +10,14 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import { loadOrCreateCA } from '../src/backend/ca';
 import type { BodyContent, FormattedBody, SseEventsView, WebSocketMessages } from '../src/shared/api';
-import { apiClient, exchangesIn, requestViaProxy, TOKEN, UI_ORIGIN } from './helpers';
+import {
+  apiClient,
+  exchangesIn,
+  requestViaProxy,
+  TOKEN,
+  UI_ORIGIN,
+  startUpstreamOnPickedPort,
+} from './helpers';
 
 // Fake tokens, built at run time so the file itself holds nothing a secret scanner flags.
 const ACCESS = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
@@ -124,7 +131,7 @@ describe('Hide Secrets: bodies masked by the backend', () => {
     dir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-hide-secrets-'));
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forGet('/json').thenReply(200, JSON.stringify({ access_token: ACCESS, n: 1 }), {
       'content-type': 'application/json',
     });

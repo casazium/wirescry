@@ -15,6 +15,7 @@ import {
   NOTHING_LISTENS,
   TOKEN,
   UI_ORIGIN,
+  startUpstreamOnPickedPort,
 } from './helpers';
 
 const request = (overrides: Partial<ComposerRequest>): ComposerRequest => ({
@@ -127,7 +128,7 @@ describe('composer', () => {
     const upstreamCA = await generateCACertificate();
     secure = getLocal({ https: upstreamCA });
     plain = getLocal();
-    await Promise.all([secure.start(), plain.start()]);
+    await Promise.all([startUpstreamOnPickedPort(secure), startUpstreamOnPickedPort(plain)]);
     for (const server of [secure, plain]) {
       await server.forPost('/echo').thenCallback(async (req) => ({
         statusCode: 201,

@@ -16,6 +16,7 @@ import {
   requestViaProxy,
   TOKEN,
   UI_ORIGIN,
+  startUpstreamOnPickedPort,
 } from './helpers';
 
 describe('backend', () => {
@@ -30,7 +31,7 @@ describe('backend', () => {
     // A local HTTPS server standing in for a real website, with its own CA.
     const upstreamCA = await generateCACertificate();
     upstream = getLocal({ https: upstreamCA });
-    await upstream.start();
+    await startUpstreamOnPickedPort(upstream);
     await upstream.forGet('/hello').thenReply(200, 'hello from upstream');
     await upstream.forPost('/echo').thenCallback((req) => ({ statusCode: 201, body: req.body.buffer }));
     for (const encoding of ['gzip', 'br', 'zstd'] as const) {

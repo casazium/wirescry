@@ -243,6 +243,7 @@ export async function onPickedPort<T>(
  * out a port that something holds on every address, so a system-picked port is away from 8000 and
  * stays the upstream's. In case another process takes 127.0.0.1 on it while Mockttp starts, that's
  * checked once it listens (on Linux, Mockttp's listening fails instead), and another port picked.
+ * Add rules after this: picking again stops the server, and Mockttp's stop drops its rules.
  */
 export function startUpstreamOnPickedPort(
   server: Pick<Mockttp, 'start' | 'stop'>,
