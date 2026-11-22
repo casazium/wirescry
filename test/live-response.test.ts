@@ -48,6 +48,16 @@ const open = (name: string): void => {
   gates.delete(name);
 };
 
+/**
+ * The /live.Many/ streams answer at once but send nothing until the one test that uses them lets
+ * them (once, for the file), so setting up the later calls (a tunnel and a TLS handshake each)
+ * doesn't compete with streams already sending.
+ */
+let letManyFlow: () => void = () => undefined;
+const manyMayFlow = new Promise<void>((resolve) => {
+  letManyFlow = resolve;
+});
+
 type Api = Awaited<ReturnType<typeof apiClient>>;
 
 describe('a response that is still arriving', () => {
@@ -112,8 +122,11 @@ describe('a response that is still arriving', () => {
         stream.write(frame(4));
       } else if (route?.startsWith('/live.Many/')) {
         stream.respond(grpc);
-        const timer = setInterval(() => stream.write(frame(8)), 10);
-        stream.on('close', () => clearInterval(timer));
+        void manyMayFlow.then(() => {
+          if (stream.closed) return;
+          const timer = setInterval(() => stream.write(frame(8)), 10);
+          stream.on('close', () => clearInterval(timer));
+        });
       }
     });
     await new Promise<void>((resolve) => h2server.listen(0, '127.0.0.1', resolve));
@@ -442,19 +455,37 @@ describe('a response that is still arriving', () => {
     });
   });
 
-  it('sends a busy stream to the UI a few times a second, not on every chunk', async () => {
-    const calls = await Promise.all(Array.from({ length: 50 }, (_, i) => startCall(`/live.Many/${i}`)));
-    await until('/live.Many/49', (e) => e.responding === true);
-    const before = new Map(Array.from({ length: 50 }, (_, i) => [i, copies(`/live.Many/${i}`).length]));
-    await new Promise((r) => setTimeout(r, 2000));
-    const sent = Array.from({ length: 50 }, (_, i) => copies(`/live.Many/${i}`).length - before.get(i)!);
-    // Every 10 ms a chunk arrives; at most 4 updates a second go out (one more for timing).
-    for (const n of sent) expect(n).toBeLessThanOrEqual(9);
-    // And they do go out. A busy CI runner can starve a stream for a while, so not every one
-    // need have had an update in these two seconds, but nearly all have.
-    expect(sent.filter((n) => n > 0).length).toBeGreaterThanOrEqual(45);
-    await Promise.all(calls.map((c) => c.end()));
-  });
+  it(
+    'sends a busy stream to the UI a few times a second, not on every chunk',
+    { timeout: 60_000 },
+    async () => {
+      const calls = await Promise.all(Array.from({ length: 50 }, (_, i) => startCall(`/live.Many/${i}`)));
+      // Every call set up and answered, while nothing flows yet; then all 50 send at once. Setting up
+      // 50 tunnels and TLS handshakes isn't what's measured, and a slow CI runner once took longer
+      // than WAIT, so this wait has 30 s. Counted, so a failure says how many were answered: 49 is a
+      // lost call, far fewer a slow runner.
+      await expect
+        .poll(
+          () =>
+            Array.from({ length: 50 }, (_, i) => latest(`/live.Many/${i}`)?.responding).filter(Boolean)
+              .length,
+          {
+            timeout: 30_000,
+          },
+        )
+        .toBe(50);
+      const before = new Map(Array.from({ length: 50 }, (_, i) => [i, copies(`/live.Many/${i}`).length]));
+      letManyFlow();
+      await new Promise((r) => setTimeout(r, 2000));
+      const sent = Array.from({ length: 50 }, (_, i) => copies(`/live.Many/${i}`).length - before.get(i)!);
+      // Every 10 ms a chunk arrives; at most 4 updates a second go out (one more for timing).
+      for (const n of sent) expect(n).toBeLessThanOrEqual(9);
+      // And they do go out. A busy CI runner can starve a stream for a while, so not every one
+      // need have had an update in these two seconds, but nearly all have.
+      expect(sent.filter((n) => n > 0).length).toBeGreaterThanOrEqual(45);
+      await Promise.all(calls.map((c) => c.end()));
+    },
+  );
 
   // Last: it moves the proxy to another port.
   it('ends a response that was arriving when the proxy restarted', async () => {
