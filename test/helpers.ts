@@ -5,6 +5,7 @@ import tls from 'node:tls';
 import { createRequire } from 'node:module';
 import { expect } from 'vitest';
 import { startBackend, type BackendOptions, type RunningBackend } from '../src/backend/backend';
+import type { Mockttp } from 'mockttp';
 import WebSocket from 'ws';
 import {
   API_PROTOCOL,
@@ -231,6 +232,35 @@ export async function onPickedPort<T>(
     if (result !== PORT_TAKEN) return result;
   }
   throw new Error(`The picked port was taken ${attempts} times in a row`);
+}
+
+/**
+ * Starts a test's Mockttp server (an upstream) on a system-picked port, and returns the port.
+ * Mockttp's own choice is the lowest free port from 8000, where other test files' proxies listen
+ * too, on 127.0.0.1 only. Mockttp listens on every address, and on macOS and Windows both can
+ * listen on one port at once: requests to 127.0.0.1 on that port then reach the proxy, not the
+ * upstream (seen as TLS handshake failures in test/mcp-backend.test.ts). The system doesn't hand
+ * out a port that something holds on every address, so a system-picked port is away from 8000 and
+ * stays the upstream's. In case another process takes 127.0.0.1 on it while Mockttp starts, that's
+ * checked once it listens (on Linux, Mockttp's listening fails instead), and another port picked.
+ */
+export function startUpstreamOnPickedPort(
+  server: Pick<Mockttp, 'start' | 'stop'>,
+  options?: { attempts?: number; pickPort?: () => Promise<number> },
+): Promise<number> {
+  return onPickedPort(async (port) => {
+    try {
+      await server.start(port);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') return PORT_TAKEN;
+      throw error;
+    }
+    if (process.platform !== 'linux' && (await portTaken(port))) {
+      await server.stop();
+      return PORT_TAKEN;
+    }
+    return port;
+  }, options);
 }
 
 /** Moves the proxy to a system-picked port, as Setup's “Always use port” does, and returns it. */

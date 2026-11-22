@@ -1,12 +1,15 @@
 /**
- * Picked ports (startBackendOnPickedPort, onPickedPort): a system-picked port can be taken by
- * another test file between being picked and being used (seen on CI: EADDRINUSE starting the
- * backend).
+ * Picked ports (startBackendOnPickedPort, onPickedPort, startUpstreamOnPickedPort): a
+ * system-picked port can be taken by another test file between being picked and being used (seen
+ * on CI: EADDRINUSE starting the backend).
  */
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { getLocal } from 'mockttp';
+import ts from 'typescript';
 import { afterEach, describe, expect, it } from 'vitest';
 import { startBackend, type RunningBackend } from '../src/backend/backend';
 import {
@@ -17,6 +20,7 @@ import {
   PORT_TAKEN,
   portTaken,
   startBackendOnPickedPort,
+  startUpstreamOnPickedPort,
   systemPickedPort,
   TOKEN,
   UI_ORIGIN,
@@ -236,5 +240,213 @@ describe('Moving the proxy to a system-picked port', () => {
     ).rejects.toThrow('1024 to 65535');
     expect(picks).toBe(1);
     expect(backend.proxyPort).toBe(before);
+  });
+});
+
+describe('Starting an upstream on a system-picked port', () => {
+  /** Takes a port on every address, so another listen on every address fails. */
+  async function holdEveryAddress(): Promise<number> {
+    const holder = net.createServer();
+    await new Promise<void>((resolve) => holder.listen(0, resolve));
+    cleanup.push(() => new Promise((resolve) => holder.close(resolve)));
+    return (holder.address() as net.AddressInfo).port;
+  }
+
+  /** Takes a port on 127.0.0.1 only, as another test file's proxy does, answering "the holder". */
+  async function holdLoopbackAnswering(): Promise<number> {
+    const holder = net.createServer((socket) => socket.end('the holder'));
+    await new Promise<void>((resolve) => holder.listen(0, '127.0.0.1', resolve));
+    cleanup.push(() => new Promise((resolve) => holder.close(resolve)));
+    return (holder.address() as net.AddressInfo).port;
+  }
+
+  /** What connecting to 127.0.0.1 on `port` reads first. */
+  function firstWords(port: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const socket = net.connect(port, '127.0.0.1');
+      socket.once('data', (data) => {
+        resolve(String(data));
+        socket.destroy();
+      });
+      socket.once('error', reject);
+    });
+  }
+
+  /** Hands out `first`, then free ports. */
+  const firstThenFree = (first: number) => {
+    const picked: number[] = [];
+    return {
+      picked,
+      pickPort: async () => {
+        const port = picked.length === 0 ? first : await systemPickedPort();
+        picked.push(port);
+        return port;
+      },
+    };
+  };
+
+  // What the helper is for: on macOS and Windows, Mockttp's own listening doesn't fail on a port
+  // another server holds on 127.0.0.1, and requests to 127.0.0.1 reach that server.
+  it.skipIf(process.platform === 'linux')(
+    'is needed: Mockttp listens beside a server holding 127.0.0.1, which then gets the requests',
+    async () => {
+      const held = await holdLoopbackAnswering();
+      const upstream = getLocal();
+      cleanup.push(() => upstream.stop());
+      await upstream.start(held);
+      expect(await firstWords(held)).toBe('the holder');
+    },
+  );
+
+  it('listens on the port it gives, away from Mockttp’s own picks from 8000, and answers there', async () => {
+    const upstream = getLocal();
+    cleanup.push(() => upstream.stop());
+    const port = await startUpstreamOnPickedPort(upstream);
+    expect(upstream.port).toBe(port);
+    expect(port).toBeGreaterThanOrEqual(10_000);
+    await upstream.forGet('/here').thenReply(200, 'the upstream');
+    for (const host of ['127.0.0.1', 'localhost']) {
+      const response = await fetch(`http://${host}:${port}/here`);
+      expect(await response.text()).toBe('the upstream');
+    }
+  });
+
+  it('picks another port when the first is taken on every address', async () => {
+    const { picked, pickPort } = firstThenFree(await holdEveryAddress());
+    const upstream = getLocal();
+    cleanup.push(() => upstream.stop());
+    const port = await startUpstreamOnPickedPort(upstream, { pickPort });
+    expect(picked).toHaveLength(2);
+    expect(port).toBe(picked[1]);
+    await upstream.forGet('/here').thenReply(200, 'the upstream');
+    expect(await (await fetch(`http://127.0.0.1:${port}/here`)).text()).toBe('the upstream');
+  });
+
+  it('picks another port when the first is held on 127.0.0.1 alone, and the upstream gets its requests', async () => {
+    const held = await holdLoopbackAnswering();
+    const { picked, pickPort } = firstThenFree(held);
+    const upstream = getLocal();
+    cleanup.push(() => upstream.stop());
+    const port = await startUpstreamOnPickedPort(upstream, { pickPort });
+    expect(picked).toEqual([held, port]);
+    expect(port).not.toBe(held);
+    await upstream.forGet('/here').thenReply(200, 'the upstream');
+    expect(await (await fetch(`http://127.0.0.1:${port}/here`)).text()).toBe('the upstream');
+    expect(await firstWords(held)).toBe('the holder');
+  });
+
+  it.skipIf(process.platform === 'linux')(
+    'stops the server again when 127.0.0.1 turns out taken once it listens',
+    async () => {
+      const held = await holdPort();
+      const { picked, pickPort } = firstThenFree(held);
+      const events: string[] = [];
+      const server = {
+        start: async (port?: number | { startPort: number; endPort: number }) => {
+          events.push(`start ${String(port)}`);
+        },
+        stop: async () => {
+          events.push('stop');
+        },
+      };
+      const port = await startUpstreamOnPickedPort(server, { pickPort });
+      expect(picked).toEqual([held, port]);
+      expect(events).toEqual([`start ${held}`, 'stop', `start ${port}`]);
+    },
+  );
+
+  it('tries another port when Mockttp finds its port in use', async () => {
+    const ports: number[] = [];
+    const server = {
+      start: async (port?: number | { startPort: number; endPort: number }) => {
+        ports.push(port as number);
+        if (ports.length === 1) throw Object.assign(new Error('in use'), { code: 'EADDRINUSE' });
+      },
+      stop: async () => {
+        throw new Error('nothing to stop');
+      },
+    };
+    const port = await startUpstreamOnPickedPort(server);
+    expect(ports).toHaveLength(2);
+    expect(port).toBe(ports[1]);
+  });
+
+  it('gives up when the port is taken every time', async () => {
+    const taken = await holdEveryAddress();
+    let tries = 0;
+    const pickPort = async () => {
+      tries += 1;
+      return taken;
+    };
+    const upstream = getLocal();
+    // Never started, so there's nothing to stop.
+    cleanup.push(() => upstream.stop().catch(() => undefined));
+    await expect(startUpstreamOnPickedPort(upstream, { attempts: 2, pickPort })).rejects.toThrow(
+      'The picked port was taken 2 times in a row',
+    );
+    expect(tries).toBe(2);
+  });
+
+  it('doesn’t try again when starting fails for another reason', async () => {
+    let starts = 0;
+    const server = {
+      start: async () => {
+        starts += 1;
+        throw Object.assign(new Error('no permission'), { code: 'EACCES' });
+      },
+      stop: async () => undefined,
+    };
+    await expect(startUpstreamOnPickedPort(server)).rejects.toThrow('no permission');
+    expect(starts).toBe(1);
+  });
+});
+
+/**
+ * Test files whose upstreams must start on a picked port (startUpstreamOnPickedPort), not on
+ * Mockttp's own pick from 8000. A flake there is rare, so no test run would catch a file going
+ * back; this reads the source instead.
+ */
+const UPSTREAMS_ON_PICKED_PORTS = ['mcp-backend.test.ts'];
+
+/** Each `start()` with no port in `source`, as its line number: Mockttp's own pick from 8000. */
+function startsWithoutAPort(source: string): number[] {
+  const file = ts.createSourceFile('test.ts', source, ts.ScriptTarget.Latest, true);
+  const lines: number[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === 'start' &&
+      node.arguments.length === 0
+    ) {
+      lines.push(file.getLineAndCharacterOfPosition(node.getStart()).line + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(file);
+  return lines;
+}
+
+describe('Upstreams on picked ports', () => {
+  it('finds a start() with no port, and nothing else', () => {
+    const source = [
+      'await upstream.start();',
+      'await startUpstreamOnPickedPort(upstream);',
+      'await other.start(8080);',
+      '// upstream.start() in a comment',
+      "const text = 'upstream.start()';",
+      'await (await make()).start();',
+    ].join('\n');
+    expect(startsWithoutAPort(source)).toEqual([1, 6]);
+  });
+
+  it('covers mcp-backend.test.ts, where the flake was seen', () => {
+    expect(UPSTREAMS_ON_PICKED_PORTS).toContain('mcp-backend.test.ts');
+  });
+
+  it.each(UPSTREAMS_ON_PICKED_PORTS)('%s starts no server on Mockttp’s own pick', (name) => {
+    const source = readFileSync(path.join(import.meta.dirname, name), 'utf8');
+    expect(source).toContain('startUpstreamOnPickedPort(');
+    expect(startsWithoutAPort(source)).toEqual([]);
   });
 });
