@@ -9,7 +9,7 @@ Wirescry is a desktop tool for seeing, debugging and rewriting HTTP traffic, in 
 
 ## Status
 
-**Checked November 20, 2026, against `main` at v0.1.37 and `wirescry-pro` `main`; updated November 21 for v0.1.38 (redaction, Hide Secrets and the MCP server).** The check covered the source, the two READMEs and the commit history. It did not cover hands-on use. Each item below is marked:
+**Checked November 20, 2026, against `main` at v0.1.37 and `wirescry-pro` `main`; updated November 22 for v0.1.39 (redaction, Hide Secrets and the MCP server).** The check covered the source, the two READMEs and the commit history. It did not cover hands-on use. Each item below is marked:
 
 - **Shipped:** in release builds.
 - **Partly:** shipped, with the gaps listed.
@@ -80,13 +80,13 @@ Launched as 0.1.1 on November 1, 2026.
   - `=`, `!=`, `~`, comparisons and `status=4xx`
   - negation with `-` and quoted terms
   - fields for size, time, gRPC status and rule
-- Redaction of secrets (free). **Shipped** in 0.1.38:
+- Redaction of secrets (free). **Shipped** in 0.1.39:
   - Export HAR redacts secrets by default (headers, cookies, URLs, and bodies best effort), with a notice of what was redacted; Export HAR Without Redaction writes everything
   - View → Hide Secrets masks the list, details, bodies (Hex too), WebSocket messages and Server-Sent Events on screen; Copy copies what's shown
   - one set of rules, plus values seen in any request's URL or headers, for export, the screen and MCP
 
 ### AI agents
-- **MCP server for AI coding agents** (free, read-only). **Shipped** in 0.1.38:
+- **MCP server for AI coding agents** (free, read-only). **Shipped** in 0.1.39:
   - Streamable HTTP on 127.0.0.1, off by default, with a token; refuses web pages
   - tools to list requests and read headers, bodies, WebSocket messages and Server-Sent Events, always masked
   - Setup section with settings for Claude Code, Cursor and VS Code, recent calls, and an "Agent active" badge
