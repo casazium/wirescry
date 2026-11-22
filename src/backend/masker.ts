@@ -253,9 +253,10 @@ export class Masker {
     const worker = this.worker ?? this.start();
     let parts: Json[];
     if (this.needsAll) {
+      // Read before the flags are cleared: if reading throws, the next job tries it all again.
+      parts = this.source.all();
       this.needsAll = false;
       this.dirty.clear();
-      parts = this.source.all();
     } else {
       parts = [];
       for (const id of this.dirty) {
@@ -266,11 +267,19 @@ export class Masker {
     }
     const chunk = this.limits.teachChunk ?? TEACH_CHUNK;
     for (let i = 0; i < parts.length; i += chunk) {
-      const response = await this.send(
-        worker,
-        { op: 'teach', parts: parts.slice(i, i + chunk) },
-        TEACH_TIME_LIMIT_MS,
-      );
+      let response: MaskResponse;
+      try {
+        response = await this.send(
+          worker,
+          { op: 'teach', parts: parts.slice(i, i + chunk) },
+          TEACH_TIME_LIMIT_MS,
+        );
+      } catch (error) {
+        // Not sent (the parts couldn't be posted): what was taken off the list to teach is lost
+        // to this worker, so it goes, and the next is taught everything.
+        if (this.worker === worker) this.stop(new WorkerGone('the worker couldn’t be taught'));
+        throw error;
+      }
       if (!response.ok || !('taught' in response)) {
         this.stop(new WorkerGone(response.ok ? 'the worker answered out of turn' : response.error));
         throw new WorkerGone('the worker couldn’t be taught');

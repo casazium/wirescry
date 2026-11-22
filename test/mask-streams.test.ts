@@ -73,6 +73,17 @@ describe('assembleMessages', () => {
       ['', { hidden: MESSAGE_NOT_CHECKED }],
     ]);
   });
+  it('hides a message with no answer in its place, or a hidden one without a reason', () => {
+    const out = assembleMessages(page, {
+      messages: [null as never, { hidden: 42 } as never],
+      full: false,
+      lost: false,
+    });
+    expect(out.messages.map((m) => [m.base64, m.masked])).toEqual([
+      ['', { hidden: MESSAGE_NOT_CHECKED }],
+      ['', { hidden: MESSAGE_NOT_CHECKED }],
+    ]);
+  });
 });
 
 describe('assembleEvents', () => {

@@ -140,7 +140,7 @@ export class McpHttpServer {
         // No subscription streams: nothing here changes for a client to hear about.
         maxSubscriptions: 0,
         keepAliveMs: 0,
-        onerror: (error) => this.options.log(`MCP: ${error.message}`),
+        onerror: (error) => this.logError(error),
       },
     );
     const server = http.createServer((req, res) => void this.serve(req, res, handler));
@@ -174,6 +174,11 @@ export class McpHttpServer {
       server.close(() => resolve());
       server.closeAllConnections();
     });
+  }
+
+  /** An error, for the log: swept, since it can quote what a client sent. */
+  logError(error: unknown): void {
+    this.options.log(`MCP: ${sweep(error instanceof Error ? error.message : String(error))}`);
   }
 
   /** Calls being served, and waiting: an agent can't queue unbounded work. */
@@ -265,7 +270,7 @@ export class McpHttpServer {
       res.writeHead(response.status, out);
       res.end(Buffer.from(await response.arrayBuffer()));
     } catch (error) {
-      this.options.log(`MCP: ${(error as Error).message}`);
+      this.logError(error);
       if (!res.headersSent) refuse(res, 500, 'Something went wrong.');
       else res.destroy();
     }

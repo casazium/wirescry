@@ -102,6 +102,14 @@ describe('Masker with the real worker, from source', () => {
     expect(textOf(await masker.mask('c', job(part('c', OTHER), `x ${OTHER} y`)))).toBe('x [redacted] y');
   });
 
+  it('still hides another exchange’s value after teaching it failed once', async () => {
+    const { parts, source } = session({ a: part('a', SECRET), b: { ...part('b'), fn: () => 1 } });
+    const masker = make(source);
+    expect(await masker.mask('c', job(part('c'), `echo ${SECRET}`))).toEqual({ failed: MASK_FAILED });
+    parts.b = part('b');
+    expect(textOf(await masker.mask('c', job(part('c'), `echo ${SECRET}`)))).toBe('echo [redacted]');
+  });
+
   it('learns a response’s request body first', async () => {
     const masker = make(session().source);
     const answer = await masker.mask(
@@ -173,6 +181,34 @@ describe('Masker failing closed', () => {
     expect(await masker.mask('x', job({}, 'x'))).toEqual({ failed: MASK_FAILED });
     parts.a = part('a');
     expect(fake(await masker.mask('x', job({}, 'x'))).taught).toEqual(['a']);
+  });
+
+  it('answers failed when what it teaches can’t be posted, and teaches it all to a new worker next time', async () => {
+    // A value that can't be copied to the worker: posting the chunk throws.
+    const { parts, source } = session({ a: part('a'), b: { ...part('b'), fn: () => 1 } });
+    const masker = make(source, FAKE, { teachChunk: 1 });
+    expect(await masker.mask('x', job({}, 'x'))).toEqual({ failed: MASK_FAILED });
+    parts.b = part('b');
+    // Not just what changed since: a teaching that failed partway taught this worker nothing for sure.
+    expect(fake(await masker.mask('x', job({}, 'x'))).taught).toEqual(['a', 'b']);
+  });
+
+  it('answers failed when reading every exchange throws, and reads them all again next time', async () => {
+    const { source } = session({ a: part('a'), b: part('b') });
+    let fail = true;
+    const masker = make(
+      {
+        all: () => {
+          if (fail) throw new Error('store busy');
+          return source.all();
+        },
+        part: source.part,
+      },
+      FAKE,
+    );
+    expect(await masker.mask('x', job({}, 'x'))).toEqual({ failed: MASK_FAILED });
+    fail = false;
+    expect(fake(await masker.mask('x', job({}, 'x'))).taught).toEqual(['a', 'b']);
   });
 
   it('teaches in chunks, and only what changed after the first job', async () => {
