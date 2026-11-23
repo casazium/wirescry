@@ -16,7 +16,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createMcpHandler, type McpHttpHandler } from '@modelcontextprotocol/server';
 import type { Reader } from './reader';
-import { createServer, sweep, type Call } from './tools';
+import { createServer, sweep, type Call, type PluginToolSource } from './tools';
 
 export const MCP_PATH = '/mcp';
 export const MAX_BODY = 1024 * 1024;
@@ -99,6 +99,8 @@ function readBody(req: http.IncomingMessage, max: number): Promise<Buffer | unde
 
 export interface McpServerOptions {
   reader: Reader;
+  /** Tools plugins offer, beside the app's own. */
+  plugins?: PluginToolSource;
   /** One line per call, for the log. */
   log(line: string): void;
   /** Told of each call, after it finishes. */
@@ -132,7 +134,7 @@ export class McpHttpServer {
         const client = sweep(
           (ctx.requestInfo?.headers.get('user-agent') ?? '').replace(/[^\x20-\x7e]/g, '').slice(0, 100),
         );
-        return createServer(this.options.reader, (call) => this.called(call, client));
+        return createServer(this.options.reader, (call) => this.called(call, client), this.options.plugins);
       },
       {
         responseMode: 'json',

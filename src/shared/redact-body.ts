@@ -485,6 +485,12 @@ const MAX_PAIR_KEY = 64;
 const PAIR_LABEL = 'name/value pair';
 
 /** A name/value pair with a secret name, judged once however many values it holds. */
+/** Whether a key can hold the name of a name/value pair (`name`, `key`, `type`…), in any case. */
+export function isPairNameKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return PAIR_NAME_KEYS.has(lower) || PAIR_WEAK_NAME_KEYS.has(lower);
+}
+
 interface PairName {
   /** The name to record: a standard header's, else {@link PAIR_LABEL}. */
   label: string;
