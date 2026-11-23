@@ -54,6 +54,7 @@ describe('Hide Secrets: bodies masked by the backend', () => {
       'utf16',
       'many.xml',
       'events',
+      'pairs',
     ]) {
       await requestViaProxy(backend.proxyPort, `${base}/${name}`, ca);
       ids[name] = await api.completed(`/${name}`);
@@ -177,6 +178,19 @@ describe('Hide Secrets: bodies masked by the backend', () => {
     await upstream.forGet('/app.js').thenReply(200, `var c={t:"${BEARER}",n:1};`, {
       'content-type': 'application/javascript',
     });
+    // Name/value pairs in the shapes real APIs use, and an ordinary one that must stay readable.
+    await upstream.forGet('/pairs').thenReply(
+      200,
+      JSON.stringify({
+        headers: [
+          { value: ACCESS, name: 'x-api-key' },
+          { Name: 'Authorization', Value: `Bearer ${BEARER}` },
+          { name: 'accept', value: 'text/html' },
+        ],
+        tuples: [['password', PASSWORD]],
+      }),
+      { 'content-type': 'application/json' },
+    );
     await upstream.forPost('/login').thenReply(200, `{"welcome":"${PASSWORD}"}`, {
       'content-type': 'application/json',
     });
@@ -209,6 +223,21 @@ describe('Hide Secrets: bodies masked by the backend', () => {
     expect(bytesOf(body).toString()).toBe(`{"access_token":"${'*'.repeat(ACCESS.length)}","n":1}`);
     const masked = body.masked as { ranges: Array<[number, number]> };
     expect(masked.ranges).toEqual([[17, 17 + ACCESS.length]]);
+  });
+
+  it('masks name/value pairs in any order and shape, and keeps ordinary ones', async () => {
+    await ready();
+    const body = await get(ids.pairs!, 'response');
+    const text = (body.masked as { text: string }).text;
+    const bytes = bytesOf(body).toString();
+    for (const secret of [ACCESS, BEARER, PASSWORD]) {
+      expect(text).not.toContain(secret);
+      expect(bytes).not.toContain(secret);
+    }
+    expect(text).toContain('{"name":"accept","value":"text/html"}');
+    expect(text).toContain('"name":"x-api-key"');
+    // The real body is still there for Copy as curl, Save and Compose.
+    expect(bytesOf(await get(ids.pairs!, 'response', false)).toString()).toContain(ACCESS);
   });
 
   it('masks a value another request’s header held', async () => {

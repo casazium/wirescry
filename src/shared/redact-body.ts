@@ -439,8 +439,12 @@ interface Frame {
   inheritOnly?: ReadonlySet<string>;
   /** An array holding a header's values (`"set-cookie": ["…", "…"]`): the header's name. */
   headerKey?: string;
-  /** An object naming a header (`{"name": "Cookie", "value": "…"}`): the header's name. */
-  headerName?: string;
+  /** A pair's secret name: `{"name":"Cookie","value":"…"}` or `["Cookie","…"]` in a list. */
+  pair?: PairName;
+  /** Inside a pair's value: the pair, which every value below here is masked under. */
+  under?: PairName;
+  /** In an array: the index of the item being read. */
+  index?: number;
   /** In an object: the key of the value being read. */
   key?: string;
   /** In an object: whether the next token is a key. */
@@ -457,6 +461,121 @@ const HEADER_KEYS: ReadonlySet<string> = new Set([
   'proxy-authorization',
 ]);
 
+/** Keys that name a pair's value, in any case: `{"Key":"password","Value":"…"}`. */
+const PAIR_NAME_KEYS: ReadonlySet<string> = new Set(['name', 'key', 'header', 'field']);
+/**
+ * Keys that name a pair only for passwords and secrets (`{"type":"password","value":"…"}`). These
+ * keys often hold plain labels: `{"type":"token","value":"Hello"}` is a streamed word.
+ */
+const PAIR_WEAK_NAME_KEYS: ReadonlySet<string> = new Set([
+  'type',
+  'id',
+  'label',
+  'k',
+  'param',
+  'parameter',
+  'property',
+  'attribute',
+]);
+/** Keys holding a pair's value, in any case. */
+const PAIR_VALUE_KEYS: ReadonlySet<string> = new Set(['value', 'val', 'values', 'v']);
+/** Longest raw key that can be a pair key, with room for every letter written as `\uXXXX`. */
+const MAX_PAIR_KEY = 64;
+/** What a redaction records for a pair: its name is free text, which may itself hold a secret. */
+const PAIR_LABEL = 'name/value pair';
+
+/** A name/value pair with a secret name, judged once however many values it holds. */
+interface PairName {
+  /** The name to record: a standard header's, else {@link PAIR_LABEL}. */
+  label: string;
+  family: SecretFamily;
+  /** Whether its value is written as this header's: a cookie's names kept, a scheme kept. */
+  header?: string;
+}
+
+/**
+ * Where each name/value pair with a secret name starts, and that name. Found before the walk so a
+ * value is masked even when it comes before its name. One pass, tolerant of a body cut short: an
+ * object counts from its name, a `["name", value]` item of a list once it has two items.
+ */
+function pairNames(text: string): Map<number, PairName> {
+  interface Open {
+    kind: 'object' | 'array';
+    start: number;
+    inList: boolean;
+    expectKey: boolean;
+    nameKey?: 'strong' | 'weak';
+    commas: number;
+    first?: PairName;
+  }
+  const found = new Map<number, PairName>();
+  const stack: Open[] = [];
+  const closeTuple = (open: Open): void => {
+    if (open.kind === 'array' && open.inList && open.commas === 1 && open.first !== undefined) {
+      found.set(open.start, open.first);
+    }
+  };
+  const secret = (raw: string, weak: boolean): PairName | undefined => {
+    const name = decodeJsonString(raw)?.decoded;
+    if (name === undefined) return undefined;
+    const lower = name.toLowerCase();
+    // Header names are matched in any case; word splitting would break `AuThOrIzAtIoN`.
+    const family = secretName(HEADER_KEYS.has(lower) ? lower : name, 'header');
+    if (!family || (weak && !SCALAR_FAMILIES.has(family))) return undefined;
+    return {
+      label: HEADER_KEYS.has(lower) ? name : PAIR_LABEL,
+      family,
+      ...(HEADER_KEYS.has(lower) ? { header: lower } : {}),
+    };
+  };
+  const n = text.length;
+  for (let i = 0; i < n; i++) {
+    const c = text.charCodeAt(i);
+    const top = stack.at(-1);
+    if (c === 0x22) {
+      let end = i + 1;
+      while (end < n && text.charCodeAt(end) !== 0x22) end += text.charCodeAt(end) === 0x5c ? 2 : 1;
+      if (end >= n) break;
+      const raw = text.slice(i + 1, end);
+      if (top?.kind === 'object' && top.expectKey) {
+        const key = raw.length <= MAX_PAIR_KEY ? decodeJsonString(raw)?.decoded.toLowerCase() : undefined;
+        top.nameKey =
+          key === undefined
+            ? undefined
+            : PAIR_NAME_KEYS.has(key)
+              ? 'strong'
+              : PAIR_WEAK_NAME_KEYS.has(key)
+                ? 'weak'
+                : undefined;
+        top.expectKey = false;
+      } else if (top?.kind === 'object' && top.nameKey) {
+        const pair = secret(raw, top.nameKey === 'weak');
+        if (pair && !found.has(top.start)) found.set(top.start, pair);
+      } else if (top?.kind === 'array' && top.commas === 0) {
+        top.first = secret(raw, false);
+      }
+      i = end;
+    } else if (c === 0x7b || c === 0x5b) {
+      if (stack.length >= MAX_DEPTH) break;
+      stack.push({
+        kind: c === 0x7b ? 'object' : 'array',
+        start: i,
+        inList: top?.kind === 'array',
+        expectKey: c === 0x7b,
+        commas: 0,
+      });
+    } else if (c === 0x7d || c === 0x5d) {
+      const open = stack.pop();
+      if (open) closeTuple(open);
+    } else if (c === 0x2c && top) {
+      top.commas++;
+      if (top.kind === 'object') top.expectKey = true;
+    }
+  }
+  for (const open of stack) closeTuple(open);
+  return found;
+}
+
 /** Families whose numbers are secrets too (a PIN, a card code); tokens' aren't. */
 const SCALAR_FAMILIES: ReadonlySet<SecretFamily> = new Set(['password', 'secret']);
 /** Families whose short or spaced strings are kept in JSON (a logprob's `"token": "Hello"`). */
@@ -471,6 +590,7 @@ const LONG_ONLY_FAMILIES: ReadonlySet<SecretFamily> = new Set(['token', 'session
 export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = false): Span[] | undefined {
   const spans: Span[] = [];
   const stack: Frame[] = [];
+  const pairs = pairNames(text);
   let i = 0;
   const n = text.length;
   const ws = (): void => {
@@ -480,10 +600,22 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
       i++;
     }
   };
-  /** The family a value at the current position takes, from its key or its container. */
+  /** The secret name of the pair whose value is at the current position, if any. */
+  const pairHere = (): PairName | undefined => {
+    const frame = stack.at(-1);
+    if (!frame) return undefined;
+    if (frame.under !== undefined) return frame.under;
+    if (frame.pair === undefined) return undefined;
+    const isValue =
+      frame.kind === 'object' ? PAIR_VALUE_KEYS.has((frame.key ?? '').toLowerCase()) : frame.index === 1;
+    return isValue ? frame.pair : undefined;
+  };
+  /** The family a value at the current position takes, from its pair, key or container. */
   const familyHere = (): SecretFamily | undefined => {
     const frame = stack.at(-1);
     if (!frame) return undefined;
+    const pair = pairHere();
+    if (pair !== undefined) return pair.family;
     if (frame.kind === 'object') {
       const key = frame.key ?? '';
       const rule = nameRule(key, 'json');
@@ -514,6 +646,8 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
   const nameHere = (): string => {
     const frame = stack.at(-1);
     if (!frame) return '';
+    const pair = pairHere();
+    if (pair !== undefined) return pair.label;
     const rule = frame.kind === 'object' ? nameRule(frame.key ?? '', 'json') : undefined;
     return rule && rule !== 'describes' ? frame.key! : (frame.inheritName ?? frame.key ?? '');
   };
@@ -537,18 +671,18 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
     const { decoded, rawAt } = unescaped;
     const frame = stack.at(-1);
     const key = frame?.kind === 'object' ? (frame.key ?? '') : '';
-    // A header's value: under its name, in an array under its name, or as a HAR-style pair's value.
-    const header =
-      frame?.kind === 'array'
-        ? frame.headerKey
-        : HEADER_KEYS.has(key.toLowerCase())
-          ? key
-          : key === 'value'
-            ? frame?.headerName
-            : undefined;
-    if (frame?.kind === 'object' && key.toLowerCase() === 'name' && HEADER_KEYS.has(decoded.toLowerCase())) {
-      frame.headerName = decoded;
+    // A header's value: a pair's, in any order or shape, under its name, or in an array under it.
+    const pair = pairHere();
+    if (pair && decoded.trim() === '') return true;
+    if (pair && !pair.header) {
+      // A pair's name says the whole value is the secret, whatever its length or spaces.
+      spans.push({ start, end, kind: 'name', name: pair.label });
+      if (known && STRONG_FAMILIES.has(pair.family)) addValue(known, decoded.trim());
+      return true;
     }
+    const header =
+      pair?.header ??
+      (frame?.kind === 'array' ? frame.headerKey : HEADER_KEYS.has(key.toLowerCase()) ? key : undefined);
     if (header && decoded !== '') {
       // As the header itself would be: a cookie's name kept, an authorization's scheme. The whole
       // string is written back, so escapes in its kept parts may change; it stays valid JSON.
@@ -558,7 +692,7 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
           start,
           end,
           kind: 'name',
-          name: header,
+          name: pair?.label ?? header,
           replacement: JSON.stringify(redacted).slice(1, -1),
         });
         return true;
@@ -654,12 +788,16 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
         const inArray = c === '{' && frame?.kind === 'array' && frame.inherit !== undefined;
         const inherit = c === '[' || inArray ? family : own && own !== 'describes' ? own : undefined;
         const inheritName = inherit ? nameHere() : undefined;
+        const under = pairHere();
+        const pair = pairs.get(i);
         stack.push(
           c === '{'
             ? {
                 kind: 'object',
                 inherit,
                 inheritName,
+                under,
+                pair,
                 expectKey: true,
                 ...(inArray ? { inheritOnly: VALUE_KEYS } : {}),
               }
@@ -667,6 +805,9 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
                 kind: 'array',
                 inherit,
                 inheritName,
+                under,
+                pair,
+                index: 0,
                 expectKey: false,
                 ...(frame?.kind === 'object' && HEADER_KEYS.has((frame.key ?? '').toLowerCase())
                   ? { headerKey: frame.key }
@@ -723,6 +864,7 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
           ws();
           if (text[i] !== '"') return fail();
         } else {
+          frame.index = (frame.index ?? 0) + 1;
           needValue = true;
         }
         continue;
