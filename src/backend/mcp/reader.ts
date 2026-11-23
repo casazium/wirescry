@@ -16,6 +16,7 @@ import { compileQuery, MAX_QUERY_LENGTH, tokenize } from '../../shared/query';
 import { isEventStream, type SseItem } from '../../shared/sse';
 import type { MaskField } from '../mask-body';
 import type { FieldsAnswer } from '../masker';
+import { collectResult, ResultError } from './plugin-result';
 
 type Json = Record<string, unknown>;
 
@@ -231,7 +232,7 @@ export interface ListResult {
   note?: string;
 }
 
-const FULL_NOTE = 'Some values seen earlier may not be hidden: Wirescry’s list of them is full.';
+export const FULL_NOTE = 'Some values seen earlier may not be hidden: Wirescry’s list of them is full.';
 
 export class Reader {
   /** For each agent stream key, the last index taught and the worker generation it was taught in. */
@@ -240,6 +241,44 @@ export class Reader {
   private readonly bodies = new Map<string, Promise<MaskedBodyText>>();
 
   constructor(private readonly backend: ReaderBackend) {}
+
+  /**
+   * A plugin tool's result, masked string by string (plugin-result.ts), with the session's known
+   * values. Throws ReadError if it isn't plain JSON, is too large, or couldn't be masked.
+   */
+  async pluginResult(result: unknown): Promise<{ value: unknown; full: boolean }> {
+    let collected: ReturnType<typeof collectResult>;
+    try {
+      collected = collectResult(result);
+    } catch (error) {
+      if (error instanceof ResultError) throw new ReadError(error.message);
+      throw error;
+    }
+    const full = { full: false };
+    const fields = await masked(this.backend, collected.fields, {}, full);
+    let value: unknown;
+    try {
+      value = collected.build(fields);
+    } catch (error) {
+      if (error instanceof ResultError) throw new ReadError(error.message);
+      throw error;
+    }
+    if (JSON.stringify(value).length > MAX_CHARS) {
+      throw new ReadError('The result is too large. Ask for less at a time.');
+    }
+    return { value, full: full.full };
+  }
+
+  /** A plugin tool's error message, masked as text; a general message if that fails. */
+  async pluginError(message: string): Promise<string> {
+    try {
+      const full = { full: false };
+      const [text] = await masked(this.backend, [{ kind: 'text', value: message.slice(0, 2000) }], {}, full);
+      return full.full ? `${text} ${FULL_NOTE}` : text!;
+    } catch {
+      return 'The tool failed.';
+    }
+  }
 
   /** Whether `id` names a captured exchange. */
   knows(id: string): boolean {

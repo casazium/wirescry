@@ -13,11 +13,13 @@ import type {
 } from '../shared/api';
 import type {
   BackendPlugin,
+  McpReadTool,
   PassThroughTransforms,
   PluginRule,
   UpstreamTargetResult,
 } from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
+import { ResultError } from './mcp/plugin-result';
 import { MOCKTTP_BUFFER_LIMIT } from './proxy';
 import { createSecureStore, type Encryptor } from './secure-store';
 
@@ -58,6 +60,102 @@ export function validateAnnotation(annotation: unknown): ExchangeAnnotation {
     ...(cleanTitle ? { title: cleanTitle } : {}),
   };
 }
+const TOOL_NAME = /^[a-z][a-z0-9_]{1,39}$/;
+export const MAX_PLUGIN_TOOLS = 32;
+const MAX_SCHEMA_BYTES = 64 * 1024;
+/** All of one plugin's schemas together: they're sent with each list of tools. */
+export const MAX_SCHEMAS_BYTES = 256 * 1024;
+/** One plugin's MCP reads at once, counted until each really ends, even if the agent has gone. */
+export const MAX_TOOL_READS = 8;
+// Invisible to people but read by a model: tag characters and variation selectors.
+const HIDDEN_TEXT = /[\u{E0000}-\u{E007F}]|[\uFE00-\uFE0F]/u;
+const HIDDEN_TEXT_ALL = new RegExp(HIDDEN_TEXT.source, 'gu');
+
+/** A plugin's MCP tool as the host keeps it: checked, copied, and its plugin's name. */
+export interface PluginTool {
+  plugin: string;
+  name: string;
+  title: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+  contains: 'traffic' | 'rules';
+}
+
+type HeldTool = PluginTool & { read: McpReadTool['read'] };
+
+/**
+ * Checks a plugin's MCP tools and returns clean copies. Throws on the first problem. `taken` holds
+ * names the app or another plugin already uses.
+ */
+export function validateTools(plugin: string, tools: unknown, taken: ReadonlySet<string>): HeldTool[] {
+  if (!Array.isArray(tools)) throw new Error('MCP tools must be a list.');
+  if (tools.length > MAX_PLUGIN_TOOLS) throw new Error(`At most ${MAX_PLUGIN_TOOLS} MCP tools.`);
+  const names = new Set<string>();
+  let schemaBytes = 0;
+  return tools.map((tool: unknown, i) => {
+    if (!tool || typeof tool !== 'object') throw new Error(`MCP tool ${i + 1} must be an object.`);
+    // Each field read once, so a getter can't pass the checks and then return something else.
+    const { name, title, description, inputSchema, contains, read, kind } = tool as Partial<
+      Record<keyof McpReadTool | 'kind', unknown>
+    >;
+    if (typeof name !== 'string' || !TOOL_NAME.test(name)) {
+      throw new Error(
+        `MCP tool ${i + 1}'s name must be 2 to 40 lowercase letters, digits and underscores, starting with a letter.`,
+      );
+    }
+    if (taken.has(name) || names.has(name)) throw new Error(`The MCP tool name ${name} is taken.`);
+    // A newer kind of tool mustn't be offered here as a read-only one.
+    if (kind !== undefined && kind !== 'read') throw new Error('This Wirescry only takes read tools.');
+    names.add(name);
+    const text = (value: unknown, max: number, what: string): string => {
+      const clean =
+        typeof value === 'string' ? value.replace(HIDDEN_TEXT_ALL, '').replace(UNSAFE_TEXT_ALL, ' ') : '';
+      if (clean.trim() === '' || length(clean) > max) {
+        throw new Error(`MCP tool ${name}'s ${what} must be 1 to ${max} characters.`);
+      }
+      return clean;
+    };
+    const cleanTitle = text(title, 100, 'title');
+    const cleanDescription = text(description, 2000, 'description');
+    if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) {
+      throw new Error(`MCP tool ${name}'s inputSchema must be a JSON Schema object.`);
+    }
+    let schema: Record<string, unknown>;
+    try {
+      const json = JSON.stringify(inputSchema);
+      const bytes = Buffer.byteLength(json);
+      schemaBytes += bytes;
+      if (
+        bytes > MAX_SCHEMA_BYTES ||
+        schemaBytes > MAX_SCHEMAS_BYTES ||
+        HIDDEN_TEXT.test(json) ||
+        UNSAFE_TEXT.test(json)
+      ) {
+        throw new Error('not allowed');
+      }
+      schema = JSON.parse(json) as Record<string, unknown>;
+    } catch {
+      throw new Error(
+        `MCP tool ${name}'s inputSchema must be JSON without hidden characters, at most 64 KB (256 KB for all of a plugin's).`,
+      );
+    }
+    if (schema.type !== 'object') throw new Error(`MCP tool ${name}'s inputSchema must have type: 'object'.`);
+    if (contains !== undefined && contains !== 'traffic' && contains !== 'rules') {
+      throw new Error(`MCP tool ${name}'s contains must be traffic or rules.`);
+    }
+    if (typeof read !== 'function') throw new Error(`MCP tool ${name} needs a read function.`);
+    return {
+      plugin,
+      name,
+      title: cleanTitle,
+      description: cleanDescription,
+      inputSchema: schema,
+      contains: (contains ?? 'traffic') as 'traffic' | 'rules',
+      read: read as McpReadTool['read'],
+    };
+  });
+}
+
 /** Mockttp steps that end a request without a response. */
 const SILENT_STEPS = new Set(['close-connection', 'reset-connection', 'timeout']);
 
@@ -89,6 +187,10 @@ export interface PluginHostOptions {
   startTimeoutMs?: number;
   /** How long one call from the UI may take; a plugin that never answers mustn't hang the UI. */
   callTimeoutMs?: number;
+  /** MCP tool names the app itself uses (and keeps for later): no plugin may take them. */
+  reservedToolNames?: readonly string[];
+  /** How long a plugin's MCP tool may take to answer. */
+  toolTimeoutMs?: number;
 }
 
 type State = { state: 'starting' } | { state: 'running' } | { state: 'failed'; reason: string };
@@ -105,6 +207,12 @@ export class PluginHost {
   private readonly silentRules = new Set<string>();
   // How often each plugin's exchangeCompleted has failed, to keep the log readable.
   private readonly completionErrors = new Map<string, number>();
+  // Each plugin's MCP tools, checked, by plugin name.
+  private readonly toolsByPlugin = new Map<string, HeldTool[]>();
+  // Each plugin's MCP calls in progress, to end when it stops.
+  private readonly liveCalls = new Map<string, Set<AbortController>>();
+  // Each plugin's reads that haven't ended yet.
+  private readonly toolReads = new Map<string, number>();
 
   constructor(private readonly options: PluginHostOptions) {
     const seen = new Set<string>();
@@ -199,6 +307,10 @@ export class PluginHost {
               this.options.annotate(plugin.name, String(exchangeId), clean);
             },
             log,
+            mcp: {
+              version: 1,
+              setTools: (tools) => this.setTools(plugin, tools),
+            },
           }))();
         await Promise.race([
           starting,
@@ -275,11 +387,87 @@ export class PluginHost {
     }
   }
 
+  /** Started plugins' MCP tools, in plugin order. */
+  tools(): PluginTool[] {
+    return this.options.plugins.flatMap((plugin) =>
+      this.hasStarted(plugin)
+        ? (this.toolsByPlugin.get(plugin.name) ?? []).map((tool) => ({
+            plugin: tool.plugin,
+            name: tool.name,
+            title: tool.title,
+            description: tool.description,
+            inputSchema: structuredClone(tool.inputSchema),
+            contains: tool.contains,
+          }))
+        : [],
+    );
+  }
+
+  /**
+   * Runs a plugin's MCP tool and returns a copy of its result. Rejects if that started plugin has
+   * no such tool, if it throws, if it takes too long, if the agent gives up, or if the plugin stops
+   * first. The tool's signal is aborted in the last three.
+   */
+  async callTool(pluginName: string, name: string, args: unknown, signal: AbortSignal): Promise<unknown> {
+    const plugin = this.options.plugins.find((p) => p.name === pluginName);
+    const tool =
+      plugin && this.hasStarted(plugin)
+        ? this.toolsByPlugin.get(plugin.name)?.find((t) => t.name === name)
+        : undefined;
+    if (!plugin || !tool) throw new Error(`No tool called ${name}.`);
+    if ((this.toolReads.get(plugin.name) ?? 0) >= MAX_TOOL_READS) {
+      throw new Error(`${name} is busy. Try again shortly.`);
+    }
+    const timeoutMs = this.options.toolTimeoutMs ?? 10_000;
+    const call = new AbortController();
+    const ended = new Promise<never>((_, reject) => {
+      call.signal.addEventListener('abort', () => reject(new Error(String(call.signal.reason))), {
+        once: true,
+      });
+    });
+    const cancelled = (): void => call.abort('The call was cancelled.');
+    if (signal.aborted) cancelled();
+    else signal.addEventListener('abort', cancelled, { once: true });
+    const live = this.liveCalls.get(plugin.name) ?? new Set<AbortController>();
+    this.liveCalls.set(plugin.name, live);
+    live.add(call);
+    const timer = setTimeout(() => call.abort(`${name} took too long to answer.`), timeoutMs);
+    try {
+      const result = await Promise.race([
+        ended,
+        // A copy of the arguments, so the plugin can't change what the server holds.
+        (async () => {
+          if (call.signal.aborted) return undefined;
+          this.toolReads.set(plugin.name, (this.toolReads.get(plugin.name) ?? 0) + 1);
+          try {
+            return await tool.read(structuredClone(args), { signal: call.signal });
+          } finally {
+            this.toolReads.set(plugin.name, this.toolReads.get(plugin.name)! - 1);
+          }
+        })(),
+      ]);
+      if (call.signal.aborted) throw new Error(String(call.signal.reason));
+      try {
+        // A copy now, so the plugin can't change it while it's masked; getters are read once.
+        return structuredClone(result);
+      } catch {
+        // Its own message would quote the plugin's code.
+        throw new ResultError('The result isn’t plain JSON.');
+      }
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', cancelled);
+      live.delete(call);
+    }
+  }
+
   async stopAll(): Promise<void> {
     for (const plugin of this.options.plugins) {
       if (!this.isRunning(plugin)) continue;
       // From now on it hears and does nothing more: no completions, badges or body reads.
       this.states.set(plugin, { state: 'failed', reason: 'Stopped.' });
+      this.toolsByPlugin.delete(plugin.name);
+      this.endCalls(plugin.name);
       // An async wrapper catches synchronous throws too.
       await (async () => plugin.stop?.())().catch((error: unknown) => {
         console.error(`[wirescry] plugin ${plugin.name} failed to stop:`, error);
@@ -331,10 +519,29 @@ export class PluginHost {
     await this.options.refreshRules();
   }
 
+  /** Ends a plugin's MCP calls in progress: their answers won't be used. */
+  private endCalls(name: string): void {
+    for (const call of this.liveCalls.get(name) ?? []) call.abort(`${name} stopped.`);
+    this.liveCalls.delete(name);
+  }
+
+  private setTools(plugin: BackendPlugin, tools: unknown): void {
+    if (!this.isRunning(plugin)) return; // A failed or stopped plugin can't add tools back.
+    const taken = new Set(this.options.reservedToolNames ?? []);
+    for (const other of this.options.plugins) {
+      // A plugin that failed or stopped has no tools here, so it holds no names.
+      if (other === plugin) continue;
+      for (const tool of this.toolsByPlugin.get(other.name) ?? []) taken.add(tool.name);
+    }
+    this.toolsByPlugin.set(plugin.name, validateTools(plugin.name, tools, taken));
+  }
+
   private async fail(plugin: BackendPlugin, reason: string): Promise<void> {
     const { name } = plugin;
     console.error(`[wirescry] plugin ${name}: ${reason}`);
     this.states.set(plugin, { state: 'failed', reason });
+    this.toolsByPlugin.delete(name);
+    this.endCalls(name);
     this.rulesByPlugin.delete(name);
     for (const key of [...this.labels.keys()]) if (key.startsWith(`${name}/`)) this.labels.delete(key);
     this.options.clearAnnotations(name);

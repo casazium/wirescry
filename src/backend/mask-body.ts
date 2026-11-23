@@ -384,7 +384,11 @@ export type MaskField =
   | { kind: 'header'; name: string; value: string }
   /** A host name: not a secret by any rule, but a known value can turn up in one. */
   | { kind: 'host'; value: string }
-  | { kind: 'text'; value: string };
+  | { kind: 'text'; value: string }
+  /** A body's text, read by its type (JSON by its keys, a form by its field names). */
+  | { kind: 'body'; contentType: string; value: string }
+  /** A JSON document that must stay valid: known values are looked for inside its strings only. */
+  | { kind: 'json'; value: string };
 
 /** Known values left in text after the rules: masked too. */
 function withKnown(text: string, known: KnownValues): string {
@@ -401,6 +405,16 @@ function maskField(field: MaskField, known: KnownValues): string {
       return withKnown(field.value, known);
     case 'text':
       return maskString(field.value, known);
+    case 'json':
+      return applySpans(field.value, redactBody(field.value, 'application/json', known).spans);
+    case 'body': {
+      const redaction = redactBody(field.value, field.contentType, known);
+      // What its type's rules found stands; a part they couldn't read gets the text rules too.
+      const spans = redaction.notScanned
+        ? mergeSpans([...redaction.spans, ...redactBody(field.value, 'text/plain', known).spans])
+        : redaction.spans;
+      return withKnown(applySpans(field.value, spans), known);
+    }
   }
 }
 

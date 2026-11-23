@@ -81,6 +81,77 @@ export interface UpstreamTarget {
 /** Where to connect, or why a plugin mustn't send this call's server anything. */
 export type UpstreamTargetResult = { target: UpstreamTarget } | { refused: string };
 
+/**
+ * A value in an MCP tool's result, marked with what it is, so Wirescry hides secrets in it the right
+ * way: a header value by the header's name, a body by its type (plain text without one). `url` is
+ * for a URL or a path with a query only. A header comes out as `{ name, value }`, the others as a
+ * string. An object with `wirescryMask` that isn't exactly one of these makes the result an error.
+ *
+ * The rest of a result is masked as a JSON body is: by each value's key and neighbors, and by the
+ * text rules. Still mark what you can. Give captured data as a `body` leaf, never parsed into
+ * objects: its keys are written by whoever sent it, and one called `wirescryMask` would be read as
+ * a mark. A marked value under a key that names a secret (`password`, `token`, `session`) is hidden
+ * whole.
+ */
+export type McpLeaf =
+  | { wirescryMask: 'header'; name: string; value: string }
+  | { wirescryMask: 'body'; contentType?: string; text: string }
+  | { wirescryMask: 'url'; value: string }
+  | { wirescryMask: 'text'; value: string };
+
+/** What a plugin's MCP tool is told about the call. */
+export interface McpToolContext {
+  /** Aborted when the agent gives up, the time limit passes or the plugin stops: stop working then. */
+  signal: AbortSignal;
+}
+
+/**
+ * A tool a plugin offers AI agents through Wirescry's MCP server. Only tools that read: it must
+ * change nothing (Wirescry tells agents it's read-only). Wirescry masks its result before an
+ * agent sees it, and treats it as untrusted, like captured traffic.
+ */
+export interface McpReadTool {
+  /** Lowercase letters, digits and underscores, starting with a letter: 2 to 40 characters. */
+  name: string;
+  /** Up to 100 characters. */
+  title: string;
+  /** Up to 2,000 characters. Wirescry adds a sentence saying the result is untrusted data. */
+  description: string;
+  /**
+   * A JSON Schema for the arguments, `type: 'object'`, shown to agents (up to 64 KB as JSON, and
+   * 256 KB for all of a plugin's tools).
+   * Wirescry doesn't check arguments against it: `read` gets them as sent, and must validate.
+   */
+  inputSchema: Record<string, unknown>;
+  /** What the result holds: captured traffic (the default), or the plugin's own rules. */
+  contains?: 'traffic' | 'rules';
+  /**
+   * Returns the result: JSON values, with McpLeaf objects for values to mask by kind. It has 10 s,
+   * and at most 8 of a plugin's reads run at once, so stop when `signal` aborts.
+   * At most 100,000 characters as JSON once masked; before masking, 20,000 values, 32 levels deep
+   * and 1,000,000 characters. Past these, or for a Map, Date, class instance or function, the agent
+   * gets an error. NaN and Infinity become null.
+   *
+   * Throw to give the agent an error; its message is masked as text and marked as untrusted.
+   *
+   * Never put the agent's arguments into a result or an error (say "unknown id", not the id). Known
+   * secrets come back masked, so an echo would tell an agent which of its guesses is one.
+   */
+  read(args: unknown, context: McpToolContext): Promise<unknown>;
+}
+
+/** Wirescry's MCP server, for a plugin. */
+export interface PluginMcp {
+  /** Rises when Wirescry accepts something new: check it before offering a newer kind of tool. */
+  version: number;
+  /**
+   * Replaces this plugin's MCP tools (call with [] to remove them), at most 32. Throws, changing
+   * nothing, if a tool is invalid or its name is taken. Agents see a plugin's tools only once it has
+   * started; Wirescry removes them itself when the plugin fails or stops, and ignores this after.
+   */
+  setTools(tools: McpReadTool[]): void;
+}
+
 export interface BackendPluginHost {
   /** A folder for this plugin's own files, inside Wirescry's data folder. */
   dataDir: string;
@@ -154,6 +225,11 @@ export interface BackendPluginHost {
    * plugin has started. Missing in versions before it was added: check before calling.
    */
   upstreamTarget?(exchangeId: string): UpstreamTargetResult | null;
+  /**
+   * Tools for AI agents, served by Wirescry's MCP server when the user turns it on. Missing in
+   * versions before it was added: check before calling.
+   */
+  mcp?: PluginMcp;
 }
 
 export interface BackendPlugin {

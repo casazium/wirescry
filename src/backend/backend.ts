@@ -54,6 +54,7 @@ import { applySpans, redactHeaders } from '../shared/redact';
 import { assembleEvents, assembleMessages } from './mask-streams';
 import { MAX_ACTIVITY, MCP_PATH, McpHttpServer } from './mcp/http';
 import { Reader, StreamLost } from './mcp/reader';
+import { APP_TOOL_NAMES } from './mcp/tools';
 import type { SseItem } from '../shared/sse';
 
 /** A new token for the MCP server: 32 random bytes, base64url (43 characters). */
@@ -170,6 +171,8 @@ export interface BackendOptions {
   pluginStartTimeoutMs?: number;
   /** How long one plugin call from the UI may take (default 2 minutes). */
   pluginCallTimeoutMs?: number;
+  /** How long a plugin's MCP tool may take; for tests. */
+  pluginToolTimeoutMs?: number;
   /** Encrypts plugins' secure stores; leave out where the OS has no keychain to use. */
   encryptor?: Encryptor;
   /** This Wirescry's version and build date, for plugins. Defaults suit tests. */
@@ -473,6 +476,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
 
   // Plugins such as Pro. They start once the API is up.
   const pluginHost = new PluginHost({
+    reservedToolNames: APP_TOOL_NAMES,
     plugins: options.plugins ?? [],
     enabled: options.pluginsEnabled ?? false,
     disabledReason: 'Plugins are turned off.',
@@ -515,6 +519,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
     startTimeoutMs: options.pluginStartTimeoutMs,
     callTimeoutMs: options.pluginCallTimeoutMs,
+    toolTimeoutMs: options.pluginToolTimeoutMs,
   });
 
   /** Tells plugins once that an exchange has finished: its response (body included) recorded, or failed. */
@@ -1036,6 +1041,10 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   let mcpProblem: string | undefined;
   const mcpServer = new McpHttpServer({
     reader: mcpReader,
+    plugins: {
+      list: () => pluginHost.tools(),
+      call: (plugin, name, args, signal) => pluginHost.callTool(plugin, name, args, signal),
+    },
     log: (line) => console.log(`[wirescry] ${line}`),
     onCall: (call) => {
       mcpActivity.unshift(call);
