@@ -2,11 +2,15 @@
  * A plugin MCP tool's result, made safe to give an agent. The result is masked as one JSON body, by
  * the same rules as a captured one, so a value is judged by its key and its neighbors (`password`,
  * a `{ name: 'authorization', value }` pair). Each string also gets the text rules, and each key is
- * masked. Values the plugin marked (McpLeaf) stand in that body as placeholders and are masked by
- * what they are: a header value by its name, a body by its type. A placeholder the JSON rules hid
- * sat under a secret's name, so that value is hidden whole.
+ * masked. Marked text (McpLeaf) is read as the plain string it is. Other marked values stand in that
+ * body as placeholders and are masked by what they are: a header value by its name, a body by its
+ * type. A placeholder the JSON rules hid sat under a secret's name, so that value is hidden whole.
+ * Marking never weakens a value: a second JSON field holds the real values, so its rules see the same
+ * names and pairs as an unmarked result and teach the same values. It's used only to hide: what it
+ * changed is hidden, and its text is never given.
  */
 import { randomInt } from 'node:crypto';
+import { isPairNameKey } from '../../shared/redact-body';
 import type { MaskField } from '../mask-body';
 
 /** How deep a result may nest. */
@@ -137,8 +141,66 @@ function readMasked(text: string): unknown {
   return result;
 }
 
-/** Puts one value together from its node in the masked JSON and the other masked fields. */
-type Built = (node: unknown, masked: readonly string[]) => unknown;
+/** Puts one value together from its nodes in the two masked JSONs and the other masked fields. */
+type Built = (node: unknown, real: unknown, masked: readonly string[]) => unknown;
+
+/** A value as it goes into each JSON, and how to rebuild it. */
+interface Walked {
+  json: unknown;
+  real: unknown;
+  build: Built;
+}
+
+/** A number in lowercase letters only: the rules never learn such a word as a known value. */
+function letters(n: number): string {
+  return [...n.toString(16)].map((digit) => 'abcdefghijklmnop'[parseInt(digit, 16)]).join('');
+}
+
+/**
+ * Whether every piece `shown` keeps is also kept by `seen`, in order: so `shown` hides at least what
+ * `seen` hides. Each piece is searched for with a prefix table (KMP) from where the last one ended,
+ * so hostile text stays linear on the backend's main thread.
+ */
+export function keptWithin(shown: string, seen: string): boolean {
+  const parts = seen.split(HIDDEN);
+  let part = 0;
+  let from = 0;
+  for (const piece of shown.split(HIDDEN)) {
+    if (piece === '') continue;
+    const table = new Int32Array(piece.length);
+    for (let i = 1, k = 0; i < piece.length; i++) {
+      while (k > 0 && piece[i] !== piece[k]) k = table[k - 1]!;
+      if (piece[i] === piece[k]) k++;
+      table[i] = k;
+    }
+    let found = false;
+    for (; part < parts.length && !found; part += found ? 0 : 1, from = found ? from : 0) {
+      const text = parts[part]!;
+      for (let i = from, k = 0; i < text.length; i++) {
+        while (k > 0 && text[i] !== piece[k]) k = table[k - 1]!;
+        if (text[i] === piece[k]) k++;
+        if (k === piece.length) {
+          from = i + 1;
+          found = true;
+          break;
+        }
+      }
+    }
+    if (!found) return false;
+  }
+  return true;
+}
+
+/**
+ * A marked value's masked text. `seen` is what the JSON rules made of its real text: its own kind's
+ * text is given only if it hides at least as much, so a decoy its rules did find can't vouch for a
+ * secret only the JSON rules found.
+ */
+function leafText(real: string, shown: string, seen: unknown): string {
+  if (seen === real) return shown;
+  if (typeof seen !== 'string' || shown === real) return HIDDEN;
+  return keptWithin(shown, seen) ? shown : HIDDEN;
+}
 
 /**
  * The fields to mask, the first being the whole result as JSON, and how to build the masked result
@@ -163,29 +225,36 @@ export function collectResult(result: unknown): {
   };
   const seen = new Set<object>();
   let placeholders = 0;
+  let marked = false;
   // Not guessable, so a string in the result can't be the same as a placeholder.
-  const salt = randomInt(1e12);
+  const salt = letters(randomInt(1e12));
 
   /** The value as it goes into the JSON, and how to build it from what comes back. */
-  const walk = (value: unknown, depth: number): { json: unknown; build: Built } => {
+  const walk = (value: unknown, depth: number, nameSlot = false): Walked => {
     if (++nodes > MAX_NODES) throw new ResultError('The result is too large.');
     if (depth > MAX_DEPTH) throw new ResultError('The result nests too deeply.');
-    if (value === null || typeof value === 'boolean') return { json: value, build: () => value };
+    if (value === null || typeof value === 'boolean') return { json: value, real: value, build: () => value };
     if (typeof value === 'number') {
       // JSON has no NaN or Infinity.
-      if (!Number.isFinite(value)) return { json: null, build: () => null };
+      if (!Number.isFinite(value)) return { json: null, real: null, build: () => null };
       // A PIN or a code can be a number: hidden, it comes back as text.
-      return { json: value, build: (node) => (typeof node === 'number' ? value : HIDDEN) };
+      return {
+        json: value,
+        real: value,
+        build: (node, real) => (typeof node === 'number' && typeof real === 'number' ? value : HIDDEN),
+      };
     }
     if (typeof value === 'string') {
       const at = add({ kind: 'text', value });
       return {
         json: value,
-        build: (node, m) => {
-          if (typeof node !== 'string') return HIDDEN;
-          if (node === value) return m[at];
-          // Each pass found something: unless they agree, neither result has everything hidden.
-          return m[at] === value || m[at] === node ? node : HIDDEN;
+        real: value,
+        build: (node, real, m) => {
+          if (typeof node !== 'string' || typeof real !== 'string') return HIDDEN;
+          // Each pass may have found something: unless they agree, none has everything hidden.
+          const found = [node, real, m[at]!].filter((text) => text !== value);
+          if (found.length === 0) return value;
+          return found.every((text) => text === found[0]) ? found[0] : HIDDEN;
         },
       };
     }
@@ -196,20 +265,24 @@ export function collectResult(result: unknown): {
       if (Array.isArray(value)) {
         // Before reading it: a sparse list can claim billions of items.
         if (nodes + value.length > MAX_NODES) throw new ResultError('The result is too large.');
-        const items: Array<{ json: unknown; build: Built }> = [];
+        const items: Walked[] = [];
         for (let i = 0; i < value.length; i++) {
           const item: unknown = value[i];
           // As JSON.stringify: undefined (or a hole) in a list is null.
           if (item === undefined) {
             nodes++;
-            items.push({ json: null, build: () => null });
-          } else items.push(walk(item, depth + 1));
+            items.push({ json: null, real: null, build: () => null });
+          } else items.push(walk(item, depth + 1, true));
         }
         return {
           json: items.map((item) => item.json),
-          build: (node, m) =>
-            Array.isArray(node) && node.length === items.length
-              ? items.map((item, i) => item.build(node[i], m))
+          real: items.map((item) => item.real),
+          build: (node, real, m) =>
+            Array.isArray(node) &&
+            node.length === items.length &&
+            Array.isArray(real) &&
+            real.length === items.length
+              ? items.map((item, i) => item.build(node[i], real[i], m))
               : HIDDEN,
         };
       }
@@ -218,34 +291,75 @@ export function collectResult(result: unknown): {
       const record = value as Record<string, unknown>;
       const leaf = asLeaf(record);
       if (leaf) {
+        const first = leaf[0]!;
+        if (first.kind === 'text') {
+          // The same rules as a plain string, so read as one. This object's count covers it.
+          nodes--;
+          return walk(first.value, depth);
+        }
+        marked = true;
         const at = leaf.map(add);
+        const main = leaf[leaf.length - 1]!;
+        const text = main.value;
         // Each its own: a value learned under a secret's name mustn't hide the others.
-        const placeholder = `wirescryMarkedValue${salt}x${placeholders++}`;
+        const placeholder = `wirescrymarkedvalue${salt}x${letters(placeholders++)}`;
+        // A header's value is a value: where a pair's name could go, it goes in as the header it
+        // is, so `vary: Cookie` can't pair with what's beside it. No such place is a secret's key.
+        // Anywhere else it stays plain, so a secret's key teaches it.
+        const isHeader = first.kind === 'host';
+        const asObject = isHeader && nameSlot;
         return {
           json: placeholder,
-          build: (node, m) => {
+          real: asObject ? { name: first.value, value: text } : text,
+          build: (node, real, m) => {
             if (node !== placeholder) return HIDDEN;
-            return leaf[0]!.kind === 'host' ? { name: m[at[0]!], value: m[at[1]!] } : m[at[0]!];
+            const seenText = asObject && real instanceof Pairs ? real.values[1] : real;
+            const shown = leafText(text, m[at[at.length - 1]!]!, seenText);
+            return isHeader ? { name: m[at[0]!], value: shown } : shown;
           },
         };
       }
       // As JSON.stringify: a key whose value is undefined is left out.
       const entries = Object.keys(record)
         .filter((key) => record[key] !== undefined)
-        .map((key) => ({ key, keyAt: add({ kind: 'text', value: key }), ...walk(record[key], depth + 1) }));
+        .map((key) => ({
+          key,
+          keyAt: add({ kind: 'text', value: key }),
+          ...walk(record[key], depth + 1, isPairNameKey(key)),
+        }));
       // No prototype, so a key called __proto__ is kept like any other.
       const json = Object.create(null) as Record<string, unknown>;
-      for (const entry of entries) json[entry.key] = entry.json;
+      const real = Object.create(null) as Record<string, unknown>;
+      for (const entry of entries) {
+        json[entry.key] = entry.json;
+        real[entry.key] = entry.real;
+      }
       return {
         json,
-        build: (node, m) => {
-          if (!(node instanceof Pairs) || node.values.length !== entries.length) return HIDDEN;
+        real,
+        build: (node, realNode, m) => {
+          if (
+            !(node instanceof Pairs) ||
+            node.values.length !== entries.length ||
+            !(realNode instanceof Pairs) ||
+            realNode.values.length !== entries.length
+          ) {
+            return HIDDEN;
+          }
           const out = Object.create(null) as Record<string, unknown>;
+          // The next number to try for each masked key, so thousands masked alike stay linear.
+          const next = new Map<string, number>();
           entries.forEach((entry, i) => {
-            let key = m[entry.keyAt]!;
-            // Two keys masked alike stay apart.
-            for (let n = 2; Object.hasOwn(out, key); n++) key = `${m[entry.keyAt]} (${n})`;
-            out[key] = entry.build(node.values[i], m);
+            const base = m[entry.keyAt]!;
+            let key = base;
+            if (Object.hasOwn(out, key)) {
+              // Two keys masked alike stay apart.
+              let n = next.get(base) ?? 2;
+              do key = `${base} (${n++})`;
+              while (Object.hasOwn(out, key));
+              next.set(base, n);
+            }
+            out[key] = entry.build(node.values[i], realNode.values[i], m);
           });
           return out;
         },
@@ -257,5 +371,13 @@ export function collectResult(result: unknown): {
 
   const top = walk(result, 0);
   fields[0] = { kind: 'json', value: JSON.stringify(top.json) };
-  return { fields, build: (m) => top.build(readMasked(m[0]!), m) };
+  // Only with a marked value is it any different from the first.
+  const realAt = marked ? fields.push({ kind: 'json', value: JSON.stringify(top.real) }) - 1 : 0;
+  return {
+    fields,
+    build: (m) => {
+      const node = readMasked(m[0]!);
+      return top.build(node, realAt === 0 ? node : readMasked(m[realAt]!), m);
+    },
+  };
 }

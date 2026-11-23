@@ -318,6 +318,86 @@ describe('plugin MCP tools', () => {
     expect((body(long.text) as { error: string }).error.length).toBeLessThanOrEqual(2000);
   });
 
+  it('through the real worker: a mark never weakens masking, and an error is masked before it’s cut', async () => {
+    const url = (value: string): Record<string, string> => ({ wirescryMask: 'url', value });
+    const text = (value: string): Record<string, string> => ({ wirescryMask: 'text', value });
+    await start([
+      toolPlugin(() => [
+        tool('marked_text_name', {
+          read: async () => ({ name: text('authorization'), value: PASSWORD }) as never,
+        }),
+        tool('marked_url_name', {
+          read: async () => ({ name: url('user[password]'), value: 'tiger' }) as never,
+        }),
+        tool('marked_secret', {
+          read: async () => ({ password: url(PASSWORD), note: `was ${PASSWORD}` }) as never,
+        }),
+        tool('decoy_body', {
+          read: async () =>
+            ({
+              b: {
+                wirescryMask: 'body',
+                contentType: 'application/x-www-form-urlencoded',
+                text: 'password=x1&msg=pwd: tiger12',
+              },
+            }) as never,
+        }),
+        tool('harmless', {
+          read: async () =>
+            ({ name: url('color'), value: 'blue', link: url('https://example.com/a') }) as never,
+        }),
+        tool('error_at_cut', {
+          read: async () => {
+            throw new Error('x'.repeat(1960) + ` {"password":"${PASSWORD}${PASSWORD}${PASSWORD}"}`);
+          },
+        }),
+        tool('alike_keys', {
+          read: async () => {
+            const keys: Record<string, null> = {};
+            for (let i = 0; i < 19_990; i++) keys[`ghp_${String(i).padStart(36, 'a')}`] = null;
+            return keys as never;
+          },
+        }),
+      ]),
+    ]);
+    expect(body((await call('marked_text_name')).text)).toEqual({
+      name: 'authorization',
+      value: '[redacted]',
+    });
+    expect(body((await call('marked_url_name')).text)).toEqual({
+      name: 'user[password]',
+      value: '[redacted]',
+    });
+    expect(body((await call('marked_secret')).text)).toEqual({
+      password: '[redacted]',
+      note: 'was [redacted]',
+    });
+    expect((await call('decoy_body')).text).not.toContain('tiger12');
+    expect(body((await call('harmless')).text)).toEqual({
+      name: 'color',
+      value: 'blue',
+      link: 'https://example.com/a',
+    });
+    const cut = await call('error_at_cut');
+    expect(cut.isError).toBe(true);
+    expect(cut.text).not.toContain('hunter2');
+    expect((body(cut.text) as { error: string }).error.length).toBeLessThanOrEqual(2000);
+
+    // The proxy shares this thread: it mustn't freeze while thousands of keys are numbered.
+    let last = performance.now();
+    let longest = 0;
+    const beat = setInterval(() => {
+      const now = performance.now();
+      longest = Math.max(longest, now - last);
+      last = now;
+    }, 10);
+    const alike = await call('alike_keys');
+    clearInterval(beat);
+    expect(alike.text).not.toContain('ghp_');
+    // Was about 12.7 seconds.
+    expect(longest).toBeLessThan(3000);
+  });
+
   it('stops waiting for a tool past its time limit, aborts it, and keeps serving', async () => {
     let aborted = false;
     await start(

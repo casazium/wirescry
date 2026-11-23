@@ -232,6 +232,11 @@ export interface ListResult {
   note?: string;
 }
 
+/** The longest plugin error that's masked. Cutting one first could split a secret from its name. */
+export const MAX_ERROR_CHARS = 64_000;
+/** How much of a plugin's error an agent gets. */
+const MAX_ERROR_SHOWN = 2_000;
+
 export const FULL_NOTE = 'Some values seen earlier may not be hidden: Wirescry’s list of them is full.';
 
 export class Reader {
@@ -269,12 +274,14 @@ export class Reader {
     return { value, full: full.full };
   }
 
-  /** A plugin tool's error message, masked as text; a general message if that fails. */
+  /** A plugin tool's error message, masked as text, then cut; a general message if that fails. */
   async pluginError(message: string): Promise<string> {
+    if (typeof message !== 'string' || message.length > MAX_ERROR_CHARS) return 'The tool failed.';
     try {
       const full = { full: false };
-      const [text] = await masked(this.backend, [{ kind: 'text', value: message.slice(0, 2000) }], {}, full);
-      return full.full ? `${text} ${FULL_NOTE}` : text!;
+      const [whole] = await masked(this.backend, [{ kind: 'text', value: message }], {}, full);
+      const text = whole!.slice(0, MAX_ERROR_SHOWN);
+      return full.full ? `${text} ${FULL_NOTE}` : text;
     } catch {
       return 'The tool failed.';
     }
