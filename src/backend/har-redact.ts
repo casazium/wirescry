@@ -10,7 +10,14 @@
  */
 import { formFields } from '../shared/form-fields.ts';
 import { isFormEncoded, queryString } from '../shared/har-fields.ts';
-import { applySpans, redactHeaders, redactUrl, type Redaction } from '../shared/redact.ts';
+import {
+  applySpans,
+  mergeSpans,
+  recordsOf,
+  redactHeaders,
+  redactUrl,
+  type Redaction,
+} from '../shared/redact.ts';
 import { isTextual, KnownValues, redactBody } from '../shared/redact-body.ts';
 
 type Json = Record<string, unknown>;
@@ -242,10 +249,23 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
     try {
       const result = redactBody(text, 'text/plain', known);
       add(where, result.records);
-      return applySpans(text, result.spans);
+      const swept = applySpans(text, result.spans);
+      return applySpans(swept, [...known.scan(swept, true), ...known.anywhere(swept)]);
     } catch {
       return undefined;
     }
+  };
+
+  /** Known values in a short field, on their own or joined to other text (`id-<token>`). */
+  const knownIn = (text: string) => [...known.scan(text, true), ...known.anywhere(text)];
+  const hide = (text: string): string => applySpans(text, knownIn(text));
+  const hideOptional = (text: string | undefined): string | undefined =>
+    text === undefined ? undefined : hide(text);
+  /** A value found anywhere in the export, hidden here too: the rules alone miss a repeat. */
+  const scan = (where: string, text: string): string => {
+    const spans = knownIn(text);
+    if (spans.length > 0) add(where, recordsOf(mergeSpans(spans)));
+    return applySpans(text, spans);
   };
 
   const request = isObject(entry.request) ? entry.request : {};
@@ -255,6 +275,8 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
   // The URL and headers first: they must be redacted, or the entry isn't written at all.
   const url = redactUrl(str(request.url) ?? '', known);
   add('request.url', url.records);
+  const scanHeaders = (where: string, headers: Header[]): Header[] =>
+    headers.map(([name, value]) => [scan(where, name), scan(where, value)]);
   const side = (from: Json, name: string) => {
     const headers = redactHeaders(headersOf(from.headers), known);
     add(`${name}.headers`, headers.records);
@@ -357,7 +379,7 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
       if (!isObject(message)) return;
       const opcode = num(message.opcode);
       const data = str(message.data) ?? '';
-      const kept = { type: str(message.type), time: num(message.time), opcode };
+      const kept = { type: hideOptional(str(message.type)), time: num(message.time), opcode };
       try {
         if (opcode === 1) {
           const body = redactBodyText(
@@ -399,11 +421,25 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
     }
   }
 
+  // Last, so a value this entry's bodies taught is hidden in its URL and headers too.
+  const redactedUrl = scan('request.url', url.url);
+  const givenMethod = str(request.method);
+  const method = givenMethod === undefined ? undefined : scan('request.method', givenMethod);
+  const finalHeaders = (name: string, from: ReturnType<typeof side>) => ({
+    headers: scanHeaders(`${name}.headers`, from.headers),
+    trailers: from.trailers && scanHeaders(`${name}.trailers`, from.trailers),
+  });
+  const requestFinal = finalHeaders('request', requestHeaders);
+  const responseFinal = finalHeaders('response', responseHeaders);
+  // Read from the Content-Type before the bodies taught anything.
+  if (postData) postData.mimeType = hide(str(postData.mimeType) ?? '');
+  content.mimeType = hide(responseType);
+
   // Wirescry's own messages, which can quote a URL or an error.
   const givenFailure = isObject(entry._wirescryFailure) ? entry._wirescryFailure : undefined;
   const failure = givenFailure
     ? {
-        kind: str(givenFailure.kind),
+        kind: hideOptional(str(givenFailure.kind)),
         code: sweep('failure', givenFailure.code),
         message: sweep('failure', givenFailure.message),
         ...(givenFailure.detail !== undefined ? { detail: sweep('failure', givenFailure.detail) } : {}),
@@ -414,7 +450,9 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
 
   // Records joined by where and what, and the not-scanned notes.
   const joined: EntryRecord[] = [];
-  for (const record of records) {
+  for (const given of records) {
+    // A name can hold the secret itself (`X-Auth-<token>`).
+    const record = given.name === undefined ? given : { ...given, name: hide(given.name) };
     const same = joined.find((r) => r.in === record.in && r.name === record.name && r.kind === record.kind);
     if (same) same.count += record.count;
     else joined.push({ ...record });
@@ -422,13 +460,13 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
   const values = joined.reduce((sum, r) => sum + r.count, 0);
 
   const redactedRequest: Json = {
-    method: str(request.method),
-    url: url.url,
-    httpVersion: str(request.httpVersion),
+    method,
+    url: redactedUrl,
+    httpVersion: hideOptional(str(request.httpVersion)),
     cookies: [],
-    headers: toHar(requestHeaders.headers),
-    ...(requestHeaders.trailers ? { _trailers: toHar(requestHeaders.trailers) } : {}),
-    queryString: queryString(url.url),
+    headers: toHar(requestFinal.headers),
+    ...(requestFinal.trailers ? { _trailers: toHar(requestFinal.trailers) } : {}),
+    queryString: queryString(redactedUrl),
     ...(postData ? { postData } : {}),
     headersSize: num(request.headersSize) ?? -1,
     bodySize: num(request.bodySize) ?? -1,
@@ -436,18 +474,18 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
   const redactedResponse: Json = {
     status: num(response.status) ?? 0,
     statusText: sweep('response.statusText', response.statusText) ?? '',
-    httpVersion: str(response.httpVersion),
+    httpVersion: hideOptional(str(response.httpVersion)),
     cookies: [],
-    headers: toHar(responseHeaders.headers),
-    ...(responseHeaders.trailers ? { _trailers: toHar(responseHeaders.trailers) } : {}),
+    headers: toHar(responseFinal.headers),
+    ...(responseFinal.trailers ? { _trailers: toHar(responseFinal.trailers) } : {}),
     content,
-    redirectURL: headerValue(responseHeaders.headers, 'location') ?? '',
+    redirectURL: headerValue(responseFinal.headers, 'location') ?? '',
     headersSize: num(response.headersSize) ?? -1,
     bodySize: num(response.bodySize) ?? -1,
   };
   const timings = isObject(entry.timings) ? entry.timings : {};
   const out: Json = {
-    startedDateTime: str(entry.startedDateTime),
+    startedDateTime: hideOptional(str(entry.startedDateTime)),
     time: num(entry.time) ?? 0,
     request: redactedRequest,
     response: redactedResponse,
@@ -459,10 +497,14 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
   if (entry._error !== undefined) out._error = sweep('error', entry._error);
   if (failure) out._wirescryFailure = failure;
   if (entry._wirescryRule !== undefined) out._wirescryRule = sweep('rule', entry._wirescryRule);
-  // A device's label and Wirescry's own ID for it: not secrets.
+  // A device's label and Wirescry's own ID for it: kept, less any known value in them.
   if (isObject(entry._wirescrySource)) {
     const { kind, id, label } = entry._wirescrySource;
-    out._wirescrySource = { kind: str(kind), id: str(id), label: str(label) };
+    out._wirescrySource = {
+      kind: hideOptional(str(kind)),
+      id: hideOptional(str(id)),
+      label: hideOptional(str(label)),
+    };
   }
   // Bodies still encoded are left out (see redactBodyText), so none is written as received.
   if (messages) {

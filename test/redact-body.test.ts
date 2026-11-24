@@ -252,7 +252,7 @@ describe('the assignment rule', () => {
     );
     const html = '<script>var password = "abcdefgh1";</script><p>password: abcdefgh1</p>';
     expect(redact(html, 'text/html')).toBe(
-      `<script>var password = "abcdefgh1";</script><p>password: ${REDACTED}</p>`,
+      `<script>var password = "${REDACTED}";</script><p>password: ${REDACTED}</p>`,
     );
   });
 });

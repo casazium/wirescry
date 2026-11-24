@@ -78,6 +78,8 @@ export class KnownValues implements ValueSink {
   private readonly values = new Set<string>();
   /** For `inBytes`: built when first needed. */
   private byFirstEight: Map<number, Map<number, Uint8Array[]>> | undefined;
+  /** Each value by its first eight characters, for `anywhere`. */
+  private textIndex: Map<string, string[]> | undefined;
   /** Whether a value was turned away for want of room, so a later secret may not be found. */
   full = false;
 
@@ -98,6 +100,7 @@ export class KnownValues implements ValueSink {
     }
     this.values.add(value);
     this.byFirstEight = undefined;
+    this.textIndex = undefined;
     if (list) list.push({ value, at: longest.at });
     else this.byRun.set(longest.run, [{ value, at: longest.at }]);
   }
@@ -121,6 +124,64 @@ export class KnownValues implements ValueSink {
       const { decoded, rawAt } = decodeWithMap(run, plusIsSpace);
       for (const span of this.find(decoded, rawAt)) {
         spans.push({ ...span, start: match.index + span.start, end: match.index + span.end });
+      }
+    }
+    return spans;
+  }
+
+  /**
+   * Spans of known values anywhere in text, even joined to other characters (`id-<token>`): for
+   * short fields such as a URL or a header, where a repeat is rarely chance. One pass, each position
+   * looked up by the eight characters from it.
+   */
+  anywhere(text: string): Span[] {
+    if (this.values.size === 0 || text.length < 8) return [];
+    if (!this.textIndex) {
+      this.textIndex = new Map();
+      for (const value of this.values) {
+        // By its end: tokens from one issuer share a start (`eyJhbGci`), rarely an end.
+        const key = value.slice(-8);
+        const list = this.textIndex.get(key);
+        if (list) list.push(value);
+        else this.textIndex.set(key, [value]);
+      }
+    }
+    const whole: Span[] = [{ start: 0, end: text.length, kind: 'known value' }];
+    const spans = this.within(text, (i) => i);
+    if (!spans) return whole;
+    for (const match of text.matchAll(ENCODED_RUN)) {
+      const run = match[0];
+      if (!run.includes('%')) continue;
+      const { decoded, rawAt } = decodeWithMap(run);
+      const found = this.within(decoded, rawAt);
+      if (!found) return whole;
+      for (const span of found) {
+        spans.push({ ...span, start: match.index + span.start, end: match.index + span.end });
+      }
+    }
+    return spans;
+  }
+
+  /**
+   * Known values in `text`, wherever they sit; undefined if comparing them would cost too much,
+   * as text built to nearly match many long values does: the caller then hides all of it.
+   */
+  private within(text: string, rawAt: (i: number, up: boolean) => number): Span[] | undefined {
+    const spans: Span[] = [];
+    let budget = text.length * 8 + 1_000_000;
+    for (let end = 8; end <= text.length; end++) {
+      for (const value of this.textIndex!.get(text.slice(end - 8, end)) ?? []) {
+        const start = end - value.length;
+        // Charged for what's really compared, so values that merely end alike can't use it up.
+        let same = 0;
+        if (start >= 0) {
+          while (same < value.length && text.charCodeAt(start + same) === value.charCodeAt(same)) same++;
+        }
+        budget -= same + 1;
+        if (budget < 0) return undefined;
+        if (same === value.length) {
+          spans.push({ start: rawAt(start, false), end: rawAt(end, true), kind: 'known value' });
+        }
       }
     }
     return spans;
@@ -304,7 +365,7 @@ function unquotedEnd(text: string, start: number): number {
  * characters, none of `( ) { } < > $` (code, not a value), and isn't a word like `null` or
  * `string`.
  */
-export function assignmentSpans(text: string): Span[] {
+export function assignmentSpans(text: string, cut = false): Span[] {
   const spans: Span[] = [];
   // How far values have been read. An assignment starting inside one already read is part of that
   // value (`password=password=…`): skipped, so each character is read about once, not once for
@@ -319,7 +380,11 @@ export function assignmentSpans(text: string): Span[] {
     const quote = text[from];
     if (quote === '"' || quote === "'") {
       const start = from + 1;
-      const end = closingQuote(text, start, quote);
+      let end = closingQuote(text, start, quote);
+      // Cut off inside the value: it runs to the end of what was kept.
+      if (end < 0 && cut && text.length - start <= MAX_VALUE && !text.includes('\n', start)) {
+        end = text.length;
+      }
       // An unclosed quote isn't marked: a later match brings a quote of its own kind, which ends
       // the search, so a long search happens at most once per kind of quote.
       readTo = end;
@@ -1232,6 +1297,147 @@ function xmlSpans(text: string, known: KnownValues | undefined): Span[] {
   return spans;
 }
 
+/** Words programs use under secret-sounding names, as in `autocomplete: "current-password"`. */
+const CODE_WORDS = new Set([
+  'current-password',
+  'new-password',
+  'one-time-code',
+  'application/json',
+  'text/plain',
+]);
+
+/**
+ * Whether a value in code looks like a secret rather than a word in the program: code is full of
+ * `credentials: "include"` and `password: "Password"`, and brackets mean an expression. Too long
+ * for `distinctive` still counts.
+ */
+function secretLooking(value: string): boolean {
+  if (/[\s()]/.test(value) || value.startsWith('+') || CODE_WORDS.has(value.toLowerCase())) return false;
+  return value.length > MAX_VALUE || distinctive(value);
+}
+
+/** A URL being built in code: the quote after `?token=` closes that string, so no value follows. */
+const IN_URL_STRING = /[?&][A-Za-z0-9_.-]{1,64}[ \t]{0,4}=[ \t]{0,4}["']$/;
+
+/** Whether an assignment in code holds a value: quoted and secret-looking, or a long number. */
+function codeValue(text: string, span: Span): boolean {
+  const value = text.slice(span.start, span.end);
+  // A number under a double-quoted name.
+  if (span.replacement !== undefined) return value.length >= 6;
+  const before = text[span.start - 1];
+  if (before !== '"' && before !== "'") return false;
+  if (IN_URL_STRING.test(text.slice(Math.max(0, span.start - 80), span.start))) return false;
+  return secretLooking(value);
+}
+
+/** A name and value inside a string of JSON in code: `JSON.parse("{\"token\":\"…\"}")`. */
+const ESCAPED_ASSIGNMENT = /\\"([A-Za-z][A-Za-z0-9_.-]{0,63})\\"[ \t]{0,4}:[ \t]{0,4}\\"/g;
+
+/**
+ * Where an escaped value starting at `from` ends: `end` at its closing `\"`, or -1 if a real quote
+ * or a line ends the string first; `stop`, how far was read. A run of backslashes before a quote
+ * is read as the string does: an even number of them, once unescaped, leaves the quote closing the
+ * value (`\"`, `\\\\\"`); an odd number makes it a quote inside the value (`\\\"`).
+ */
+function escapedEnd(text: string, from: number): { end: number; stop: number } {
+  let i = from;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' || c === '\n') return { end: -1, stop: i };
+    if (c !== '\\') {
+      i++;
+      continue;
+    }
+    let run = 0;
+    while (text[i + run] === '\\') run++;
+    if (run % 2 === 1 && text[i + run] === '"') {
+      if ((run - 1) % 4 === 0) return { end: i + run - 1, stop: i + run - 1 };
+      i += run + 1;
+    } else {
+      // An odd run escapes the character after it.
+      i += run + (run % 2);
+    }
+  }
+  return { end: -1, stop: text.length };
+}
+
+/** Strong secret names with escaped-quoted values; `cut`, a value may run past the end kept. */
+function escapedAssignmentSpans(text: string, cut: boolean): Span[] {
+  const spans: Span[] = [];
+  let readTo = 0;
+  for (const match of text.matchAll(ESCAPED_ASSIGNMENT)) {
+    if (match.index < readTo) continue;
+    const name = match[1]!;
+    const family = secretName(name, 'json');
+    if (!family || !STRONG_FAMILIES.has(family)) continue;
+    const start = match.index + match[0].length;
+    const { end, stop } = escapedEnd(text, start);
+    readTo = stop;
+    const close = end < 0 && cut && stop === text.length ? stop : end;
+    if (close <= start) continue;
+    const value = text.slice(start, close);
+    if (!STOP_WORDS.has(value.toLowerCase()) && secretLooking(value)) {
+      spans.push({ start, end: close, kind: 'name', name });
+    }
+  }
+  return spans;
+}
+
+/** Strong secret names with a template literal for a value, with nothing substituted in it. */
+function templateSpans(text: string, cut: boolean): Span[] {
+  const spans: Span[] = [];
+  let readTo = 0;
+  for (const match of text.matchAll(ASSIGNMENT)) {
+    if (match.index < readTo) continue;
+    const from = match.index + match[0].length;
+    if (text[from] !== '`') continue;
+    const family = secretName(match[2]!, 'json');
+    if (!family || !STRONG_FAMILIES.has(family)) continue;
+    const start = from + 1;
+    const closed = text.indexOf('`', start);
+    if (closed < 0 && !cut) break;
+    const end = closed < 0 ? text.length : closed;
+    readTo = end;
+    const value = text.slice(start, end);
+    if (!value.includes('${') && secretLooking(value))
+      spans.push({ start, end, kind: 'name', name: match[2]! });
+  }
+  return spans;
+}
+
+const ENTITY_QUOTE = '&(?:quot|#34|#[xX]22);';
+const ENTITY_ASSIGNMENT = new RegExp(
+  `${ENTITY_QUOTE}([A-Za-z][A-Za-z0-9_.-]{0,63})${ENTITY_QUOTE}[ \\t]{0,4}:[ \\t]{0,4}${ENTITY_QUOTE}`,
+  'g',
+);
+
+/** JSON in an HTML attribute, its quotes written as entities: `data-page="{&quot;token&quot;:…}"`. */
+function entityAssignmentSpans(text: string, cut: boolean): Span[] {
+  const spans: Span[] = [];
+  const closing = new RegExp(`${ENTITY_QUOTE}|"`, 'g');
+  let readTo = 0;
+  for (const match of text.matchAll(ENTITY_ASSIGNMENT)) {
+    if (match.index < readTo) continue;
+    const name = match[1]!;
+    const family = secretName(name, 'json');
+    if (!family || !STRONG_FAMILIES.has(family)) continue;
+    const start = match.index + match[0].length;
+    closing.lastIndex = start;
+    let close = closing.exec(text);
+    // `\&quot;` is a quote inside the value.
+    while (close && close[0] !== '"' && text[close.index - 1] === '\\') close = closing.exec(text);
+    if (!close && !cut) break;
+    const end = close ? close.index : text.length;
+    readTo = end;
+    if (close?.[0] === '"' || end <= start) continue;
+    const value = text.slice(start, end);
+    if (!STOP_WORDS.has(value.toLowerCase()) && secretLooking(value)) {
+      spans.push({ start, end, kind: 'name', name });
+    }
+  }
+  return spans;
+}
+
 /** Spans by the rules for a body's kind, known values included. */
 function kindSpans(
   text: string,
@@ -1295,13 +1501,24 @@ function kindSpans(
         return found >= 0 && span.end <= code[found]![1];
       };
       const spans = plainSpans(text, known, false);
-      for (const span of assignmentSpans(text)) if (!inCode(span)) spans.push(span);
+      // In a script, only quoted values: `password = getPassword()` is code.
+      for (const span of assignmentSpans(text, cut)) {
+        if (!inCode(span) || codeValue(text, span)) spans.push(span);
+      }
+      for (const span of escapedAssignmentSpans(text, cut)) if (inCode(span)) spans.push(span);
+      for (const span of templateSpans(text, cut)) if (inCode(span)) spans.push(span);
+      for (const span of entityAssignmentSpans(text, cut)) spans.push(span);
       for (const span of tagSpans(text, known)) spans.push(span);
       for (const span of xmlElementSpans(text, known, true)) spans.push(span);
       return spans;
     }
-    case 'code':
-      return plainSpans(text, known, false);
+    case 'code': {
+      const spans = plainSpans(text, known, false);
+      for (const span of assignmentSpans(text, cut)) if (codeValue(text, span)) spans.push(span);
+      for (const span of escapedAssignmentSpans(text, cut)) spans.push(span);
+      for (const span of templateSpans(text, cut)) spans.push(span);
+      return spans;
+    }
     case 'opaque':
       notScanned.push('an encoded body');
       return [];

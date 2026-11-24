@@ -615,7 +615,7 @@ describe('redactHarEntry', () => {
     expect(JSON.stringify(entry)).toBe(before);
   });
 
-  it('writes only the fields it knows: a value planted everywhere survives only where kept on purpose', () => {
+  it('writes only the fields it knows: a value planted everywhere survives nowhere', () => {
     const MARK = 'zqMARK7' + 'vX2pL9wR4';
     const url = `https://example.com/p?token=${MARK}`;
     const json = JSON.stringify({ password: MARK });
@@ -684,11 +684,10 @@ describe('redactHarEntry', () => {
     const known = new KnownValues();
     collectKnown(knownPart(entry), known);
     const out = redactHarEntry(entry, meta, known).entry;
-    const kept = new Set(['_wirescrySource.id', '_wirescrySource.label']);
     const survivors = leaves(out)
       .filter(([, value]) => value.includes(MARK))
       .map(([at]) => at);
-    expect(survivors.sort()).toEqual([...kept].sort());
+    expect(survivors).toEqual([]);
     expect(JSON.stringify(out)).not.toContain('_later');
     // And everything harEntry wrote is still there.
     expect(Object.keys(out).sort()).toEqual(

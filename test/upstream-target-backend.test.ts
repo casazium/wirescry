@@ -156,7 +156,7 @@ describe('where a call’s server is, for a plugin', () => {
   it('refuses a call a rule handled, and gives nothing for a call that’s gone or before starting', async () => {
     const mocked = await callThrough('/mocked');
     expect(host!.upstreamTarget!(mocked.id)).toEqual({
-      refused: 'The rule "Mock orders" handled it, so it may not have gone to the server shown.',
+      refused: 'A rule handled it, so it may not have gone to the server shown.',
     });
     expect(host!.upstreamTarget!('no-such-exchange')).toBeNull();
     expect(early).toEqual([null]);
