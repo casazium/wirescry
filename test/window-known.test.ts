@@ -133,21 +133,41 @@ describe('WindowKnown: catching up', () => {
 
   it('keeps each chunk of catching up short, so the proxy isn’t held up', async () => {
     const s = store(10_000);
-    const known = new WindowKnown(s.source, { flush: () => undefined });
+    // A clock that moves 1 ms on each read: each exchange learned costs one read, so a 5 ms
+    // chunk learns at most a handful before giving the event loop back. Real time on a shared
+    // runner is too noisy to measure a stall this small.
+    let now = 0;
+    const known = new WindowKnown(s.source, { flush: () => undefined, chunkMs: 5, clock: () => now++ });
+    // Which turn of the event loop each exchange was learned in.
+    let turn = 0;
+    let ticking = true;
+    // Runs once in each turn's check phase, as each chunk does.
+    const tick = (): void => {
+      turn += 1;
+      if (ticking) setImmediate(tick);
+    };
+    setImmediate(tick);
+    const perTurn = new Map<number, number>();
+    const get = s.source.get;
+    s.source.get = (id) => {
+      perTurn.set(turn, (perTurn.get(turn) ?? 0) + 1);
+      return get(id);
+    };
     const epoch = known.watch(true)!;
-    // The longest stretch the event loop waits, measured from timers while the pass runs.
-    let longest = 0;
-    let last = performance.now();
-    const ticker = setInterval(() => {
-      const now = performance.now();
-      longest = Math.max(longest, now - last);
-      last = now;
-    }, 0);
     await caughtUp(known, epoch);
-    clearInterval(ticker);
-    // Chunks of about 5 ms; budget 40 ms for a slow, shared machine.
-    expect(longest).toBeLessThan(40);
+    ticking = false;
     expect(known.values!.size).toBe(10_000);
+    // Thousands of short chunks, none learning more than its 5 ms allows.
+    expect(perTurn.size).toBeGreaterThan(1000);
+    expect(Math.max(...perTurn.values())).toBeLessThanOrEqual(10);
+  });
+
+  it('learns everything even when a chunk’s time runs out at once', async () => {
+    const s = store(50);
+    const known = new WindowKnown(s.source, { flush: () => undefined, chunkMs: 0 });
+    const epoch = known.watch(true)!;
+    await caughtUp(known, epoch);
+    expect(known.values!.size).toBe(50);
   });
 
   it('answers a stale or missing epoch from 0 with the current one', async () => {
