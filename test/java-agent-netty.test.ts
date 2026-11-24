@@ -91,6 +91,10 @@ const fakes: Record<string, string> = {};
 
 async function listen<T extends net.Server>(server: T): Promise<number> {
   servers.push(server);
+  // Node closes an idle kept-alive connection after 5 s, and a slow runner can take that long
+  // between two requests: the program's pooled connection would then be gone, and it would open
+  // a new tunnel the tests don't expect. Pooling is what they check, so idle connections stay.
+  if ('keepAliveTimeout' in server) (server as unknown as { keepAliveTimeout: number }).keepAliveTimeout = 0;
   server.on('connection', (s: net.Socket) => {
     sockets.add(s);
     s.on('close', () => sockets.delete(s));
