@@ -28,6 +28,7 @@ import {
   type Run,
   waitForOutput,
   waitForLines,
+  startupMs,
 } from './java-agent-helpers';
 
 const version = JSON.parse(
@@ -118,7 +119,7 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
 
   async function probe(java: string, flags: string[] = [], args: string[] = []): Promise<Run> {
     const r = run(java, [...flags, '-cp', probes, 'ProxyProbe', ...args], { stdin: true });
-    await waitForOutput(r, 'ready', 15_000);
+    await waitForOutput(r, 'ready', startupMs(15_000));
     return r;
   }
 
@@ -131,7 +132,8 @@ describe.skipIf(!buildJava)('attaching from Setup', () => {
 
   for (const java of javas) {
     const major = majorOf(java);
-    describe(`on Java ${major}`, () => {
+    // Room for a slow start on Windows (startupMs), above vitest's 20 s default.
+    describe(`on Java ${major}`, { timeout: 120_000 }, () => {
       it('lists, attaches, sends through Wirescry, detaches, and attaches again', async () => {
         await start();
         // An argument: what a JVM's display name holds after its main class.

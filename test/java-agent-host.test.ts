@@ -34,6 +34,7 @@ import {
   type Run,
   waitForOutput,
   waitForLines,
+  startupMs,
 } from './java-agent-helpers';
 
 let work: string;
@@ -763,7 +764,7 @@ describe.skipIf(!buildJava)('JVMs following the host', { timeout: 90_000 }, () =
 
   async function probe(java: string, stub: string): Promise<Run> {
     const r = run(java, [`-javaagent:${stub}`, '-cp', probes, 'ProxyProbe'], { stdin: true });
-    await waitForOutput(r, 'ready', 15_000);
+    await waitForOutput(r, 'ready', startupMs(15_000));
     return r;
   }
 

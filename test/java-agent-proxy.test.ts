@@ -38,6 +38,7 @@ import {
   waitForAgent,
   waitForOutput,
   waitForLines,
+  startupMs,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: answers plain requests itself, and tunnels CONNECT. */
@@ -160,7 +161,7 @@ const beatingFolder = (change: Parameters<typeof agentFolder>[0]) => agentFolder
 /** A ProxyProbe, ready for commands, its agent on if it should be (see waitForAgent). */
 async function probe(java: string, jvm: string[] = []): Promise<Run> {
   const r = run(java, [...VERIFY, ...jvm, '-cp', probes, 'ProxyProbe'], { stdin: true });
-  await waitForOutput(r, 'ready', 15_000);
+  await waitForOutput(r, 'ready', startupMs(15_000));
   await waitForAgent(jvm, r.child.pid);
   return r;
 }
@@ -443,7 +444,7 @@ describe.skipIf(!buildJava)('the Java agent’s proxy hook', { timeout: 90_000 }
         const client = run(java, [...VERIFY, '-cp', probes, 'TlsProbeHttpClient', 'https://proxied.test/'], {
           stdin: true,
         });
-        await waitForOutput(client, 'ready', 15_000);
+        await waitForOutput(client, 'ready', startupMs(15_000));
         const send = async () => {
           const before = client.stdout().split('\n').filter(Boolean).length;
           client.send('');

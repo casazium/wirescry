@@ -45,6 +45,7 @@ import {
   type Run,
   waitForOutput,
   waitForLines,
+  startupMs,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: answers plain requests itself, and tunnels CONNECT. */
@@ -276,7 +277,7 @@ async function probe(
       ? [...VERIFY, ...jvm, '-cp', isolated, 'Isolated', classpaths[set]!, main]
       : [...VERIFY, ...jvm, '-cp', options.classpath ?? classpaths[set]!, main];
   const r = run(java, args, { stdin: true });
-  await waitForOutput(r, 'ready', 30_000);
+  await waitForOutput(r, 'ready', startupMs(30_000));
   await waitForAgent(r.child.spawnargs, r.child.pid);
   return r;
 }
@@ -729,7 +730,7 @@ describe.skipIf(!buildJava)('the Java agent’s Jetty hooks', { timeout: 180_000
           stdin: true,
         },
       );
-      await waitForOutput(r, 'ready', 20_000);
+      await waitForOutput(r, 'ready', startupMs(20_000));
       await waitForAgent(r.child.spawnargs, r.child.pid);
       return r;
     }
