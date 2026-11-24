@@ -11,6 +11,7 @@ import {
   isGrpcError,
 } from '../../shared/grpc';
 import { formatBytes } from './bytes';
+import { CHECKING, CHECKING_LABEL } from './secrets';
 
 const ROW_HEIGHT = 24;
 /** Extra rows drawn above and below the visible ones, so fast scrolling doesn't show gaps. */
@@ -64,6 +65,8 @@ function formatDuration(ms: number | undefined): string {
 
 interface Props {
   rows: ExchangeSummary[];
+  /** A row as shown (View › Hide Secrets masks it): asked only for the rows in view. */
+  shown?(row: ExchangeSummary): ExchangeSummary;
   /** Requests from before the backend restarted: shown dimmed, details gone. */
   staleIds: ReadonlySet<string>;
   selectedId: string | undefined;
@@ -79,12 +82,24 @@ function deviceBadge(label: string): string {
   return label.length > 16 ? `${label.slice(0, 15).trimEnd()}…` : label;
 }
 
+/** A field's text, or "Checking…" said as what it is. */
+function Field({ text }: { text: string }): React.JSX.Element {
+  if (text !== CHECKING) return <>{text}</>;
+  return (
+    <span className="checking">
+      <span aria-hidden="true">{CHECKING}</span>
+      <span className="visually-hidden">{CHECKING_LABEL}</span>
+    </span>
+  );
+}
+
 /** Plugin badges shown on one row. */
 const MAX_BADGES = 3;
 
 /** The traffic list. Only rows in view are in the DOM, so it stays fast with thousands of rows. */
 export function TrafficList({
   rows,
+  shown,
   staleIds,
   selectedId,
   onSelect,
@@ -157,8 +172,10 @@ export function TrafficList({
         }}
       >
         <div style={{ height: rows.length * ROW_HEIGHT, position: 'relative' }}>
-          {visible.map((e, i) => {
+          {visible.map((row, i) => {
             const index = first + i;
+            // Masked here, for the rows in view only; memoized by the caller.
+            const e = shown ? shown(row) : row;
             return (
               <div
                 key={e.id}
@@ -175,13 +192,13 @@ export function TrafficList({
                 style={{ transform: `translateY(${index * ROW_HEIGHT}px)` }}
                 onClick={() => onSelect(e.id === selectedId ? undefined : e.id)}
                 onContextMenu={(event) => {
-                  // The row's own menu, instead of the window's.
+                  // The row's own menu, instead of the window's: for the row as captured.
                   event.preventDefault();
-                  onContextMenu(e);
+                  onContextMenu(row);
                 }}
               >
                 <span role="cell" className="method">
-                  {e.method}
+                  <Field text={e.method} />
                 </span>
                 <span
                   role="cell"
@@ -198,10 +215,11 @@ export function TrafficList({
                   {receiving(e, staleIds.has(e.id)) && <span className="visually-hidden"> (receiving)</span>}
                 </span>
                 <span role="cell" className="muted col-type" title={e.contentType}>
-                  {e.status !== undefined && !e.failure ? exchangeType(e) : ''}
+                  {/* A kind, from the row as captured: it says nothing secret. */}
+                  {row.status !== undefined && !row.failure ? exchangeType(row) : ''}
                 </span>
                 <span role="cell" className="col-host" title={e.host}>
-                  {e.host}
+                  <Field text={e.host} />
                 </span>
                 <span role="cell" className="path" title={e.url}>
                   {e.imported && (
@@ -223,7 +241,7 @@ export function TrafficList({
                   {/* At most a few, so the path stays visible; each says what it means. */}
                   {e.annotations?.slice(0, MAX_BADGES).map((a) => (
                     <span key={a.plugin} className={`rule-badge plugin-badge tone-${a.tone}`} title={a.title}>
-                      {a.label}
+                      <Field text={a.label} />
                       {a.title && (
                         <span className="visually-hidden">
                           : {a.title}
@@ -237,7 +255,7 @@ export function TrafficList({
                       Rule
                     </span>
                   )}
-                  {e.path}
+                  <Field text={e.path} />
                   {staleIds.has(e.id) && (
                     <span className="visually-hidden"> (from before the proxy restarted)</span>
                   )}

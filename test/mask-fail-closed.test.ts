@@ -53,34 +53,55 @@ afterEach(() => {
 
 describe('the window', () => {
   it('masks as usual when the rules work', () => {
-    expect(maskUrl(`https://a.test/?token=${SECRET}`)).toBe('https://a.test/?token=[redacted]');
-    expect(maskText(`password=${SECRET}`)).not.toContain(SECRET);
-    expect(maskHeaders([['authorization', `Bearer ${SECRET}`]])).toEqual([
+    expect(maskUrl(`https://a.test/?token=${SECRET}`, [])).toBe('https://a.test/?token=[redacted]');
+    expect(maskText(`password=${SECRET}`, [])).not.toContain(SECRET);
+    expect(maskHeaders([['authorization', `Bearer ${SECRET}`]], [])).toEqual([
       ['authorization', 'Bearer [redacted]'],
     ]);
   });
 
   it('hides a URL or a message whole when its rule throws', () => {
     broken.url = true;
-    expect(maskUrl(`https://a.test/?token=${SECRET}`)).toBe('[redacted]');
+    expect(maskUrl(`https://a.test/?token=${SECRET}`, [])).toBe('[redacted]');
     broken.body = true;
-    expect(maskText(`failed: ${SECRET}`)).toBe('[redacted]');
+    expect(maskText(`failed: ${SECRET}`, [])).toBe('[redacted]');
   });
 
   it('masks headers one at a time when the list can’t be, hiding only the one that throws', () => {
     broken.headers = true;
     broken.header.add('x-odd');
     expect(
-      maskHeaders([
-        ['authorization', `Bearer ${SECRET}`],
-        ['x-odd', SECRET],
-        ['accept', 'text/html'],
-      ]),
+      maskHeaders(
+        [
+          ['authorization', `Bearer ${SECRET}`],
+          ['x-odd', SECRET],
+          ['accept', 'text/html'],
+        ],
+        [],
+      ),
     ).toEqual([
       ['authorization', 'Bearer [redacted]'],
       ['x-odd', '[redacted]'],
       ['accept', 'text/html'],
     ]);
+  });
+
+  it('hides a field whole when looking for known values throws', () => {
+    const throwing = {
+      scan: () => {
+        throw new Error('broken set');
+      },
+      anywhere: () => {
+        throw new Error('broken set');
+      },
+    } as unknown as InstanceType<typeof KnownValues>;
+    expect(maskUrl('https://a.test/plain', [throwing])).toBe('[redacted]');
+    expect(maskText('a plain message here', [throwing])).toBe('[redacted]');
+    expect(maskHeaders([['x-plain', 'plain value here']], [throwing])).toEqual([
+      ['[redacted]', '[redacted]'],
+    ]);
+    // The same text with a set that works is left readable.
+    expect(maskUrl('https://a.test/plain', [new KnownValues()])).toBe('https://a.test/plain');
   });
 });
 

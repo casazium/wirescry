@@ -16,6 +16,7 @@ import type {
   FormatLanguage,
   FormattedBody,
   Header,
+  KnownPage,
   McpActivity,
   McpStatus,
   PluginStatus,
@@ -94,6 +95,7 @@ import { JavaAttach, type JavaAttachOptions } from './java/attach-manager';
 import type { FileOps } from './java/agent-files';
 import { InMemoryRequestStore } from './store';
 import { UpdateBatcher } from './update-batcher';
+import { WindowKnown } from './window-known';
 import type { BackendPlugin } from '../plugin-api/backend';
 import { PluginHost } from './plugin-host';
 import * as mockttp from 'mockttp';
@@ -171,6 +173,8 @@ export interface BackendOptions {
   pluginStartTimeoutMs?: number;
   /** How long one plugin call from the UI may take (default 2 minutes). */
   pluginCallTimeoutMs?: number;
+  /** How long collecting known values for the window goes on with no window connected; for tests. */
+  knownIdleMs?: number;
   /** How long a plugin's MCP tool may take; for tests. */
   pluginToolTimeoutMs?: number;
   /** Encrypts plugins' secure stores; leave out where the OS has no keychain to use. */
@@ -344,7 +348,30 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   };
   // eslint-disable-next-line prefer-const -- assigned later, after what status() reads exists
   let android: AndroidSetup | undefined;
-  const updates = new UpdateBatcher((message) => broadcast(message));
+  const updates = new UpdateBatcher(
+    (message) => broadcast(message),
+    undefined,
+    // While the window watches known values: those its exchanges teach, ahead of them.
+    (changed) => {
+      if (!windowKnown.watching) return undefined;
+      for (const summary of changed) {
+        const exchange = store.get(summary.id);
+        if (exchange) windowKnown.collect(exchange);
+      }
+      return windowKnown.take();
+    },
+  );
+  // Known values for the window's Hide Secrets, collected only while it asks (window-known.ts).
+  const windowKnown = new WindowKnown(
+    {
+      ids: () => store.list().map((summary) => summary.id),
+      get: (id) => store.get(id),
+    },
+    { flush: () => updates.flush() },
+  );
+  /** Collecting stops once no window has been connected for this long. */
+  const knownIdleMs = options.knownIdleMs ?? 30_000;
+  let knownIdle: ReturnType<typeof setTimeout> | undefined;
   let paused = false;
   // HTTPS connections through the main proxy that refused the certificate: see ProxyStatus.refused.
   const refusals = new Refusals();
@@ -384,6 +411,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     clearTimeout(completionTimers.get(id));
     completionTimers.delete(id);
     updates.remove(id);
+    windowKnown.forget(id);
     websockets.delete(id);
     sse.delete(id);
     void bodies.delete(id).catch(() => undefined);
@@ -1486,14 +1514,17 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
         store.clear();
         // The session's values go with its traffic.
         masker.reset();
+        windowKnown.clear();
         completed.clear();
         for (const timer of completionTimers.values()) clearTimeout(timer);
         completionTimers.clear();
         websockets.clear();
         sse.clear();
+        // Told now, in the same turn as the store and the window's values: a push or page of the
+        // new, empty set must never reach the window while it still shows the old rows.
+        broadcast({ type: 'cleared' });
         await importWrite;
         await bodies.clear();
-        broadcast({ type: 'cleared' });
         // What refused the certificate belongs with the traffic that's gone.
         if (refusals.of(COMPUTER)) {
           clearRefusals();
@@ -1728,7 +1759,27 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       case 'getExchange': {
         const exchange: ExchangeDetail | undefined = store.get(command.exchangeId);
         if (!exchange) throw new Error('Exchange not found');
+        // What it teaches goes to the window first, with any summaries waiting.
+        if (windowKnown.watching) {
+          windowKnown.collect(exchange);
+          updates.flush();
+        }
         return exchange;
+      }
+      case 'watchKnownValues': {
+        if (typeof command.on !== 'boolean') throw new Error('on must be true or false');
+        const epoch = windowKnown.watch(command.on);
+        return epoch === undefined ? {} : { epoch };
+      }
+      case 'getKnownValues': {
+        if (command.epoch !== undefined && typeof command.epoch !== 'string') {
+          throw new Error('epoch must be a string');
+        }
+        if (!Number.isSafeInteger(command.after) || command.after < 0) {
+          throw new Error('after must be a whole number, 0 or more');
+        }
+        const page: KnownPage = await windowKnown.page(command.epoch, command.after);
+        return page;
       }
       case 'getBody': {
         const exchange = store.get(command.exchangeId);
@@ -1830,6 +1881,14 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     handlers: {
       hello: () => ({ type: 'hello', status: status(), exchanges: store.list(), paused }),
       command: handleCommand,
+      connections: (count) => {
+        clearTimeout(knownIdle);
+        knownIdle = undefined;
+        if (count > 0 || stopping) return;
+        // A window that went without saying (closed, crashed) doesn't keep the proxy collecting.
+        knownIdle = setTimeout(() => windowKnown.watch(false), knownIdleMs);
+        knownIdle.unref?.();
+      },
     },
   });
   // Wirescry's own ports, never a call's server. Plugins start below, once all of them are open.
@@ -1889,6 +1948,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
       completionTimers.clear();
       await pluginHost.stopAll();
       updates.reset();
+      clearTimeout(knownIdle);
+      windowKnown.stop();
       await Promise.all([
         api.stop(),
         proxy.stop(),

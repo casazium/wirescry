@@ -516,8 +516,12 @@ export interface DockerStatus {
 /** Messages the backend pushes to the UI. */
 export type ServerMessage =
   | { type: 'hello'; status: ProxyStatus; exchanges: ExchangeSummary[]; paused: boolean }
-  /** New or changed exchanges, batched. `removed` lists ids dropped to stay under the store's limit. */
-  | { type: 'exchanges'; exchanges: ExchangeSummary[]; removed: string[] }
+  /**
+   * New or changed exchanges, batched. `removed` lists ids dropped to stay under the store's limit.
+   * `known`, while the window watches known values, carries those learned since the last message,
+   * the values from these exchanges' own URLs and headers among them.
+   */
+  | { type: 'exchanges'; known?: KnownPush; exchanges: ExchangeSummary[]; removed: string[] }
   | { type: 'cleared' }
   /**
    * How far a named search with body terms has got, to the window that asked: at most four times
@@ -533,6 +537,32 @@ export type ServerMessage =
   | { type: 'mcp'; status: McpStatus }
   | { type: 'result'; id: number; ok: true; value?: unknown }
   | { type: 'result'; id: number; ok: false; error: string };
+
+/**
+ * Values learned from exchanges' URLs, headers and trailers for View › Hide Secrets, numbered in
+ * the order learned within an epoch. A new epoch (switched on again, Clear, a rebuild when full,
+ * a new backend) numbers from 0 again.
+ */
+export interface KnownPush {
+  epoch: string;
+  /** The first value's number. */
+  from: number;
+  values: string[];
+  /** A value was turned away for want of room, so one seen earlier may not be hidden. */
+  full: boolean;
+}
+
+/** A page of known values (getKnownValues). */
+export interface KnownPage {
+  epoch: string;
+  /** Numbered from `next - values.length`. */
+  values: string[];
+  /** The number after the last value. */
+  next: number;
+  /** Every stored exchange has been read and every value sent: pushes carry the rest. */
+  done: boolean;
+  full: boolean;
+}
 
 /** A call an AI agent made through the MCP server, for Setup's activity list. Never what it read. */
 export interface McpActivity {
@@ -649,6 +679,16 @@ export type ClientCommand =
   /** A call from a plugin's UI to its backend half. */
   | { id: number; command: 'plugin'; plugin: string; name: string; args?: unknown }
   | { id: number; command: 'getExchange'; exchangeId: string }
+  /**
+   * Turns collecting known values for View › Hide Secrets on or off. Off until asked; on again
+   * while on keeps the epoch. Replies `{ epoch }` (none when off).
+   */
+  | { id: number; command: 'watchKnownValues'; on: boolean }
+  /**
+   * Known values from number `after` in `epoch` (about 1 MB at most): KnownPage. A stale or missing
+   * epoch is answered from 0 with the current one. Fails while not watching.
+   */
+  | { id: number; command: 'getKnownValues'; epoch?: string; after: number }
   /**
    * The search box's query against the exchanges' details, for header terms the UI can't check
    * itself. Replies `{ ids }`: those that match, among `ids` or all of them. At most

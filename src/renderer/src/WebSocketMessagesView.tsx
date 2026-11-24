@@ -9,7 +9,7 @@ import type {
 import type { Command } from './api-client';
 import { BodyView } from './BodyView';
 import { base64ToBytes, bytesToText, formatBytes, looksLikeText } from './bytes';
-import { maskText, SecretsHidden } from './secrets';
+import { KnownSecrets, maskMessage, SecretsHidden } from './secrets';
 
 /** The UI keeps at most this many messages per connection; older ones are still in the backend. */
 const MAX_SHOWN = 2000;
@@ -51,6 +51,7 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
   // Read once: the view is mounted afresh when the switch changes (DetailPane keys it), so nothing
   // fetched one way is shown the other.
   const [hideSecrets] = useState(useContext(SecretsHidden));
+  const masking = useContext(KnownSecrets);
   const [messages, setMessages] = useState<Message[]>([]);
   const [dropped, setDropped] = useState(0);
   const [error, setError] = useState<string>();
@@ -101,7 +102,8 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
       },
       (e: Error) => {
         loading.current = false;
-        setError(hideSecrets ? maskText(e.message) : e.message);
+        // Masked when shown, with the values known then.
+        setError(e.message);
       },
     );
   }, [exchangeId, messageCount, send, fetches, hideSecrets]);
@@ -163,7 +165,7 @@ export function WebSocketMessagesView({ exchangeId, messageCount, send }: Props)
       </div>
       {error && (
         <p className="note error" role="alert">
-          {error}
+          {hideSecrets ? maskMessage(error, masking) : error}
         </p>
       )}
       {hidden > 0 && (

@@ -76,6 +76,8 @@ function longestRun(value: string): { run: string; at: number } | undefined {
 export class KnownValues implements ValueSink {
   private readonly byRun = new Map<string, Known[]>();
   private readonly values = new Set<string>();
+  /** The values in the order learned, for `list`. */
+  private readonly order: string[] = [];
   /** For `inBytes`: built when first needed. */
   private byFirstEight: Map<number, Map<number, Uint8Array[]>> | undefined;
   /** Each value by its first eight characters, for `anywhere`. */
@@ -99,10 +101,27 @@ export class KnownValues implements ValueSink {
       return;
     }
     this.values.add(value);
+    this.order.push(value);
     this.byFirstEight = undefined;
     this.textIndex = undefined;
     if (list) list.push({ value, at: longest.at });
     else this.byRun.set(longest.run, [{ value, at: longest.at }]);
+  }
+
+  /**
+   * The values from position `after` in the order learned, up to about `maxChars` of text (at
+   * least one, if there is one).
+   */
+  list(after: number, maxChars: number): string[] {
+    const out: string[] = [];
+    let chars = 0;
+    for (let i = Math.max(0, after); i < this.order.length; i++) {
+      const value = this.order[i]!;
+      if (out.length > 0 && chars + value.length > maxChars) break;
+      out.push(value);
+      chars += value.length;
+    }
+    return out;
   }
 
   /** Adds another set's values, in the order it learned them; `full` carries over. */

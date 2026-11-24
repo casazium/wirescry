@@ -1,4 +1,4 @@
-import type { ExchangeSummary, ServerMessage } from '../shared/api';
+import type { ExchangeSummary, KnownPush, ServerMessage } from '../shared/api';
 
 /**
  * Collects exchange changes and sends them in one message every `delayMs`, so a burst
@@ -12,6 +12,11 @@ export class UpdateBatcher {
   constructor(
     private readonly send: (message: Extract<ServerMessage, { type: 'exchanges' }>) => void,
     private readonly delayMs = 50,
+    /**
+     * Known values for the window to have before these exchanges (see window-known.ts), learned
+     * from them first; undefined when there are none to send.
+     */
+    private readonly knownFor?: (exchanges: readonly ExchangeSummary[]) => KnownPush | undefined,
   ) {}
 
   change(summary: ExchangeSummary): void {
@@ -34,13 +39,18 @@ export class UpdateBatcher {
     this.removed.clear();
   }
 
+  /** Sends what's waiting, and any known values to go with it, now. */
   flush(): void {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    if (this.changed.size === 0 && this.removed.size === 0) return;
+    const exchanges = [...this.changed.values()];
+    const known = this.knownFor?.(exchanges);
+    if (exchanges.length === 0 && this.removed.size === 0 && !known) return;
+    // Values first, so the window has them before it shows the exchanges they came from.
     const message = {
       type: 'exchanges' as const,
-      exchanges: [...this.changed.values()],
+      ...(known ? { known } : {}),
+      exchanges,
       removed: [...this.removed],
     };
     this.changed = new Map();

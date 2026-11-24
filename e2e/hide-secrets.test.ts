@@ -23,7 +23,10 @@ const shots = process.env.WIRESCRY_SHOTS;
 const ACCESS = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
 const BEARER = 'mK7vQ2xZ' + '9pLw4RtY8nB3';
 const PASSWORD = 'hunter2' + 'Correct9Horse';
-const SECRETS = { ACCESS, BEARER, PASSWORD };
+// Learned from Authorization alone, then repeated where no rule looks: a path, x-echo, Location.
+const LEARNED = 'Zq9x' + 'Tk7Lm2Pw4Rt8Vn6Yb3';
+const LATER = 'Wn4k' + 'Rb8Yc2Hd6Jf1Mg5Px7';
+const SECRETS = { ACCESS, BEARER, PASSWORD, LEARNED, LATER };
 
 let app: ElectronApplication;
 let page: Page;
@@ -48,6 +51,13 @@ beforeAll(async () => {
       if (req.url?.startsWith('/login')) {
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ access_token: ACCESS, user: 'ada' }));
+      } else if (req.url?.startsWith('/probe/')) {
+        // Echoes the bearer token in a header of its own and in a redirect.
+        const sent = (req.headers.authorization ?? '').replace(/^Bearer /, '');
+        res.statusCode = 302;
+        res.setHeader('x-echo', `you sent ${sent}`);
+        res.setHeader('location', `/next?state=${sent}`);
+        res.end();
       } else if (req.url === '/echo') {
         res.setHeader('content-type', 'text/plain');
         res.end(`you sent ${BEARER}`);
@@ -258,7 +268,10 @@ it('hides secrets in the real window, copies what it shows, and keeps the switch
   expect(await viaProxy(proxyPort, '/utf16')).toBe(200);
   expect(await viaProxy(proxyPort, '/events')).toBe(200);
   await webSocketViaProxy(proxyPort, JSON.stringify({ password: PASSWORD }));
-  await expect.poll(() => rows().count(), { timeout: 30_000 }).toBe(6);
+  expect(
+    await viaProxy(proxyPort, `/probe/${LEARNED}/x`, { headers: { authorization: `Bearer ${LEARNED}` } }),
+  ).toBe(302);
+  await expect.poll(() => rows().count(), { timeout: 30_000 }).toBe(7);
 
   // Off: the secrets show (so the checks below can find them).
   expect(await menuItem()).toEqual({ enabled: true, checked: false });
@@ -270,11 +283,21 @@ it('hides secrets in the real window, copies what it shows, and keeps the switch
   await clickMenu();
   await badge().waitFor();
   expect(await menuItem()).toEqual({ enabled: true, checked: true });
-  for (const name of ['/login?', '/echo', '/login/form', '/utf16']) {
+  for (const name of ['/login?', '/echo', '/login/form', '/utf16', '/probe/']) {
     await open(name);
     await checkEveryView(name);
     await shot(`2-on-${name.replace(/\W/g, '')}`);
   }
+  // The probe: the learned token is hidden in the list and the detail, wherever it repeats.
+  await expect.poll(async () => (await row('/probe/').innerText()).includes('[redacted]')).toBe(true);
+  expect(await page.locator('.detail').innerText()).toContain('you sent [redacted]');
+  // One that arrives while it's on: its values come with it.
+  expect(
+    await viaProxy(proxyPort, `/probe/${LATER}/y`, { headers: { authorization: `Bearer ${LATER}` } }),
+  ).toBe(302);
+  await expect.poll(() => rows().count(), { timeout: 30_000 }).toBe(8);
+  await open(`/probe/[redacted]/y`);
+  await checkEveryView('/probe/ while on');
 
   // A WebSocket's messages and an event stream's events, masked: each message opened, in each view.
   await open('/socket');
