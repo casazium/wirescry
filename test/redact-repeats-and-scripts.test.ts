@@ -327,6 +327,47 @@ describe('a redacted HAR hides a repeated secret everywhere', () => {
   });
 });
 
+describe('Hide Secrets and agents hide a repeated secret in short fields', () => {
+  const taught = (): KnownValues => {
+    const known = new KnownValues();
+    known.add(SECRET);
+    return known;
+  };
+
+  it('joined to other text in a URL, a header and a host', () => {
+    const [url, header, host] = maskFields(
+      [
+        { kind: 'url', value: `https://a.example/u/user_${SECRET}/x?who=id-${SECRET}&page=2` },
+        { kind: 'header', name: 'x-echo', value: `id-${SECRET}` },
+        { kind: 'host', value: `x-${SECRET}.example` },
+      ],
+      taught(),
+    );
+    expect(url).toBe('https://a.example/u/user_[redacted]/x?who=id-[redacted]&page=2');
+    expect(header).toBe('id-[redacted]');
+    expect(host).toBe('x-[redacted].example');
+  });
+
+  it('with spaces written as + in a URL', () => {
+    const known = new KnownValues();
+    known.add('Zq9x Tk7Lm2 Pw4Rt8Vn6');
+    const [url] = maskFields([{ kind: 'url', value: 'https://a.example/?q=Zq9x+Tk7Lm2+Pw4Rt8Vn6' }], known);
+    expect(url).not.toContain('Tk7Lm2');
+  });
+
+  it('leaves a different value alone', () => {
+    const [url, header] = maskFields(
+      [
+        { kind: 'url', value: `https://a.example/u/user_${OTHER}` },
+        { kind: 'header', name: 'x-echo', value: `id-${OTHER}` },
+      ],
+      taught(),
+    );
+    expect(url).toContain(OTHER);
+    expect(header).toContain(OTHER);
+  });
+});
+
 const masked = (text: string, type: string): string => applySpans(text, redactBody(text, type).spans);
 const CODE_TYPES = ['application/javascript', 'text/javascript'];
 
