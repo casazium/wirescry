@@ -395,14 +395,19 @@ function withKnown(text: string, known: KnownValues): string {
   return applySpans(text, known.scan(text));
 }
 
+/** Known values in a short field, on their own or joined to other text (`id-<token>`). */
+function withKnownAnywhere(text: string, known: KnownValues): string {
+  return applySpans(text, [...known.scan(text, true), ...known.anywhere(text)]);
+}
+
 function maskField(field: MaskField, known: KnownValues): string {
   switch (field.kind) {
     case 'url':
-      return withKnown(redactUrl(field.value, known).url, known);
+      return withKnownAnywhere(redactUrl(field.value, known).url, known);
     case 'header':
-      return withKnown(redactHeader(field.name, field.value, known).value, known);
+      return withKnownAnywhere(redactHeader(field.name, field.value, known).value, known);
     case 'host':
-      return withKnown(field.value, known);
+      return withKnownAnywhere(field.value, known);
     case 'text':
       return maskString(field.value, known);
     case 'json':

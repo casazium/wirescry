@@ -81,7 +81,8 @@ export interface AgentSummary {
   websocket?: { messages: number; closeCode?: number; closeReason?: string };
   eventStream?: true;
   grpc?: { status?: number; message?: string };
-  handledByRule?: string;
+  /** A rule handled it. Which one isn't said: a rule's label holds what the user typed in it. */
+  handledByRule?: true;
   imported?: true;
   composed?: true;
   fromDevice?: true;
@@ -120,11 +121,11 @@ function summaryFields(s: ExchangeSummary): { fields: MaskField[]; build(masked:
       ? undefined
       : at({ kind: 'header', name: 'content-type', value: s.contentType });
   const failureCode = text(s.failure?.code);
-  const failureMessage = text(s.failure?.message);
+  // A rule's failure message quotes its label, which holds what the user typed in the rule.
+  const failureMessage = text(s.failure?.kind === 'rule' ? RULE_ENDED : s.failure?.message);
   const failureDetail = text(s.failure?.detail);
   const closeReason = text(s.closeReason);
   const grpcMessage = text(s.grpcMessage);
-  const rule = text(s.handledBy?.label);
   return {
     fields,
     build(m) {
@@ -172,7 +173,7 @@ function summaryFields(s: ExchangeSummary): { fields: MaskField[]; build(masked:
               },
             }
           : {}),
-        ...(rule !== undefined ? { handledByRule: get(rule)! } : {}),
+        ...(s.handledBy ? { handledByRule: true as const } : {}),
         ...(s.imported ? { imported: true as const } : {}),
         ...(s.composed ? { composed: true as const } : {}),
         ...(s.source ? { fromDevice: true as const } : {}),
@@ -231,6 +232,8 @@ export interface ListResult {
   /** Set when some values seen earlier may not be hidden: Wirescry's list of them is full. */
   note?: string;
 }
+
+const RULE_ENDED = 'A rule ended this request without a response.';
 
 /** The longest plugin error that's masked. Cutting one first could split a secret from its name. */
 export const MAX_ERROR_CHARS = 64_000;
@@ -308,7 +311,7 @@ export class Reader {
     if (compiled && compiled.errors.length > 0) throw new ReadError(compiled.errors.join(' '));
     if (compiled?.needsDetail) {
       throw new ReadError(
-        'Header and body terms can’t be used here: searching real values could confirm a hidden secret. Use the summary terms (method, status, host, path, url, type, size, time, protocol, rule, failure, grpc) and plain words.',
+        'Header and body terms can’t be used here: searching real values could confirm a hidden secret. Use the summary terms (method, status, host, path, url, type, size, time, protocol, failure, grpc) and plain words.',
       );
     }
     const all = this.backend.summaries().slice().reverse();
@@ -679,8 +682,7 @@ function asSummary(raw: ExchangeSummary, shown: AgentSummary): ExchangeSummary {
     ...(raw.grpc ? { grpc: true as const } : {}),
     ...(raw.grpcStatus !== undefined ? { grpcStatus: raw.grpcStatus } : {}),
     ...(raw.grpcDeadlineExceeded ? { grpcDeadlineExceeded: true as const } : {}),
-    ...(shown.handledByRule !== undefined
-      ? { handledBy: { ...raw.handledBy!, label: shown.handledByRule } }
-      : {}),
+    // No label, so a search can't test what a rule's label says.
+    ...(shown.handledByRule ? { handledBy: { ...raw.handledBy!, label: '' } } : {}),
   };
 }

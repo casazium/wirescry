@@ -151,9 +151,7 @@ describe('calls whose server a plugin mustn’t contact', () => {
     const handled = call('https://api.example.com/x', {
       handledBy: { plugin: 'pro', ruleId: 'r1', label: 'Forward to staging' },
     });
-    expect(refusal(handled)).toBe(
-      'The rule "Forward to staging" handled it, so it may not have gone to the server shown.',
-    );
+    expect(refusal(handled)).toBe('A rule handled it, so it may not have gone to the server shown.');
   });
 
   it('refuses a call sent from Compose, from a device, or a WebSocket', () => {

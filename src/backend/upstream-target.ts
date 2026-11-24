@@ -38,7 +38,7 @@ export function upstreamTargetOf(
   }
   if (summary.handledBy) {
     return {
-      refused: `The rule "${summary.handledBy.label}" handled it, so it may not have gone to the server shown.`,
+      refused: 'A rule handled it, so it may not have gone to the server shown.',
     };
   }
   if (summary.composed) {

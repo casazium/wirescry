@@ -73,7 +73,7 @@ describe('list', () => {
     expect(out.exchanges[1]).toMatchObject({
       imported: true,
       fromDevice: true,
-      handledByRule: 'rule [redacted]',
+      handledByRule: true,
     });
     expect(out.exchanges[2]!.url).toBe('https://api.test/a?token=[redacted]');
   });
