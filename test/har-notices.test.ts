@@ -21,6 +21,18 @@ describe('exportNotice', () => {
     );
   });
 
+  it('doesn’t say no secrets were found when a request or body was left out', () => {
+    for (const left of [{ dropped: 1 }, { leftOut: 4 }]) {
+      const text = exportNotice({ name: 'a.har', count: 6, redaction: { ...none, ...left } }, 0);
+      expect(text).not.toContain('No secrets were found');
+      expect(text).toMatch(/^Exported 6 requests to a\.har\. Redaction is best effort/);
+    }
+    // Only not checked: nothing found in what was checked, and it says what wasn't.
+    const unchecked = exportNotice({ name: 'a.har', count: 2, redaction: { ...none, notScanned: 1 } }, 0);
+    expect(unchecked).toContain('No secrets were found.');
+    expect(unchecked).toContain('1 body or message wasn’t checked: it isn’t text.');
+  });
+
   it('adds what was left out or not checked, in the singular and plural, and only when there is some', () => {
     const one = exportNotice(
       { name: 'a.har', count: 1, redaction: { ...none, dropped: 1, leftOut: 1, notScanned: 1 } },
@@ -28,7 +40,7 @@ describe('exportNotice', () => {
     );
     expect(one).toContain('1 request was left out: it couldn’t be redacted.');
     expect(one).toContain('1 body or message was left out: it couldn’t be redacted safely.');
-    expect(one).toContain('1 body or message wasn’t checked: they aren’t text.');
+    expect(one).toContain('1 body or message wasn’t checked: it isn’t text.');
     const many = exportNotice(
       { name: 'a.har', count: 1, redaction: { ...none, dropped: 2, leftOut: 3, notScanned: 4 } },
       0,
