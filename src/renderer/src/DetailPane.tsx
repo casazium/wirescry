@@ -14,7 +14,20 @@ import { BodyView } from './BodyView';
 import { formatBytes } from './bytes';
 import { bodyFileName } from './body-file-name';
 import { fetchCurlCommand } from './curl-command';
-import { maskHeaders, maskSummary, maskText, maskUrl, SecretsHidden } from './secrets';
+import {
+  CHECKING_LABEL,
+  HIDING,
+  isPlaceholder,
+  KnownSecrets,
+  maskHeaders,
+  maskMessage,
+  maskSummaryWith,
+  maskUrl,
+  ownValues,
+  SecretsHidden,
+  STALE,
+  staleSummary,
+} from './secrets';
 import { REDACTED } from '../../shared/redact';
 import { protocolText } from './protocol-text';
 import { redirectTarget } from './redirect';
@@ -64,9 +77,9 @@ function HeaderTable({ headers, grpc }: { headers: Header[]; grpc?: boolean }): 
       <tbody>
         {headers.map(([name, value], i) => {
           // gRPC sends binary metadata base64-encoded in headers whose names end in -bin.
-          // Not for a value Hide Secrets masked: there's nothing to decode.
+          // Not for a value Hide Secrets masked or holds back: there's nothing to decode.
           const hex =
-            grpc && name.toLowerCase().endsWith('-bin') && !value.includes(REDACTED)
+            grpc && name.toLowerCase().endsWith('-bin') && !value.includes(REDACTED) && !isPlaceholder(value)
               ? binaryHeaderHex(value)
               : undefined;
           return (
@@ -104,6 +117,7 @@ function Body({
   unavailable?: string;
 }): React.JSX.Element {
   const hideSecrets = useContext(SecretsHidden);
+  const masking = useContext(KnownSecrets);
   const notes = (
     <>
       {info?.incomplete && <p className="note">The connection closed before the whole body arrived.</p>}
@@ -116,7 +130,9 @@ function Body({
   );
   if (unavailable) return <p className="note">{unavailable}</p>;
   if (!state) return <p className="muted">{hideSecrets ? 'Hiding secrets…' : 'Loading…'}</p>;
-  if ('error' in state) return <p className="note error">{state.error}</p>;
+  // An error's text could quote something: masked like any other message while on.
+  if ('error' in state)
+    return <p className="note error">{hideSecrets ? maskMessage(state.error, masking) : state.error}</p>;
   if (!state.content) return <p className="muted">No body</p>;
   return (
     <>
@@ -149,11 +165,21 @@ export function DetailPane({
   onSelectExchange,
 }: Props): React.JSX.Element {
   const hideSecrets = useContext(SecretsHidden);
-  // What's shown: masked while Hide Secrets is on. Copy as curl and actions use the real summary.
-  const shown = hideSecrets ? maskSummary(summary) : summary;
+  const masking = useContext(KnownSecrets);
   const [loaded, setDetail] = useState<ExchangeDetail>();
   // Only this exchange's details, never the last one's while the next loads.
   const detail = loaded?.summary.id === summary.id ? loaded : undefined;
+  // Its own values first, built once per detail: hidden even when the session's set is full.
+  const own = useMemo(() => (hideSecrets && detail ? ownValues(detail) : undefined), [hideSecrets, detail]);
+  const known = useMemo(() => (own ? [own, masking.known] : [masking.known]), [own, masking]);
+  // What's shown: masked while Hide Secrets is on. Copy as curl and actions use the real summary.
+  const shown = useMemo(
+    () => (!hideSecrets ? summary : stale ? staleSummary(summary) : maskSummaryWith(summary, masking, own)),
+    [hideSecrets, stale, summary, masking, own],
+  );
+  // The URL and header values while they can't be checked: not yet, or not at all (a restart).
+  const withheld = !hideSecrets ? undefined : stale ? STALE : masking.covered ? undefined : HIDING;
+  const urlShown = withheld ?? shown.url;
   const [bodies, setBodies] = useState<Record<string, BodyState>>({});
   const [copied, setCopied] = useState<string>();
   // Where keyboard focus goes after following a redirect: the link itself goes away.
@@ -177,17 +203,22 @@ export function DetailPane({
 
   // Headers as shown.
   const headers = useMemo(() => {
-    const show = (h: Header[] | undefined): Header[] | undefined => (h && hideSecrets ? maskHeaders(h) : h);
+    const show = (h: Header[] | undefined): Header[] | undefined => {
+      if (!h || !hideSecrets) return h;
+      if (withheld) return h.map(([name]): Header => [name, withheld]);
+      return maskHeaders(h, known);
+    };
     return {
       request: show(detail?.requestHeaders),
       response: show(detail?.responseHeaders),
       requestTrailers: show(detail?.requestTrailers),
       responseTrailers: show(detail?.responseTrailers),
     };
-  }, [detail, hideSecrets]);
+  }, [detail, hideSecrets, withheld, known]);
 
   const redirect = detail?.responseHeaders ? redirectTarget(summary, detail.responseHeaders) : undefined;
-  const redirectShown = redirect !== undefined && hideSecrets ? maskUrl(redirect) : redirect;
+  const redirectShown =
+    redirect !== undefined && hideSecrets ? (withheld ?? maskUrl(redirect, known)) : redirect;
   // A gRPC call its client canceled: routine, so not shown as a failure.
   const canceled = isGrpcClientCancel(summary);
   // How long a gRPC client gives the call, from its grpc-timeout.
@@ -229,13 +260,9 @@ export function DetailPane({
         (value) =>
           active &&
           setBodies((b) => ({ ...keepCurrent(b), [key]: { content: value as BodyContent | null } })),
-        // An error's text could quote something: masked like any other message while on.
+        // Masked when shown (Body), with the values known then.
         (error: Error) =>
-          active &&
-          setBodies((b) => ({
-            ...keepCurrent(b),
-            [key]: { error: mode === 'masked' ? maskText(error.message) : error.message },
-          })),
+          active && setBodies((b) => ({ ...keepCurrent(b), [key]: { error: error.message } })),
       );
     };
     load('request', requestSize);
@@ -281,7 +308,7 @@ export function DetailPane({
             exchangeId: summary.id,
             side,
             // From what's shown: a name made from a masked URL.
-            name: bodyFileName(shown.url, contentType, side),
+            name: bodyFileName(urlShown, contentType, side),
           });
           if (!result.name) return undefined;
           return result.decodeError
@@ -292,7 +319,7 @@ export function DetailPane({
   // Query parameters, parsed, when the URL has any.
   let query: Array<[string, string]> = [];
   try {
-    query = [...new URL(shown.url).searchParams];
+    query = [...new URL(urlShown).searchParams];
   } catch {
     // Not a URL we can parse; nothing to show.
   }
@@ -374,16 +401,29 @@ export function DetailPane({
   return (
     <aside className="detail" id={DETAIL_PANE_ID} aria-label="Exchange details">
       <div className="detail-header">
-        <strong>{summary.method}</strong>
-        <span className="detail-url" title={shown.url}>
-          {shown.url}
+        <strong>{shown.method}</strong>
+        <span className="detail-url" title={urlShown}>
+          {urlShown}
         </span>
         <button type="button" className="icon" aria-label="Close details" onClick={onClose}>
           ×
         </button>
       </div>
       <div className="detail-actions">
-        <button type="button" className="secondary" onClick={() => void copy('URL', shown.url)}>
+        <button
+          type="button"
+          className="secondary"
+          onClick={() => void copy('URL', urlShown)}
+          // It would copy what isn't shown.
+          disabled={withheld !== undefined}
+          title={
+            withheld === STALE
+              ? 'Can’t be checked for secrets: the proxy restarted'
+              : withheld
+                ? `${CHECKING_LABEL}…`
+                : undefined
+          }
+        >
           Copy URL
         </button>
         {!summary.websocket && (

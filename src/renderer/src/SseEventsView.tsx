@@ -2,7 +2,7 @@ import { memo, useContext, useEffect, useId, useLayoutEffect, useRef, useState }
 import type { SseEventsView as View } from '../../shared/api';
 import type { SseItem } from '../../shared/sse';
 import type { Command } from './api-client';
-import { maskText, SecretsHidden } from './secrets';
+import { KnownSecrets, maskMessage, SecretsHidden } from './secrets';
 
 /** Items kept in view: the newest. */
 const MAX_SHOWN = 2000;
@@ -26,6 +26,7 @@ interface Props {
 export function SseEventsView({ exchangeId, responding, received, size, send }: Props): React.JSX.Element {
   // Read once: the view is mounted afresh when the switch changes (DetailPane keys it).
   const [hideSecrets] = useState(useContext(SecretsHidden));
+  const masking = useContext(KnownSecrets);
   const [shown, setShown] = useState<{ view: View; items: SseItem[] } | undefined>();
   const [error, setError] = useState<string>();
   const poll = useRef<() => void>(() => undefined);
@@ -83,7 +84,8 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
       }
       busy = true;
       read()
-        .catch((e: Error) => active && setError(hideSecrets ? maskText(e.message) : e.message))
+        // Masked when shown, with the values known then.
+        .catch((e: Error) => active && setError(e.message))
         .finally(() => {
           busy = false;
           if (again) {
@@ -134,7 +136,7 @@ export function SseEventsView({ exchangeId, responding, received, size, send }: 
       )}
       {error && (
         <p className="note error" role="alert">
-          {error}
+          {hideSecrets ? maskMessage(error, masking) : error}
         </p>
       )}
       {earlier > 0 && (

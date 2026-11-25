@@ -42,6 +42,7 @@ import {
   type Run,
   waitForOutput,
   waitForLines,
+  startupMs,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: answers plain requests itself, and tunnels CONNECT. */
@@ -241,7 +242,7 @@ async function probe(java: string, v: 4 | 5, jvm: string[] = [], isolate = false
     ? [...VERIFY, ...jvm, '-cp', isolated, 'Isolated', classpath[v], `ApacheProbe${v}`]
     : [...VERIFY, ...jvm, '-cp', classpath[v], `ApacheProbe${v}`];
   const r = run(java, args, { stdin: true });
-  await waitForOutput(r, 'ready', 20_000);
+  await waitForOutput(r, 'ready', startupMs(20_000));
   await waitForAgent(r.child.spawnargs, r.child.pid);
   return r;
 }
@@ -669,7 +670,7 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
           const r = run(java, [...VERIFY, ...jvm, '-cp', matrixClasspath[m.set]!, `ApacheBasic${m.v}`], {
             stdin: true,
           });
-          await waitForOutput(r, 'ready', 20_000);
+          await waitForOutput(r, 'ready', startupMs(20_000));
           await waitForAgent(r.child.spawnargs, r.child.pid);
           // macOS sets http.nonProxyHosts in every JVM; the 5.7 builders use the JDK's selector.
           expect(await ask(r, 'set http.nonProxyHosts')).toBe('set');
@@ -784,7 +785,7 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
       async function spring(fat: boolean, jvm: string[] = []): Promise<Run> {
         const where = fat ? ['-jar', fatJar] : ['-cp', springClasspath, 'SpringProbe'];
         const r = run(java, [...VERIFY, ...jvm, ...where], { stdin: true });
-        await waitForOutput(r, 'ready', 30_000);
+        await waitForOutput(r, 'ready', startupMs(30_000));
         await waitForAgent(r.child.spawnargs, r.child.pid);
         expect(await ask(r, 'set http.nonProxyHosts')).toBe('set');
         return r;
@@ -856,7 +857,7 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
         const r = run(java, [...VERIFY, ...jvm, '-cp', loaderProbe, 'LoaderProbe', jars(5), jars(4)], {
           stdin: true,
         });
-        await waitForOutput(r, 'ready', 20_000);
+        await waitForOutput(r, 'ready', startupMs(20_000));
         await waitForAgent(r.child.spawnargs, r.child.pid);
         return r;
       }

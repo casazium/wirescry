@@ -1,4 +1,4 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { compileFilter, QUICK_FILTERS, type QuickFilter } from '../../shared/filter';
 import { MAX_SEARCHED_MB } from '../../shared/query';
 import type {
@@ -30,7 +30,15 @@ import {
 import { uiPlugins } from '@wirescry/pro/ui';
 import { PLUGIN_API_VERSION } from '../../plugin-api/version';
 import { followingRequest } from './redirect';
-import { maskSummary, readHideSecrets, SecretsHidden, writeHideSecrets } from './secrets';
+import {
+  KnownSecrets,
+  maskSummary,
+  readHideSecrets,
+  SecretsHidden,
+  staleSummary,
+  writeHideSecrets,
+  type Masking,
+} from './secrets';
 import { agentActive, ACTIVE_MS, MCP_SECTION_ID } from './mcp-config';
 import { alreadyDismissed, REFUSED_HELP_URL, refusedSummary, refusedWhy } from './refused-text';
 import { SetupPage } from './SetupPage';
@@ -76,6 +84,8 @@ export function App(): React.JSX.Element {
     dismissRestartNotice,
     detailMatch,
     setDetailQuery,
+    masking,
+    watchKnown,
   } = useBackend((key) => {
     if (pluginViews.some((p) => p.key === key)) setView(key);
   });
@@ -122,6 +132,8 @@ export function App(): React.JSX.Element {
       clearTimeout(done);
     };
   }, [lastCall]);
+  // The backend collects known values only while the switch is on.
+  useEffect(() => watchKnown(hideSecrets), [hideSecrets, watchKnown]);
   const changeHideSecrets = (on: boolean): void => {
     writeHideSecrets(on);
     setHideSecrets(on);
@@ -207,8 +219,12 @@ export function App(): React.JSX.Element {
       ),
     [allExchanges, shown, staleIds, detailMatch],
   );
-  // The list as shown: masked while Hide Secrets is on. Filtering and search use real values.
-  const listRows = useMemo(() => (hideSecrets ? rows.map(maskSummary) : rows), [rows, hideSecrets]);
+  // A row as shown while Hide Secrets is on: only rows in view are masked (TrafficList). Filtering
+  // and search use real values. Rows from before a restart can't be checked.
+  const shownRow = useCallback(
+    (e: ExchangeSummary): ExchangeSummary => (staleIds.has(e.id) ? staleSummary(e) : maskSummary(e, masking)),
+    [staleIds, masking],
+  );
   // Only those in the list: not ones a Clear is hiding while it can be undone.
   const unsearchable = useMemo(
     () => (shown.needsDetail ? allExchanges.filter((e) => staleIds.has(e.id)).length : 0),
@@ -381,8 +397,16 @@ export function App(): React.JSX.Element {
     setSelectedId(exchange.id);
     const actions = actionsFor(exchange);
     const stale = staleIds.has(exchange.id);
+    // Not while it can't be masked yet (or at all): it would copy what isn't shown.
+    const unchecked = hideSecrets && (stale || !masking.covered);
     const choices: MenuChoice[] = [
-      { id: 'copy-url', label: 'Copy URL' },
+      unchecked
+        ? {
+            id: 'copy-url',
+            label: stale ? 'Copy URL (can’t be checked for secrets)' : 'Copy URL (checking for secrets…)',
+            enabled: false,
+          }
+        : { id: 'copy-url', label: 'Copy URL' },
       ...(exchange.websocket || stale ? [] : [{ id: 'copy-curl', label: 'Copy as curl' }]),
       ...(actions.length > 0 ? [{ separator: true as const }] : []),
       // Within what a menu accepts: short labels, and at most 40 items.
@@ -397,8 +421,8 @@ export function App(): React.JSX.Element {
     }
     try {
       // What's shown: masked while Hide Secrets is on. Copy as curl repeats the real request.
-      if (chosen === 'copy-url')
-        await navigator.clipboard.writeText(hideSecrets ? maskSummary(exchange).url : exchange.url);
+      if (chosen === 'copy-url' && !unchecked)
+        await navigator.clipboard.writeText(hideSecrets ? maskSummary(exchange, masking).url : exchange.url);
       else if (chosen === 'copy-curl')
         await navigator.clipboard.writeText(await fetchCurlCommand(exchange, send));
       else actions.find((a) => a.key === chosen)?.run();
@@ -546,10 +570,10 @@ export function App(): React.JSX.Element {
       secretsHidden: hideSecrets,
     });
   }, [connected, exportable.length, harBusy, paused, hideSecrets]);
-  const composedShown = composed && hideSecrets ? maskSummary(composed) : composed;
+  const composedShown = composed && hideSecrets ? shownRow(composed) : composed;
 
   return (
-    <SecretsHidden.Provider value={hideSecrets}>
+    <SecretsProviders hidden={hideSecrets} masking={masking}>
       <div className="app">
         <header className="toolbar">
           <h1>Wirescry</h1>
@@ -645,11 +669,16 @@ export function App(): React.JSX.Element {
             {hideSecrets && (
               <button
                 type="button"
-                className="pill secrets-hidden"
-                title="Secrets are hidden in the traffic list and details. Compose, Edit and resend, and plugin views show real values. Click to show secrets."
+                className={masking.full ? 'pill secrets-hidden full' : 'pill secrets-hidden'}
+                title={
+                  'Secrets are hidden in the traffic list and details. Compose, Edit and resend, and plugin views show real values. Click to show secrets.' +
+                  (masking.full
+                    ? ' Some values seen earlier may not be hidden: Wirescry’s list of them is full.'
+                    : '')
+                }
                 onClick={() => changeHideSecrets(false)}
               >
-                Secrets hidden
+                Secrets hidden{masking.full ? ' (list full)' : ''}
               </button>
             )}
             {browsers.length > 0 ? (
@@ -1043,15 +1072,14 @@ export function App(): React.JSX.Element {
             style={{ '--detail-size': `${(detailSize * 100).toFixed(1)}%` } as React.CSSProperties}
           >
             <TrafficList
-              rows={listRows}
+              rows={rows}
+              {...(hideSecrets ? { shown: shownRow } : {})}
               staleIds={staleIds}
               selectedId={selectedId}
               onSelect={setSelectedId}
               onKeyDown={onListKey}
               // The row as captured, not as shown: its actions and Copy as curl use real values.
-              onContextMenu={(exchange) =>
-                void showRowMenu(rows.find((r) => r.id === exchange.id) ?? exchange)
-              }
+              onContextMenu={(exchange) => void showRowMenu(exchange)}
               empty={
                 !connected ? null : allExchanges.length === 0 ? (
                   <>
@@ -1093,6 +1121,23 @@ export function App(): React.JSX.Element {
           </div>
         )}
       </div>
+    </SecretsProviders>
+  );
+}
+
+/** Whether Hide Secrets is on, and the known values it masks with, for the views below. */
+function SecretsProviders({
+  hidden,
+  masking,
+  children,
+}: {
+  hidden: boolean;
+  masking: Masking;
+  children: React.ReactNode;
+}): React.JSX.Element {
+  return (
+    <SecretsHidden.Provider value={hidden}>
+      <KnownSecrets.Provider value={masking}>{children}</KnownSecrets.Provider>
     </SecretsHidden.Provider>
   );
 }

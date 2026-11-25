@@ -12,6 +12,8 @@ import type { UiPluginApi } from '../../plugin-api/ui';
 import { ApiClient, type Command } from './api-client';
 import { DetailMatcher, type DetailMatchState } from './detail-matcher';
 import { ExchangeList } from './exchange-list';
+import { KnownSync } from './known-sync';
+import { UNCOVERED, type Masking } from './secrets';
 
 /** A badge on a plugin's tab. */
 export interface TabBadge {
@@ -54,6 +56,10 @@ export interface BackendView {
   /** The search box's text when it has header terms, else undefined. */
   setDetailQuery(query: string | undefined): void;
   dismissRestartNotice(): void;
+  /** The session's known values for View › Hide Secrets, as far as the window has them. */
+  masking: Masking;
+  /** Turns following the known values on (Hide Secrets on) or off. */
+  watchKnown(on: boolean): void;
 }
 
 /** Shown after the backend restarts, so nothing disappears without a word. */
@@ -125,6 +131,9 @@ export function useBackend(showView: (key: string) => void): BackendView {
   });
   // Kept across connections: a search stays in force while a new connection answers it again.
   const [matcher] = useState(() => new DetailMatcher(setDetailMatch));
+  // Kept across connections, like the matcher: a reconnect catches up from what it has.
+  const [masking, setMasking] = useState<Masking>(UNCOVERED);
+  const [known] = useState(() => new KnownSync(setMasking));
 
   useEffect(() => {
     let active = true;
@@ -187,6 +196,8 @@ export function useBackend(showView: (key: string) => void): BackendView {
               void client.send({ command: 'setPaused', paused: true }).catch(() => setPaused(false));
             }
           }
+          // Not covered until it has caught up again: before the rows are shown.
+          known.hello((command) => client.send(command));
           if (greeted.current !== generation) {
             // A new backend: what the old one was deleting is gone with it.
             deleting.current.clear();
@@ -214,6 +225,8 @@ export function useBackend(showView: (key: string) => void): BackendView {
           }
           break;
         case 'exchanges':
+          // Values first: the summaries they came with are shown covered.
+          known.push(message.known);
           if (deleting.current.size > 0) {
             // Rows being deleted stay gone, even if an update for them was already on its way.
             for (const id of message.removed) deleting.current.delete(id);
@@ -231,6 +244,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
           render();
           break;
         case 'cleared':
+          known.cleared();
           deleting.current.clear();
           matcher.clear();
           list.reset([]);
@@ -292,8 +306,9 @@ export function useBackend(showView: (key: string) => void): BackendView {
       client.close();
       clientRef.current = undefined;
       matcher.connect(undefined);
+      known.disconnect();
     };
-  }, [connection, generation, attempt, matcher]);
+  }, [connection, generation, attempt, matcher, known]);
 
   const removeExchanges = useCallback((ids: ReadonlySet<string>) => {
     setPrevious((rows) => (rows.some((e) => ids.has(e.id)) ? rows.filter((e) => !ids.has(e.id)) : rows));
@@ -392,5 +407,7 @@ export function useBackend(showView: (key: string) => void): BackendView {
     dismissRestartNotice: useCallback(() => setRestartNotice(undefined), []),
     detailMatch,
     setDetailQuery: useCallback((query: string | undefined) => matcher.setQuery(query), [matcher]),
+    masking,
+    watchKnown: useCallback((on: boolean) => known.setOn(on), [known]),
   };
 }

@@ -47,6 +47,7 @@ import {
   type Run,
   waitForOutput,
   waitForLines,
+  startupMs,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: tunnels CONNECT, and records what it was asked. */
@@ -91,6 +92,10 @@ const fakes: Record<string, string> = {};
 
 async function listen<T extends net.Server>(server: T): Promise<number> {
   servers.push(server);
+  // Node closes an idle kept-alive connection after 5 s, and a slow runner can take that long
+  // between two requests: the program's pooled connection would then be gone, and it would open
+  // a new tunnel the tests don't expect. Pooling is what they check, so idle connections stay.
+  if ('keepAliveTimeout' in server) (server as unknown as { keepAliveTimeout: number }).keepAliveTimeout = 0;
   server.on('connection', (s: net.Socket) => {
     sockets.add(s);
     s.on('close', () => sockets.delete(s));
@@ -243,7 +248,7 @@ async function probe(java: string, set: TestJarSet, jvm: string[] = [], classpat
   const r = run(java, [...VERIFY, ...jvm, '-cp', classpath ?? classpaths[set]!, 'NettyProbe'], {
     stdin: true,
   });
-  await waitForOutput(r, 'ready', 30_000);
+  await waitForOutput(r, 'ready', startupMs(30_000));
   await waitForAgent(r.child.spawnargs, r.child.pid);
   return r;
 }
@@ -651,7 +656,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
             ],
             { stdin: true },
           );
-          await waitForOutput(r, 'ready', 30_000);
+          await waitForOutput(r, 'ready', startupMs(30_000));
           await waitForAgent(r.child.spawnargs, r.child.pid);
           expect(await ask(r, 'route default http://proxied.test/')).toBe(via(proxy));
           expect(await ask(r, 'get default http://proxied.test/i')).toBe('OK plain proxied.test/i');
@@ -732,7 +737,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
           stdin: true,
         },
       );
-      await waitForOutput(r, 'ready', 30_000);
+      await waitForOutput(r, 'ready', startupMs(30_000));
       await waitForAgent(r.child.spawnargs, r.child.pid);
       return r;
     };

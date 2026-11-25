@@ -29,6 +29,7 @@ import {
   type Run,
   waitForOutput,
   waitForLines,
+  startupMs,
 } from './java-agent-helpers';
 
 interface Ca {
@@ -112,7 +113,7 @@ async function tlsProbe(java: string, args: string[], jvm: string[] = []): Promi
   const r = run(java, [...jvm, '-cp', probes, mainClass, ...args.slice(args[0] === 'httpclient' ? 1 : 0)], {
     stdin: true,
   });
-  await waitForOutput(r, 'ready', 15_000);
+  await waitForOutput(r, 'ready', startupMs(15_000));
   return r;
 }
 

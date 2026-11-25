@@ -24,6 +24,10 @@ const fake = vi.hoisted(() => ({
   clients: [] as Array<{ onMessage(message: unknown): void; send: ReturnType<typeof vi.fn> }>,
   answer: undefined as undefined | ((command: Record<string, unknown>) => unknown),
 }));
+
+/** What the fake backend answers getKnownValues with: the session's values, caught up at once. */
+let knownValues: string[] = [];
+const KNOWN_EPOCH = 'e1';
 vi.mock('../../src/renderer/src/api-client', () => ({
   ApiClient: class {
     send = vi.fn(async (command: Record<string, unknown>) => fake.answer?.(command));
@@ -150,6 +154,7 @@ let bridge: {
 };
 let clipboard: ReturnType<typeof vi.fn>;
 let commands: Array<Record<string, unknown>>;
+let changeState: (state: BackendState) => void = () => undefined;
 
 beforeEach(() => {
   window.matchMedia ??= ((query: string) => ({
@@ -161,8 +166,20 @@ beforeEach(() => {
   localStorage.clear();
   fake.clients.length = 0;
   commands = [];
+  knownValues = [];
   fake.answer = (command) => {
     commands.push(command);
+    if (command.command === 'watchKnownValues') return command.on ? { epoch: KNOWN_EPOCH } : {};
+    if (command.command === 'getKnownValues') {
+      const after = command.epoch === KNOWN_EPOCH ? (command.after as number) : 0;
+      return {
+        epoch: KNOWN_EPOCH,
+        values: knownValues.slice(after),
+        next: knownValues.length,
+        done: true,
+        full: false,
+      };
+    }
     const id = command.exchangeId as string;
     const s = [exchange, failed, socket].find((e) => e.id === id)!;
     if (command.command === 'getExchange') return detailOf(s);
@@ -234,7 +251,10 @@ beforeEach(() => {
   window.wirescry = new Proxy(
     {
       getBackendState: async () => ready,
-      onBackendStateChanged: () => () => undefined,
+      onBackendStateChanged: (callback: (state: BackendState) => void) => {
+        changeState = callback;
+        return () => undefined;
+      },
       onMenuCommand: (callback: (command: MenuCommand) => void) => {
         bridge.menu = callback;
         return () => undefined;
@@ -638,5 +658,222 @@ describe('Hide Secrets: the switch', () => {
     await toggle();
     await settle();
     expect(leaked(everything())).toEqual([]);
+  });
+});
+
+describe('Hide Secrets: values known from elsewhere', () => {
+  // Learned by the backend from the Authorization header: no rule finds it in a path or x-echo.
+  const LEARNED = 'Zq9x' + 'Tk7Lm2Pw4Rt8Vn6Yb3';
+  const repeat = summary('r', {
+    path: `/u/${LEARNED}/profile`,
+    url: `https://api.test/u/${LEARNED}/profile`,
+    statusMessage: `Found ${LEARNED}`,
+    status: 302,
+    responseSize: undefined,
+  });
+  const plain = summary('p', { path: '/plain/page', url: 'https://api.test/plain/page' });
+  const withRepeat = () => {
+    const answer = fake.answer!;
+    fake.answer = (command) => {
+      if (command.command === 'getExchange' && command.exchangeId === 'r')
+        return {
+          summary: repeat,
+          requestHeaders: [['authorization', `Bearer ${LEARNED}`]],
+          responseHeaders: [
+            ['x-echo', `you sent ${LEARNED}`],
+            ['location', `https://api.test/next?state=${LEARNED}`],
+            ['x-plain', 'hello-world'],
+          ],
+          timing: {},
+        };
+      if (command.command === 'getExchange' && command.exchangeId === 'p') return detailOf(plain);
+      return answer(command);
+    };
+  };
+  const learned = (text: string): boolean => text.includes(LEARNED);
+  const pathCells = () => rows().map((r) => r.querySelector('.path')!.textContent);
+
+  it('shows the repeat with the switch off', async () => {
+    withRepeat();
+    await started([repeat, plain]);
+    await select(0);
+    await settle();
+    expect(learned(everything())).toBe(true);
+  });
+
+  it('hides it in the list and the detail: URL, path, message, x-echo, Location and the redirect', async () => {
+    withRepeat();
+    knownValues = [LEARNED];
+    await started([repeat, plain]);
+    await toggle();
+    await settle();
+    expect(pathCells()).toEqual([expect.stringContaining('/u/[redacted]/profile'), '/plain/page']);
+    await select(0);
+    await settle();
+    expect(learned(everything())).toBe(false);
+    expect(screen.getByText('you sent [redacted]')).toBeTruthy();
+    // Ordinary values stay readable.
+    expect(screen.getByText('hello-world')).toBeTruthy();
+    await click('Copy URL');
+    expect(copied()).toBe('https://api.test/u/[redacted]/profile');
+  });
+
+  it('shows "Checking…" until caught up, then the masked row; Copy URL waits', async () => {
+    withRepeat();
+    knownValues = [LEARNED];
+    let release!: () => void;
+    const answer = fake.answer!;
+    fake.answer = (command) =>
+      command.command === 'getKnownValues'
+        ? new Promise((resolve) => (release = () => resolve(answer(command))))
+        : answer(command);
+    await started([repeat, plain]);
+    await toggle();
+    await settle();
+    expect(pathCells().every((t) => t?.includes('Checking…'))).toBe(true);
+    expect(screen.getAllByText('Checking for secrets').length).toBeGreaterThan(0);
+    expect(learned(everything())).toBe(false);
+    // The row's menu offers Copy URL, disabled, saying why.
+    bridge.showMenu.mockResolvedValueOnce('copy-url');
+    await act(async () => void fireEvent.contextMenu(rows()[0]!));
+    expect(bridge.showMenu.mock.calls.at(-1)![0][0]).toEqual({
+      id: 'copy-url',
+      label: 'Copy URL (checking for secrets…)',
+      enabled: false,
+    });
+    expect(clipboard).not.toHaveBeenCalled();
+    await act(async () => release());
+    await settle();
+    expect(pathCells()[0]).toContain('/u/[redacted]/profile');
+    expect(learned(everything())).toBe(false);
+  });
+
+  it('stays at "Checking…" when catching up fails', async () => {
+    withRepeat();
+    const answer = fake.answer!;
+    fake.answer = (command) => {
+      if (command.command === 'getKnownValues') throw new Error('not now');
+      return answer(command);
+    };
+    await started([repeat, plain]);
+    await toggle();
+    await settle();
+    expect(pathCells().every((t) => t?.includes('Checking…'))).toBe(true);
+    expect(learned(everything())).toBe(false);
+  });
+
+  it('masks a row already shown once a push brings its value, and a new row with its own values', async () => {
+    withRepeat();
+    await started([repeat, plain]);
+    await toggle();
+    await settle();
+    // Covered with no values yet: the repeat shows (a value learned later is a known limit).
+    expect(pathCells()[0]).toContain(LEARNED);
+    const fresh = summary('n', { path: `/n/${LEARNED}`, url: `https://api.test/n/${LEARNED}` });
+    await act(async () =>
+      client().onMessage({
+        type: 'exchanges',
+        known: { epoch: KNOWN_EPOCH, from: 0, values: [LEARNED], full: false },
+        exchanges: [fresh],
+        removed: [],
+      } as ServerMessage),
+    );
+    // New rows are drawn on the next frame.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)));
+    await settle();
+    expect(pathCells()).toEqual([
+      expect.stringContaining('/u/[redacted]/profile'),
+      '/plain/page',
+      expect.stringContaining('/n/[redacted]'),
+    ]);
+    expect(learned(everything())).toBe(false);
+  });
+
+  it('a push with a gap shows "Checking…" until it has caught up', async () => {
+    withRepeat();
+    await started([repeat, plain]);
+    await toggle();
+    await settle();
+    knownValues = ['Aa1' + 'Bb2Cc3Dd4Ee5Ff6', 'Gg7' + 'Hh8Ii9Jj0Kk1Ll2', LEARNED];
+    let release!: () => void;
+    const answer = fake.answer!;
+    fake.answer = (command) =>
+      command.command === 'getKnownValues'
+        ? new Promise((resolve) => (release = () => resolve(answer(command))))
+        : answer(command);
+    await act(async () =>
+      client().onMessage({
+        type: 'exchanges',
+        known: { epoch: KNOWN_EPOCH, from: 2, values: [LEARNED], full: false },
+        exchanges: [],
+        removed: [],
+      } as ServerMessage),
+    );
+    await settle();
+    expect(pathCells().every((t) => t?.includes('Checking…'))).toBe(true);
+    await act(async () => release());
+    await settle();
+    expect(pathCells()[0]).toContain('/u/[redacted]/profile');
+  });
+
+  it('notes a full list on the badge', async () => {
+    const answer = fake.answer!;
+    fake.answer = (command) =>
+      command.command === 'getKnownValues'
+        ? { epoch: KNOWN_EPOCH, values: [], next: 0, done: true, full: true }
+        : answer(command);
+    await started();
+    await toggle();
+    await settle();
+    const badge = screen.getByRole('button', { name: 'Secrets hidden (list full)' });
+    expect(badge.title).toContain(
+      'Some values seen earlier may not be hidden: Wirescry’s list of them is full.',
+    );
+    expect(badge.className).toContain('full');
+  });
+
+  it('asks to watch only while on, and says when it’s off', async () => {
+    await started();
+    await settle();
+    // Off: no values asked for; on a connection it only says it's off.
+    expect(commands.some((c) => c.command === 'getKnownValues')).toBe(false);
+    expect(commands.filter((c) => c.command === 'watchKnownValues')).toEqual([
+      { command: 'watchKnownValues', on: false },
+    ]);
+    await toggle();
+    await settle();
+    expect(commands).toContainEqual({ command: 'watchKnownValues', on: true });
+    await toggle();
+    await settle();
+    expect(commands.at(-1)).toEqual({ command: 'watchKnownValues', on: false });
+  });
+
+  it('shows rows from before a restart as can’t be checked', async () => {
+    withRepeat();
+    knownValues = [LEARNED];
+    await started([repeat, plain]);
+    await toggle();
+    await settle();
+    // A new backend: the old rows stay, dimmed; their values went with the old one.
+    await act(async () =>
+      changeState({
+        state: 'ready',
+        connection: { apiUrl: 'ws://127.0.0.1:9002/', token: 't' },
+        generation: 2,
+      } as BackendState),
+    );
+    await act(async () =>
+      client().onMessage({ type: 'hello', status: status(), exchanges: [], paused: false } as ServerMessage),
+    );
+    await settle();
+    expect(pathCells()).toEqual([
+      expect.stringContaining('Can’t be checked for secrets'),
+      expect.stringContaining('Can’t be checked for secrets'),
+    ]);
+    expect(learned(everything())).toBe(false);
+    bridge.showMenu.mockResolvedValueOnce('copy-url');
+    await act(async () => void fireEvent.contextMenu(rows()[0]!));
+    expect(bridge.showMenu.mock.calls.at(-1)![0][0]).toMatchObject({ id: 'copy-url', enabled: false });
+    expect(clipboard).not.toHaveBeenCalled();
   });
 });

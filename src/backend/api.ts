@@ -17,6 +17,8 @@ export interface ApiHandlers {
   hello(): ServerMessage;
   /** Handles a command from the UI. Throw to send an error back. */
   command(command: ClientCommand, context: CommandContext): Promise<unknown>;
+  /** Called with how many clients are connected, as one connects or one closes. */
+  connections?(count: number): void;
 }
 
 export interface ApiServerOptions {
@@ -98,7 +100,11 @@ export async function startApiServer(options: ApiServerOptions): Promise<Running
     });
     send(ws, handlers.hello());
     const closed = new AbortController();
-    ws.once('close', () => closed.abort());
+    ws.once('close', () => {
+      closed.abort();
+      handlers.connections?.(wss.clients.size);
+    });
+    handlers.connections?.(wss.clients.size);
     const context: CommandContext = { signal: closed.signal, notify: (message) => send(ws, message) };
     ws.on('message', async (data) => {
       let command: ClientCommand;

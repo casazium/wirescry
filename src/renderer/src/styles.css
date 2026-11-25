@@ -285,6 +285,11 @@ button.pill.secrets-hidden {
   color: var(--accent);
 }
 
+/* Its list of values is full: one seen earlier may show. */
+button.pill.secrets-hidden.full {
+  color: var(--warn);
+}
+
 /* An AI agent read traffic through MCP in the last minute: click for Setup's section. */
 button.pill.agent-active {
   color: var(--warn);
@@ -1101,6 +1106,12 @@ button.help-button {
   font-size: 10px;
   letter-spacing: 0.04em;
   line-height: 14px;
+}
+
+/* A field Hide Secrets can't show yet: the window is still getting the values to hide. */
+.checking {
+  color: var(--muted);
+  font-style: italic;
 }
 
 /* Read by screen readers, not shown. */

@@ -251,6 +251,15 @@ export function threadDump(java: string, pid: number): Promise<string> {
  * how), what it printed, and for a JVM still running, its threads. Without these, a hang, a crash and
  * a slow start all read as "expected ''" or "expected 3 to be greater than 3".
  */
+/**
+ * How long to wait for a program to start: longer on Windows, where a fresh CI runner has been
+ * seen to take over 17 s just loading Java's own libraries (its instrument library, before any of
+ * the agent's code), with almost no CPU used: the file system or a scanner holding it up.
+ */
+export function startupMs(ms: number): number {
+  return process.platform === 'win32' ? Math.max(ms, 60_000) : ms;
+}
+
 export async function waitFor(r: Run, done: () => boolean, what: string, timeoutMs: number): Promise<void> {
   const started = Date.now();
   let closed = false;

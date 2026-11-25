@@ -3,7 +3,7 @@ import type { BodyContent, FormattedBody } from '../../shared/api';
 import { exchangeType } from '../../shared/exchange-type';
 import { base64ToBytes, bytesToText, formatBytes, hexDump, looksLikeText } from './bytes';
 import { fieldsText, formFields, type FormField } from '../../shared/form-fields';
-import { maskText, SecretsHidden } from './secrets';
+import { KnownSecrets, maskMessage, SecretsHidden } from './secrets';
 
 type Kind = 'json' | 'image' | 'code' | 'form' | 'text' | 'binary';
 type Mode = 'formatted' | 'text' | 'hex';
@@ -70,8 +70,9 @@ function FormattedCode({
   /** Called with the formatted text, so Copy can copy what's shown. */
   onFormatted(text: string | undefined): void;
 }): React.JSX.Element {
-  const [result, setResult] = useState<FormattedBody>();
+  const [result, setResult] = useState<FormattedBody & { failed?: true }>();
   const hideSecrets = useContext(SecretsHidden);
+  const masking = useContext(KnownSecrets);
   useEffect(() => {
     let active = true;
     format().then(
@@ -80,8 +81,8 @@ function FormattedCode({
         setResult(value);
         onFormatted(value.ok ? value.text : undefined);
       },
-      (error: Error) =>
-        active && setResult({ ok: false, reason: hideSecrets ? maskText(error.message) : error.message }),
+      // Masked when shown, with the values known then.
+      (error: Error) => active && setResult({ ok: false, reason: error.message, failed: true }),
     );
     return () => {
       active = false;
@@ -90,9 +91,11 @@ function FormattedCode({
 
   if (!result) return <p className="muted">Formatting…</p>;
   if (!result.ok) {
+    // A failed call's error could quote something; the backend's own reasons are its words.
+    const reason = result.failed && hideSecrets ? maskMessage(result.reason, masking) : result.reason;
     return (
       <>
-        <p className="note">Not formatted: {result.reason}</p>
+        <p className="note">Not formatted: {reason}</p>
         <pre className="code">{text}</pre>
       </>
     );

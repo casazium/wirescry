@@ -1,5 +1,8 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
+import type { ExchangeSummary } from '../../src/shared/api';
+import { KnownValues } from '../../src/shared/redact-body';
+import { maskSummary, type Masking } from '../../src/renderer/src/secrets';
 import { TrafficList } from '../../src/renderer/src/TrafficList';
 import { summary } from './fixtures';
 
@@ -238,5 +241,65 @@ describe('TrafficList plugin badges', () => {
       'p2',
       'p3',
     ]);
+  });
+});
+
+describe('TrafficList with Hide Secrets', () => {
+  // A token learned elsewhere: no rule finds it in a path.
+  const TOKEN = 'Zq9x' + 'Tk7Lm2Pw4Rt8Vn6Yb3';
+  const masking = (values: string[], covered = true, version = 1): Masking => {
+    const known = new KnownValues();
+    for (const v of values) known.add(v);
+    return { known, version, covered, full: false };
+  };
+  const many = Array.from({ length: 10_000 }, (_, i) =>
+    summary(`r${i}`, { path: `/u/${TOKEN}/${i}`, url: `https://api.test/u/${TOKEN}/${i}` }),
+  );
+  const paths = () => screen.getAllByTestId('exchange-row').map((r) => r.querySelector('.path')!.textContent);
+
+  it('masks only the rows in view, and again when the values change', () => {
+    const shown = vi.fn((s: ExchangeSummary) => maskSummary(s, before));
+    const before = masking([]);
+    const props = list({ rows: many, shown });
+    // jsdom has no layout: the overscan's rows, not 10,000.
+    expect(shown.mock.calls.length).toBeLessThanOrEqual(20);
+    expect(paths()[0]).toContain(TOKEN);
+    const after = masking([TOKEN], true, 2);
+    const again = vi.fn((s: ExchangeSummary) => maskSummary(s, after));
+    cleanup();
+    render(<TrafficList {...props} shown={again} />);
+    expect(again.mock.calls.length).toBeLessThanOrEqual(20);
+    expect(paths()[0]).toBe('/u/[redacted]/0');
+    expect(paths().join('')).not.toContain(TOKEN);
+  });
+
+  it('shows "Checking…", read as "Checking for secrets", while not covered; the type from the row', () => {
+    list({ rows: [many[0]!], shown: (s) => maskSummary(s, masking([], false)) });
+    const row = screen.getByTestId('exchange-row');
+    expect(row.textContent).not.toContain(TOKEN);
+    expect(row.querySelector('.path .checking')?.textContent).toBe('Checking…Checking for secrets');
+    expect(row.querySelector('.method .checking')).toBeTruthy();
+    expect(row.querySelector('.col-type')?.textContent).toBe('json');
+  });
+
+  it('gives the row as captured to its menu', () => {
+    const props = list({ rows: [many[0]!], shown: (s) => maskSummary(s, masking([TOKEN])) });
+    fireEvent.contextMenu(screen.getByTestId('exchange-row'));
+    expect(props.onContextMenu).toHaveBeenCalledWith(many[0]);
+  });
+
+  it('costs little to mask a screenful of rows against 10,000 values', () => {
+    const values = Array.from({ length: 10_000 }, (_, i) => `Filler${i}Zx8Wv6Ut4Sr2Qp`);
+    const rows = many.slice(0, 70).map((s) => ({ ...s, statusMessage: `OK ${TOKEN}` }));
+    let best = Infinity;
+    for (let run = 0; run < 3; run++) {
+      // A new Masking each run, so nothing comes from the cache.
+      const m = masking([...values.slice(0, 9_999), TOKEN], true, run + 2);
+      const start = performance.now();
+      for (const s of rows) maskSummary(s, m);
+      best = Math.min(best, performance.now() - start);
+    }
+    // Measured at 2-3 ms; budget 30 ms for a slow, shared machine.
+    expect(best).toBeLessThan(30);
   });
 });
