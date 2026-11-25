@@ -297,12 +297,28 @@ describe('the Java agent workflow’s jar cache', () => {
     expect(others).toEqual([]);
   });
 
-  it('is the only workflow that saves or restores its key, so no job saves it without the test jars', () => {
+  it('is the only workflow that saves its key, so no job saves it without the test jars', () => {
+    // Other jobs may restore it (ci.yml's Electron job does), but only with cache/restore, which
+    // never saves. Any other cache step that names the key, in any job, would save it.
     const dir = path.join(import.meta.dirname, '..', '.github', 'workflows');
     const users = readdirSync(dir).filter((f) =>
       readFileSync(path.join(dir, f), 'utf8').includes('java-agent-deps-'),
     );
-    expect(users).toEqual(['java-agent.yml']);
+    expect(users).toContain('java-agent.yml');
+    const savers: string[] = [];
+    for (const file of users) {
+      const parsed = parse(readFileSync(path.join(dir, file), 'utf8')) as {
+        jobs: Record<string, { steps?: Array<{ uses?: string; with?: Record<string, string> }> }>;
+      };
+      for (const [job, { steps: jobSteps = [] }] of Object.entries(parsed.jobs)) {
+        for (const step of jobSteps) {
+          if (!JSON.stringify(step).includes('java-agent-deps-')) continue;
+          expect(step.uses, `${file} ${job}`).toMatch(/^actions\/cache(\/restore|\/save)?@/);
+          if (!step.uses!.startsWith('actions/cache/restore@')) savers.push(`${file} ${job}`);
+        }
+      }
+    }
+    expect(savers).toEqual(['java-agent.yml versions']);
   });
 
   it('runs when the fetch script changes', () => {

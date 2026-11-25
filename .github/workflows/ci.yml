@@ -111,6 +111,17 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The agent's packaging test builds it, which takes Byte Buddy from Maven Central, and its
+      # 429s failed this job. So it reads the cache java-agent.yml keeps (every jar the agent's
+      # tests use), or else the check job's, and never saves: java-agent.yml alone saves its key,
+      # so the key always holds every jar.
+      - uses: actions/cache/restore@v6
+        with:
+          path: native/java-agent/deps
+          key: java-agent-deps-${{ hashFiles('scripts/build-java-agent.mjs') }}
+          restore-keys: |
+            java-agent-deps-
+            byte-buddy-
       # The Docker relay's tests skip here without the pipe helper; the check job runs them. The
       # Java agent's run in JVMs, not in Electron's Node: the check job runs those too.
       - run: npm run test:electron -- --exclude 'test/java-agent.test.ts' --exclude 'test/java-agent-trust.test.ts' --exclude 'test/java-agent-proxy.test.ts' --exclude 'test/java-agent-host.test.ts' --exclude 'test/java-agent-startup.test.ts' --exclude 'test/java-agent-attach-jvm.test.ts' --exclude 'test/java-agent-apache.test.ts' --exclude 'test/java-agent-jetty.test.ts' --exclude 'test/java-agent-netty.test.ts'
