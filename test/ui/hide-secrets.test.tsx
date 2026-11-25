@@ -206,7 +206,7 @@ beforeEach(() => {
               {
                 ...meta(1, binary.length, true),
                 base64: '',
-                masked: { hidden: 'This body isn’t text and holds a value hidden elsewhere.' },
+                masked: { hidden: 'This body isn’t text and holds what looks like a secret.' },
               },
             ],
             dropped: 0,

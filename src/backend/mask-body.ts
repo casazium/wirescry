@@ -8,7 +8,7 @@
  * them from source in tests.
  */
 import { applySpans, mergeSpans, redactHeader, redactUrl, type Span } from '../shared/redact.ts';
-import { bodyKind, isTextual, KnownValues, redactBody } from '../shared/redact-body.ts';
+import { bodyKind, isTextual, KnownValues, redactBody, secretInBytes } from '../shared/redact-body.ts';
 import { textOfBytes, type Encoding } from './har-redact.ts';
 import type { SseItem } from '../shared/sse.ts';
 
@@ -37,7 +37,7 @@ export type MaskedBytes =
 export const HIDDEN_UNREADABLE = 'This body couldn’t be read as text, so it can’t be checked for secrets.';
 
 export const HIDDEN_BINARY =
-  'This body isn’t text and holds a value hidden elsewhere, so it isn’t shown while View › Hide Secrets is on.';
+  'This body isn’t text and holds what looks like a secret, so it isn’t shown while View › Hide Secrets is on.';
 
 const STAR = 0x2a;
 
@@ -167,23 +167,26 @@ export function maskBytes(
   if (!decoded) {
     // Text it can't read: its secrets can't be found, so it isn't shown.
     if (isTextual(mediaType) || saysUtf16(bytes, mediaType)) return { hidden: HIDDEN_UNREADABLE };
-    if (known.inBytes(bytes)) return { hidden: HIDDEN_BINARY };
+    // The Hex view's ASCII column shows any secret in it byte for byte.
+    if (secretInBytes(bytes, known, { cut })) return { hidden: HIDDEN_BINARY };
     return { bytes, ranges: [], binary: true, literals: [] };
   }
   const { text, encoding } = decoded;
   // Read as UTF-16 (by a BOM or NULs that may be chance in binary): a known value written as plain
   // UTF-8 bytes in it wouldn't be found in the text, so the body isn't shown.
-  if (encoding !== 'utf8' && encoding !== 'latin1') {
-    if (known.inBytes(bytes)) return { hidden: HIDDEN_BINARY };
-    // Nor would a secret the rules find in it read byte for byte (the Hex view's ASCII column).
-    const asBytes = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length).toString('latin1');
-    if (redactBody(asBytes, 'text/plain', known).spans.length > 0) return { hidden: HIDDEN_BINARY };
-  }
   const spans = mergeSpans(redactBody(text, rulesType(mediaType), known, { cut }).spans);
   const ranges = byteRanges(text, spans, encoding);
   // A secret running to a cut end runs on into the cut-off character's bytes.
   const last = ranges[ranges.length - 1];
   if (last && last[1] === decoded.length) last[1] = bytes.length;
+  // Read as UTF-16 or Latin-1, or as UTF-8 with NULs in it (ASCII in UTF-16, too little to be read
+  // as such), what's left is checked again byte for byte, as the Hex view's ASCII column shows it.
+  if (
+    (encoding !== 'utf8' || bytes.includes(0)) &&
+    secretInBytes(bytes, known, { skip: ranges, cut, type: rulesType(mediaType) })
+  ) {
+    return { hidden: HIDDEN_BINARY };
+  }
   let masked = bytes;
   if (ranges.length > 0) {
     masked = Uint8Array.from(bytes);
