@@ -1550,6 +1550,82 @@ function kindSpans(
   }
 }
 
+/** Whether a compressor's header starts at `i`: gzip, zstd, or zlib. */
+function compressedAt(bytes: Uint8Array, i: number): boolean {
+  const b0 = bytes[i];
+  const b1 = bytes[i + 1];
+  if (b0 === undefined || b1 === undefined) return false;
+  if (b0 === 0x1f && b1 === 0x8b) return true;
+  if (b0 === 0x28 && b1 === 0xb5 && bytes[i + 2] === 0x2f && bytes[i + 3] === 0xfd) return true;
+  // zlib as writers emit it: 78 then one of four levels (any checksum-valid pair is too loose).
+  return b0 === 0x78 && (b1 === 0x01 || b1 === 0x5e || b1 === 0x9c || b1 === 0xda);
+}
+
+/**
+ * Bytes a compressor wrote, sent without saying so: gzip, zstd or zlib at the start, or in a gRPC
+ * frame marked compressed. Brotli and raw deflate have no header to know them by.
+ */
+export function looksCompressed(bytes: Uint8Array): boolean {
+  return compressedAt(bytes, 0) || (bytes[0] === 1 && bytes.length > 5 && compressedAt(bytes, 5));
+}
+
+const latin1 = new TextDecoder('latin1');
+
+/**
+ * Whether bytes still show a secret byte for byte, read as the `strings` tool reads them: NULs
+ * dropped (so UTF-16 and UTF-32 ASCII reads as ASCII) and every other byte that isn't printable
+ * ASCII a line break (so random binary rarely makes a match by chance). Then the text rules, and
+ * known values in that view and in the bytes as Latin-1. `type`: the rules to read it by, for a body
+ * read as text (a script's, say, which leaves unquoted code alone); else plain text's. A match counts only if it isn't wholly in
+ * `skip`, byte ranges already hidden. `cut`: only the start was kept, so a value may run to the
+ * end. Learns nothing: binary isn't a place to learn values from.
+ */
+export function secretInBytes(
+  bytes: Uint8Array,
+  known: KnownValues,
+  options: { skip?: ReadonlyArray<readonly [number, number]>; cut?: boolean; type?: string } = {},
+): boolean {
+  const hidden = [...(options.skip ?? [])].sort((a, b) => a[0] - b[0]);
+  // Whether [start, end) lies in one hidden range (they're sorted, and apart once merged).
+  const covered = (start: number, end: number): boolean => {
+    let low = 0;
+    let high = hidden.length - 1;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      const [s, e] = hidden[mid]!;
+      if (e <= start) low = mid + 1;
+      else if (s > start) high = mid - 1;
+      else return end <= e;
+    }
+    return false;
+  };
+  if (hidden.length === 0 && known.inBytes(bytes)) return true;
+  if (hidden.length > 0) {
+    const blanked = Uint8Array.from(bytes);
+    for (const [start, end] of hidden) blanked.fill(0x0a, start, end);
+    if (known.inBytes(blanked)) return true;
+  }
+  // The printable view; where each of its characters came from is worked out only on a match.
+  const printable = new Uint8Array(bytes.length);
+  let n = 0;
+  for (const byte of bytes) {
+    if (byte === 0) continue;
+    printable[n++] = (byte >= 0x20 && byte < 0x7f) || byte === 0x09 ? byte : 0x0a;
+  }
+  const strings = latin1.decode(printable.subarray(0, n));
+  const found = [
+    ...redactBody(strings, options.type ?? 'text/plain', undefined, { cut: options.cut === true }).spans,
+    ...known.scan(strings),
+  ].filter((s) => s.end > s.start);
+  if (found.length > 0) {
+    const from = new Uint32Array(n);
+    for (let i = 0, k = 0; i < bytes.length; i++) if (bytes[i] !== 0) from[k++] = i;
+    if (found.some((s) => !covered(from[s.start]!, from[s.end - 1]! + 1))) return true;
+  }
+  if (known.size === 0) return false;
+  return known.scan(latin1.decode(bytes)).some((s) => s.end > s.start && !covered(s.start, s.end));
+}
+
 /**
  * A text body's redactions, by its media type. Values found by name are added to `known`, and
  * every known value found in the body is redacted too, before or after where it was learned.

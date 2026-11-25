@@ -155,9 +155,13 @@ describe('maskBytes: text that isn’t UTF-8', () => {
     expect(result.ranges).toEqual([[20, body.length]]);
   });
 
-  it('doesn’t read Latin-1 into a type that isn’t text', () => {
+  it('doesn’t read Latin-1 into a type that isn’t text, but hides one whose ASCII shows a secret', () => {
     const body = Buffer.concat([Buffer.from([0xff, 0x00, 0xe9]), Buffer.from(`password=${PASSWORD}`)]);
-    const result = shown(maskBytes(body, 'application/octet-stream', false, new KnownValues()));
+    expect(maskBytes(body, 'application/octet-stream', false, new KnownValues())).toEqual({
+      hidden: HIDDEN_BINARY,
+    });
+    const plain = Buffer.concat([Buffer.from([0xff, 0x00, 0xe9]), Buffer.from('nothing secret here')]);
+    const result = shown(maskBytes(plain, 'application/octet-stream', false, new KnownValues()));
     expect(result.binary).toBe(true);
     expect(result.ranges).toEqual([]);
   });
@@ -212,12 +216,19 @@ describe('maskBytes: UTF-16 without a BOM, and text it can’t read', () => {
     });
   });
 
-  it('hides text full of NULs in no pattern, but shows such bytes of a type that isn’t text', () => {
+  it('hides text full of NULs in no pattern, and such bytes of a type that isn’t text only if they show a secret', () => {
     const body = Buffer.from(
       `\u0000\u0000\u0000ab\u0000\u0000cd\u0000\u0000\u0000password=${PASSWORD}\u0000\u0000\u0000\u0000\u0000`,
     );
     expect(maskBytes(body, 'text/plain', false, new KnownValues())).toEqual({ hidden: HIDDEN_UNREADABLE });
-    expect(shown(maskBytes(body, 'application/octet-stream', false, new KnownValues())).binary).toBe(true);
+    // Not text, but its ASCII shows the password: hidden too.
+    expect(maskBytes(body, 'application/octet-stream', false, new KnownValues())).toEqual({
+      hidden: HIDDEN_BINARY,
+    });
+    const plain = Buffer.from(
+      '\u0000\u0000\u0000ab\u0000\u0000cd\u0000\u0000\u0000nothing\u0000\u0000\u0000',
+    );
+    expect(shown(maskBytes(plain, 'application/octet-stream', false, new KnownValues())).binary).toBe(true);
   });
 
   it('still reads UTF-8 with a stray NUL as UTF-8 text', () => {

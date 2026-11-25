@@ -18,7 +18,7 @@ import {
   redactUrl,
   type Redaction,
 } from '../shared/redact.ts';
-import { isTextual, KnownValues, redactBody } from '../shared/redact-body.ts';
+import { isTextual, KnownValues, looksCompressed, redactBody, secretInBytes } from '../shared/redact-body.ts';
 
 type Json = Record<string, unknown>;
 type Header = [string, string];
@@ -207,20 +207,25 @@ function redactBodyText(
     };
   }
   const bytes = Buffer.from(text, 'base64');
+  const notChecked = { in: where, notScanned: 'binary', count: 1 };
+  // Compressed without saying so: anyone can decompress it, and nothing in it can be checked.
+  if (looksCompressed(bytes)) return { text: undefined, records, notScanned: notChecked, leftOut: true };
   const asText = isTextual(mediaType) ? textOfBytes(bytes, mediaType) : undefined;
   if (!asText) {
-    // Not text: not checked. But a secret found elsewhere, there byte for byte, means it goes.
-    if (known.inBytes(bytes)) {
-      return {
-        text: undefined,
-        records,
-        notScanned: { in: where, notScanned: 'binary', count: 1 },
-        leftOut: true,
-      };
+    // Not text, or text it can't read: not checked by its type's rules, but left out if its bytes
+    // show a secret.
+    if (secretInBytes(bytes, known, { cut: options.cut })) {
+      return { text: undefined, records, notScanned: notChecked, leftOut: true };
     }
-    return { text, records, notScanned: { in: where, notScanned: 'binary', count: 1 }, leftOut: false };
+    return { text, records, notScanned: notChecked, leftOut: false };
   }
   const result = redactBody(asText.text, mediaType, known, { cut: options.cut });
+  // Read as UTF-16 or Latin-1, what's left is checked again byte for byte: as anyone decoding the
+  // file differently would see it (ASCII after a BOM, UTF-32, ASCII among other text).
+  const unit = asText.encoding === 'latin1' ? 1 : 2;
+  const skip = result.spans.map((s): [number, number] => [s.start * unit, s.end * unit]);
+  if (secretInBytes(bytes, known, { skip, cut: options.cut, type: mediaType }))
+    return { text: undefined, records, leftOut: true };
   add(result.records);
   const redacted = applySpans(asText.text, result.spans);
   return {
@@ -395,14 +400,17 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
           if (body.leftOut) framesLeftOut += 1;
           messages!.push({ ...kept, data: body.text ?? '' });
         } else {
-          // Binary: not checked, and left out if a known value is in it byte for byte.
+          // Binary: not checked by text's rules, and left out as a binary body is.
           framesNotScanned += 1;
-          if (known.inBytes(Buffer.from(data, 'base64'))) {
-            framesLeftOut += 1;
-            messages!.push({ ...kept, data: '' });
-          } else {
-            messages!.push({ ...kept, data });
-          }
+          const body = redactBodyText(
+            'webSocketMessages',
+            data,
+            'application/octet-stream',
+            { base64: true, undecoded: false, cut: cutFrames.has(index) },
+            known,
+          );
+          if (body.leftOut) framesLeftOut += 1;
+          messages!.push({ ...kept, data: body.text ?? '' });
         }
       } catch {
         framesLeftOut += 1;
