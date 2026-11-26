@@ -995,8 +995,12 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
 
 /** Tags and quoted attribute values up to 256 KB: a SAML form's hidden input runs to 20 KB. */
 const TAG = /<([A-Za-z][\w:.-]{0,63})([^<>]{0,262144})>/g;
-const ATTRIBUTE =
-  /([A-Za-z_:][\w:.-]{0,63})\s*=\s*(?:"([^"]{0,262144})"|'([^']{0,262144})'|([^\s"'<>`=]{1,4096}))/g;
+/** Unquoted attribute values are read this far by the pattern; a longer one is read on in code. */
+const MAX_UNQUOTED_ATTRIBUTE = 4096;
+const ATTRIBUTE = new RegExp(
+  `([A-Za-z_:][\\w:.-]{0,63})\\s*=\\s*(?:"([^"]{0,262144})"|'([^']{0,262144})'|([^\\s"'<>\`=]{1,${MAX_UNQUOTED_ATTRIBUTE}}))`,
+  'g',
+);
 
 interface Attribute {
   name: string;
@@ -1007,11 +1011,20 @@ interface Attribute {
 
 function attributesOf(tag: string, offset: number): Attribute[] {
   const out: Attribute[] = [];
-  for (const match of tag.matchAll(ATTRIBUTE)) {
+  const pattern = new RegExp(ATTRIBUTE);
+  for (let match = pattern.exec(tag); match; match = pattern.exec(tag)) {
     const group = match[2] !== undefined ? 2 : match[3] !== undefined ? 3 : 4;
-    const value = match[group]!;
+    let value = match[group]!;
     const quoted = group !== 4;
     const start = offset + match.index + match[0].length - value.length - (quoted ? 1 : 0);
+    // An unquoted value at its bound runs on to whitespace or the tag's end: taken whole.
+    if (!quoted && value.length === MAX_UNQUOTED_ATTRIBUTE) {
+      let end = match.index + match[0].length;
+      while (end < tag.length && !/[\s"'<>`]/.test(tag[end]!)) end++;
+      value = tag.slice(start - offset, end);
+      // The next attribute is looked for after it, not inside it.
+      pattern.lastIndex = end;
+    }
     out.push({ name: match[1]!, value, start, end: start + value.length });
   }
   return out;
@@ -1103,14 +1116,16 @@ export function xmlElementSpans(text: string, sink?: ValueSink, html = false): S
     let close: number;
     if (window.startsWith(CDATA_OPEN, lead)) {
       let cdataEnd = window.indexOf(']]>', lead + CDATA_OPEN.length);
+      // A long section is redacted to its `]]>` even when another element's close follows it.
+      let farEnd = false;
       if (cdataEnd < 0 && long) {
         const far = cdataEndFrom(windowEnd - 2);
         cdataEnd = far < 0 ? text.length - start : far - start;
+        farEnd = true;
       }
       const after = start + cdataEnd + 3;
       const gap = /^\s{0,64}/.exec(text.slice(after, after + 64))![0].length;
-      const toEnd = start + cdataEnd === text.length;
-      if (cdataEnd < 0 || (!toEnd && !text.startsWith(`</${name}`, after + gap))) continue;
+      if (cdataEnd < 0 || (!farEnd && !text.startsWith(`</${name}`, after + gap))) continue;
       close = start + cdataEnd;
       start += lead + CDATA_OPEN.length;
     } else {

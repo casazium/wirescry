@@ -54,6 +54,23 @@ describe('values past the 4 KB limits', () => {
     );
   });
 
+  it('redacts a long CDATA section to its end even when another element’s close follows', () => {
+    const text = `<Password><![CDATA[${FILL(5_000)}${SECRET}]]>x</Password><n>kept</n>`;
+    expect(redact(text, 'application/xml')).toBe(`<Password><![CDATA[${REDACTED}]]>x</Password><n>kept</n>`);
+  });
+
+  it('redacts a long unquoted attribute value whole, and reads the attributes after it', () => {
+    const text = `<input name=csrf_token value=${FILL(5_000)}${SECRET} type=hidden><add key=token value=${SECRET}>`;
+    expect(redact(text, 'text/html')).toBe(
+      `<input name=csrf_token value=${REDACTED} type=hidden><add key=token value=${REDACTED}>`,
+    );
+  });
+
+  it('doesn’t look for attributes inside a long unquoted value', () => {
+    const text = `<input value=${FILL(5_000)}&password=x type=hidden>`;
+    expect(redact(text, 'text/html')).toBe(text);
+  });
+
   it('redacts a long element or CDATA that never closes, to the end', () => {
     for (const text of [
       `<r><Password>${FILL(5_000)}${SECRET}`,
@@ -108,6 +125,23 @@ describe('values past the 4 KB limits', () => {
       expect(out).not.toContain('Ab1');
       expect(out).not.toContain('==');
     }
+  });
+
+  it('redacts a long bearer token whose first 4 KB look like a word', () => {
+    // The check (a digit, or mixed case) is skipped for a value at its bound: it fails closed.
+    const text = `bearer ${rep('a', 4_096)}${SECRET} kept`;
+    expect(applySpans(text, shapeSpans(text))).toBe(`bearer ${REDACTED} kept`);
+  });
+
+  it('redacts long Basic credentials whose colon comes after the first 4 KB', () => {
+    const value = btoa(`${rep('u', 3_075)}:${SECRET}`);
+    const text = `Authorization: Basic ${value} kept`;
+    expect(applySpans(text, shapeSpans(text))).toBe(`Authorization: Basic ${REDACTED} kept`);
+  });
+
+  it('redacts a bearer token at its bound with padding, and keeps what follows', () => {
+    const text = `bearer ${TOKEN(4_094)}== kept`;
+    expect(applySpans(text, shapeSpans(text))).toBe(`bearer ${REDACTED} kept`);
   });
 
   it('redacts long Basic credentials whole', () => {
@@ -173,6 +207,17 @@ describe('private keys on one line or escaped twice', () => {
       `-----BEGIN PRIVATE KEY-----\\\\n${BODY}\\\\n${BODY}\\\\n-----END PRIVATE KEY-----`,
     ],
     ['with a tab', `-----BEGIN RSA PRIVATE KEY-----\t${BODY}\t-----END RSA PRIVATE KEY-----`],
+    ['with its line breaks taken out', `-----BEGIN PRIVATE KEY-----${BODY}${BODY}-----END PRIVATE KEY-----`],
+    ['in a continued shell line', `-----BEGIN PRIVATE KEY-----\\\n${BODY}\\\n-----END PRIVATE KEY-----`],
+    [
+      'with Unicode-escaped breaks',
+      `-----BEGIN PRIVATE KEY-----\\u000a${BODY}\\u000d\\u000a-----END PRIVATE KEY-----`,
+    ],
+    ['with escaped slashes', `-----BEGIN PRIVATE KEY-----\\n${BODY}\\/${BODY}\\n-----END PRIVATE KEY-----`],
+    [
+      'encrypted, on one line',
+      `-----BEGIN RSA PRIVATE KEY----- Proc-Type: 4,ENCRYPTED DEK-Info: AES-128-CBC,ABCDEF ${BODY} -----END RSA PRIVATE KEY-----`,
+    ],
   ])('redacts a key %s, keeping its BEGIN and END lines', (_what, text) => {
     const out = applySpans(text, shapeSpans(text));
     expect(out).not.toContain(SECRET);
@@ -200,6 +245,8 @@ describe('private keys on one line or escaped twice', () => {
     ['a one-line public key', `-----BEGIN PUBLIC KEY----- ${BODY} -----END PUBLIC KEY-----`],
     ['a BEGIN line then a word', `-----BEGIN PRIVATE KEY----- ${rep('A', 31)}.`],
     ['a backslash that is not a line break', `-----BEGIN PRIVATE KEY-----\\\\t${BODY}`],
+    ['a word after the BEGIN line', '-----BEGIN PRIVATE KEY-----Note: keep this file safe.'],
+    ['a short run with no space', `-----BEGIN PRIVATE KEY-----${rep('A', 31)}.`],
   ])('leaves %s alone', (_what, text) => {
     expect(shapeSpans(text)).toEqual([]);
   });

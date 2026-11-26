@@ -460,10 +460,13 @@ const SHAPES: readonly Shape[] = [
 const PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/g;
 
 /**
- * A line break written out, as in JSON (`\\n`), or escaped again for each time it was put in a
- * string (`\\\\n`, `\\\\r\\\\n`).
+ * A line break written out, as in JSON (`\\n`), escaped again for each time it was put in a string
+ * (`\\\\n`, `\\\\r\\\\n`), as a Unicode escape (`\\u000a`), or a real one after a backslash, as a
+ * shell's or Dockerfile's continued line has.
  */
-const WRITTEN_BREAK = /\\{1,8}(?:r\\{1,8})?n/y;
+const WRITTEN_BREAK = /\\{1,8}(?:(?:r\\{1,8})?n|\r?\n|(?:u000[dD]\\{1,8})?u000[aA])/y;
+/** A slash escaped in a key's body, as PHP's JSON writes one: `\\/`. */
+const ESCAPED_SLASH = /\\{1,8}\//y;
 
 /** The width of a line break at `i`, real (`\n`, `\r\n`) or written out (WRITTEN_BREAK); 0 if none. */
 function lineBreak(text: string, i: number): number {
@@ -474,8 +477,11 @@ function lineBreak(text: string, i: number): number {
   return WRITTEN_BREAK.test(text) ? WRITTEN_BREAK.lastIndex - i : 0;
 }
 
-/** A key on one line: spaces or tabs after the BEGIN line, then 32+ characters of base64. */
-const ONE_LINE_KEY = /[ \t]{1,8}(?=[A-Za-z0-9+/]{32})/y;
+/**
+ * A key on one line: any spaces or tabs after the BEGIN line (none, if its line breaks were taken
+ * out), then 32+ characters of base64 or an armor header such as `Proc-Type: `.
+ */
+const ONE_LINE_KEY = /[ \t]{0,8}(?=[A-Za-z0-9+/]{32}|(?:Proc-Type|DEK-Info|Version|Comment|Hash|Charset): )/y;
 
 /** An armor header line's start: `Proc-Type: `, `Version: `, `Comment: `. */
 const KEY_HEADER = /[A-Za-z][A-Za-z0-9-]{0,40}: /y;
@@ -518,6 +524,8 @@ function privateKeySpans(text: string): Span[] {
       const brk = lineBreak(text, end);
       if (brk > 0) end += brk;
       else if (KEY_BODY.test(text[end]!)) end++;
+      else if (text[end] === '\\' && ((ESCAPED_SLASH.lastIndex = end), ESCAPED_SLASH.test(text)))
+        end = ESCAPED_SLASH.lastIndex;
       else break;
     }
     spans.push({ start, end, kind: 'Private key' });
@@ -537,10 +545,13 @@ export function shapeSpans(text: string, sink?: ValueSink): Span[] {
       const group = shape.group ?? 0;
       let value = match[group];
       if (value === undefined || value === '') continue;
-      if (shape.check && !shape.check(value)) continue;
+      // A value that reaches its bound runs on: redacted whatever its first part looks like (fails
+      // closed), as checking all of it would read a long run once for each match in it.
+      const long = shape.runs !== undefined && value.length === shape.runs.bound;
+      if (!long && shape.check && !shape.check(value)) continue;
       const start = group === 0 ? match.index : match.indices![group]![0];
       let end = start + value.length;
-      if (shape.runs && value.length === shape.runs.bound) {
+      if (shape.runs && long) {
         if (end < runFrom || end > runTo) {
           runFrom = end;
           runTo = end;
