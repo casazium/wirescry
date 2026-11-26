@@ -343,7 +343,8 @@ describe('bodies by kind', () => {
       'Content-Disposition: form-data; name="file"; filename="a.png"',
       'Content-Type: image/png',
       '',
-      'PNGDATA',
+      // A PNG's signature holds control characters: it doesn't read as text.
+      '\x89PNG\x1a\x00PNGDATA',
       `--${b}`,
       'Content-Disposition: form-data; name="notes"; filename="notes.txt"',
       'Content-Type: text/plain',
