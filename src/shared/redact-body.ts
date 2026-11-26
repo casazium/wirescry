@@ -1040,7 +1040,67 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
 // ---------------------------------------------------------------- tags (XML and HTML)
 
 /** Tags and quoted attribute values up to 256 KB: a SAML form's hidden input runs to 20 KB. */
-const TAG = /<([A-Za-z][\w:.-]{0,63})([^<>]{0,262144})>/g;
+const MAX_TAG = 262_144;
+
+interface Tag {
+  index: number;
+  name: string;
+  /** What's between the name and the `>`: the attributes. */
+  body: string;
+  bodyStart: number;
+  /** The index after the `>`. */
+  end: number;
+}
+
+/** The first `>` in `text[from, to)`, or -1. */
+function firstGreaterThan(text: string, from: number, to: number): number {
+  for (let i = from; i < to; i++) if (text[i] === '>') return i;
+  return -1;
+}
+
+/**
+ * Where a tag whose attributes start at `from` ends (its `>`), or -1. A `>` inside a quoted
+ * value (`data-x="a>b"`) is the value's. A quote counts only after `=` and any whitespace, as an
+ * attribute's value starts, and only if it closes before the next `<`, so a `<` inside a quoted
+ * value (`placeholder="<enter>"`) isn't read through: a known limit, as before. If the quotes
+ * don't work out before the next `<` (`title="> He said "hi" <br>`), the tag ends at its first
+ * `>`, as one read without quotes would. Nothing is read past the next `<`.
+ */
+function tagEnd(text: string, from: number): number {
+  // Attributes up to MAX_TAG characters, then the `>`.
+  const limit = Math.min(text.length, from + MAX_TAG + 1);
+  let i = from;
+  while (i < limit) {
+    const c = text[i];
+    if (c === '>') return i;
+    if (c === '<') return firstGreaterThan(text, from, i);
+    i++;
+    if (c !== '=') continue;
+    while (i < limit && /\s/.test(text[i]!)) i++;
+    const quote = text[i];
+    if (quote !== '"' && quote !== "'") continue;
+    let close = i + 1;
+    while (close < limit && text[close] !== quote && text[close] !== '<') close++;
+    if (close < limit && text[close] === quote) i = close + 1;
+    else i++;
+  }
+  return firstGreaterThan(text, from, limit);
+}
+
+/**
+ * The tags in text (`<name attributes>`), in order. Each is read no further than the next `<`, so
+ * the text is read about once.
+ */
+function* tagsIn(text: string): Generator<Tag> {
+  const start = /<([A-Za-z][\w:.-]{0,63})/g;
+  for (let match = start.exec(text); match; match = start.exec(text)) {
+    const bodyStart = match.index + match[0].length;
+    const end = tagEnd(text, bodyStart);
+    if (end < 0) continue;
+    yield { index: match.index, name: match[1]!, body: text.slice(bodyStart, end), bodyStart, end: end + 1 };
+    start.lastIndex = end + 1;
+  }
+}
 /** Unquoted attribute values are read this far by the pattern; a longer one is read on in code. */
 const MAX_UNQUOTED_ATTRIBUTE = 4096;
 const ATTRIBUTE = new RegExp(
@@ -1089,12 +1149,12 @@ const localName = (name: string): string => name.slice(name.lastIndexOf(':') + 1
  */
 export function tagSpans(text: string, sink?: ValueSink): Span[] {
   const spans: Span[] = [];
-  for (const match of text.matchAll(TAG)) {
-    const attributes = attributesOf(match[2]!, match.index + 1 + match[1]!.length);
+  for (const tag of tagsIn(text)) {
+    const attributes = attributesOf(tag.body, tag.bodyStart);
     const named = attributes.find((a) => /^(?:name|key|property)$/i.test(a.name));
     // A password field is one whatever its name.
     const isPassword =
-      /^input$/i.test(match[1]!) &&
+      /^input$/i.test(tag.name) &&
       attributes.some((a) => /^type$/i.test(a.name) && /^password$/i.test(a.value));
     const namedFamily = isPassword ? 'password' : named ? secretName(named.value, 'form') : undefined;
     for (const attribute of attributes) {
@@ -1115,36 +1175,101 @@ export function tagSpans(text: string, sink?: ValueSink): Span[] {
   return spans;
 }
 
-const ELEMENT_OPEN = /<([A-Za-z][\w:.-]{0,63})(\s[^<>]{0,4096})?>/g;
 const CDATA_OPEN = '<![CDATA[';
+
+/**
+ * A search for `needle` from a position, remembering its last answer: a later search from inside
+ * the stretch it read finds the same, so many searches from close together cost one.
+ */
+function rememberedSearch(text: string, needle: string): (from: number) => number {
+  let searchedFrom = -1;
+  let foundAt = -1;
+  return (from) => {
+    if (searchedFrom < 0 || from < searchedFrom || (foundAt >= 0 && from > foundAt)) {
+      searchedFrom = from;
+      foundAt = text.indexOf(needle, from);
+    }
+    return foundAt;
+  };
+}
+
+/**
+ * For text with comments in it, where the comments starting at a `<!--` run to: the next `<` after
+ * them that doesn't start another, -1 if there's none, or the text's length if one never closes.
+ * Every comment's end is found in one pass, when first needed, and where each end leads is
+ * remembered, so each comment is walked once however many elements' text reaches it (as elements
+ * inside one long comment all do).
+ */
+function commentWalker(text: string): (at: number) => number {
+  let ends: number[] | undefined;
+  const endFrom = (from: number): number => {
+    if (!ends) {
+      ends = [];
+      for (let at = text.indexOf('-->'); at >= 0; at = text.indexOf('-->', at + 1)) ends.push(at);
+    }
+    let low = 0;
+    let high = ends.length;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (ends[middle]! < from) low = middle + 1;
+      else high = middle;
+    }
+    return low < ends.length ? ends[low]! : -1;
+  };
+  const leadsTo = new Map<number, number>();
+  return (at) => {
+    const passed: number[] = [];
+    let result: number;
+    for (let comment = at; ;) {
+      const end = endFrom(comment + 4);
+      if (end < 0) {
+        result = text.length;
+        break;
+      }
+      const known = leadsTo.get(end);
+      if (known !== undefined) {
+        result = known;
+        break;
+      }
+      passed.push(end);
+      const next = text.indexOf('<', end + 3);
+      if (next < 0 || !text.startsWith('<!--', next)) {
+        result = next;
+        break;
+      }
+      comment = next;
+    }
+    for (const end of passed) leadsTo.set(end, result);
+    return result;
+  };
+}
 
 /**
  * Elements whose text is a secret, redacted: by the element's name (`<Password>…</Password>`,
  * `<wsse:Password>`), or in XML by its `key` or `name` attribute (`<entry key="password">…</entry>`). In
  * HTML only a `<textarea>` with a secret `name` counts: a link or button named for a password
- * holds words, not one. Plain text or one CDATA section, after any whitespace. Only text found by
- * the element's own name is added to the known values.
+ * holds words, not one. Plain text or one CDATA section, after any whitespace; comments before the
+ * close tag are redacted with it. Only text found by the element's own name is added to the known
+ * values. Known limits: a comment before a CDATA section, and processing instructions
+ * (`<?pi?>`) in the text, leave an element unread.
  */
 export function xmlElementSpans(text: string, sink?: ValueSink, html = false): Span[] {
   const spans: Span[] = [];
-  // The last search for `]]>` past a window: where it started and what it found. A later search
-  // from inside that stretch finds the same, so many unclosed sections cost one search, not many.
-  let cdataFrom = -1;
-  let cdataAt = -1;
-  const cdataEndFrom = (from: number): number => {
-    if (cdataFrom < 0 || from < cdataFrom || (cdataAt >= 0 && from > cdataAt)) {
-      cdataFrom = from;
-      cdataAt = text.indexOf(']]>', from);
-    }
-    return cdataAt;
-  };
-  for (const match of text.matchAll(ELEMENT_OPEN)) {
-    const name = match[1]!;
+  // The search for the end of a CDATA section past a window: many left unclosed cost one search.
+  const cdataEndFrom = rememberedSearch(text, ']]>');
+  const pastComments = commentWalker(text);
+  for (const tag of tagsIn(text)) {
+    // An element's start: its name, then attributes after whitespace, or none. In XML, not one
+    // that closes itself (`<Password/>`, `<Password />`), which has no text; HTML ignores that `/`
+    // (`<textarea name="password" />…</textarea>` still holds text).
+    if (tag.body !== '' && !/^\s/.test(tag.body)) continue;
+    if (!html && tag.body.endsWith('/')) continue;
+    const name = tag.name;
     const byOwnName = html ? undefined : secretName(localName(name), 'json');
     let family: SecretFamily | undefined = byOwnName;
     let named: Attribute | undefined;
     if (!family) {
-      const attributes = match[2] ? attributesOf(match[2], match.index + 1 + name.length) : [];
+      const attributes = tag.body ? attributesOf(tag.body, tag.bodyStart) : [];
       named = html
         ? /^textarea$/i.test(name)
           ? attributes.find((a) => /^name$/i.test(a.name))
@@ -1154,7 +1279,7 @@ export function xmlElementSpans(text: string, sink?: ValueSink, html = false): S
     }
     if (!family) continue;
     // The text, searched for its end only so far: an unclosed one isn't read to the body's end.
-    let start = match.index + match[0].length;
+    let start = tag.end;
     const windowEnd = start + 64 + CDATA_OPEN.length + MAX_VALUE + 3;
     const window = text.slice(start, windowEnd);
     // Text running past the window is a long value: redacted to where it ends, or to the text's
@@ -1162,7 +1287,10 @@ export function xmlElementSpans(text: string, sink?: ValueSink, html = false): S
     const long = windowEnd < text.length;
     const lead = /^\s{0,64}/.exec(window)![0].length;
     let close: number;
-    if (window.startsWith(CDATA_OPEN, lead)) {
+    // Where the first comment in plain text starts, if there is one.
+    let firstComment = -1;
+    const cdata = window.startsWith(CDATA_OPEN, lead);
+    if (cdata) {
       let cdataEnd = window.indexOf(']]>', lead + CDATA_OPEN.length);
       // A long section is redacted to its `]]>` even when another element's close follows it.
       let farEnd = false;
@@ -1173,26 +1301,54 @@ export function xmlElementSpans(text: string, sink?: ValueSink, html = false): S
       }
       const after = start + cdataEnd + 3;
       const gap = /^\s{0,64}/.exec(text.slice(after, after + 64))![0].length;
-      if (cdataEnd < 0 || (!farEnd && !text.startsWith(`</${name}`, after + gap))) continue;
+      // Comments may come between the section and the close.
+      let closeAt = after + gap;
+      if (!farEnd && text.startsWith('<!--', closeAt)) closeAt = pastComments(closeAt);
+      // A comment never closed runs to the text's end, and the section is redacted all the same,
+      // as it is when the body ends right after the section (fails closed).
+      const closed = closeAt === text.length || text.startsWith(`</${name}`, closeAt);
+      if (cdataEnd < 0 || (!farEnd && (closeAt < 0 || !closed))) continue;
       close = start + cdataEnd;
       start += lead + CDATA_OPEN.length;
     } else {
       let lt = window.indexOf('<');
-      // The next `<` is no further than the next element, so these searches read the text once.
+      // The next `<` is no further than the next element (or comment), so this search reads the
+      // text about once.
       if (lt < 0 && long) {
         const far = text.indexOf('<', windowEnd);
         lt = far < 0 ? text.length - start : far - start;
+      }
+      // Comments before the close (`<Password>…<!-- note --></Password>`) are passed over and
+      // redacted with the text. One never closed runs to the text's end, and so does the text.
+      if (lt >= 0 && start + lt < text.length && text.startsWith('<!--', start + lt)) {
+        firstComment = start + lt;
+        const past = pastComments(start + lt);
+        lt = past < 0 ? -1 : past - start;
       }
       const toEnd = lt >= 0 && start + lt === text.length;
       if (lt < 0 || (!toEnd && !text.startsWith(`</${name}`, start + lt))) continue;
       close = start + lt;
     }
     if (close === start) continue;
+    // The value: plain text without its comments, which are redacted with it but aren't the value
+    // (one left open runs to the end). A long one isn't stripped, which would be a pass over all
+    // of it: it's taken to its first comment, or whole if a comment comes first. In CDATA, `<!--`
+    // is just text.
+    const raw = text.slice(start, close);
+    const stripped = cdata
+      ? raw
+      : close - start <= MAX_VALUE + 1024
+        ? raw.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+        : firstComment >= 0 && text.slice(start, firstComment).trim() !== ''
+          ? text.slice(start, firstComment)
+          : raw;
+    const value = stripped.trim();
+    if (value === '') continue;
     // Named by an XML `name` attribute (`<property name="…password">`), only text that is one
     // token: `<string name="error_token">Your token expired</string>` is words.
-    if (named && /^name$/i.test(named.name) && /\s/.test(text.slice(start, close).trim())) continue;
+    if (named && /^name$/i.test(named.name) && /\s/.test(value)) continue;
     spans.push({ start, end: close, kind: 'name', name: named?.value ?? localName(name) });
-    if (sink && byOwnName && STRONG_FAMILIES.has(byOwnName)) addValue(sink, text.slice(start, close).trim());
+    if (sink && byOwnName && STRONG_FAMILIES.has(byOwnName)) addValue(sink, value);
   }
   return spans;
 }
@@ -1330,12 +1486,14 @@ function multipartSpans(
     let bodyEnd = partEnd;
     if (text.slice(bodyEnd - 2, bodyEnd) === '\r\n') bodyEnd -= 2;
     else if (text[bodyEnd - 1] === '\n') bodyEnd -= 1;
-    const disposition = /^content-disposition:([^\r\n]{0,1024})/im.exec(headers)?.[1] ?? '';
+    // A header folded onto more lines (`form-data;\r\n name="password"`) is read as one.
+    const unfolded = headers.replace(/\r?\n[ \t]+/g, ' ');
+    const disposition = /^content-disposition:([^\r\n]{0,1024})/im.exec(unfolded)?.[1] ?? '';
     // `name=`, quoted or not, and not the end of `filename=`.
     const nameMatch = /(?:^|[;\s])name=(?:"([^"]{0,256})"|([^;\s]{1,256}))/i.exec(disposition);
     const name = nameMatch ? (nameMatch[1] ?? nameMatch[2]) : undefined;
     const isFile = /filename\*?=/i.test(disposition);
-    const partType = /^content-type:\s*([^\r\n]{1,256})/im.exec(headers)?.[1];
+    const partType = /^content-type:[ \t]*([^\r\n]{1,256})/im.exec(unfolded)?.[1];
     if (bodyEnd > blank) {
       const family = name !== undefined ? secretName(name, 'form') : undefined;
       if (family) {
@@ -1354,9 +1512,18 @@ function multipartSpans(
         const value = text.slice(blank, bodyEnd).trim();
         if (known && credentialLike(value)) addValue(known, value);
       } else if (isFile && partType && !/^text\/|json|xml|javascript|x-www-form-urlencoded/i.test(partType)) {
-        notScanned.push('a file part that isn’t text');
-        // Token shapes are still looked for: a key or token in a file of unknown type.
-        add(plainSpans(text.slice(blank, bodyEnd), known, false), blank);
+        // A file sent with a type that isn't text. One that reads as text all the same (an `.env`
+        // sent as `application/octet-stream`) is read as text with no type, as a part without a
+        // Content-Type is: assignments and JSON too. Any other gets only the token shapes and the
+        // known values. ESC is allowed, for colored logs.
+        const body = text.slice(blank, bodyEnd);
+        // eslint-disable-next-line no-control-regex -- control characters are what mark it as binary
+        const readsAsText = !/[\x00-\x08\x0e-\x1a\x1c-\x1f\x7f\ufffd]/.test(body.slice(0, 4096));
+        if (readsAsText) add(kindSpans(body, 'text/plain', known, notScanned, depth + 1), blank);
+        else {
+          notScanned.push('a file part that isn’t text');
+          add(plainSpans(body, known, false), blank);
+        }
       } else {
         add(
           kindSpans(text.slice(blank, bodyEnd), partType ?? 'text/plain', known, notScanned, depth + 1),
