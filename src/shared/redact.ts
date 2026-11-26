@@ -255,6 +255,61 @@ export function nameRule(name: string, where: NameContext): SecretFamily | 'desc
   return found;
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Whether a value looks like a credential by itself, for a name that doesn't say it holds one (a
+ * `key` field, a URL's user name, the credential after a scheme): 20+ characters of
+ * `[A-Za-z0-9_-]` with letters and digits, and not a UUID. Only such values are learned and looked
+ * for elsewhere, so ordinary IDs and paths aren't (and none past 4,096 characters: see
+ * `distinctive`).
+ */
+export function credentialLike(value: string): boolean {
+  return (
+    value.length >= 20 &&
+    /^[A-Za-z0-9_-]+$/.test(value) &&
+    /[A-Za-z]/.test(value) &&
+    /\d/.test(value) &&
+    !UUID.test(value)
+  );
+}
+
+/** Whether a field's name is just `key` (in a query, fragment, matrix parameter or form). */
+export function isKeyName(name: string): boolean {
+  const words = nameWords(name);
+  return words.length === 1 && words[0] === 'key';
+}
+
+/**
+ * Whether the value of a field named just `key` holds a secret. It often carries an API key
+ * (`?key=<key>`), but also IDs, paths and words (`?key=name`, `?key=uploads/photo.jpg`), so only
+ * these count: 8+ characters of `[A-Za-z0-9_+=-]` with letters and digits; base64 of 16+
+ * characters with upper and lower case and digits, mixed within its parts (`wJalr…/K7MDENG/…`,
+ * not `uploads/User123/Avatar`); or a value too long to
+ * judge (past 4,096 characters). `spaced` is the value decoded with `+` as a space, as a form
+ * reads it; `literal`, with `+` kept, as base64 is written.
+ */
+export function keyValueIsSecret(spaced: string, literal: string): boolean {
+  if (literal.length > 4096) return true;
+  if (
+    spaced.length >= 8 &&
+    /^[A-Za-z0-9_+=-]+$/.test(spaced) &&
+    /[A-Za-z]/.test(spaced) &&
+    /\d/.test(spaced)
+  ) {
+    return true;
+  }
+  return (
+    /^[A-Za-z0-9+/]{16,4096}={0,2}$/.test(literal) &&
+    /[a-z]/.test(literal) &&
+    /[A-Z]/.test(literal) &&
+    /\d/.test(literal) &&
+    // Not a path or phrase whose every part is a word, digits after it (`uploads/User123/Avatar`,
+    // `New+York+City+2024`): base64's parts mix them.
+    !literal.split(/[/+]/).every((part) => /^[A-Za-z]*\d*$/.test(part))
+  );
+}
+
 /** Whether a value under a name of this family is a credential worth finding elsewhere. */
 export const STRONG_FAMILIES: ReadonlySet<SecretFamily> = new Set(['password', 'secret', 'token']);
 
@@ -637,6 +692,13 @@ function parameterSpans(
         spans.push({ start: eq + 1, end, kind: 'name', name });
         const decoded = percentDecode(value);
         if (STRONG_FAMILIES.has(family) && distinctive(decoded)) sink?.add(decoded);
+      } else if (
+        isKeyName(name) &&
+        keyValueIsSecret(percentDecode(value).trim(), percentDecode(value, false).trim())
+      ) {
+        spans.push({ start: eq + 1, end, kind: 'name', name });
+        const decoded = percentDecode(value).trim();
+        if (sink && credentialLike(decoded)) addValue(sink, decoded);
       } else if (decodedHoldsSecret(value, depth, sink)) {
         spans.push({ start: eq + 1, end, kind: 'encoded', name });
       } else if (depth < MAX_URL_DEPTH && /[?#@;]/.test(value) && /=|:\/\//.test(value)) {
@@ -652,9 +714,60 @@ function parameterSpans(
 }
 
 /**
- * Spans to redact in a URL, absolute or not (`/path?query`): a password in `user:password@`,
- * query and fragment parameters with secret names, matrix parameters (`;jsessionid=…`), values
- * that hold a secret once decoded, and token shapes anywhere. Everything else stays as it was.
+ * Whether a URL's user name looks like a token rather than a person's name
+ * (`https://<token>@git.example/…`, `https://<token>:x-oauth-basic@…`): 16+ characters with
+ * letters and digits, or 24+ of mixed case. Never one with `@` or `.`, as an email or a dotted
+ * name has.
+ */
+function tokenLikeUser(user: string): boolean {
+  if (/[@.]/.test(user)) return false;
+  return (
+    (user.length >= 16 && /[A-Za-z]/.test(user) && /\d/.test(user)) ||
+    (user.length >= 24 && /[a-z]/.test(user) && /[A-Z]/.test(user))
+  );
+}
+
+/**
+ * Spans in a URL's authority, `url[from, to)`: the password in `user:password@`, and a user name
+ * that looks like a token.
+ */
+function authoritySpans(url: string, from: number, to: number, sink?: ValueSink): Span[] {
+  const spans: Span[] = [];
+  // Both searches stay inside the authority, so many URLs in one path are still read once.
+  let at = to - 1;
+  while (at >= from && url[at] !== '@') at--;
+  if (at < from) return spans;
+  let colon = from;
+  while (colon < at && url[colon] !== ':') colon++;
+  const userEnd = colon;
+  const user = percentDecode(url.slice(from, userEnd), false);
+  if (tokenLikeUser(user)) {
+    spans.push({ start: from, end: userEnd, kind: 'URL user name' });
+    if (sink && credentialLike(user)) addValue(sink, user);
+  }
+  if (userEnd < at) {
+    spans.push({ start: colon + 1, end: at, kind: 'URL password' });
+    const password = percentDecode(url.slice(colon + 1, at), false);
+    if (distinctive(password)) sink?.add(password);
+  }
+  return spans;
+}
+
+/** Where the authority of a URL written inside another one ends. */
+const AUTHORITY_END = /[/?#&]/g;
+/**
+ * A URL's start with `://` percent-encoded, whole or in part (`https%3A%2F%2F`, `https:%2F%2F`,
+ * `https%3A//`), but not plain `://`, which the loop over literal URLs reads.
+ */
+const ENCODED_URL_START =
+  /[A-Za-z][A-Za-z0-9+.-]{0,31}(?:%3[Aa](?:%2[Ff]|\/){2}|:(?:%2[Ff]%2[Ff]|%2[Ff]\/|\/%2[Ff]))/g;
+
+/**
+ * Spans to redact in a URL, absolute or not (`/path?query`): a password in `user:password@` and
+ * a user name that looks like a token, in the URL and in URLs written inside it; query and
+ * fragment parameters with secret names; matrix parameters (`;jsessionid=…`); values and path
+ * segments that hold a secret once decoded; and token shapes anywhere. Everything else stays as it
+ * was.
  */
 export function urlSpans(url: string, depth = 0, sink?: ValueSink, shapes = true): Span[] {
   const spans: Span[] = [];
@@ -664,8 +777,7 @@ export function urlSpans(url: string, depth = 0, sink?: ValueSink, shapes = true
   const queryAt = question >= 0 && question < beforeHash ? question : -1;
   const pathEnd = queryAt >= 0 ? queryAt : beforeHash;
 
-  // user:password@ in the authority, found without scanning the whole URL. A URL starting with
-  // `//` has an authority too.
+  // user:password@ in the authority. A URL starting with `//` has an authority too.
   const scheme = url.startsWith('//') ? -1 : url.indexOf('://');
   let pathStart = 0;
   if (url.startsWith('//') || (scheme >= 0 && scheme < 64 && scheme < pathEnd)) {
@@ -673,23 +785,60 @@ export function urlSpans(url: string, depth = 0, sink?: ValueSink, shapes = true
     let authorityEnd = pathEnd;
     const slash = url.indexOf('/', authorityStart);
     if (slash >= 0 && slash < authorityEnd) authorityEnd = slash;
+    // A URL written right after this one (`…@hosthttps://…`) is the path's, below.
+    const nextMark = url.indexOf('://', authorityStart);
+    if (nextMark >= 0 && nextMark < authorityEnd) authorityEnd = nextMark;
     pathStart = authorityEnd;
-    const at = url.lastIndexOf('@', authorityEnd - 1);
-    if (at >= authorityStart) {
-      const colon = url.indexOf(':', authorityStart);
-      if (colon >= 0 && colon < at) {
-        spans.push({ start: colon + 1, end: at, kind: 'URL password' });
-        const password = percentDecode(url.slice(colon + 1, at), false);
-        if (distinctive(password)) sink?.add(password);
+    pushAll(spans, authoritySpans(url, authorityStart, authorityEnd, sink));
+  }
+
+  // URLs written inside this one, in its path, query or fragment (`/proxy/https://user:pass@host/`,
+  // `#/route/https://…`): their authorities. Each ends at the next `/`, `?`, `#` or `&`; the next
+  // URL's `://` holds a `/`, so each search stops by then, and the rest of the URL is read once.
+  for (let mark = url.indexOf('://', pathStart); mark >= 0; mark = url.indexOf('://', mark + 3)) {
+    AUTHORITY_END.lastIndex = mark + 3;
+    const stop = AUTHORITY_END.exec(url);
+    pushAll(spans, authoritySpans(url, mark + 3, stop ? stop.index : url.length, sink));
+  }
+
+  // URLs written percent-encoded into the path (`/proxy/https%3A%2F%2Fuser:pass@host/`): a segment
+  // that holds a secret once decoded (a password, a token shape, a secret parameter) is redacted,
+  // from the segment's start or the end of an encoded URL before it there. It ends at the next `/`
+  // after the scheme, the end of the path (`?` or `#`), or the next encoded URL.
+  if (depth < MAX_URL_DEPTH) {
+    let slash = pathStart;
+    let previousEnd = pathStart;
+    ENCODED_URL_START.lastIndex = pathStart;
+    let start = ENCODED_URL_START.exec(url);
+    while (start && start.index < pathEnd) {
+      const after = start.index + start[0].length;
+      // Read before the nested call below, which uses the same pattern.
+      ENCODED_URL_START.lastIndex = after;
+      const next = ENCODED_URL_START.exec(url);
+      if (slash < after) {
+        const found = url.indexOf('/', after);
+        slash = found < 0 ? url.length : found;
       }
+      let end = Math.min(slash, pathEnd);
+      if (next && next.index < end) end = next.index;
+      const decoded = percentDecode(url.slice(start.index, end), false);
+      if (urlSpans(decoded, depth + 1, sink).length > 0) {
+        // From the segment's start (`/prefix,https%3A…`), but not back past an encoded URL before
+        // it in the same segment, which was judged on its own.
+        let from = start.index;
+        while (from > previousEnd && url[from - 1] !== '/') from--;
+        spans.push({ start: from, end, kind: 'encoded' });
+      }
+      previousEnd = end;
+      start = next;
     }
   }
 
   // Matrix parameters in the path's segments: /segment;name=value;name=value/…
   let semi = url.indexOf(';', pathStart);
   while (semi >= 0 && semi < pathEnd) {
-    const slash = url.indexOf('/', semi);
-    const end = slash >= 0 && slash < pathEnd ? slash : pathEnd;
+    const segmentEnd = url.indexOf('/', semi);
+    const end = segmentEnd >= 0 && segmentEnd < pathEnd ? segmentEnd : pathEnd;
     pushAll(spans, parameterSpans(url, semi + 1, end, /;/g, depth, sink));
     semi = url.indexOf(';', end);
   }

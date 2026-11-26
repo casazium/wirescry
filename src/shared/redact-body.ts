@@ -13,7 +13,10 @@
 import {
   addValue,
   distinctive,
+  credentialLike,
   formSpans,
+  isKeyName,
+  keyValueIsSecret,
   mergeSpans,
   nameRule,
   percentDecode,
@@ -685,8 +688,39 @@ function pairNames(text: string): Map<number, PairName> {
 
 /** Families whose numbers are secrets too (a PIN, a card code); tokens' aren't. */
 const SCALAR_FAMILIES: ReadonlySet<SecretFamily> = new Set(['password', 'secret']);
-/** Families whose short or spaced strings are kept in JSON (a logprob's `"token": "Hello"`). */
+/**
+ * Families whose short or spaced strings are kept whole in JSON (a logprob's `"token": "Hello"`),
+ * except a credential after a scheme (see `schemeAndCredential`).
+ */
 const LONG_ONLY_FAMILIES: ReadonlySet<SecretFamily> = new Set(['token', 'session']);
+
+/**
+ * A scheme and a credential (`ApiKey <key>`, `svc <key>`): one word of up to 32 characters, white
+ * space, then one more run with none, which is the credential if it's 16+ characters of
+ * `[A-Za-z0-9._~+/=-]` with letters and digits, or too long to judge (past 4,096 characters).
+ * Where the credential starts, or undefined. Read by hand, not by one pattern: a pattern over a
+ * credential megabytes long overflows the stack.
+ */
+function schemeAndCredential(text: string): { from: number; credential: string } | undefined {
+  let i = 0;
+  while (i < text.length && /\s/.test(text[i]!)) i++;
+  const word = /^[A-Za-z][A-Za-z0-9_.-]{0,31}/.exec(text.slice(i, i + 33));
+  if (!word) return undefined;
+  i += word[0].length;
+  const gap = i;
+  while (i < text.length && /\s/.test(text[i]!)) i++;
+  if (i === gap || i === text.length) return undefined;
+  let end = text.length;
+  while (end > i && /\s/.test(text[end - 1]!)) end--;
+  const credential = text.slice(i, end);
+  if (credential.length > MAX_VALUE) return /\s/.test(credential) ? undefined : { from: i, credential };
+  const looksLike =
+    credential.length >= 16 &&
+    /^[A-Za-z0-9._~+/=-]+$/.test(credential) &&
+    /[A-Za-z]/.test(credential) &&
+    /\d/.test(credential);
+  return looksLike ? { from: i, credential } : undefined;
+}
 
 /**
  * Spans in a JSON document, or undefined if it isn't one. Values under secret names are redacted
@@ -813,6 +847,18 @@ export function jsonSpans(text: string, known?: KnownValues, depth = 0, cut = fa
         // Only a value under its own strong name is certain enough to look for elsewhere.
         if (known && ownStrong()) addValue(known, decoded);
         return true;
+      }
+      // A scheme and a credential (`"auth": "ApiKey <key>"`): the credential, the scheme kept.
+      // The shapes and known values below still look at the whole string.
+      const scheme = schemeAndCredential(decoded);
+      if (scheme) {
+        spans.push({
+          start: start + rawAt(scheme.from),
+          end: start + rawAt(scheme.from + scheme.credential.length),
+          kind: 'name',
+          name: nameHere(),
+        });
+        if (known && ownStrong() && credentialLike(scheme.credential)) addValue(known, scheme.credential);
       }
     }
     // Too short for a token shape, a URL with a secret, an assignment or a known value.
@@ -1296,6 +1342,17 @@ function multipartSpans(
         // A secret-named field or file (an uploaded private key) is redacted whole.
         spans.push({ start: blank, end: bodyEnd, kind: 'name', name });
         if (known && !isFile && STRONG_FAMILIES.has(family)) addValue(known, text.slice(blank, bodyEnd));
+      } else if (
+        name !== undefined &&
+        !isFile &&
+        isKeyName(name) &&
+        keyValueIsSecret(text.slice(blank, bodyEnd).trim(), text.slice(blank, bodyEnd).trim())
+      ) {
+        // A field named just `key` with an API key's look (see keyValueIsSecret); a file's
+        // contents are left to the file's own rules.
+        spans.push({ start: blank, end: bodyEnd, kind: 'name', name });
+        const value = text.slice(blank, bodyEnd).trim();
+        if (known && credentialLike(value)) addValue(known, value);
       } else if (isFile && partType && !/^text\/|json|xml|javascript|x-www-form-urlencoded/i.test(partType)) {
         notScanned.push('a file part that isn’t text');
         // Token shapes are still looked for: a key or token in a file of unknown type.
