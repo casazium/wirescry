@@ -318,8 +318,19 @@ describe('time', () => {
     ['long unclosed quotes', (n: number) => rep(`token: '${FILL(4_200)}`, n / 1_000), 'text/plain'],
     ['long quotes, one kind', (n: number) => rep(`token: "${FILL(4_200)}`, n / 1_000), 'text/plain'],
     ['long unquoted values', (n: number) => rep(`password=${FILL(4_200)}`, n / 1_000), 'text/plain'],
-    ['bearers in one long run', (n: number) => rep(`+bearer+${TOKEN(20)}`, n / 10), 'text/plain'],
-    ['basics in one long run', (n: number) => rep(`+basic+dXNlcjpwYXNz`, n / 10), 'text/plain'],
+    // Each ends with one more run, longer than 4,096 characters. The last value matched runs to the
+    // end of the text; without the tail, its length depends on the text's length, and a short one is
+    // learned and then compared at every repeat of its run, which makes the time jump at some sizes.
+    [
+      'bearers in one long run',
+      (n: number) => rep(`+bearer+${TOKEN(20)}`, n / 10) + `+${TOKEN(4_200)}`,
+      'text/plain',
+    ],
+    [
+      'basics in one long run',
+      (n: number) => rep(`+basic+dXNlcjpwYXNz`, n / 10) + `+${TOKEN(4_200)}`,
+      'text/plain',
+    ],
     [
       'one-line BEGIN lines',
       (n: number) => rep(`-----BEGIN PRIVATE KEY----- ${rep('A', 40)} `, n / 50),
