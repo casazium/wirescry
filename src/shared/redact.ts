@@ -355,7 +355,15 @@ interface Shape {
   group?: number;
   /** A further check on the redacted part. */
   check?: (value: string) => boolean;
+  /**
+   * A value whose pattern stops at a bound: its characters and the bound. A value that reaches the
+   * bound runs on: it's redacted to where it ends (and up to two `=` after), never in part.
+   */
+  runs?: { of: RegExp; bound: number };
 }
+
+/** Bearer tokens' and Basic credentials' patterns stop at this many characters. */
+const MAX_SCHEME_VALUE = 4096;
 
 const hasDigit = (value: string): boolean => /\d/.test(value);
 
@@ -396,17 +404,22 @@ const SHAPES: readonly Shape[] = [
     pattern: new RegExp(
       // No check of what follows: a longer run is redacted to the bound, and checking would
       // backtrack over the whole bound at every `bearer+` in hostile text.
-      `${B}bearer(?:[ \\t]{1,8}|%20|\\+)([A-Za-z0-9._~+/-]{20,4096}={0,2})`,
+      `${B}bearer(?:[ \\t]{1,8}|%20|\\+)([A-Za-z0-9._~+/-]{20,${MAX_SCHEME_VALUE}}={0,2})`,
       'gid',
     ),
     group: 1,
     check: bearerLike,
+    runs: { of: /[A-Za-z0-9._~+/-]/, bound: MAX_SCHEME_VALUE },
   },
   {
     kind: 'Basic credentials',
-    pattern: new RegExp(`${B}basic(?:[ \\t]{1,8}|%20|\\+)([A-Za-z0-9+/]{4,4096}={0,2})`, 'gid'),
+    pattern: new RegExp(
+      `${B}basic(?:[ \\t]{1,8}|%20|\\+)([A-Za-z0-9+/]{4,${MAX_SCHEME_VALUE}}={0,2})`,
+      'gid',
+    ),
     group: 1,
     check: isBasicCredentials,
+    runs: { of: /[A-Za-z0-9+/]/, bound: MAX_SCHEME_VALUE },
   },
   {
     kind: 'GitHub token',
@@ -445,13 +458,30 @@ const SHAPES: readonly Shape[] = [
 
 /** A private key's BEGIN line (PEM, or PGP's armor). */
 const PRIVATE_KEY = /-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----/g;
-const MAX_KEY_BODY = 16384;
 
-/** The width of a line break at `i`, real (`\n`, `\r\n`) or written out as in JSON; 0 if none. */
+/**
+ * A line break written out, as in JSON (`\\n`), escaped again for each time it was put in a string
+ * (`\\\\n`, `\\\\r\\\\n`), as a Unicode escape (`\\u000a`), or a real one after a backslash, as a
+ * shell's or Dockerfile's continued line has.
+ */
+const WRITTEN_BREAK = /\\{1,8}(?:(?:r\\{1,8})?n|\r?\n|(?:u000[dD]\\{1,8})?u000[aA])/y;
+/** A slash escaped in a key's body, as PHP's JSON writes one: `\\/`. */
+const ESCAPED_SLASH = /\\{1,8}\//y;
+
+/** The width of a line break at `i`, real (`\n`, `\r\n`) or written out (WRITTEN_BREAK); 0 if none. */
 function lineBreak(text: string, i: number): number {
-  for (const brk of ['\r\n', '\n', '\\r\\n', '\\n']) if (text.startsWith(brk, i)) return brk.length;
-  return 0;
+  if (text.startsWith('\r\n', i)) return 2;
+  if (text[i] === '\n') return 1;
+  if (text[i] !== '\\') return 0;
+  WRITTEN_BREAK.lastIndex = i;
+  return WRITTEN_BREAK.test(text) ? WRITTEN_BREAK.lastIndex - i : 0;
 }
+
+/**
+ * A key on one line: any spaces or tabs after the BEGIN line (none, if its line breaks were taken
+ * out), then 32+ characters of base64 or an armor header such as `Proc-Type: `.
+ */
+const ONE_LINE_KEY = /[ \t]{0,8}(?=[A-Za-z0-9+/]{32}|(?:Proc-Type|DEK-Info|Version|Comment|Hash|Charset): )/y;
 
 /** An armor header line's start: `Proc-Type: `, `Version: `, `Comment: `. */
 const KEY_HEADER = /[A-Za-z][A-Za-z0-9-]{0,40}: /y;
@@ -459,38 +489,46 @@ const KEY_HEADER = /[A-Za-z][A-Za-z0-9-]{0,40}: /y;
 const KEY_BODY = /[A-Za-z0-9+/=\s]/;
 
 /**
- * Spans of private keys' bodies, up to 16 KB each. The BEGIN line must end the line, so prose
- * that names one isn't taken for a key. Then any header lines (`Proc-Type: 4,ENCRYPTED`, PGP's
- * `Version:` and `Comment:`), then base64 to the END line or the first character that can't be
- * part of a key. The BEGIN and END lines stay, so a reader can tell a key was there. Found in
- * code rather than one regex, which overflows its stack on a long body.
+ * Spans of private keys' bodies, however long. The BEGIN line must end the line, or be followed on
+ * the same line by 32+ characters of base64, so prose that names one isn't taken for a key. Line
+ * breaks may be real or written out, escaped any number of times. Then any header lines
+ * (`Proc-Type: 4,ENCRYPTED`, PGP's `Version:` and `Comment:`), then base64 to the END line or the
+ * first character that can't be part of a key. The BEGIN and END lines stay, so a reader can tell
+ * a key was there. Found in code rather than one regex, which overflows its stack on a long body.
  */
 function privateKeySpans(text: string): Span[] {
   const spans: Span[] = [];
   for (const match of text.matchAll(PRIVATE_KEY)) {
     const start = match.index + match[0].length;
-    const limit = Math.min(text.length, start + MAX_KEY_BODY);
+    // No limit: the body is read to its END line or the first character that can't be in a key,
+    // and never past `-----`, so each BEGIN reads only up to the next.
     let end = start + lineBreak(text, start);
-    if (end === start) continue;
+    if (end === start) {
+      ONE_LINE_KEY.lastIndex = start;
+      if (!ONE_LINE_KEY.test(text)) continue;
+      end = ONE_LINE_KEY.lastIndex;
+    }
     // Header lines, each to its line break, but never past `-----`: otherwise each BEGIN would
     // scan on through the ones after it.
     for (;;) {
       KEY_HEADER.lastIndex = end;
       if (!KEY_HEADER.test(text)) break;
       let lineEnd = KEY_HEADER.lastIndex;
-      while (lineEnd < limit && lineBreak(text, lineEnd) === 0 && !text.startsWith('-----', lineEnd))
+      while (lineEnd < text.length && lineBreak(text, lineEnd) === 0 && !text.startsWith('-----', lineEnd))
         lineEnd++;
       const brk = lineBreak(text, lineEnd);
       end = lineEnd + brk;
       if (brk === 0) break;
     }
-    while (end < limit && !text.startsWith('-----', end)) {
+    while (end < text.length && !text.startsWith('-----', end)) {
       const brk = lineBreak(text, end);
       if (brk > 0) end += brk;
       else if (KEY_BODY.test(text[end]!)) end++;
+      else if (text[end] === '\\' && ((ESCAPED_SLASH.lastIndex = end), ESCAPED_SLASH.test(text)))
+        end = ESCAPED_SLASH.lastIndex;
       else break;
     }
-    spans.push({ start, end: Math.min(end, limit), kind: 'Private key' });
+    spans.push({ start, end, kind: 'Private key' });
   }
   return spans;
 }
@@ -499,13 +537,31 @@ function privateKeySpans(text: string): Span[] {
 export function shapeSpans(text: string, sink?: ValueSink): Span[] {
   const spans: Span[] = privateKeySpans(text);
   for (const shape of SHAPES) {
+    // The last run read past a bound: from where, to where. A later match ending inside it is in
+    // the same run, so it ends there too: a long run is read once, not once for each match in it.
+    let runFrom = -1;
+    let runTo = -1;
     for (const match of text.matchAll(shape.pattern)) {
       const group = shape.group ?? 0;
-      const value = match[group];
+      let value = match[group];
       if (value === undefined || value === '') continue;
-      if (shape.check && !shape.check(value)) continue;
+      // A value that reaches its bound runs on: redacted whatever its first part looks like (fails
+      // closed), as checking all of it would read a long run once for each match in it.
+      const long = shape.runs !== undefined && value.length === shape.runs.bound;
+      if (!long && shape.check && !shape.check(value)) continue;
       const start = group === 0 ? match.index : match.indices![group]![0];
-      spans.push({ start, end: start + value.length, kind: shape.kind });
+      let end = start + value.length;
+      if (shape.runs && long) {
+        if (end < runFrom || end > runTo) {
+          runFrom = end;
+          runTo = end;
+          while (runTo < text.length && shape.runs.of.test(text[runTo]!)) runTo++;
+          for (let pad = 0; pad < 2 && text[runTo] === '='; pad++) runTo++;
+        }
+        end = runTo;
+        value = text.slice(start, end);
+      }
+      spans.push({ start, end, kind: shape.kind });
       if (sink) addValue(sink, value.trim());
     }
   }
