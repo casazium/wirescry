@@ -936,11 +936,11 @@ describe('fixes from the second review', () => {
     expect(sink.values).toEqual([GH]);
   });
 
-  it('redacts a header line that runs to the key limit', () => {
+  it('redacts a header line that runs past 16 KB to its end', () => {
     const key = '-----BEGIN PRIVATE KEY-----\nProc-Type: ' + rep('x', 20_000);
     const spans = shapeSpans(key);
     expect(spans).toHaveLength(1);
-    expect(spans[0]!.end - spans[0]!.start).toBe(16384);
+    expect(spans[0]!.end).toBe(key.length);
   });
 
   it('collects JWTs and signed values from cookies', () => {

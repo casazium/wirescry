@@ -353,7 +353,11 @@ const STOP_WORDS = new Set([
 ]);
 const MAX_VALUE = 4096;
 
-/** The end of a quoted value starting after `open` at `from`, honouring backslashes; -1 if none. */
+/**
+ * The end of a quoted value starting after `open` at `from`, honouring backslashes: its closing
+ * quote. -1 if a line break or the text's end comes first, within MAX_VALUE characters; -2 if
+ * neither comes within them (see longValueEnd).
+ */
 function closingQuote(text: string, from: number, quote: string): number {
   const limit = Math.min(text.length, from + MAX_VALUE);
   for (let i = from; i < limit; i++) {
@@ -362,7 +366,20 @@ function closingQuote(text: string, from: number, quote: string): number {
     else if (c === quote) return i;
     else if (c === '\n') return -1;
   }
-  return -1;
+  return limit < text.length ? -2 : -1;
+}
+
+/**
+ * Where a quoted value that ran past MAX_VALUE ends: its closing quote, else the line break or the
+ * text's end. Fails closed: all of it is redacted, not just the first 4 KB or none of it.
+ */
+function longValueEnd(text: string, from: number, quote: string): number {
+  for (let i = from; i < text.length; i++) {
+    const c = text[i];
+    if (c === '\\') i++;
+    else if (c === quote || c === '\n') return i;
+  }
+  return text.length;
 }
 
 /**
@@ -371,8 +388,8 @@ function closingQuote(text: string, from: number, quote: string): number {
  */
 function unquotedEnd(text: string, start: number): number {
   let end = start;
-  const limit = Math.min(text.length, start + MAX_VALUE);
-  while (end < limit && !/[\s&<>"']/.test(text[end]!)) end++;
+  // No limit: a long value is redacted whole. The caller reads each character about once.
+  while (end < text.length && !/[\s&<>"']/.test(text[end]!)) end++;
   while (end > start && /[.,;)}\]]/.test(text[end - 1]!)) end--;
   return end;
 }
@@ -400,10 +417,10 @@ export function assignmentSpans(text: string, cut = false): Span[] {
     if (quote === '"' || quote === "'") {
       const start = from + 1;
       let end = closingQuote(text, start, quote);
+      // Past MAX_VALUE with no line break: a long value, redacted to wherever it ends.
+      if (end === -2) end = longValueEnd(text, start, quote);
       // Cut off inside the value: it runs to the end of what was kept.
-      if (end < 0 && cut && text.length - start <= MAX_VALUE && !text.includes('\n', start)) {
-        end = text.length;
-      }
+      else if (end < 0 && cut && !text.includes('\n', start)) end = text.length;
       // An unclosed quote isn't marked: a later match brings a quote of its own kind, which ends
       // the search, so a long search happens at most once per kind of quote.
       readTo = end;
@@ -1049,6 +1066,17 @@ const CDATA_OPEN = '<![CDATA[';
  */
 export function xmlElementSpans(text: string, sink?: ValueSink, html = false): Span[] {
   const spans: Span[] = [];
+  // The last search for `]]>` past a window: where it started and what it found. A later search
+  // from inside that stretch finds the same, so many unclosed sections cost one search, not many.
+  let cdataFrom = -1;
+  let cdataAt = -1;
+  const cdataEndFrom = (from: number): number => {
+    if (cdataFrom < 0 || from < cdataFrom || (cdataAt >= 0 && from > cdataAt)) {
+      cdataFrom = from;
+      cdataAt = text.indexOf(']]>', from);
+    }
+    return cdataAt;
+  };
   for (const match of text.matchAll(ELEMENT_OPEN)) {
     const name = match[1]!;
     const byOwnName = html ? undefined : secretName(localName(name), 'json');
@@ -1066,19 +1094,34 @@ export function xmlElementSpans(text: string, sink?: ValueSink, html = false): S
     if (!family) continue;
     // The text, searched for its end only so far: an unclosed one isn't read to the body's end.
     let start = match.index + match[0].length;
-    const window = text.slice(start, start + 64 + CDATA_OPEN.length + MAX_VALUE + 3);
+    const windowEnd = start + 64 + CDATA_OPEN.length + MAX_VALUE + 3;
+    const window = text.slice(start, windowEnd);
+    // Text running past the window is a long value: redacted to where it ends, or to the text's
+    // end if it never does (fails closed), never shown in part.
+    const long = windowEnd < text.length;
     const lead = /^\s{0,64}/.exec(window)![0].length;
     let close: number;
     if (window.startsWith(CDATA_OPEN, lead)) {
-      const cdataEnd = window.indexOf(']]>', lead + CDATA_OPEN.length);
+      let cdataEnd = window.indexOf(']]>', lead + CDATA_OPEN.length);
+      if (cdataEnd < 0 && long) {
+        const far = cdataEndFrom(windowEnd - 2);
+        cdataEnd = far < 0 ? text.length - start : far - start;
+      }
       const after = start + cdataEnd + 3;
       const gap = /^\s{0,64}/.exec(text.slice(after, after + 64))![0].length;
-      if (cdataEnd < 0 || !text.startsWith(`</${name}`, after + gap)) continue;
+      const toEnd = start + cdataEnd === text.length;
+      if (cdataEnd < 0 || (!toEnd && !text.startsWith(`</${name}`, after + gap))) continue;
       close = start + cdataEnd;
       start += lead + CDATA_OPEN.length;
     } else {
-      const lt = window.indexOf('<');
-      if (lt < 0 || !text.startsWith(`</${name}`, start + lt)) continue;
+      let lt = window.indexOf('<');
+      // The next `<` is no further than the next element, so these searches read the text once.
+      if (lt < 0 && long) {
+        const far = text.indexOf('<', windowEnd);
+        lt = far < 0 ? text.length - start : far - start;
+      }
+      const toEnd = lt >= 0 && start + lt === text.length;
+      if (lt < 0 || (!toEnd && !text.startsWith(`</${name}`, start + lt))) continue;
       close = start + lt;
     }
     if (close === start) continue;
