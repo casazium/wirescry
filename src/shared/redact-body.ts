@@ -1011,7 +1011,9 @@ interface Attribute {
 
 function attributesOf(tag: string, offset: number): Attribute[] {
   const out: Attribute[] = [];
-  const pattern = new RegExp(ATTRIBUTE);
+  // The shared pattern, from the start: nothing else uses it while this runs.
+  const pattern = ATTRIBUTE;
+  pattern.lastIndex = 0;
   for (let match = pattern.exec(tag); match; match = pattern.exec(tag)) {
     const group = match[2] !== undefined ? 2 : match[3] !== undefined ? 3 : 4;
     let value = match[group]!;
