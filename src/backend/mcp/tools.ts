@@ -7,6 +7,7 @@ import { fromJsonSchema, McpServer, type CallToolResult } from '@modelcontextpro
 import * as z from 'zod';
 import { applySpans } from '../../shared/redact';
 import { redactBody } from '../../shared/redact-body';
+import { visible } from '../../shared/visible';
 import type { PluginTool } from '../plugin-host';
 import { ResultError } from './plugin-result';
 import { FULL_NOTE, MAX_CHARS, MAX_LIST, MAX_MESSAGES, ReadError, type Reader } from './reader';
@@ -128,6 +129,51 @@ function ok(value: unknown, banner = UNTRUSTED): CallToolResult {
   return { content: [{ type: 'text', text: `${banner}\n${JSON.stringify(value)}` }] };
 }
 
+/** What a tool says when something it didn't expect went wrong: a new one each time. */
+const wentWrong = (): CallToolResult => ({
+  content: [{ type: 'text', text: 'Something went wrong.' }],
+  isError: true,
+});
+
+/**
+ * A result as the agent gets it: hidden characters in its text written as visible escapes (see
+ * visible.ts). Only text is sent: escapes in structured content or another kind of item would be
+ * decoded by the client, so one of those is refused until it's handled.
+ */
+export function shown(result: CallToolResult): CallToolResult {
+  if (result.structuredContent !== undefined) throw new Error('Structured content isn’t escaped.');
+  return {
+    ...result,
+    content: result.content.map((item) => {
+      if (item.type !== 'text') throw new Error('Only text is escaped.');
+      return { ...item, text: visible(item.text) };
+    }),
+  };
+}
+
+/**
+ * A tool's handler with every result shown (see `shown`), and anything it throws, which the SDK
+ * would send as it is, turned into a fixed message. Every tool's handler is wrapped in this. (The
+ * SDK still answers arguments that don't fit the schema itself; its messages name the field and
+ * what was expected, not the value sent.)
+ */
+export function guarded<A, C>(
+  tool: string,
+  handler: (args: A, ctx: C) => Promise<CallToolResult>,
+): (args: A, ctx: C) => Promise<CallToolResult> {
+  return async (args, ctx) => {
+    try {
+      return shown(await handler(args, ctx));
+    } catch (error) {
+      // The kind of error only: its message could quote traffic.
+      console.error(
+        `[wirescry] MCP tool ${tool} failed: ${error instanceof Error ? error.name : typeof error}`,
+      );
+      return wentWrong();
+    }
+  };
+}
+
 function failed(error: unknown): CallToolResult {
   const message = error instanceof ReadError ? error.message : 'Something went wrong reading that.';
   return { content: [{ type: 'text', text: sweep(message) }], isError: true };
@@ -172,12 +218,13 @@ export function createServer(
       inputSchema: listInput,
       annotations: READ_ONLY,
     },
-    async ({ query, limit, cursor }) =>
+    guarded('list_exchanges', async ({ query, limit, cursor }) =>
       run(
         'list_exchanges',
         `${query ? `a query of ${query.length} characters, ` : ''}limit ${limit ?? 50}`,
         () => reader.list(query, limit ?? 50, cursor),
       ),
+    ),
   );
   server.registerTool(
     'get_exchange',
@@ -187,7 +234,7 @@ export function createServer(
       inputSchema: getInput,
       annotations: READ_ONLY,
     },
-    async ({ id }) => run('get_exchange', idOf(reader, id), () => reader.get(id)),
+    guarded('get_exchange', async ({ id }) => run('get_exchange', idOf(reader, id), () => reader.get(id))),
   );
   server.registerTool(
     'get_body',
@@ -197,10 +244,11 @@ export function createServer(
       inputSchema: bodyInput,
       annotations: READ_ONLY,
     },
-    async ({ id, side, offset, maxChars }) =>
+    guarded('get_body', async ({ id, side, offset, maxChars }) =>
       run('get_body', `${idOf(reader, id)}, ${side}, offset ${offset ?? 0}`, () =>
         reader.body(id, side, offset ?? 0, maxChars ?? 20_000),
       ),
+    ),
   );
   server.registerTool(
     'get_websocket_messages',
@@ -210,10 +258,11 @@ export function createServer(
       inputSchema: messagesInput,
       annotations: READ_ONLY,
     },
-    async ({ id, after, limit }) =>
+    guarded('get_websocket_messages', async ({ id, after, limit }) =>
       run('get_websocket_messages', `${idOf(reader, id)}, after ${after ?? -1}`, () =>
         reader.messages(id, after ?? -1, limit ?? 50),
       ),
+    ),
   );
   server.registerTool(
     'get_sse_events',
@@ -223,8 +272,9 @@ export function createServer(
       inputSchema: eventsInput,
       annotations: READ_ONLY,
     },
-    async ({ id, after }) =>
+    guarded('get_sse_events', async ({ id, after }) =>
       run('get_sse_events', `${idOf(reader, id)}, after ${after ?? 0}`, () => reader.events(id, after ?? 0)),
+    ),
   );
   for (const tool of plugins?.list() ?? []) {
     const banner = tool.contains === 'rules' ? RULES_BANNER : UNTRUSTED;
@@ -238,7 +288,7 @@ export function createServer(
           inputSchema: fromJsonSchema(tool.inputSchema as Parameters<typeof fromJsonSchema>[0], PASS_THROUGH),
           annotations: READ_ONLY,
         },
-        async (args, ctx) => {
+        guarded(tool.name, async (args, ctx) => {
           // The agent's arguments could hold anything, so the activity list doesn't show them.
           const summary = `from ${tool.plugin}`;
           try {
@@ -255,7 +305,7 @@ export function createServer(
             const message = await reader.pluginError(messageOf(error));
             return { ...ok({ error: message }, banner), isError: true };
           }
-        },
+        }),
       );
     } catch (error) {
       if (!unusable.has(tool.name)) {

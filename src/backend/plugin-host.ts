@@ -19,6 +19,7 @@ import type {
   UpstreamTargetResult,
 } from '../plugin-api/backend';
 import { PLUGIN_API_VERSION } from '../plugin-api/version';
+import { INVISIBLE } from '../shared/visible';
 import { ResultError } from './mcp/plugin-result';
 import { MOCKTTP_BUFFER_LIMIT } from './proxy';
 import { createSecureStore, type Encryptor } from './secure-store';
@@ -67,9 +68,30 @@ const MAX_SCHEMA_BYTES = 64 * 1024;
 export const MAX_SCHEMAS_BYTES = 256 * 1024;
 /** One plugin's MCP reads at once, counted until each really ends, even if the agent has gone. */
 export const MAX_TOOL_READS = 8;
-// Invisible to people but read by a model: tag characters and variation selectors.
-const HIDDEN_TEXT = /[\u{E0000}-\u{E007F}]|[\uFE00-\uFE0F]/u;
-const HIDDEN_TEXT_ALL = new RegExp(HIDDEN_TEXT.source, 'gu');
+// Characters that can spell out hidden text, one per letter or byte: the tag characters and
+// supplementary variation selectors (U+E0000 to U+E0FFF), the variation selectors, and the
+// Mongolian ones. Dropped from a tool's title and description; every other INVISIBLE character
+// (bidi controls, zero-width spaces, separators, controls, unassigned), tab and newline become a
+// space.
+const CARRIERS_ALL = /[\u{E0000}-\u{E0FFF}]|[\uFE00-\uFE0F]|[\u180B-\u180D]|\u180F/gu;
+const UNSEEN_OR_BREAK_ALL = new RegExp(`[\\t\\n]|${INVISIBLE.source}`, 'gu');
+
+/** Whether any key or string in a parsed JSON value holds an INVISIBLE character. */
+function holdsInvisible(value: unknown): boolean {
+  const stack: unknown[] = [value];
+  while (stack.length > 0) {
+    const next = stack.pop();
+    if (typeof next === 'string') {
+      if (INVISIBLE.test(next)) return true;
+    } else if (next && typeof next === 'object') {
+      for (const [key, item] of Object.entries(next)) {
+        if (INVISIBLE.test(key)) return true;
+        stack.push(item);
+      }
+    }
+  }
+  return false;
+}
 
 /** A plugin's MCP tool as the host keeps it: checked, copied, and its plugin's name. */
 export interface PluginTool {
@@ -109,7 +131,7 @@ export function validateTools(plugin: string, tools: unknown, taken: ReadonlySet
     names.add(name);
     const text = (value: unknown, max: number, what: string): string => {
       const clean =
-        typeof value === 'string' ? value.replace(HIDDEN_TEXT_ALL, '').replace(UNSAFE_TEXT_ALL, ' ') : '';
+        typeof value === 'string' ? value.replace(CARRIERS_ALL, '').replace(UNSEEN_OR_BREAK_ALL, ' ') : '';
       if (clean.trim() === '' || length(clean) > max) {
         throw new Error(`MCP tool ${name}'s ${what} must be 1 to ${max} characters.`);
       }
@@ -125,15 +147,11 @@ export function validateTools(plugin: string, tools: unknown, taken: ReadonlySet
       const json = JSON.stringify(inputSchema);
       const bytes = Buffer.byteLength(json);
       schemaBytes += bytes;
-      if (
-        bytes > MAX_SCHEMA_BYTES ||
-        schemaBytes > MAX_SCHEMAS_BYTES ||
-        HIDDEN_TEXT.test(json) ||
-        UNSAFE_TEXT.test(json)
-      ) {
-        throw new Error('not allowed');
-      }
+      if (bytes > MAX_SCHEMA_BYTES || schemaBytes > MAX_SCHEMAS_BYTES) throw new Error('not allowed');
       schema = JSON.parse(json) as Record<string, unknown>;
+      // Checked parsed, not as JSON, where a control or lone surrogate is already an escape that
+      // a client decodes.
+      if (holdsInvisible(schema)) throw new Error('not allowed');
     } catch {
       throw new Error(
         `MCP tool ${name}'s inputSchema must be JSON without hidden characters, at most 64 KB (256 KB for all of a plugin's).`,

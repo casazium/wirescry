@@ -13,6 +13,7 @@ import type {
   WebSocketMessages,
 } from '../../shared/api';
 import { compileQuery, MAX_QUERY_LENGTH, tokenize } from '../../shared/query';
+import { visible } from '../../shared/visible';
 import { isEventStream, type SseItem } from '../../shared/sse';
 import type { MaskField } from '../mask-body';
 import type { FieldsAnswer } from '../masker';
@@ -271,7 +272,8 @@ export class Reader {
       if (error instanceof ResultError) throw new ReadError(error.message);
       throw error;
     }
-    if (JSON.stringify(value).length > MAX_CHARS) {
+    // Counted as the agent gets it, hidden characters escaped.
+    if (visible(JSON.stringify(value)).length > MAX_CHARS) {
       throw new ReadError('The result is too large. Ask for less at a time.');
     }
     return { value, full: full.full };
