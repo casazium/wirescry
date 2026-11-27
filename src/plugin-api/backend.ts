@@ -113,13 +113,21 @@ export interface McpToolContext {
 export interface McpReadTool {
   /** Lowercase letters, digits and underscores, starting with a letter: 2 to 40 characters. */
   name: string;
-  /** Up to 100 characters. */
+  /**
+   * Up to 100 characters. Characters people can't see are cleaned out: tag characters and
+   * variation selectors are dropped, and other hidden characters, tabs and newlines become spaces.
+   */
   title: string;
-  /** Up to 2,000 characters. Wirescry adds a sentence saying the result is untrusted data. */
+  /**
+   * Up to 2,000 characters, cleaned as the title is. Wirescry adds a sentence saying the result
+   * is untrusted data.
+   */
   description: string;
   /**
    * A JSON Schema for the arguments, `type: 'object'`, shown to agents (up to 64 KB as JSON, and
-   * 256 KB for all of a plugin's tools).
+   * 256 KB for all of a plugin's tools). Refused if a key or string in it holds a character people
+   * can't see (a control other than tab or newline, a bidi control, a zero-width character, a tag
+   * character or variation selector).
    * Wirescry doesn't check arguments against it: `read` gets them as sent, and must validate.
    */
   inputSchema: Record<string, unknown>;
@@ -128,7 +136,8 @@ export interface McpReadTool {
   /**
    * Returns the result: JSON values, with McpLeaf objects for values to mask by kind. It has 10 s,
    * and at most 8 of a plugin's reads run at once, so stop when `signal` aborts.
-   * At most 100,000 characters as JSON once masked; before masking, 20,000 values, 32 levels deep
+   * At most 100,000 characters as JSON once masked, counting each hidden character as the six or
+   * twelve of the `\uXXXX` escape the agent is shown; before masking, 20,000 values, 32 levels deep
    * and 1,000,000 characters. Past these, or for a Map, Date, class instance or function, the agent
    * gets an error. NaN and Infinity become null.
    *
