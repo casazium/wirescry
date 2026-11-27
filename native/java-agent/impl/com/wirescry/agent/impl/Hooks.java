@@ -141,13 +141,17 @@ final class Hooks implements ClassFileTransformer {
         state = woven == null ? "failed" : "ok";
       }
     } catch (Throwable t) {
+      if (Trace.ON) Trace.note("weave of " + className + " threw: " + t);
       // Byte Buddy refuses class files newer than it knows.
       String message = String.valueOf(t.getMessage());
       // ProgramWeaver.NOT_COVERED: a release the hooks don't cover.
       if (message.startsWith("not-covered: ")) state = "not-covered";
       else state = message.contains("not supported") || message.contains("Unsupported class file") ? "jdk-too-new" : "failed";
     }
-    if (TRUST_MANAGER.equals(className)) trust = state;
+    if (TRUST_MANAGER.equals(className)) {
+      trust = state;
+      if (!"ok".equals(state) && Trace.ON) Trace.note("trust: the trust manager wasn't woven (" + state + ")");
+    }
     else if (PROXY_SELECTOR.equals(className)) proxy = state;
     else {
       woven = programWoven(loader, className, woven, state);
@@ -215,7 +219,10 @@ final class Hooks implements ClassFileTransformer {
                 && (JETTY_PROXY_CONFIGURATION.equals(name) ? !jettyMatchInstalled(c) : !programWoven(c));
         if (!isTrust && !isProxy && !program) continue;
         if (inst.isModifiableClass(c)) loaded.add(JETTY_PROXY_CONFIGURATION.equals(name) ? 0 : loaded.size(), c);
-        else if (isTrust) trust = "failed";
+        else if (isTrust) {
+          trust = "failed";
+          Trace.note("trust: the loaded trust manager can't be changed");
+        }
         else if (isProxy) proxy = "failed";
         else library(name, "failed");
       }
@@ -226,8 +233,10 @@ final class Hooks implements ClassFileTransformer {
           inst.retransformClasses(c);
           if (JETTY_PROXY_CONFIGURATION.equals(name) && programWoven(c)) markJettyMatchInstalled(c.getClassLoader());
         } catch (Throwable t) {
-          if (TRUST_MANAGER.equals(name)) trust = "failed";
-          else if (PROXY_SELECTOR.equals(name)) proxy = "failed";
+          if (TRUST_MANAGER.equals(name)) {
+            trust = "failed";
+            if (Trace.ON) Trace.note("trust: retransforming the trust manager failed: " + t);
+          } else if (PROXY_SELECTOR.equals(name)) proxy = "failed";
           else library(name, "failed");
         }
       }
@@ -309,6 +318,7 @@ final class Hooks implements ClassFileTransformer {
       File jar = weaverJar(impl);
       // Its code runs in this program, as the stub checks for the agent's own jar.
       if (!impl.getName().endsWith(".jar") || !Perms.private_(jar)) {
+        if (Trace.ON) Trace.note("weaver not loaded: " + jar + " isn't the agent's own, or isn't private");
         weaverFailed = true;
         return false;
       }
@@ -322,6 +332,7 @@ final class Hooks implements ClassFileTransformer {
               Class.forName("com.wirescry.agent.weaver.Weaver", true, loader).newInstance();
       programWeaver = program;
     } catch (Throwable t) {
+      if (Trace.ON) Trace.note("weaver not loaded: " + t);
       weaverFailed = true;
     }
     return weaver != null;

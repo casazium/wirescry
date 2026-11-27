@@ -51,6 +51,9 @@ public final class LivenessCheck {
     check("gone when the pid's start time changes", !live.alive(control(2), true));
     check("noted again when the new Wirescry's heartbeat moves", live.alive(control(3), true));
     check("and alive after", live.alive(control(3), true));
+    fake.start = null;
+    check("alive when the system can't say the start time now", live.alive(control(3), true));
+    fake.start = "t2";
     fake.handle = null;
     check("gone when the pid has no process", !live.alive(control(3), true));
     fake.handle = Liveness.Processes.UNKNOWN;

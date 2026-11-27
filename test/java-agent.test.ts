@@ -9,9 +9,10 @@ import { readFileSync } from 'node:fs';
 import { chmod, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { generateCACertificate } from 'mockttp';
 import { describe, expect, it } from 'vitest';
 import { buildJavaAgent } from '../scripts/build-java-agent.mjs';
-import { readStatuses, writeWhole } from '../src/backend/java/agent-files';
+import { caSha256, readStatuses, writeWhole } from '../src/backend/java/agent-files';
 import {
   agentFolder,
   attacher,
@@ -105,8 +106,56 @@ describe.skipIf(!buildJava)('the Java agent', () => {
       { encoding: 'utf8' },
     );
     expect(result.stdout).not.toContain('FAIL');
-    expect(result.stdout.match(/^ok /gm)).toHaveLength(17);
+    expect(result.stdout.match(/^ok /gm)).toHaveLength(18);
     expect(result.status).toBe(0);
+  });
+
+  it('reads a CA that could not be used again after a short wait, not only when it changes', async () => {
+    const out = path.join(shared.work, 'trust-check');
+    const compiled = spawnSync(
+      javac!,
+      [
+        '--release',
+        '8',
+        '-Xlint:-options',
+        '-cp',
+        shared.built.impl.file,
+        '-d',
+        out,
+        path.join(import.meta.dirname, 'java', 'TrustCheck.java'),
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(compiled.stderr).toBe('');
+    const work = path.join(shared.work, `trust-check-${process.pid}-${Date.now()}`);
+    await mkdir(work, { recursive: true, mode: 0o700 });
+    const { cert } = await generateCACertificate({ subject: { commonName: 'Trust check CA' } });
+    const pem = path.join(work, 'ca.pem');
+    await writeFile(pem, cert, { mode: 0o600 });
+    const cases = path.join(work, 'cases');
+    await mkdir(cases, { mode: 0o700 });
+    const result = spawnSync(
+      buildJava!,
+      [
+        '-Dwirescry.agent.test.trustRetryMs=1000',
+        '-cp',
+        [shared.built.impl.file, shared.built.stub.file, out].join(path.delimiter),
+        'com.wirescry.agent.impl.TrustCheck',
+        pem,
+        caSha256(cert),
+        cases,
+      ],
+      { encoding: 'utf8' },
+    );
+    const report = result.stdout + result.stderr;
+    expect(result.stdout, report).not.toContain('FAIL');
+    const oks = result.stdout.match(/^ok /gm)?.length ?? 0;
+    const skips = result.stdout.match(/^skip /gm)?.length ?? 0;
+    // Ten cases, each passed or skipped. As root a file can't be made unreadable, so five are
+    // skipped; on a slow machine a timing case or two may be.
+    expect(oks + skips, report).toBe(10);
+    expect(skips, report).toBeLessThanOrEqual(process.getuid?.() === 0 ? 5 : 2);
+    expect(result.status, report).toBe(0);
   });
 
   for (const java of javas) {

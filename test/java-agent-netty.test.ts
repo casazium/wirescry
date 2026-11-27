@@ -48,6 +48,7 @@ import {
   waitForOutput,
   waitForLines,
   startupMs,
+  agentReport,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: tunnels CONNECT, and records what it was asked. */
@@ -232,7 +233,12 @@ afterAll(() => {
 });
 
 /** Turns on the bytecode verifier for every class, so a bad rewrite fails the test. */
-const VERIFY = ['-XX:+UnlockDiagnosticVMOptions', '-XX:+BytecodeVerificationLocal'];
+const VERIFY = [
+  '-XX:+UnlockDiagnosticVMOptions',
+  '-XX:+BytecodeVerificationLocal',
+  // The agent's notes on why a hook did nothing, for a failure's message (see tunneled).
+  '-Dwirescry.agent.test.trace=true',
+];
 /**
  * A lookup here that failed: the JDK's, or Netty's DNS resolver's (a subclass, by its own name); or
  * one still going when the probe stopped waiting (20 s), which a loaded machine's DNS can take for
@@ -262,6 +268,22 @@ async function ask(r: Run, command: string): Promise<string> {
   r.send(command);
   await waitForLines(r, before, 30_000);
   return r.stdout().split('\n').filter(Boolean)[before]!.trim();
+}
+
+/**
+ * `ask`, for a command that should answer "OK tunneled": any other answer comes back with what the
+ * agent last reported and its notes (VERIFY turns them on), so a failure says why trust said no.
+ * No notes at all means either the trust manager never reached the agent's transformer (status
+ * `trust:waiting`) or its woven code failed before calling the agent (`trust:ok`).
+ */
+async function tunneled(r: Run, command: string): Promise<string> {
+  const answer = await ask(r, command);
+  if (answer === 'OK tunneled') return answer;
+  const notes = r
+    .stderr()
+    .split('\n')
+    .filter((line) => line.startsWith('wirescry-trace: '));
+  return [answer, `agent: ${await agentReport(r.child.pid)}`, ...notes].join('\n');
 }
 
 /** Asks `command` until it answers `expected` or `timeoutMs` passes, one at a time. */
@@ -299,7 +321,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
           // Plain http too goes through a tunnel; the name is only resolvable on the far side.
           expect(await ask(r, 'get default http://proxied.test/a?b=1')).toBe('OK plain proxied.test/a?b=1');
           // The trust hook accepting the stand-in's certificate for the host it names.
-          expect(await ask(r, 'get default https://proxied.test/c')).toBe('OK tunneled');
+          expect(await tunneled(r, 'get default https://proxied.test/c')).toBe('OK tunneled');
           // A client made after the agent started, too (sharing the default pool: no new tunnel).
           expect(await ask(r, 'fresh http://proxied.test/f')).toBe('OK plain proxied.test/f');
           expect(proxy.seen).toEqual(['CONNECT proxied.test:80', 'CONNECT proxied.test:443']);
@@ -588,10 +610,12 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
           // Wirescry's certificate names another host: refused.
           expect(await ask(r, 'get default https://wrong.test/')).toMatch(HANDSHAKE);
           // A program that trusts any certificate, as before.
-          expect(await ask(r, 'get insecure https://wrong.test/')).toBe('OK tunneled');
+          expect(await tunneled(r, 'get insecure https://wrong.test/')).toBe('OK tunneled');
           // A program's own trust store (another CA alone): the JDK's trust manager still, so
           // Wirescry's CA is trusted too, for the host it names.
-          expect(await ask(r, `get trust:changeit:${otherTrust} https://proxied.test/`)).toBe('OK tunneled');
+          expect(await tunneled(r, `get trust:changeit:${otherTrust} https://proxied.test/`)).toBe(
+            'OK tunneled',
+          );
           expect(await ask(r, `get trust:changeit:${otherTrust} https://wrong.test/`)).toMatch(HANDSHAKE);
           // A program that pins a certificate with a trust manager of its own: Wirescry's refused.
           expect(await ask(r, 'get pinned https://proxied.test/')).toMatch(HANDSHAKE);
@@ -603,12 +627,12 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
           const classpath = [classpaths[set], ...(await fetchTestJars('tcnative'))].join(path.delimiter);
           const r = await probe(java, set, [`-javaagent:${agent.stub}`], classpath);
           expect(await ask(r, 'openssl')).toBe('true');
-          expect(await ask(r, 'get opensslclient https://proxied.test/o')).toBe('OK tunneled');
+          expect(await tunneled(r, 'get opensslclient https://proxied.test/o')).toBe('OK tunneled');
           expect(await ask(r, 'get opensslclient https://wrong.test/')).toMatch(
             /^FAIL javax\.net\.ssl\.SSL\w*Exception/,
           );
           // The default client too, which takes OpenSSL when it's there.
-          expect(await ask(r, 'get default https://proxied.test/d')).toBe('OK tunneled');
+          expect(await tunneled(r, 'get default https://proxied.test/d')).toBe('OK tunneled');
         });
 
         it('leaves a program without Netty’s proxy support direct, and says so', async () => {
@@ -704,7 +728,7 @@ describe.skipIf(!buildJava)('the Java agent’s Reactor Netty hook', { timeout: 
             const agent = await on(proxy);
             const r = await probe(java, set, [`-javaagent:${agent.stub}`], webClasspath);
             expect(await ask(r, 'webclient http://proxied.test/w')).toBe('OK plain proxied.test/w');
-            expect(await ask(r, 'webclient https://proxied.test/s')).toBe('OK tunneled');
+            expect(await tunneled(r, 'webclient https://proxied.test/s')).toBe('OK tunneled');
             expect(proxy.seen).toEqual(['CONNECT proxied.test:80', 'CONNECT proxied.test:443']);
           },
         );

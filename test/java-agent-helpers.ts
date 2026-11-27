@@ -348,4 +348,28 @@ export async function statusOf(dir: string, pid: number | undefined): Promise<Ag
   return (await readStatuses(dir)).find((s) => s.pid === pid);
 }
 
+/**
+ * What the agent in the JVM with this pid last reported (whether it's on, why, and its hooks,
+ * such as `trust:ca-unreadable`), from any folder made with `beat`: for a failure's message, to
+ * tell an agent that was off from one whose CA couldn't be used. Never throws.
+ */
+export async function agentReport(pid: number | undefined): Promise<string> {
+  try {
+    for (const folder of beating.values()) {
+      const status = await statusOf(folder.dir, pid);
+      if (status) {
+        return JSON.stringify({
+          enabled: status.enabled,
+          reason: status.reason,
+          hooks: status.hooks,
+          beat: status.beat,
+        });
+      }
+    }
+    return 'no status';
+  } catch (error) {
+    return `no status (${(error as Error).message})`;
+  }
+}
+
 export const newId = () => `t${randomBytes(6).toString('hex')}`;
