@@ -18,7 +18,16 @@ import {
   redactUrl,
   type Redaction,
 } from '../shared/redact.ts';
-import { isTextual, KnownValues, looksCompressed, redactBody, secretInBytes } from '../shared/redact-body.ts';
+import {
+  isTextual,
+  KnownValues,
+  looksCompressed,
+  OWN_URL_SHARE,
+  redactBody,
+  REQUEST_BODY_SHARE,
+  secretInBytes,
+  SHARED_URL_SHARE,
+} from '../shared/redact-body.ts';
 
 type Json = Record<string, unknown>;
 type Header = [string, string];
@@ -72,15 +81,29 @@ const toHar = (headers: Header[]): Array<{ name: string; value: string }> =>
 const headerValue = (headers: Header[], name: string): string | undefined =>
   headers.find(([n]) => n.toLowerCase() === name)?.[1];
 
-/** Collects the values an entry's URL, headers and trailers hold, before any entry is redacted. */
-export function collectKnown(entry: Json, known: KnownValues): void {
+/** Learns the values an entry's headers and trailers hold. */
+export function collectHeaders(entry: Json, known: KnownValues): void {
   const request = isObject(entry.request) ? entry.request : {};
   const response = isObject(entry.response) ? entry.response : {};
-  const url = str(request.url);
-  if (url) redactUrl(url, known);
   for (const value of [request.headers, request._trailers, response.headers, response._trailers]) {
     redactHeaders(headersOf(value), known);
   }
+}
+
+/** Learns the values an entry's URL holds, at most `share` new to the set. */
+export function collectUrl(entry: Json, known: KnownValues, share: number): void {
+  const request = isObject(entry.request) ? entry.request : {};
+  const url = str(request.url);
+  if (url) known.share('url', share, () => redactUrl(url, known));
+}
+
+/**
+ * Collects the values an entry's URL, headers and trailers hold, before any entry is redacted:
+ * headers and trailers first, then the URL, at most `urlShare` new values from it.
+ */
+export function collectKnown(entry: Json, known: KnownValues, urlShare = SHARED_URL_SHARE): void {
+  collectHeaders(entry, known);
+  collectUrl(entry, known, urlShare);
 }
 
 /** The lightweight part of an entry `collectKnown` reads, to send to a worker cheaply. */
@@ -236,11 +259,52 @@ function redactBodyText(
   };
 }
 
+/** At most this many values an entry's bodies taught are kept for the entries after it. */
+export const HAND_BACK_SHARE = 1_000;
+
 /**
  * An entry redacted, built afresh from the fields named here. Throws if its URL or headers can't
  * be redacted (the caller leaves the entry out); a body or message that can't be is left out.
+ *
+ * `shared`: the export's values. The entry's own go in a set over it, so the export's can't crowd
+ * them out; afterwards, up to HAND_BACK_SHARE values new to the export's set are kept in it for the
+ * entries after this one.
  */
-export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues): RedactedEntry {
+export function redactHarEntry(entry: Json, meta: EntryMeta, shared: KnownValues): RedactedEntry {
+  const known = new KnownValues(shared);
+  // Where the entry's own set starts holding what its bodies taught (after its URL and headers).
+  const bodies = { from: Infinity };
+  try {
+    return redactWith(entry, meta, known, bodies);
+  } finally {
+    handBack(known, bodies.from, shared);
+    // A value the entry's own set turned away, or a search that gave up, is the export's to report.
+    if (known.full) shared.markFull();
+  }
+}
+
+/**
+ * Up to HAND_BACK_SHARE of the values `from` learned from position `at` on (what an entry's bodies
+ * taught) that are new to `to`, added to it; past that, `to` is marked full.
+ */
+function handBack(from: KnownValues, at: number, to: KnownValues): void {
+  let added = 0;
+  for (const value of from.list(at, Infinity)) {
+    if (to.has(value)) continue;
+    if (added >= HAND_BACK_SHARE) {
+      to.markFull();
+      return;
+    }
+    if (to.add(value)) added += 1;
+  }
+}
+
+function redactWith(
+  entry: Json,
+  meta: EntryMeta,
+  known: KnownValues,
+  bodies: { from: number },
+): RedactedEntry {
   const records: EntryRecord[] = [];
   const notScanned: NotScannedRecord[] = [];
   const notes: string[] = [];
@@ -277,9 +341,8 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
   const response = isObject(entry.response) ? entry.response : {};
   const undecoded = Array.isArray(entry._wirescryUndecoded) ? (entry._wirescryUndecoded as unknown[]) : [];
 
-  // The URL and headers first: they must be redacted, or the entry isn't written at all.
-  const url = redactUrl(str(request.url) ?? '', known);
-  add('request.url', url.records);
+  // The URL and headers first: they must be redacted, or the entry isn't written at all. Headers
+  // before the URL, so a URL of junk can't take the room their values need.
   const scanHeaders = (where: string, headers: Header[]): Header[] =>
     headers.map(([name, value]) => [scan(where, name), scan(where, value)]);
   const side = (from: Json, name: string) => {
@@ -292,6 +355,11 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
   };
   const requestHeaders = side(request, 'request');
   const responseHeaders = side(response, 'response');
+  let url!: ReturnType<typeof redactUrl>;
+  known.share('url', OWN_URL_SHARE, () => (url = redactUrl(str(request.url) ?? '', known)));
+  // The URL's records before the headers', though it was learned after them.
+  records.unshift(...url.records.map((r) => ({ in: 'request.url', ...r })));
+  bodies.from = known.size;
 
   // A body's media type, from the redacted Content-Type (the raw one could hold anything).
   const mediaType = (headers: Header[], given: unknown): string =>
@@ -304,17 +372,24 @@ export function redactHarEntry(entry: Json, meta: EntryMeta, known: KnownValues)
     const type = mediaType(requestHeaders.headers, given.mimeType);
     const base64 = given._encoding === 'base64';
     let body: Body;
+    // Redacted with room of its own, so it hides its own repeats; then only a share of what it
+    // taught is kept for the response.
+    const requestKnown = new KnownValues(known);
     try {
       body = redactBodyText(
         'request.postData',
         str(given.text) ?? '',
         type,
         { base64, undecoded: undecoded.includes('request body'), cut: meta.cut.request },
-        known,
+        requestKnown,
       );
     } catch {
       body = { text: undefined, records: [], leftOut: true };
     }
+    known.share('request body', REQUEST_BODY_SHARE, () => {
+      for (const value of requestKnown.list(0, Infinity)) known.add(value);
+    });
+    if (requestKnown.full) known.markFull();
     records.push(...body.records);
     if (body.notScanned) notScanned.push(body.notScanned);
     if (body.text === undefined) {

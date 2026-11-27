@@ -260,11 +260,7 @@ export function staleSummary(summary: ExchangeSummary): ExchangeSummary {
  */
 export function ownValues(detail: ExchangeDetail): KnownValues {
   const own = new KnownValues();
-  try {
-    redactUrl(detail.summary.url, own);
-  } catch {
-    // Nothing learned from it.
-  }
+  // Headers first: a URL of junk can't take the room their values need.
   for (const list of [
     detail.requestHeaders,
     detail.responseHeaders,
@@ -276,6 +272,11 @@ export function ownValues(detail: ExchangeDetail): KnownValues {
     } catch {
       // Nothing learned from them.
     }
+  }
+  try {
+    redactUrl(detail.summary.url, own);
+  } catch {
+    // Nothing learned from it.
   }
   return own;
 }

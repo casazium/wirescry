@@ -98,6 +98,8 @@ export interface AgentDetail extends AgentSummary {
   requestBody?: { size: number; kept: number };
   responseBody?: { size: number; kept: number };
   timing?: Record<string, number>;
+  /** FULL_NOTE, if Wirescry's list of values seen was full. */
+  note?: string;
 }
 
 /** The fields of a summary to mask, in a fixed order, and how to put them back. */
@@ -378,7 +380,8 @@ export class Reader {
         fields.push({ kind: 'host', value: name });
       }
     }
-    const out = await masked(this.backend, fields, this.backend.part(detail));
+    const full = { full: false };
+    const out = await masked(this.backend, fields, this.backend.part(detail), full);
     const headers = (k: number): Header[] | undefined =>
       lists[k]?.map((_, j): Header => [out[starts[k]! + 2 * j + 1]!, out[starts[k]! + 2 * j]!]);
     const summary = build(out);
@@ -402,6 +405,7 @@ export class Reader {
         ? { responseBody: { size: detail.responseBody.size, kept: detail.responseBody.stored } }
         : {}),
       ...(detail.timing ? { timing: numbersOf(detail.timing) } : {}),
+      ...(full.full ? { note: FULL_NOTE } : {}),
     };
   }
 
@@ -420,6 +424,7 @@ export class Reader {
     }
     const body = await pending;
     if (body.kind !== 'text') return body;
+    const note = body.full ? { note: FULL_NOTE } : {};
     const from = Math.max(0, Math.floor(offset));
     const n = Math.max(1, Math.min(MAX_CHARS, Math.floor(maxChars)));
     const text = body.text.slice(from, from + n);
@@ -432,6 +437,7 @@ export class Reader {
       text,
       ...(from + text.length < body.text.length ? { more: true as const } : {}),
       ...(body.cut ? { cut: true as const } : {}),
+      ...note,
     };
   }
 
@@ -475,6 +481,9 @@ export class Reader {
           ? { cut: true as const }
           : {}),
       })),
+      ...(shown.messages.some((m) => m.masked && !('hidden' in m.masked) && m.masked.full)
+        ? { note: FULL_NOTE }
+        : {}),
     };
   }
 
@@ -506,7 +515,10 @@ export class Reader {
       total: shown.total,
       receiving: shown.receiving,
       items: shown.items.map(itemOf),
-      ...(shown.problem ? { note: shown.problem } : {}),
+      // The stream's problem and the full list in one note.
+      ...(shown.problem || shown.full
+        ? { note: [shown.problem, shown.full ? FULL_NOTE : undefined].filter(Boolean).join(' ') }
+        : {}),
       ...(shown.full ? { full: true as const } : {}),
     };
   }
@@ -575,6 +587,7 @@ export class Reader {
         kind: 'binary',
         size: content.size,
         ...(content.contentType ? { contentType: content.contentType } : {}),
+        ...(m.full ? { note: FULL_NOTE } : {}),
       };
     return {
       kind: 'text',
@@ -582,6 +595,7 @@ export class Reader {
       size: content.size,
       cut: content.truncated,
       ...(content.contentType ? { contentType: content.contentType } : {}),
+      ...(m.full ? { full: true as const } : {}),
     };
   }
 
@@ -595,8 +609,8 @@ export class Reader {
 type MaskedBodyText =
   | { kind: 'none' }
   | { kind: 'hidden'; reason: string; size: number }
-  | { kind: 'binary'; size: number; contentType?: string }
-  | { kind: 'text'; text: string; size: number; cut: boolean; contentType?: string };
+  | { kind: 'binary'; size: number; contentType?: string; note?: string }
+  | { kind: 'text'; text: string; size: number; cut: boolean; contentType?: string; full?: true };
 
 export type BodySlice =
   | Exclude<MaskedBodyText, { kind: 'text' }>
@@ -611,6 +625,8 @@ export type BodySlice =
       more?: true;
       /** Wirescry kept only the start of this body. */
       cut?: true;
+      /** FULL_NOTE, if Wirescry's list of values seen was full. */
+      note?: string;
     };
 
 export interface AgentMessages {
@@ -626,6 +642,8 @@ export interface AgentMessages {
     hidden?: string;
     cut?: true;
   }>;
+  /** FULL_NOTE, if Wirescry's list of values seen was full. */
+  note?: string;
 }
 
 export interface AgentEvents {

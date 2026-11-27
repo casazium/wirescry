@@ -67,7 +67,10 @@ export class HarRedactor {
 
   constructor(private readonly file = workerFile()) {}
 
-  /** Teaches the worker the values in these entries' URLs and headers. */
+  /**
+   * Teaches the worker the values in these entries' URLs and headers: within one call, every
+   * header before any URL (export calls it once, with every entry).
+   */
   async collect(parts: Json[]): Promise<void> {
     this.collected.push(...parts);
     const worker = this.worker;

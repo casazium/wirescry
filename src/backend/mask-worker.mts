@@ -3,13 +3,14 @@
  * never stalls the proxy (see src/backend/masker.ts).
  *
  * It keeps the session's known values: those in every exchange's URL, headers and trailers, taught
- * as they arrive. Each body is masked with a fresh set: its own exchange's values first, then the
- * session's, so one job never changes what the next finds.
+ * as they arrive. Each body is masked with a set of its own over the session's: its own exchange's
+ * values and what its bodies teach go in it, with room the session's values can't take, and one
+ * job never adds to what the next finds.
  *
  * Its imports carry `.ts` and are pure, so Node runs it from source in tests.
  */
 import { parentPort } from 'node:worker_threads';
-import { KnownValues } from '../shared/redact-body.ts';
+import { KnownValues, OWN_URL_SHARE, REQUEST_BODY_SHARE, SHARED_URL_SHARE } from '../shared/redact-body.ts';
 import { collectKnown } from './har-redact.ts';
 import {
   learnFrom,
@@ -85,12 +86,9 @@ export type MaskResponse =
 
 const session = new KnownValues();
 
-/** What each stream has learned, for the streams read most recently. */
-/** What each stream has learned, for the streams read most recently, and the session it has. */
-const streams = new Map<string, { known: KnownValues; taught: number }>();
+/** What each stream has learned, over the session's values, for the streams read most recently. */
+const streams = new Map<string, { known: KnownValues }>();
 const MAX_STREAMS = 20;
-/** Teaches so far: a stream takes the session's values again only after one. */
-let teaches = 0;
 
 /**
  * A stream's known values: its exchange's and the session's, and what its pages taught. Never
@@ -102,16 +100,14 @@ function streamKnown(stream: Stream, own: Json): { known: KnownValues; lost: boo
   let entry = streams.get(stream.key);
   streams.delete(stream.key);
   const lost = !entry && !stream.fresh;
-  entry ??= { known: new KnownValues(), taught: -1 };
-  // Its exchange's own values each time: response headers and trailers can arrive later.
+  // Over the session's values, so it finds what the session learns later too.
+  entry ??= { known: new KnownValues(session) };
+  // Its exchange's own values each time: response headers and trailers can arrive later. The URL's
+  // share is counted for the stream's life.
   try {
-    collectKnown(own, entry.known);
+    collectKnown(own, entry.known, OWN_URL_SHARE);
   } catch {
     // Nothing learned from them.
-  }
-  if (entry.taught !== teaches) {
-    entry.known.addAll(session);
-    entry.taught = teaches;
   }
   streams.set(stream.key, entry);
   if (streams.size > MAX_STREAMS) streams.delete(streams.keys().next().value!);
@@ -122,12 +118,11 @@ function handle(message: MaskRequest): MaskResponse {
   if (message.op === 'teach') {
     for (const part of message.parts) {
       try {
-        collectKnown(part, session);
+        collectKnown(part, session, SHARED_URL_SHARE);
       } catch {
         // A part that can't be read teaches nothing.
       }
     }
-    teaches += 1;
     return { id: message.id, ok: true, taught: true };
   }
   if (message.op === 'messages') {
@@ -140,22 +135,23 @@ function handle(message: MaskRequest): MaskResponse {
     const items = maskSseItems(message.items, known);
     return { id: message.id, ok: true, items, full: known.full, lost };
   }
-  const known = new KnownValues();
+  // The exchange's own values, in a set over the session's, so the session's can't crowd them out.
+  const known = new KnownValues(session);
   // Headers or a request body that can't be read teach nothing; the body is still masked.
   try {
-    collectKnown(message.own, known);
+    collectKnown(message.own, known, OWN_URL_SHARE);
   } catch {
     // Nothing learned from them.
   }
   if (message.op === 'mask' && message.request) {
     const { bytes, mediaType, cut } = message.request;
     try {
-      learnFrom(bytes, mediaType, cut, known);
+      // A share of the room: the rest is for what the body being masked teaches.
+      known.share('request body', REQUEST_BODY_SHARE, () => learnFrom(bytes, mediaType, cut, known));
     } catch {
       // Nothing learned from it.
     }
   }
-  known.addAll(session);
   if (message.op === 'fields') {
     return { id: message.id, ok: true, fields: maskFields(message.fields, known), full: known.full };
   }
