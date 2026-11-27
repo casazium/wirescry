@@ -16,7 +16,7 @@
  */
 import type { ExchangeDetail, Header, KnownPage, KnownPush } from '../shared/api';
 import { redactHeaders, redactUrl } from '../shared/redact';
-import { KnownValues } from '../shared/redact-body';
+import { KnownValues, SHARED_URL_SHARE } from '../shared/redact-body';
 
 /** Where the stored exchanges come from. */
 export interface KnownSource {
@@ -52,15 +52,6 @@ class Learner {
     const id = exchange.summary.id;
     let seen = this.seen.get(id);
     if (!seen) this.seen.set(id, (seen = { lists: [] }));
-    const url = exchange.summary.url;
-    if (url && seen.url !== url) {
-      seen.url = url;
-      try {
-        redactUrl(url, this.known);
-      } catch {
-        // A URL that can't be read teaches nothing.
-      }
-    }
     const lists = [
       exchange.requestHeaders,
       exchange.responseHeaders,
@@ -75,6 +66,17 @@ class Learner {
         redactHeaders(list, this.known);
       } catch {
         // Headers that can't be read teach nothing.
+      }
+    }
+    // After the headers, and only a share of the set: URLs of junk can't take the room header
+    // values need.
+    const url = exchange.summary.url;
+    if (url && seen.url !== url) {
+      seen.url = url;
+      try {
+        this.known.share('url', SHARED_URL_SHARE, () => redactUrl(url, this.known));
+      } catch {
+        // A URL that can't be read teaches nothing.
       }
     }
   }

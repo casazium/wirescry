@@ -6,8 +6,8 @@
  * Its imports carry `.ts` and are pure, so Node runs it from source in tests.
  */
 import { parentPort } from 'node:worker_threads';
-import { KnownValues } from '../shared/redact-body.ts';
-import { collectKnown, redactHarEntry, type EntryMeta } from './har-redact.ts';
+import { KnownValues, SHARED_URL_SHARE } from '../shared/redact-body.ts';
+import { collectHeaders, collectUrl, redactHarEntry, type EntryMeta } from './har-redact.ts';
 
 type Json = Record<string, unknown>;
 
@@ -39,11 +39,18 @@ const known = new KnownValues();
 
 function handle(message: RedactRequest): RedactResponse {
   if (message.op === 'collect') {
-    for (const part of message.parts) {
-      try {
-        collectKnown(part, known);
-      } catch {
-        // A part that can't be read: its entry is dropped when redacted (its URL or headers fail).
+    // Every entry's headers and trailers, then every URL: URLs of junk can't take the room header
+    // values need.
+    for (const learn of [
+      (part: Json) => collectHeaders(part, known),
+      (part: Json) => collectUrl(part, known, SHARED_URL_SHARE),
+    ]) {
+      for (const part of message.parts) {
+        try {
+          learn(part);
+        } catch {
+          // A part that can't be read: its entry is dropped when redacted (its URL or headers fail).
+        }
       }
     }
     return { id: message.id, ok: true, collected: true };

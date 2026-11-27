@@ -134,6 +134,16 @@ function undoEscapes(raw: string): { decoded: string; rawAt: (i: number, up: boo
   return { decoded: parts.join(''), rawAt };
 }
 
+/**
+ * How many values new to a set an exchange's URL may add to it: in a set of the exchange's own, so
+ * a URL of junk leaves room for what its bodies teach; in a set shared by many (the session's, an
+ * export's), so URLs leave room for header values.
+ */
+export const OWN_URL_SHARE = 2_000;
+export const SHARED_URL_SHARE = 8_000;
+/** How many values new to an exchange's own set its request body may add. */
+export const REQUEST_BODY_SHARE = 3_000;
+
 /** The longest value kept (see `distinctive`). */
 const MAX_KNOWN_LENGTH = 4096;
 /** At most this many known values, and this many sharing one longest run. */
@@ -170,6 +180,17 @@ function longestRun(value: string): { run: string; at: number } | undefined {
  * keyed by each value's longest run, then the whole value is checked around it.
  */
 export class KnownValues implements ValueSink {
+  /**
+   * `under`: a set this one stands over: its values are found too, and nothing is added to it
+   * (building its index of bytes may mark it full, as it would on its own). An
+   * exchange's own values go in a set over the session's, so the session's can't crowd them out.
+   */
+  private readonly under: KnownValues | undefined;
+
+  constructor(under?: KnownValues) {
+    this.under = under;
+  }
+
   private readonly byRun = new Map<string, Known[]>();
   private readonly values = new Set<string>();
   /** The values in the order learned, for `list`. */
@@ -182,24 +203,76 @@ export class KnownValues implements ValueSink {
   private readonly longIndex = new Map<string, LongEntry[]>();
   /** Each value by its first eight characters, for `cutTail`. */
   private headIndex: Map<string, string[]> | undefined;
-  /** Whether a value was turned away for want of room, so a later secret may not be found. */
-  full = false;
+  /** Set when a value was turned away here, or a search asked of this set gave up (see `full`). */
+  private turnedAway = false;
+  /** New values each share has let in (see `share`). */
+  private readonly shares = new Map<string, number>();
+  /** The share `add` counts against now, if any. */
+  private sharing: { name: string; max: number } | undefined;
 
+  /**
+   * Whether a value was turned away for want of room, here or in the set this one stands over (as
+   * it is now), so a later secret may not be found.
+   */
+  get full(): boolean {
+    return this.turnedAway || (this.under?.full ?? false);
+  }
+
+  /** Records that a value was turned away, or a search gave up, here: `full` says so from now on. */
+  markFull(): void {
+    this.turnedAway = true;
+  }
+
+  /** This set's own values, not counting the set it stands over. */
   get size(): number {
     return this.values.size;
   }
 
-  add(value: string): void {
-    if (this.values.has(value) || !distinctive(value)) return;
+  /** Whether neither this set nor any it stands over has a value. */
+  get empty(): boolean {
+    return this.values.size === 0 && (this.under?.empty ?? true);
+  }
+
+  has(value: string): boolean {
+    return this.values.has(value);
+  }
+
+  /**
+   * Runs `learn`, letting it add at most `max` values new to this set under `name`, counted for
+   * the set's life: so a URL or request body can take only part of an exchange's room. Past it a
+   * new value is turned away and the set marked full.
+   */
+  share(name: string, max: number, learn: () => void): void {
+    const before = this.sharing;
+    this.sharing = { name, max };
+    try {
+      learn();
+    } finally {
+      this.sharing = before;
+    }
+  }
+
+  /** Adds a value if it can be found and there is room; whether it was added. */
+  add(value: string): boolean {
+    if (this.values.has(value) || !distinctive(value)) return false;
     const longest = longestRun(value);
     // A value of mostly punctuation can't be found by its runs.
-    if (!longest || longest.run.length < 4 || value.length > longest.run.length * MAX_LENGTH_PER_RUN) return;
-    const list = this.byRun.get(longest.run);
-    // Values sharing a run are checked one by one wherever it appears, so only a few are kept.
-    if (this.values.size >= MAX_KNOWN || (list && list.length >= MAX_PER_RUN)) {
-      this.full = true;
-      return;
+    if (!longest || longest.run.length < 4 || value.length > longest.run.length * MAX_LENGTH_PER_RUN) {
+      return false;
     }
+    const list = this.byRun.get(longest.run);
+    const share = this.sharing;
+    const used = share ? (this.shares.get(share.name) ?? 0) : 0;
+    // Values sharing a run are checked one by one wherever it appears, so only a few are kept.
+    if (
+      this.values.size >= MAX_KNOWN ||
+      (list && list.length >= MAX_PER_RUN) ||
+      (share !== undefined && used >= share.max)
+    ) {
+      this.turnedAway = true;
+      return false;
+    }
+    if (share) this.shares.set(share.name, used + 1);
     this.values.add(value);
     this.order.push(value);
     this.byFirstEight = undefined;
@@ -210,6 +283,7 @@ export class KnownValues implements ValueSink {
     if (this.headIndex) indexBy(this.headIndex, value.slice(0, 8), value);
     if (list) list.push({ value, at: longest.at });
     else this.byRun.set(longest.run, [{ value, at: longest.at }]);
+    return true;
   }
 
   /**
@@ -228,10 +302,17 @@ export class KnownValues implements ValueSink {
     return out;
   }
 
-  /** Adds another set's values, in the order it learned them; `full` carries over. */
+  /** Adds another set's own values, in the order it learned them; `full` carries over. */
   addAll(other: KnownValues): void {
     for (const value of other.values) this.add(value);
-    if (other.full) this.full = true;
+    if (other.full) this.turnedAway = true;
+  }
+
+  /** This set and each it stands over, nearest first. */
+  private chain(): KnownValues[] {
+    const sets: KnownValues[] = [this];
+    for (let set = this.under; set; set = set.under) sets.push(set);
+    return sets;
   }
 
   /**
@@ -239,9 +320,24 @@ export class KnownValues implements ValueSink {
    * space).
    */
   scan(text: string, plusIsSpace = false): Span[] {
-    if (this.values.size === 0 || text.length < 8) return [];
-    const spans = this.find(text, (i) => i);
-    this.embedded(text, (i) => i, spans);
+    if (text.length < 8) return [];
+    const spans: Span[] = [];
+    for (const set of this.chain()) set.scanOwn(text, plusIsSpace, this, spans);
+    // The same value can be found by more than one search, or in more than one set: each span once.
+    const seen = new Set<string>();
+    return spans.filter((span) => {
+      const key = `${span.start}:${span.end}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  /** `scan` in this set's own values, into `spans`; a search that gives up marks `asker` full. */
+  private scanOwn(text: string, plusIsSpace: boolean, asker: KnownValues, spans: Span[]): void {
+    if (this.values.size === 0) return;
+    for (const span of this.find(text, (i) => i)) spans.push(span);
+    this.embedded(text, (i) => i, spans, asker);
     for (const match of text.matchAll(ENCODED_RUN)) {
       const run = match[0];
       const add = (found: Span[]): void => {
@@ -252,7 +348,7 @@ export class KnownValues implements ValueSink {
       if (run.includes('%') || (plusIsSpace && run.includes('+'))) {
         const { decoded, rawAt } = decodeWithMap(run, plusIsSpace);
         const found = this.find(decoded, rawAt);
-        this.embedded(decoded, rawAt, found);
+        this.embedded(decoded, rawAt, found, asker);
         add(found);
       }
       // Written with JSON's escapes, as a script or a page often writes a value (a slash as
@@ -260,18 +356,10 @@ export class KnownValues implements ValueSink {
       if (run.includes('\\')) {
         const { decoded, rawAt } = undoEscapes(run);
         const found = this.find(decoded, rawAt);
-        this.embedded(decoded, rawAt, found);
+        this.embedded(decoded, rawAt, found, asker);
         add(found);
       }
     }
-    // The same value can be found by more than one search: each span once.
-    const seen = new Set<string>();
-    return spans.filter((span) => {
-      const key = `${span.start}:${span.end}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
   }
 
   /** Adds a value to `longIndex`, if long and varied enough; past MAX_PER_RUN alike, `full`. */
@@ -300,7 +388,7 @@ export class KnownValues implements ValueSink {
       tries++;
     }
     // Turned away from full lists; a value with no varied window is just not looked for inside runs.
-    if (tries > 0) this.full = true;
+    if (tries > 0) this.turnedAway = true;
   }
 
   /**
@@ -308,9 +396,15 @@ export class KnownValues implements ValueSink {
    * `out`: long enough that a repeat is rarely chance. One pass, each position looked up by the
    * eight characters ending there; at most MAX_PER_RUN values share those, each compared from its
    * end back. The comparisons are budgeted at 40 per character of text, so the cost stays linear
-   * however many calls there are; past the budget the search stops and the set is marked full.
+   * however many calls there are; past the budget the search stops and the set asked (`asker`,
+   * never one it stands over) is marked full.
    */
-  private embedded(text: string, rawAt: (i: number, up: boolean) => number, out: Span[]): void {
+  private embedded(
+    text: string,
+    rawAt: (i: number, up: boolean) => number,
+    out: Span[],
+    asker: KnownValues,
+  ): void {
     if (this.longIndex.size === 0 || text.length < 16) return;
     let budget = text.length * 40;
     for (let at = 8; at <= text.length; at++) {
@@ -325,7 +419,7 @@ export class KnownValues implements ValueSink {
         budget -= value.length - i;
         if (budget < 0) {
           // Text built to near-match long values everywhere: said, not silently given up.
-          this.full = true;
+          asker.turnedAway = true;
           return;
         }
         if (i < 0) out.push({ start: rawAt(start, false), end: rawAt(end, true), kind: 'known value' });
@@ -342,7 +436,19 @@ export class KnownValues implements ValueSink {
    * differ.
    */
   cutTail(text: string): Span[] {
-    if (this.values.size === 0 || text.length < 8) return [];
+    if (text.length < 8) return [];
+    // The earliest start found in any set: the longest tail hidden.
+    let best: Span | undefined;
+    for (const set of this.chain()) {
+      const found = set.cutTailOwn(text);
+      if (found && (!best || found.start < best.start)) best = found;
+    }
+    return best ? [best] : [];
+  }
+
+  /** `cutTail` in this set's own values. */
+  private cutTailOwn(text: string): Span | undefined {
+    if (this.values.size === 0) return undefined;
     if (!this.headIndex) {
       this.headIndex = new Map();
       for (const value of this.values) indexBy(this.headIndex, value.slice(0, 8), value);
@@ -365,11 +471,10 @@ export class KnownValues implements ValueSink {
         while (i >= 8 && text.charCodeAt(start + i) === value.charCodeAt(i)) i--;
         budget -= tail - i;
         // Past the budget, the tail is hidden: a cut end is short, and hiding it costs little.
-        if (budget < 0) return [{ start, end: text.length, kind: 'known value' }];
-        if (i < 8) return [{ start, end: text.length, kind: 'known value' }];
+        if (budget < 0 || i < 8) return { start, end: text.length, kind: 'known value' };
       }
     }
-    return [];
+    return undefined;
   }
 
   /**
@@ -378,7 +483,20 @@ export class KnownValues implements ValueSink {
    * looked up by the eight characters from it.
    */
   anywhere(text: string): Span[] {
-    if (this.values.size === 0 || text.length < 8) return [];
+    if (text.length < 8) return [];
+    const spans: Span[] = [];
+    for (const set of this.chain()) {
+      const found = set.anywhereOwn(text);
+      // Too costly to check in any set: all of it hidden.
+      if (found === undefined) return [{ start: 0, end: text.length, kind: 'known value' }];
+      for (const span of found) spans.push(span);
+    }
+    return spans;
+  }
+
+  /** `anywhere` in this set's own values; undefined if it would cost too much. */
+  private anywhereOwn(text: string): Span[] | undefined {
+    if (this.values.size === 0) return [];
     if (!this.textIndex) {
       this.textIndex = new Map();
       for (const value of this.values) {
@@ -389,15 +507,14 @@ export class KnownValues implements ValueSink {
         else this.textIndex.set(key, [value]);
       }
     }
-    const whole: Span[] = [{ start: 0, end: text.length, kind: 'known value' }];
     const spans = this.within(text, (i) => i);
-    if (!spans) return whole;
+    if (!spans) return undefined;
     for (const match of text.matchAll(ENCODED_RUN)) {
       const run = match[0];
       if (!run.includes('%')) continue;
       const { decoded, rawAt } = decodeWithMap(run);
       const found = this.within(decoded, rawAt);
-      if (!found) return whole;
+      if (!found) return undefined;
       for (const span of found) {
         spans.push({ ...span, start: match.index + span.start, end: match.index + span.end });
       }
@@ -437,7 +554,16 @@ export class KnownValues implements ValueSink {
    * eight bytes from it; at most a few values share those, so it stays linear.
    */
   inBytes(bytes: Uint8Array): boolean {
-    if (this.values.size === 0 || bytes.length < 8) return false;
+    if (bytes.length < 8) return false;
+    return this.chain().some((set) => set.inBytesOwn(bytes));
+  }
+
+  /**
+   * `inBytes` in this set's own values. Values too alike to index mark this set full, which a set
+   * over it reports too.
+   */
+  private inBytesOwn(bytes: Uint8Array): boolean {
+    if (this.values.size === 0) return false;
     const index = this.bytesIndex();
     let hi = 0;
     let lo = 0;
@@ -478,7 +604,7 @@ export class KnownValues implements ValueSink {
       if (!list) inner.set(lo, [encoded]);
       else if (list.length < MAX_PER_RUN) list.push(encoded);
       // Too many alike to check at every position: one may go unfound in bytes.
-      else this.full = true;
+      else this.turnedAway = true;
     }
     this.byFirstEight = index;
     return index;
@@ -2194,7 +2320,7 @@ export function secretInBytes(
     for (let i = 0, k = 0; i < bytes.length; i++) if (bytes[i] !== 0) from[k++] = i;
     if (found.some((s) => !covered(from[s.start]!, from[s.end - 1]! + 1))) return true;
   }
-  if (known.size === 0) return false;
+  if (known.empty) return false;
   return known.scan(latin1.decode(bytes)).some((s) => s.end > s.start && !covered(s.start, s.end));
 }
 
