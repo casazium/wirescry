@@ -6,7 +6,8 @@
  * - carry no Origin header: MCP clients don't send one, browsers always do, so no web page can call
  *   it (not even one served from this computer);
  * - carry the token: `Authorization: Bearer <token>`, compared in constant time;
- * - be at most 1 MiB, and not open a subscription stream (this server has nothing to stream).
+ * - be at most 1 MiB, one message (not a batch), and not open a subscription stream (this server
+ *   has nothing to stream).
  *
  * Then the SDK (createMcpHandler) serves it: the 2026-07-28 protocol, and 2025-era clients through
  * its stateless fallback, from one set of tools (tools.ts).
@@ -16,7 +17,7 @@ import http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { createMcpHandler, type McpHttpHandler } from '@modelcontextprotocol/server';
 import type { Reader } from './reader';
-import { createServer, sweep, type Call, type PluginToolSource } from './tools';
+import { CallSlots, createServer, sweep, type Call, type PluginToolSource } from './tools';
 
 export const MCP_PATH = '/mcp';
 export const MAX_BODY = 1024 * 1024;
@@ -24,7 +25,11 @@ export const MAX_BODY = 1024 * 1024;
 export const MAX_ACTIVITY = 50;
 /** At most this much more of a too-large body is read (and dropped) before answering 413. */
 const DRAIN_LIMIT = 16 * 1024 * 1024;
-/** Requests served at once, and waiting, before an agent is told to slow down (429). */
+/**
+ * Requests open at once before an agent is told to slow down (429). The same as MAX_CALLS, so a
+ * client that waits for its answers gets this; the busy tool result is seen only while work whose
+ * client has gone still holds places.
+ */
 export const MAX_BUSY = 8;
 
 export interface Activity extends Call {
@@ -49,20 +54,24 @@ export function isOwnHost(host: string | undefined, port: number): boolean {
   return lower === `127.0.0.1:${port}` || lower === `localhost:${port}`;
 }
 
-/** Whether a JSON-RPC body asks for a subscription stream, which this server doesn't serve. */
-function asksToListen(body: Buffer): boolean {
+/**
+ * What a body is, as the SDK would read it (a leading BOM dropped): a batch (a JSON array), a
+ * request for a subscription stream, which this server doesn't serve, or anything else (including
+ * text that isn't JSON, which the SDK answers).
+ */
+function bodyKind(body: Buffer): 'batch' | 'listen' | 'other' {
+  let parsed: unknown;
   try {
-    // As the SDK reads it: a leading BOM is dropped.
-    const parsed = JSON.parse(body.toString('utf8').replace(/^\uFEFF/, '')) as unknown;
-    const messages = Array.isArray(parsed) ? parsed : [parsed];
-    return messages.some(
-      (m) =>
-        typeof m === 'object' && m !== null && (m as { method?: unknown }).method === 'subscriptions/listen',
-    );
+    parsed = JSON.parse(body.toString('utf8').replace(/^\uFEFF/, '')) as unknown;
   } catch {
-    // Not JSON: the SDK answers that.
-    return false;
+    return 'other';
   }
+  if (Array.isArray(parsed)) return 'batch';
+  return typeof parsed === 'object' &&
+    parsed !== null &&
+    (parsed as { method?: unknown }).method === 'subscriptions/listen'
+    ? 'listen'
+    : 'other';
 }
 
 function refuse(
@@ -134,7 +143,12 @@ export class McpHttpServer {
         const client = sweep(
           (ctx.requestInfo?.headers.get('user-agent') ?? '').replace(/[^\x20-\x7e]/g, '').slice(0, 100),
         );
-        return createServer(this.options.reader, (call) => this.called(call, client), this.options.plugins);
+        return createServer(
+          this.options.reader,
+          (call) => this.called(call, client),
+          this.options.plugins,
+          this.calls,
+        );
       },
       {
         responseMode: 'json',
@@ -183,8 +197,10 @@ export class McpHttpServer {
     this.options.log(`MCP: ${sweep(error instanceof Error ? error.message : String(error))}`);
   }
 
-  /** Calls being served, and waiting: an agent can't queue unbounded work. */
+  /** Requests open now. Freed when the connection closes; the work itself is counted by `calls`. */
   private busy = 0;
+  /** Tool calls running, from every request: a call holds its place until its work ends. */
+  private readonly calls = new CallSlots();
 
   private called(call: Call, client: string): void {
     const activity: Activity = { ...call, at: Date.now(), client };
@@ -240,7 +256,13 @@ export class McpHttpServer {
       if (Number(req.headers['content-length'] ?? 0) > MAX_BODY) return tooLarge();
       const body = await readBody(req, MAX_BODY);
       if (body === undefined) return tooLarge();
-      if (asksToListen(body)) return refuse(res, 404, 'Not found: this server has no subscriptions.');
+      const kind = bodyKind(body);
+      // One message per request. MCP dropped batches in 2025-06-18, and a batch holding a call and
+      // its own cancellation never ends in the SDK.
+      if (kind === 'batch') {
+        return refuse(res, 400, 'Bad request: batches aren’t served. Send one message per request.');
+      }
+      if (kind === 'listen') return refuse(res, 404, 'Not found: this server has no subscriptions.');
       if (this.busy >= MAX_BUSY) {
         return refuse(res, 429, 'Too many requests at once: wait for the others to finish.', {
           'retry-after': '1',
