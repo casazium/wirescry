@@ -9,12 +9,15 @@
  * - be at most 1 MiB, one message (not a batch), and not open a subscription stream (this server
  *   has nothing to stream).
  *
+ * A connection that hasn't sent a whole request head within about 5 s is closed, and idle or refused
+ * connections can't crowd out an agent's (see Connections).
+ *
  * Then the SDK (createMcpHandler) serves it: the 2026-07-28 protocol, and 2025-era clients through
  * its stateless fallback, from one set of tools (tools.ts).
  */
 import { createHash, timingSafeEqual } from 'node:crypto';
 import http from 'node:http';
-import type { AddressInfo } from 'node:net';
+import type { AddressInfo, Socket } from 'node:net';
 import { createMcpHandler, type McpHttpHandler } from '@modelcontextprotocol/server';
 import type { Reader } from './reader';
 import { CallSlots, createServer, sweep, type Call, type PluginToolSource } from './tools';
@@ -114,6 +117,56 @@ export interface McpServerOptions {
   log(line: string): void;
   /** Told of each call, after it finishes. */
   onCall(activity: Activity): void;
+  /** How long a connection has to send a whole request head (default 5 s). For tests. */
+  headDeadlineMs?: number;
+  /** How often that deadline is checked (default every second). For tests. */
+  checkEveryMs?: number;
+}
+
+/** Connections that haven't sent the token yet, kept open at once; the oldest makes room. */
+export const MAX_WAITING = 16;
+/** Connections that have sent the token, kept open at once. */
+export const MAX_TRUSTED = 16;
+
+/**
+ * A listener's open connections, in two groups, so idle or slow ones can't lock agents out
+ * (security review 2, F13). A connection waits until a request on it passes the Host, Origin and
+ * token checks, then is trusted for its life (the token can't change under it: a new token
+ * closes every connection). Past MAX_WAITING waiting, the oldest is closed to make room; past
+ * MAX_TRUSTED trusted, the newest is turned away.
+ */
+export class Connections {
+  private readonly waiting = new Set<Socket>();
+  private readonly trusted = new Set<Socket>();
+
+  /** How many are open, waiting and trusted. For tests. */
+  get counts(): { waiting: number; trusted: number } {
+    return { waiting: this.waiting.size, trusted: this.trusted.size };
+  }
+
+  /** A new connection: waiting, and the oldest waiting one closed if there are too many. */
+  opened(socket: Socket): void {
+    this.waiting.add(socket);
+    socket.once('close', () => {
+      this.waiting.delete(socket);
+      this.trusted.delete(socket);
+    });
+    if (this.waiting.size > MAX_WAITING) {
+      const oldest = this.waiting.values().next().value!;
+      // Out of the set first: destroy() emits 'close' later, and the next connection mustn't pick it.
+      this.waiting.delete(oldest);
+      oldest.destroy();
+    }
+  }
+
+  /** A request on `socket` passed the checks: trusted, unless MAX_TRUSTED are already. */
+  trust(socket: Socket): boolean {
+    if (this.trusted.has(socket)) return true;
+    if (this.trusted.size >= MAX_TRUSTED) return false;
+    this.waiting.delete(socket);
+    this.trusted.add(socket);
+    return true;
+  }
 }
 
 /** The listener, started and stopped as the user turns it on and off. */
@@ -159,10 +212,16 @@ export class McpHttpServer {
         onerror: (error) => this.logError(error),
       },
     );
-    const server = http.createServer((req, res) => void this.serve(req, res, handler));
-    // An agent is one or two clients: no need for many connections, or for slow ones to linger.
-    server.maxConnections = 16;
-    server.headersTimeout = 10_000;
+    const connections = new Connections();
+    // Node closes a connection that hasn't sent a whole request head within headersTimeout
+    // (measured from the connection, for its first request), checking every
+    // connectionsCheckingInterval: each second here, not the default 30.
+    const server = http.createServer(
+      { connectionsCheckingInterval: this.options.checkEveryMs ?? 1000 },
+      (req, res) => void this.serve(req, res, handler, connections),
+    );
+    server.on('connection', (socket: Socket) => connections.opened(socket));
+    server.headersTimeout = this.options.headDeadlineMs ?? 5000;
     server.requestTimeout = 60_000;
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
@@ -214,6 +273,7 @@ export class McpHttpServer {
     req: http.IncomingMessage,
     res: http.ServerResponse,
     handler: McpHttpHandler,
+    connections: Connections,
   ): Promise<void> {
     try {
       const url = new URL(req.url ?? '/', 'http://localhost');
@@ -229,6 +289,12 @@ export class McpHttpServer {
             'www-authenticate': 'Bearer',
           },
         );
+      }
+      if (!connections.trust(req.socket)) {
+        return refuse(res, 429, 'Too many connections: close some and try again.', {
+          connection: 'close',
+          'retry-after': '1',
+        });
       }
       if (url.pathname !== MCP_PATH) return refuse(res, 404, `Not found: the MCP endpoint is ${MCP_PATH}.`);
       if (req.method !== 'POST') return refuse(res, 405, 'Method not allowed: POST only.', { allow: 'POST' });
