@@ -43,6 +43,7 @@ import {
   waitForOutput,
   waitForLines,
   startupMs,
+  agentReport,
 } from './java-agent-helpers';
 
 /** A stand-in for Wirescry's proxy: answers plain requests itself, and tunnels CONNECT. */
@@ -233,7 +234,12 @@ afterAll(() => {
 });
 
 /** Turns on the bytecode verifier for every class, so a bad rewrite fails the test. */
-const VERIFY = ['-XX:+UnlockDiagnosticVMOptions', '-XX:+BytecodeVerificationLocal'];
+const VERIFY = [
+  '-XX:+UnlockDiagnosticVMOptions',
+  '-XX:+BytecodeVerificationLocal',
+  // The agent's notes on why a hook did nothing, for a failure's message (see tunneled).
+  '-Dwirescry.agent.test.trace=true',
+];
 const UNKNOWN_HOST = /^FAIL java\.net\.UnknownHostException/;
 
 /** An ApacheProbe for version `v`, ready for commands; in a class loader of its own if `isolate`. */
@@ -256,6 +262,22 @@ async function ask(r: Run, command: string): Promise<string> {
   r.send(command);
   await waitForLines(r, before, 20_000);
   return r.stdout().split('\n').filter(Boolean)[before]!.trim();
+}
+
+/**
+ * `ask`, for a command that should answer "OK tunneled": any other answer comes back with what the
+ * agent last reported and its notes (VERIFY turns them on), so a failure says why trust said no.
+ * No notes at all means either the trust manager never reached the agent's transformer (status
+ * `trust:waiting`) or its woven code failed before calling the agent (`trust:ok`).
+ */
+async function tunneled(r: Run, command: string): Promise<string> {
+  const answer = await ask(r, command);
+  if (answer === 'OK tunneled') return answer;
+  const notes = r
+    .stderr()
+    .split('\n')
+    .filter((line) => line.startsWith('wirescry-trace: '));
+  return [answer, `agent: ${await agentReport(r.child.pid)}`, ...notes].join('\n');
 }
 
 /**
@@ -292,7 +314,7 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
           expect(await ask(r, 'route http://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
           expect(await ask(r, 'get http://proxied.test/a?b=1')).toBe('OK proxied http://proxied.test/a?b=1');
           // Through a CONNECT tunnel, the trust hook accepting the stand-in's certificate.
-          expect(await ask(r, 'get https://proxied.test/c')).toBe('OK tunneled');
+          expect(await tunneled(r, 'get https://proxied.test/c')).toBe('OK tunneled');
           // The client built when the program started, before any request.
           expect(await ask(r, 'early http://proxied.test/e')).toBe('OK proxied http://proxied.test/e');
           expect(proxy.seen).toEqual([
@@ -467,7 +489,7 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
             expect(await ask(r, 'async http://proxied.test/async4')).toBe(
               'OK proxied http://proxied.test/async4',
             );
-            expect(await ask(r, 'async https://proxied.test/tls4')).toBe('OK tunneled');
+            expect(await tunneled(r, 'async https://proxied.test/tls4')).toBe('OK tunneled');
             expect(proxy.seen).toEqual(['GET http://proxied.test/async4', 'CONNECT proxied.test:443']);
           });
         }
@@ -480,7 +502,7 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
             expect(await ask(r, 'async http://proxied.test/async')).toBe(
               'OK proxied http://proxied.test/async',
             );
-            expect(await ask(r, 'async https://proxied.test/tls')).toBe('OK tunneled');
+            expect(await tunneled(r, 'async https://proxied.test/tls')).toBe('OK tunneled');
             expect(proxy.seen).toEqual(['GET http://proxied.test/async', 'CONNECT proxied.test:443']);
           });
 
@@ -684,12 +706,12 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
           expect(await ask(r, 'route http://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
           expect(await ask(r, 'route https://proxied.test/')).toBe(`PROXY 127.0.0.1:${proxy.port}`);
           expect(await ask(r, 'get http://proxied.test/m')).toBe('OK proxied http://proxied.test/m');
-          expect(await ask(r, 'get https://proxied.test/t')).toBe('OK tunneled');
+          expect(await tunneled(r, 'get https://proxied.test/t')).toBe('OK tunneled');
           expect(await ask(r, 'system http://proxied.test/s')).toBe('OK proxied http://proxied.test/s');
           const seen = ['GET http://proxied.test/m', 'CONNECT proxied.test:443', 'GET http://proxied.test/s'];
           if (m.v === 5) {
             expect(await ask(r, 'async http://proxied.test/a')).toBe('OK proxied http://proxied.test/a');
-            expect(await ask(r, 'async https://proxied.test/at')).toBe('OK tunneled');
+            expect(await tunneled(r, 'async https://proxied.test/at')).toBe('OK tunneled');
             seen.push('GET http://proxied.test/a', 'CONNECT proxied.test:443');
           }
           expect(proxy.seen).toEqual(seen);
@@ -805,9 +827,9 @@ describe.skipIf(!buildJava)('the Java agent’s Apache HttpClient hook', { timeo
           );
           // As Spring makes it (the JDK's selector), and on a default client (DefaultRoutePlanner).
           expect(await ask(r, 'rest http://proxied.test/r')).toBe('OK proxied http://proxied.test/r');
-          expect(await ask(r, 'rest https://proxied.test/rs')).toBe('OK tunneled');
+          expect(await tunneled(r, 'rest https://proxied.test/rs')).toBe('OK tunneled');
           expect(await ask(r, 'default http://proxied.test/d')).toBe('OK proxied http://proxied.test/d');
-          expect(await ask(r, 'default https://proxied.test/ds')).toBe('OK tunneled');
+          expect(await tunneled(r, 'default https://proxied.test/ds')).toBe('OK tunneled');
           // This computer, direct, by each hook's rules: nothing listens on port 1.
           expect(await ask(r, 'rest http://localhost:1/')).toMatch(/^FAIL .*Connect/);
           expect(await ask(r, 'default http://localhost:1/')).toMatch(/^FAIL .*Connect/);

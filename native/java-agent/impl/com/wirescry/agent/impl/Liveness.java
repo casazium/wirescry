@@ -18,7 +18,8 @@ import java.util.Optional;
  *       change or sleep doesn't matter. This works on every Java.
  *   <li>On Java 9 and later, Wirescry's process. When a read shows the heartbeat has just moved,
  *       Wirescry is surely alive, so the start time of its pid is noted then. Until the next move,
- *       the pid must still exist with that start time. This notices a crash within a second, and a
+ *       the pid must still exist with that start time (one the system can't give at that moment is
+ *       no sign of another program, so the heartbeat decides). This notices a crash within a second, and a
  *       new Wirescry that got the same pid is noted again at its first heartbeat. Node has no start
  *       time that matches Java's, so Wirescry never writes one.
  * </ul>
@@ -90,6 +91,9 @@ final class Liveness {
     }
     // Nothing noted for this pid yet: the heartbeat hasn't moved since it appeared.
     if (notedPid != control.wirescryPid || notedStart == null) return true;
+    // The system can't say now: not a sign of another process, so alive, as the heartbeat says.
+    // Only a start time that differs means the pid went to another program.
+    if (start == null) return true;
     return notedStart.equals(start);
   }
 
