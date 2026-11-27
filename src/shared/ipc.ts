@@ -31,6 +31,8 @@ export type BackendMessage =
   | { type: 'notify'; title: string; body: string }
   /** The answer to an android-undo request: done, or out of time. */
   | { type: 'android-undone'; id: number }
+  /** A secret the app's log must never show, such as the MCP server's token. */
+  | { type: 'log-secret'; secret: string }
   | CryptoRequest
   | HarReply;
 

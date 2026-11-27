@@ -32,6 +32,7 @@ export interface SecureStorage {
   decrypt(base64: string): Promise<string>;
 }
 import { levelForOutput, lineSplitter, type FileLogger } from './logger';
+import { isMcpToken } from '../shared/mcp-token';
 
 /** How long the backend gets to stop cleanly on quit before it's killed. */
 const SHUTDOWN_TIMEOUT_MS = 3000;
@@ -160,6 +161,11 @@ export class BackendSupervisor extends EventEmitter<{ state: [BackendState] }> {
         else waiting.reject(new Error(message.error));
       } else if (message.type === 'notify') {
         this.options.notify?.(String(message.title).slice(0, 200), String(message.body).slice(0, 1000));
+      } else if (message.type === 'log-secret') {
+        // Only a token's shape: anything else is ignored, so a bad message can't hide log lines.
+        if (isMcpToken(message.secret)) {
+          this.options.logger?.addSecret(message.secret);
+        }
       } else if (message.type === 'android-undone') {
         this.androidWaiting.get(message.id)?.();
         this.androidWaiting.delete(message.id);

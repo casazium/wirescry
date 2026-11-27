@@ -1,9 +1,11 @@
+import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { FileLogger } from '../src/main/logger';
 
 /** A stand-in for Electron's UtilityProcess. */
 class FakeChild extends EventEmitter {
@@ -270,6 +272,61 @@ describe('Putting Android devices back before a quick quit', () => {
     s.start();
     forked[0]!.emit('message', { type: 'notify', title: 'Device gone', body: 'Pixel 8 …' });
     expect(notified).toEqual([['Device gone', 'Pixel 8 …']]);
+  });
+});
+
+describe('secrets the backend says the log must never show', () => {
+  let dataDir: string;
+  beforeEach(async () => {
+    forked.length = 0;
+    nextExitAfter = 0;
+    dataDir = await mkdtemp(path.join(os.tmpdir(), 'wirescry-supervisor-secrets-'));
+  });
+  afterEach(async () => {
+    await rm(dataDir, { recursive: true, force: true });
+  });
+
+  it('adds a token-shaped one to the log’s scrubber, and ignores anything else', () => {
+    const added: string[] = [];
+    const logger = {
+      addSecret: (s: string) => added.push(s),
+      write: () => undefined,
+    } as unknown as FileLogger;
+    const s = new BackendSupervisor({
+      dataDir,
+      allowedOrigins: [],
+      pluginsEnabled: false,
+      app: { version: '0.0.0', releaseDate: '' },
+      logger,
+    });
+    s.start();
+    const token = 'Ab9_-'.repeat(8) + 'xyz';
+    forked[0]!.emit('message', { type: 'log-secret', secret: token });
+    const bad = [
+      'short',
+      'a'.repeat(42),
+      'a'.repeat(44),
+      'a'.repeat(32),
+      'a'.repeat(64),
+      'f'.repeat(40), // a hex id isn't a token
+      token.slice(0, 42) + '+',
+      token.slice(0, 42) + '.',
+      token.slice(0, 42) + '=',
+      ' ' + token.slice(1),
+      token + '\n',
+      42,
+      undefined,
+      null,
+      { token },
+      [token],
+      '',
+    ];
+    for (const secret of bad) forked[0]!.emit('message', { type: 'log-secret', secret });
+    expect(added).toEqual([token]);
+    // A token as the backend makes it.
+    const real = randomBytes(32).toString('base64url');
+    forked[0]!.emit('message', { type: 'log-secret', secret: real });
+    expect(added).toEqual([token, real]);
   });
 });
 

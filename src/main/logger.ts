@@ -43,7 +43,7 @@ export class FileLogger {
 
   /** Redacts `secret` from everything written from now on. */
   addSecret(secret: string): void {
-    if (secret.length >= 8) this.secrets = [...this.secrets, secret];
+    if (secret.length >= 8 && !this.secrets.includes(secret)) this.secrets = [...this.secrets, secret];
   }
 
   write(source: string, level: LogLevel, message: string): void {
