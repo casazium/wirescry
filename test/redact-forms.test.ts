@@ -51,9 +51,9 @@ describe('a scheme and a credential under a token name in JSON', () => {
     [`{"auth":"ApiKey ${SECRET}.${OTHER}"}`, `{"auth":"ApiKey ${R}"}`],
     [`{"auth":"ApiKey ${SECRET}~1"}`, `{"auth":"ApiKey ${R}"}`],
     [`{"auth":"X-Key ${SECRET}"}`, `{"auth":"X-Key ${R}"}`],
-    [`{"auth":"api_key.v2 ${SECRET}"}`, `{"auth":"api_key.v2 ${R}"}`],
+    [`{"auth":"api_key.ver ${SECRET}"}`, `{"auth":"api_key.ver ${R}"}`],
     // A scheme word of 32 characters, the most allowed.
-    [`{"auth":"${rep('A', 32)} ${SECRET}"}`, `{"auth":"${rep('A', 32)} ${R}"}`],
+    [`{"auth":"${rep('a', 32)} ${SECRET}"}`, `{"auth":"${rep('a', 32)} ${R}"}`],
   ])('redacts the credential in %s, keeping the scheme', (text, expected) => {
     expect(json(text)).toBe(expected);
   });
@@ -75,13 +75,14 @@ describe('a scheme and a credential under a token name in JSON', () => {
     expect(json(text)).toBe(`{"auth":"x ${R}","password":"${R}"}`);
   });
 
-  it('still looks for token shapes and known values in the whole string', () => {
-    // A shape in the scheme's place.
-    expect(json(`{"auth":"${AWS_KEY_ID} ${OTHER}"}`)).toBe(`{"auth":"${R} ${R}"}`);
-    // A known value in the scheme's place.
+  it('hides both words when a token shape or known value is in the scheme’s place', () => {
+    // A first word distinctive enough to be a token isn't a scheme, as a shape or a known value is.
+    expect(json(`{"auth":"${AWS_KEY_ID} ${OTHER}"}`)).toBe(`{"auth":"${R}"}`);
     const known = new KnownValues();
     json(`{"password":"${SECRET}"}`, known);
-    expect(json(`{"auth":"${SECRET} ${OTHER}"}`, known)).toBe(`{"auth":"${R} ${R}"}`);
+    expect(json(`{"auth":"${SECRET} ${OTHER}"}`, known)).toBe(`{"auth":"${R}"}`);
+    // A scheme word with letters and digits is taken as a token too: both go.
+    expect(json(`{"auth":"api_key.v2 ${SECRET}"}`)).toBe(`{"auth":"${R}"}`);
   });
 
   it('learns a bearer token under a session or inherited name, as before', () => {
@@ -138,7 +139,7 @@ describe('a scheme and a credential under a token name in JSON', () => {
     `{"token":"see ApiKey ${SECRET}"}`,
     `{"auth":"ApiKey ${SECRET} extra"}`,
     // A scheme word of 33 characters is too long to be one.
-    `{"auth":"${rep('A', 33)} ${SECRET}"}`,
+    `{"auth":"${rep('a', 33)} ${SECRET}"}`,
     // A name that isn't a secret's.
     `{"note":"ApiKey ${SECRET}"}`,
     // A name about tokens, not holding one.

@@ -398,11 +398,41 @@ function unquotedEnd(text: string, start: number): number {
 }
 
 /**
+ * After an unquoted scheme word at `text[from, end)` (`ApiKey`, `svc`), the credential that follows
+ * on the same line, if it ends the line and looks like one (see `schemeAndCredential`), or
+ * undefined. Up to 64 spaces or tabs come between them, and after it only spaces, tabs and
+ * closing punctuation. Not another `name=value` field.
+ */
+function credentialAfterScheme(
+  text: string,
+  from: number,
+  end: number,
+): { start: number; end: number } | undefined {
+  // Checked again below; here only so most values aren't followed into the next word.
+  if (!/^[A-Za-z][A-Za-z0-9_.-]{0,31}$/.test(text.slice(from, end))) return undefined;
+  let start = end;
+  while (start < text.length && start - end < 64 && (text[start] === ' ' || text[start] === '\t')) start++;
+  if (start === end || start >= text.length) return undefined;
+  const credentialEnd = unquotedEnd(text, start);
+  // `name=value` is a log line's next field (`token=<token> session=…`), not a credential; base64's
+  // `=` padding at the end is not that.
+  if (/^[A-Za-z_][A-Za-z0-9_.-]{0,63}=(?!=*$)/.test(text.slice(start, credentialEnd))) return undefined;
+  // Then only spaces, tabs and closing punctuation (`{auth: ApiKey <key>}`) before the line ends.
+  let after = credentialEnd;
+  while (after < text.length && /[ \t.,;)}\]]/.test(text[after]!)) after++;
+  if (after < text.length && text[after] !== '\n' && text[after] !== '\r') return undefined;
+  const found = schemeAndCredential(text.slice(from, credentialEnd));
+  return found ? { start: from + found.from, end: from + found.from + found.credential.length } : undefined;
+}
+
+/**
  * The assignment rule: a strong secret name (a password's, a secret's or a token's) followed by
  * `=` or `:` and a value, as in logs and config: `password=…`, `api_key: …`, `"token": "…"`. A
  * quoted value runs to its closing quote; an unquoted one to whitespace or `&`, needs 6+
  * characters, none of `( ) { } < > $` (code, not a value), and isn't a word like `null` or
- * `string`.
+ * `string`. A scheme and a credential (`auth: ApiKey <key>`, `token = "ApiKey <key>"`) keep the
+ * scheme and lose the credential under a token name, and lose both under a password or secret
+ * name.
  */
 export function assignmentSpans(text: string, cut = false): Span[] {
   const spans: Span[] = [];
@@ -428,6 +458,18 @@ export function assignmentSpans(text: string, cut = false): Span[] {
       // the search, so a long search happens at most once per kind of quote.
       readTo = end;
       if (end <= start || STOP_WORDS.has(text.slice(start, end).toLowerCase())) continue;
+      // Under a token name, a scheme and a credential (`auth = "ApiKey <key>"`): the credential,
+      // the scheme kept, as in JSON. Under a password or secret name the whole value goes, so a
+      // password with a space never shows its first word.
+      const scheme =
+        family === 'token' && end - start <= MAX_VALUE + 64
+          ? schemeAndCredential(text.slice(start, end))
+          : undefined;
+      if (scheme) {
+        const at = start + scheme.from;
+        spans.push({ start: at, end: at + scheme.credential.length, kind: 'name', name });
+        continue;
+      }
       spans.push({ start, end, kind: 'name', name });
       continue;
     }
@@ -452,6 +494,19 @@ export function assignmentSpans(text: string, cut = false): Span[] {
     const end = unquotedEnd(text, from);
     readTo = end;
     const value = text.slice(from, end);
+    // A scheme and a credential, unquoted, ending the line (`auth: ApiKey <key>`): the credential
+    // under a token name, the scheme kept; both words under a password or secret name.
+    const credential = credentialAfterScheme(text, from, end);
+    if (credential) {
+      readTo = credential.end;
+      spans.push({
+        start: family === 'token' ? credential.start : from,
+        end: credential.end,
+        kind: 'name',
+        name,
+      });
+      continue;
+    }
     if (value.length < 6 || /[(){}<>$]/.test(value) || STOP_WORDS.has(value.toLowerCase())) continue;
     // Not added to the known values: a rule over free text is too loose a source for them.
     spans.push({ start: from, end, kind: 'name', name });
@@ -698,7 +753,8 @@ const LONG_ONLY_FAMILIES: ReadonlySet<SecretFamily> = new Set(['token', 'session
  * A scheme and a credential (`ApiKey <key>`, `svc <key>`): one word of up to 32 characters, white
  * space, then one more run with none, which is the credential if it's 16+ characters of
  * `[A-Za-z0-9._~+/=-]` with letters and digits, or too long to judge (past 4,096 characters).
- * Where the credential starts, or undefined. Read by hand, not by one pattern: a pattern over a
+ * Where the credential starts, or undefined. If the first word is distinctive enough to be a token
+ * itself, both words are returned as the credential. Read by hand, not by one pattern: a pattern over a
  * credential megabytes long overflows the stack.
  */
 function schemeAndCredential(text: string): { from: number; credential: string } | undefined {
@@ -713,13 +769,18 @@ function schemeAndCredential(text: string): { from: number; credential: string }
   let end = text.length;
   while (end > i && /\s/.test(text[end - 1]!)) end--;
   const credential = text.slice(i, end);
-  if (credential.length > MAX_VALUE) return /\s/.test(credential) ? undefined : { from: i, credential };
   const looksLike =
-    credential.length >= 16 &&
-    /^[A-Za-z0-9._~+/=-]+$/.test(credential) &&
-    /[A-Za-z]/.test(credential) &&
-    /\d/.test(credential);
-  return looksLike ? { from: i, credential } : undefined;
+    credential.length > MAX_VALUE
+      ? !/\s/.test(credential)
+      : credential.length >= 16 &&
+        /^[A-Za-z0-9._~+/=-]+$/.test(credential) &&
+        /[A-Za-z]/.test(credential) &&
+        /\d/.test(credential);
+  if (!looksLike) return undefined;
+  // A first word distinctive enough to be a token isn't a scheme: both words are the secret.
+  const wordStart = gap - word[0].length;
+  if (distinctive(word[0])) return { from: wordStart, credential: text.slice(wordStart, end) };
+  return { from: i, credential };
 }
 
 /**
@@ -1627,9 +1688,15 @@ function codeValue(text: string, span: Span): boolean {
   const value = text.slice(span.start, span.end);
   // A number under a double-quoted name.
   if (span.replacement !== undefined) return value.length >= 6;
-  const before = text[span.start - 1];
+  // A credential after a scheme inside a quoted value (`"ApiKey <key>"`): judged by where the
+  // quote opens.
+  const scheme = /(["'])[ \t]*[A-Za-z][A-Za-z0-9_.-]{0,31}[ \t]{1,64}$/.exec(
+    text.slice(Math.max(0, span.start - 100), span.start),
+  );
+  const quoteAt = scheme ? span.start - scheme[0].length : span.start - 1;
+  const before = text[quoteAt];
   if (before !== '"' && before !== "'") return false;
-  if (IN_URL_STRING.test(text.slice(Math.max(0, span.start - 80), span.start))) return false;
+  if (IN_URL_STRING.test(text.slice(Math.max(0, quoteAt + 1 - 80), quoteAt + 1))) return false;
   return secretLooking(value);
 }
 
