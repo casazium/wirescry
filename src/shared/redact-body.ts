@@ -40,10 +40,102 @@ const TOKEN_RUN = /[A-Za-z0-9_-]+/g;
 /**
  * A run of characters that can't end a value written in a URL or form (no space, quote or angle
  * bracket), anchored at its start so each is read once. Runs holding a `%` (or, in a form, a `+`)
- * are decoded and searched again.
+ * are decoded, and runs holding a `\` have JSON's escapes undone, and are searched again.
  */
 const ENCODED_RUN = /(?<![^\s"'<>])[^\s"'<>]+/g;
 
+/** A long value in `longIndex`, keyed by the eight characters ending at `k` in it. */
+interface LongEntry {
+  value: string;
+  k: number;
+}
+
+/**
+ * The largest `k`, at most `from`, where the eight characters of `value` before `k` hold at least
+ * four different ones; -1 if there's none. A count of each character slides back with the
+ * window, so the search reads each character about once, and stops at the first it finds.
+ */
+export function variedWindowEnd(value: string, from: number): number {
+  if (from < 8 || from > value.length) return -1;
+  const counts = new Map<string, number>();
+  let distinct = 0;
+  const add = (char: string): void => {
+    const count = counts.get(char) ?? 0;
+    if (count === 0) distinct++;
+    counts.set(char, count + 1);
+  };
+  for (let i = from - 8; i < from; i++) add(value[i]!);
+  for (let k = from; ; k--) {
+    if (distinct >= 4) return k;
+    if (k === 8) return -1;
+    // The window one back: gains the character before it, loses its last.
+    add(value[k - 9]!);
+    const last = value[k - 1]!;
+    const left = counts.get(last)! - 1;
+    counts.set(last, left);
+    if (left === 0) distinct--;
+  }
+}
+
+/** Adds `value` to `index` under `key`. */
+function indexBy(index: Map<string, string[]>, key: string, value: string): void {
+  const list = index.get(key);
+  if (list) list.push(value);
+  else index.set(key, [value]);
+}
+
+/**
+ * JSON's escapes undone, leniently, for finding known values: `\/`, `\\` and `\uXXXX` (a run of
+ * text never holds a quote, so `\"` can't appear in one); any other backslash is kept as written.
+ * With a map from an index in the result to one in `raw` (a start to the escape's start, an end
+ * to after it).
+ */
+function undoEscapes(raw: string): { decoded: string; rawAt: (i: number, up: boolean) => number } {
+  const parts: string[] = [];
+  const starts: number[] = [];
+  const extras: number[] = [];
+  let from = 0;
+  let length = 0;
+  let extra = 0;
+  for (let at = raw.indexOf('\\'); at >= 0; at = raw.indexOf('\\', at)) {
+    const next = raw[at + 1];
+    let char: string | undefined;
+    let width = 2;
+    if (next === '/' || next === '\\') char = next;
+    else if (next === 'u' && /^[0-9A-Fa-f]{4}$/.test(raw.slice(at + 2, at + 6))) {
+      char = String.fromCharCode(parseInt(raw.slice(at + 2, at + 6), 16));
+      width = 6;
+    }
+    if (char === undefined) {
+      at += 1;
+      continue;
+    }
+    parts.push(raw.slice(from, at), char);
+    length += at - from;
+    starts.push(length);
+    extra += width - 1;
+    extras.push(extra);
+    length += 1;
+    from = at + width;
+    at = from;
+  }
+  if (starts.length === 0) return { decoded: raw, rawAt: (i) => i };
+  parts.push(raw.slice(from));
+  const rawAt = (i: number): number => {
+    let low = 0;
+    let high = starts.length;
+    while (low < high) {
+      const mid = (low + high) >> 1;
+      if (starts[mid]! < i) low = mid + 1;
+      else high = mid;
+    }
+    return i + (low > 0 ? extras[low - 1]! : 0);
+  };
+  return { decoded: parts.join(''), rawAt };
+}
+
+/** The longest value kept (see `distinctive`). */
+const MAX_KNOWN_LENGTH = 4096;
 /** At most this many known values, and this many sharing one longest run. */
 const MAX_KNOWN = 10_000;
 const MAX_PER_RUN = 8;
@@ -69,9 +161,10 @@ function longestRun(value: string): { run: string; at: number } | undefined {
 }
 
 /**
- * Secret values found so far, found again wherever they appear: as written, or percent-encoded.
- * Only distinctive values are kept (see `distinctive`), and a match must stand alone, not be part
- * of a longer run of letters and digits.
+ * Secret values found so far, found again wherever they appear: as written, percent-encoded, or
+ * with JSON's escapes. Only distinctive values are kept (see `distinctive`). In bodies a match must
+ * stand alone, not be part of a longer run of letters and digits, unless the value is 16+
+ * characters long (see `embedded`); a body cut off inside one is caught by `cutTail`.
  *
  * Finding is one pass: each run of token characters in the text is looked up by itself in a map
  * keyed by each value's longest run, then the whole value is checked around it.
@@ -85,6 +178,10 @@ export class KnownValues implements ValueSink {
   private byFirstEight: Map<number, Map<number, Uint8Array[]>> | undefined;
   /** Each value by its first eight characters, for `anywhere`. */
   private textIndex: Map<string, string[]> | undefined;
+  /** Values of 16+ characters by an eight-character window near their end (see `indexLong`). */
+  private readonly longIndex = new Map<string, LongEntry[]>();
+  /** Each value by its first eight characters, for `cutTail`. */
+  private headIndex: Map<string, string[]> | undefined;
   /** Whether a value was turned away for want of room, so a later secret may not be found. */
   full = false;
 
@@ -107,6 +204,10 @@ export class KnownValues implements ValueSink {
     this.order.push(value);
     this.byFirstEight = undefined;
     this.textIndex = undefined;
+    // Kept up to date as values arrive: rebuilt for each, a body teaching one per line would
+    // cost its length times the values.
+    this.indexLong(value);
+    if (this.headIndex) indexBy(this.headIndex, value.slice(0, 8), value);
     if (list) list.push({ value, at: longest.at });
     else this.byRun.set(longest.run, [{ value, at: longest.at }]);
   }
@@ -140,15 +241,135 @@ export class KnownValues implements ValueSink {
   scan(text: string, plusIsSpace = false): Span[] {
     if (this.values.size === 0 || text.length < 8) return [];
     const spans = this.find(text, (i) => i);
+    this.embedded(text, (i) => i, spans);
     for (const match of text.matchAll(ENCODED_RUN)) {
       const run = match[0];
-      if (!run.includes('%') && !(plusIsSpace && run.includes('+'))) continue;
-      const { decoded, rawAt } = decodeWithMap(run, plusIsSpace);
-      for (const span of this.find(decoded, rawAt)) {
-        spans.push({ ...span, start: match.index + span.start, end: match.index + span.end });
+      const add = (found: Span[]): void => {
+        for (const span of found) {
+          spans.push({ ...span, start: match.index + span.start, end: match.index + span.end });
+        }
+      };
+      if (run.includes('%') || (plusIsSpace && run.includes('+'))) {
+        const { decoded, rawAt } = decodeWithMap(run, plusIsSpace);
+        const found = this.find(decoded, rawAt);
+        this.embedded(decoded, rawAt, found);
+        add(found);
+      }
+      // Written with JSON's escapes, as a script or a page often writes a value (a slash as
+      // backslash-slash, or inside escaped JSON).
+      if (run.includes('\\')) {
+        const { decoded, rawAt } = undoEscapes(run);
+        const found = this.find(decoded, rawAt);
+        this.embedded(decoded, rawAt, found);
+        add(found);
       }
     }
-    return spans;
+    // The same value can be found by more than one search: each span once.
+    const seen = new Set<string>();
+    return spans.filter((span) => {
+      const key = `${span.start}:${span.end}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  /** Adds a value to `longIndex`, if long and varied enough; past MAX_PER_RUN alike, `full`. */
+  private indexLong(value: string): void {
+    if (value.length < 16) return;
+    // Keyed by an eight-character window of at least four different characters, from the end
+    // back: a repeated tail (`…AAAA`) would match at every position of a run of it, and a value
+    // with no such window (`AAAA…==`) would match inside unrelated text, so isn't kept here. Values
+    // sharing a window (`<id>.worker1`) move to the one before it, up to four times.
+    let tries = 0;
+    for (
+      let k = variedWindowEnd(value, value.length);
+      k >= 8 && tries < 4;
+      k = variedWindowEnd(value, k - 8)
+    ) {
+      const key = value.slice(k - 8, k);
+      const list = this.longIndex.get(key);
+      if (!list) {
+        this.longIndex.set(key, [{ value, k }]);
+        return;
+      }
+      if (list.length < MAX_PER_RUN) {
+        list.push({ value, k });
+        return;
+      }
+      tries++;
+    }
+    // Turned away from full lists; a value with no varied window is just not looked for inside runs.
+    if (tries > 0) this.full = true;
+  }
+
+  /**
+   * Values of 16+ characters inside longer runs (`/dl/<token>_thumb.png`, `x<token>`), added to
+   * `out`: long enough that a repeat is rarely chance. One pass, each position looked up by the
+   * eight characters ending there; at most MAX_PER_RUN values share those, each compared from its
+   * end back. The comparisons are budgeted at 40 per character of text, so the cost stays linear
+   * however many calls there are; past the budget the search stops and the set is marked full.
+   */
+  private embedded(text: string, rawAt: (i: number, up: boolean) => number, out: Span[]): void {
+    if (this.longIndex.size === 0 || text.length < 16) return;
+    let budget = text.length * 40;
+    for (let at = 8; at <= text.length; at++) {
+      const list = this.longIndex.get(text.slice(at - 8, at));
+      if (!list) continue;
+      for (const { value, k } of list) {
+        const start = at - k;
+        const end = start + value.length;
+        if (start < 0 || end > text.length) continue;
+        let i = value.length - 1;
+        while (i >= 0 && text.charCodeAt(start + i) === value.charCodeAt(i)) i--;
+        budget -= value.length - i;
+        if (budget < 0) {
+          // Text built to near-match long values everywhere: said, not silently given up.
+          this.full = true;
+          return;
+        }
+        if (i < 0) out.push({ start: rawAt(start, false), end: rawAt(end, true), kind: 'known value' });
+      }
+    }
+  }
+
+  /**
+   * At the end of a body that was cut off, the tail that begins a known value (or is one): 8+
+   * characters of it in the text's last run, which may be that value cut short. The run is read
+   * back to whitespace, a quote or an angle bracket, and no further than 4,096 characters, so a
+   * value with a space is caught only if the cut falls in its first word. Each candidate is
+   * compared from the tail's end back, where values that share a start (tokens from one issuer)
+   * differ.
+   */
+  cutTail(text: string): Span[] {
+    if (this.values.size === 0 || text.length < 8) return [];
+    if (!this.headIndex) {
+      this.headIndex = new Map();
+      for (const value of this.values) indexBy(this.headIndex, value.slice(0, 8), value);
+    }
+    let runStart = text.length;
+    while (
+      runStart > 0 &&
+      text.length - runStart < MAX_KNOWN_LENGTH &&
+      !/[\s"'<>]/.test(text[runStart - 1]!)
+    ) {
+      runStart--;
+    }
+    let budget = (text.length - runStart) * 16 + 100_000;
+    for (let start = runStart; start <= text.length - 8; start++) {
+      const tail = text.length - start;
+      for (const value of this.headIndex.get(text.slice(start, start + 8)) ?? []) {
+        if (value.length < tail) continue;
+        // The first eight match already.
+        let i = tail - 1;
+        while (i >= 8 && text.charCodeAt(start + i) === value.charCodeAt(i)) i--;
+        budget -= tail - i;
+        // Past the budget, the tail is hidden: a cut end is short, and hiding it costs little.
+        if (budget < 0) return [{ start, end: text.length, kind: 'known value' }];
+        if (i < 8) return [{ start, end: text.length, kind: 'known value' }];
+      }
+    }
+    return [];
   }
 
   /**
@@ -1993,6 +2214,8 @@ export function redactBody(
   if (known) kindSpans(text, mediaType, known, [], 0, cut);
   // Known values are looked for by each kind's rules: in JSON, inside its strings; in text, anywhere.
   const spans = kindSpans(text, mediaType, known, notScanned, 0, cut);
+  // A body cut off inside a known value: what's left of it is hidden.
+  if (known && cut) for (const span of known.cutTail(text)) spans.push(span);
   const merged = mergeSpans(spans);
   return {
     spans: merged,

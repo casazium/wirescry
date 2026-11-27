@@ -218,9 +218,9 @@ describe('masking with the session’s known values', () => {
     expect(maskText(`not found: ${other}`, set())).toBe(`not found: ${other}`);
   });
 
-  it('scans a message for a repeat standing alone (not joined, as in other text)', () => {
+  it('scans a message for a repeat standing alone, or joined if 16+ characters long', () => {
     expect(maskText(`upstream said ${TOKEN}`, set())).toBe('upstream said [redacted]');
-    expect(maskText(`upstream said x${TOKEN}`, set())).toBe(`upstream said x${TOKEN}`);
+    expect(maskText(`upstream said x${TOKEN}`, set())).toBe('upstream said x[redacted]');
   });
 
   it('never learns: a value found by a rule while masking isn’t hidden elsewhere afterwards', () => {

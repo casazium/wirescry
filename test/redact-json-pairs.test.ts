@@ -149,7 +149,9 @@ describe('JSON name/value pairs: secrets are masked', () => {
 
   it('leaves the known values’ “full” flag alone', () => {
     const known = new KnownValues();
-    const secrets = Array.from({ length: 12 }, (_, i) => `sk_test_${i}abcdefghijklmnop`);
+    // Distinct endings: values sharing their last eight past a limit mark the set full (that's
+    // tested with the known-value forms).
+    const secrets = Array.from({ length: 12 }, (_, i) => `sk_test_abcdefghijklmnop${i}`);
     const text = j({ tokens: secrets, pair: { name: 'x-api-key', value: 'other-value-123' } });
     redactBody(text, 'application/json', known);
     expect(known.full).toBe(false);
