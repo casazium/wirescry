@@ -151,12 +151,16 @@ describe('JSON', () => {
 });
 
 describe('known values', () => {
-  it('finds a known value as written and percent-encoded, standing alone', () => {
+  it('finds a known value as written and percent-encoded; a long one even inside a longer run', () => {
     const known = new KnownValues();
     known.add(SESSION);
     known.add('Ab/12+34=5678xyZ');
-    const text = `x ${SESSION} y ${encodeURIComponent('Ab/12+34=5678xyZ')} z a${SESSION} ${SESSION}b`;
-    expect(applySpans(text, known.scan(text))).toBe(`x ${REDACTED} y ${REDACTED} z a${SESSION} ${SESSION}b`);
+    known.add('Short1abc');
+    const text = `x ${SESSION} y ${encodeURIComponent('Ab/12+34=5678xyZ')} z a${SESSION} ${SESSION}b q Short1abc aShort1abc`;
+    // 16+ characters: found inside a longer run too. Shorter: only standing alone.
+    expect(applySpans(text, known.scan(text))).toBe(
+      `x ${REDACTED} y ${REDACTED} z a${REDACTED} ${REDACTED}b q ${REDACTED} aShort1abc`,
+    );
   });
 
   it('ignores values that aren’t distinctive, or have no run of four token characters', () => {

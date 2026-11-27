@@ -91,7 +91,7 @@ function anywhereSpans(text: string, known: readonly KnownValues[]): Span[] {
   return spans;
 }
 
-/** Known values in message text, standing alone, from each set. */
+/** Known values in message text, from each set: standing alone, or anywhere if 16+ long. */
 function scanSpans(text: string, known: readonly KnownValues[]): Span[] {
   const spans: Span[] = [];
   for (const set of known) for (const span of set.scan(text)) spans.push(span);
