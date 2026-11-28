@@ -182,14 +182,21 @@ describe('the MCP server, end to end', () => {
             ...Array.from({ length: 20 }, (_, i) =>
               socket(`wss://example.com/other${i}`, [{ data: 'hello' }]),
             ),
+            // A password bare in the first message, named only in the second.
+            socket('wss://example.com/ahead', [
+              { data: `note ${PASSWORD}` },
+              { data: JSON.stringify({ password: PASSWORD }) },
+              { data: 'nothing here' },
+            ]),
           ],
         },
       }),
     );
     await backend.importHar(long);
-    await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(23);
+    await expect.poll(() => exchangesIn(api.messages).filter((e) => e.imported).length).toBe(24);
     const imported = exchangesIn(api.messages).filter((e) => e.imported);
     ids.wsLong = imported.find((e) => e.url.endsWith('/long'))!.id;
+    ids.wsAhead = imported.find((e) => e.url.endsWith('/ahead'))!.id;
     ids.others = imported
       .filter((e) => /\/other\d+$/.test(e.url))
       .map((e) => e.id)
@@ -295,6 +302,18 @@ describe('the MCP server, end to end', () => {
     const out = await call('get_websocket_messages', { id: ids.wsLate, after: 1 });
     expect(leaked(out.text)).toEqual([]);
     expect(out.text).toContain('later [redacted]');
+  });
+
+  it('hides a value in a message read before the one that names it', async () => {
+    await ready();
+    // Only the first message, read first: the second, which names the password, taught it anyway.
+    const first = await call('get_websocket_messages', { id: ids.wsAhead, limit: 1 });
+    expect(leaked(first.text)).toEqual([]);
+    expect(first.text).toContain('note [redacted]');
+    expect(first.text).not.toContain('"index":1');
+    // Text no message names is shown as it is.
+    const last = await call('get_websocket_messages', { id: ids.wsAhead, after: 1 });
+    expect(last.text).toContain('nothing here');
   });
 
   it('teaches a long stream again from the start when the worker let it go, not just its last 2,000', async () => {

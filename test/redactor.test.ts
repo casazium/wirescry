@@ -60,6 +60,66 @@ describe('HarRedactor with the real worker, from source', () => {
   });
 });
 
+describe('HarRedactor learning entries first', () => {
+  const namer = {
+    request: {
+      url: 'https://example.com/login',
+      headers: [],
+      postData: { mimeType: 'application/json', text: JSON.stringify({ password: SECRET }) },
+    },
+    response: {},
+  };
+  const bare = {
+    request: { url: 'https://example.com/b', headers: [] },
+    response: { content: { mimeType: 'text/plain', text: `note ${SECRET}` } },
+  };
+  /** An entry big enough that a 1 ms limit stops the worker. */
+  const big = {
+    request: {
+      url: 'https://example.com/big',
+      headers: [],
+      postData: { mimeType: 'text/plain', text: 'word '.repeat(2_000_000) },
+    },
+    response: {},
+  };
+  const textOf = (outcome: Awaited<ReturnType<HarRedactor['redact']>>): string => {
+    if (!('text' in outcome)) throw new Error(JSON.stringify(outcome));
+    return JSON.parse(outcome.text).response.content.text as string;
+  };
+
+  it('hides what an entry’s body named in an entry redacted after, and keeps it past a new worker', async () => {
+    const redactor = make();
+    expect(await redactor.learn(namer, META)).toEqual({ full: false });
+    expect(textOf(await redactor.redact(bare, META))).toBe('note [redacted]');
+    // The worker runs out of time and is stopped: the next one is taught what was learned.
+    await expect(redactor.redact(big, META, 1)).rejects.toThrow();
+    expect(textOf(await redactor.redact(bare, META))).toBe('note [redacted]');
+  });
+
+  it('without learning, or redacting without giving back, a later entry isn’t helped', async () => {
+    const plain = make();
+    expect(textOf(await plain.redact(bare, META))).toBe(`note ${SECRET}`);
+    const kept = make();
+    await kept.redact(namer, META, undefined, false);
+    expect(textOf(await kept.redact(bare, META))).toBe(`note ${SECRET}`);
+    // Giving back (the default, as before learning) does help.
+    const given = make();
+    await given.redact(namer, META);
+    expect(textOf(await given.redact(bare, META))).toBe('note [redacted]');
+  });
+
+  it('tells a new worker that learning turned values away', async () => {
+    const redactor = make();
+    await redactor.learn(namer, META);
+    (redactor as unknown as { learnedFull: boolean }).learnedFull = true;
+    await expect(redactor.redact(big, META, 1)).rejects.toThrow();
+    const outcome = await redactor.redact(bare, META);
+    expect(outcome).toMatchObject({ full: true });
+    // A redactor that never learned anything is not full.
+    expect(await make().redact(bare, META)).toMatchObject({ full: false });
+  });
+});
+
 describe('HarRedactor when the worker misbehaves', () => {
   it('fails the entry, and teaches the next worker what the old one knew before it redacts', async () => {
     const redactor = make(FAKE);
@@ -76,6 +136,34 @@ describe('HarRedactor when the worker misbehaves', () => {
     const next = await redactor.redact({ mode: 'ok' }, META);
     expect('text' in next && JSON.parse(next.text)).toEqual({ collected: 3, redacted: 2 });
     expect(await started()).toBe(2);
+  });
+
+  it('teaches a new worker what learning found, and that it was full, after what was collected', async () => {
+    const redactor = make(FAKE);
+    await redactor.collect([{ a: 1 }]);
+    expect(await redactor.learn({ learned: ['v1', 'v2'] }, META)).toEqual({ full: false });
+    expect(await redactor.learn({ learned: ['v3'], full: true }, META)).toEqual({ full: true });
+    await expect(redactor.redact({ mode: 'crash-first' }, META)).rejects.toThrow();
+    const outcome = await redactor.redact({ mode: 'ok' }, META);
+    expect('text' in outcome && JSON.parse(outcome.text)).toEqual({
+      collected: 1,
+      redacted: 1,
+      toldValues: 3,
+      toldFull: true,
+    });
+  });
+
+  it('fails a learn the worker can’t do, and goes on with a new worker that keeps what was learned', async () => {
+    const redactor = make(FAKE);
+    await redactor.learn({ learned: ['v1'] }, META);
+    for (const mode of ['crash', 'fail', 'out-of-turn']) {
+      await expect(redactor.learn({ mode }, META), mode).rejects.toThrow();
+    }
+    expect(await redactor.learn({ mode: 'dropped' }, META)).toEqual({ dropped: true });
+    const outcome = await redactor.redact({ mode: 'ok' }, META);
+    expect('text' in outcome && JSON.parse(outcome.text)).toMatchObject({ toldValues: 1, toldFull: false });
+    // A learning answer to a redact is out of turn.
+    await expect(redactor.redact({ mode: 'learned-out-of-turn' }, META)).rejects.toThrow('out of turn');
   });
 
   it('teaches every new worker, however many fail in a row', async () => {

@@ -270,14 +270,24 @@ export const HAND_BACK_SHARE = 1_000;
  * them out; afterwards, up to HAND_BACK_SHARE values new to the export's set are kept in it for the
  * entries after this one.
  */
-export function redactHarEntry(entry: Json, meta: EntryMeta, shared: KnownValues): RedactedEntry {
+export function redactHarEntry(
+  entry: Json,
+  meta: EntryMeta,
+  shared: KnownValues,
+  /**
+   * Whether what the entry's bodies teach is handed back to the export's set. An export that
+   * learned every entry first redacts without it, so an entry's output doesn't depend on what came
+   * before it, and the share isn't given twice.
+   */
+  giveBack = true,
+): RedactedEntry {
   const known = new KnownValues(shared);
   // Where the entry's own set starts holding what its bodies taught (after its URL and headers).
   const bodies = { from: Infinity };
   try {
     return redactWith(entry, meta, known, bodies);
   } finally {
-    handBack(known, bodies.from, shared);
+    if (giveBack) handBack(known, bodies.from, shared);
     // A value the entry's own set turned away, or a search that gave up, is the export's to report.
     if (known.full) shared.markFull();
   }
