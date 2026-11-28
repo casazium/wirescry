@@ -411,7 +411,19 @@ describe('Masker: what a stream learns, page to page', () => {
       messages: page('x'),
     });
     expect('lost' in first && first.lost).toBe(true);
-    // Now it has something: not lost.
+    // Still lost: what that one page taught isn't the stream's, so it isn't kept.
+    const again = await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: false },
+      messages: page('y'),
+    });
+    expect('lost' in again && again.lost).toBe(true);
+    // Taught from the start: not lost from then on.
+    await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: true },
+      messages: page('x'),
+    });
     const second = await masker.maskMessages('w', {
       own: part('w'),
       stream: { key: 'a', fresh: false },
@@ -425,6 +437,11 @@ describe('Masker: what a stream learns, page to page', () => {
       messages: page('z'),
     });
     expect('lost' in restarted && restarted.lost).toBe(true);
+    await masker.maskMessages('w', {
+      own: part('w'),
+      stream: { key: 'a', fresh: true },
+      messages: page('z'),
+    });
     for (let i = 0; i < 20; i++) {
       await masker.maskEvents('s', { own: part('s'), stream: { key: `other${i}`, fresh: true }, items: [] });
     }

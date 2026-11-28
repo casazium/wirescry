@@ -3,8 +3,8 @@
  * fields, always masked, never the originals when masking fails, and streams read from partway
  * taught everything before.
  */
-import { describe, expect, it, vi } from 'vitest';
-import { Reader, ReadError, StreamLost, type ReaderBackend } from '../src/backend/mcp/reader';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { checkTaught, Reader, ReadError, StreamLost, type ReaderBackend } from '../src/backend/mcp/reader';
 import type { ExchangeDetail, ExchangeSummary, WebSocketMessages } from '../src/shared/api';
 
 const SECRET = 'Q2xA9fK3' + 'mZ7pL1sW8eR4tY6u';
@@ -46,6 +46,8 @@ function backend(list: ExchangeSummary[], more: Partial<ReaderBackend> = {}): Re
     maskMessages: async (_d, page) => page,
     sseRead: async () => null,
     maskEvents: async (_d, view) => view,
+    teachMessages: async () => undefined,
+    teachEvents: async () => undefined,
     generation: () => 1,
     ...more,
   };
@@ -248,59 +250,129 @@ describe('body', () => {
 });
 
 describe('streams read from partway', () => {
-  const N = 1_200;
-  const all = Array.from({ length: N }, (_, i) => ({
+  const message = (i: number, base64 = 'eA==') => ({
     index: i,
     fromClient: false,
     isBinary: false,
     time: i,
-    size: 1,
-    base64: 'eA==',
-  }));
+    size: (base64.length * 3) / 4,
+    base64,
+  });
+  let all = Array.from({ length: 1_200 }, (_, i) => message(i));
   const page = (_id: string, after: number, limit: number): WebSocketMessages => ({
     messages: all.filter((m) => m.index > after).slice(0, limit),
-    dropped: 0,
-    total: N,
+    dropped: all[0]?.index ?? 0,
+    total: (all.at(-1)?.index ?? -1) + 1,
   });
-
-  it('teaches every earlier message first, in pages, from the start; then only what’s new', async () => {
+  /** A backend that records what it teaches and what it masks to show. */
+  const recording = (more: Partial<ReaderBackend> = {}) => {
     const taught: Array<[number, number, boolean]> = [];
-    let generation = 1;
-    const b = backend([summary('w', { websocket: true, messageCount: N })], {
+    const masked: Array<[number, number, boolean]> = [];
+    const b = backend([summary('w', { websocket: true, messageCount: all.length })], {
       wsPage: page,
-      maskMessages: async (_d, p, fresh) => {
+      teachMessages: async (_d, p, fresh) => {
         taught.push([p.messages[0]!.index, p.messages.at(-1)!.index, fresh]);
+      },
+      maskMessages: async (_d, p, fresh) => {
+        if (p.messages.length > 0) masked.push([p.messages[0]!.index, p.messages.at(-1)!.index, fresh]);
         return p;
       },
-      generation: () => generation,
+      ...more,
     });
+    return { taught, masked, b };
+  };
+  beforeEach(() => {
+    all = Array.from({ length: 1_200 }, (_, i) => message(i));
+  });
+
+  it('teaches every kept message first, after the page too, in pages from the start; then only what’s new', async () => {
+    let generation = 1;
+    const { taught, masked, b } = recording({ generation: () => generation });
     const r = new Reader(b);
     await r.messages('w', 1_100, 10);
     expect(taught).toEqual([
       [0, 499, true],
       [500, 999, false],
-      [1000, 1100, false],
-      [1101, 1110, false],
+      [1000, 1199, false],
     ]);
+    expect(masked).toEqual([[1101, 1110, false]]);
+    // Already taught to the end: the next page is only shown.
     taught.length = 0;
+    masked.length = 0;
     await r.messages('w', 1_110, 10);
-    expect(taught).toEqual([[1111, 1120, false]]);
+    expect(taught).toEqual([]);
+    expect(masked).toEqual([[1111, 1120, false]]);
+    // An earlier page read again teaches nothing either: reading it doesn't move the mark back.
+    await r.messages('w', 10, 5);
+    await r.messages('w', 1_150, 5);
+    expect(taught).toEqual([]);
+    // New messages: only they are taught.
+    all.push(...Array.from({ length: 50 }, (_, i) => message(1_200 + i)));
+    await r.messages('w', 10, 5);
+    expect(taught).toEqual([[1200, 1249, false]]);
     // The worker restarted: what it learned is gone, so it's taught again from the start.
     taught.length = 0;
     generation = 2;
     await r.messages('w', 1_150, 5);
     expect(taught[0]).toEqual([0, 499, true]);
-    expect(taught.at(-1)).toEqual([1151, 1155, false]);
+    expect(taught.at(-1)).toEqual([1000, 1249, false]);
+  });
+
+  it('from the start, teaches the whole kept stream before showing the first page', async () => {
+    const { taught, masked, b } = recording();
+    await new Reader(b).messages('w', -1, 5);
+    expect(taught).toEqual([
+      [0, 499, true],
+      [500, 999, false],
+      [1000, 1199, false],
+    ]);
+    expect(masked).toEqual([[0, 4, false]]);
+  });
+
+  it('never masks a page to show as a fresh stream', async () => {
+    const { masked, b } = recording();
+    const r = new Reader(b);
+    for (const after of [-1, 0, 600, 1_198]) await r.messages('w', after, 3);
+    expect(masked.length).toBeGreaterThan(0);
+    expect(masked.every(([, , fresh]) => !fresh)).toBe(true);
+  });
+
+  it('starts at the first kept message when older ones were let go', async () => {
+    all = Array.from({ length: 50 }, (_, i) => message(100 + i));
+    const { taught, masked, b } = recording();
+    await new Reader(b).messages('w', -1, 5);
+    expect(taught).toEqual([[100, 149, true]]);
+    expect(masked).toEqual([[100, 104, false]]);
+  });
+
+  it('teaches a few megabytes at a time', async () => {
+    // 3 MB each: one message per job, however many fit in a page.
+    const big = 'A'.repeat(4 * 1024 * 1024);
+    all = Array.from({ length: 3 }, (_, i) => message(i, big));
+    const { taught, b } = recording();
+    await new Reader(b).messages('w', -1, 1);
+    expect(taught).toEqual([
+      [0, 0, true],
+      [1, 1, false],
+      [2, 2, false],
+    ]);
+    // Small ones go many to a job.
+    all = Array.from({ length: 30 }, (_, i) => message(i, 'A'.repeat(400_000)));
+    const small = recording();
+    await new Reader(small.b).messages('w', -1, 1);
+    expect(small.taught).toEqual([
+      [0, 12, true],
+      [13, 25, false],
+      [26, 29, false],
+    ]);
   });
 
   it('teaches it all again from the start when the worker lost the stream, and gives up the second time', async () => {
-    const taught: Array<[number, boolean]> = [];
     let lose = 1;
-    const b = backend([summary('w', { websocket: true, messageCount: N })], {
-      wsPage: page,
+    const { taught, masked, b } = recording({
       maskMessages: async (_d, p, fresh) => {
-        taught.push([p.messages[0]!.index, fresh]);
-        if (!fresh && lose > 0 && p.messages[0]!.index === 1001) {
+        masked.push([p.messages[0]!.index, p.messages.at(-1)!.index, fresh]);
+        if (lose > 0) {
           lose -= 1;
           throw new StreamLost();
         }
@@ -310,32 +382,130 @@ describe('streams read from partway', () => {
     const r = new Reader(b);
     await r.messages('w', 1_000, 5);
     // The page was lost: everything again, from the start, then the page.
-    expect(taught.filter(([, fresh]) => fresh)).toHaveLength(2);
-    expect(taught.at(-1)).toEqual([1001, false]);
-    lose = 2;
+    expect(taught.filter(([, , fresh]) => fresh)).toHaveLength(2);
+    expect(masked).toEqual([
+      [1001, 1005, false],
+      [1001, 1005, false],
+    ]);
     const always = new Reader(
-      backend([summary('w', { websocket: true, messageCount: N })], {
-        wsPage: page,
-        maskMessages: async (_d, p, fresh) => {
-          if (!fresh) throw new StreamLost();
-          return p;
+      recording({
+        maskMessages: async () => {
+          throw new StreamLost();
         },
-      }),
+      }).b,
     );
     await expect(always.messages('w', 600, 5)).rejects.toThrow(/Couldn’t check this stream/);
   });
 
-  it('from the start, teaches nothing extra', async () => {
-    const taught: number[] = [];
-    const b = backend([summary('w', { websocket: true, messageCount: N })], {
-      wsPage: page,
+  it('a page lost while being taught is taught again from the start', async () => {
+    let lose = 1;
+    const { taught, b } = recording({
+      teachMessages: async (_d, p, fresh) => {
+        taught.push([p.messages[0]!.index, p.messages.at(-1)!.index, fresh]);
+        if (!fresh && lose > 0) {
+          lose -= 1;
+          throw new StreamLost();
+        }
+      },
+    });
+    await new Reader(b).messages('w', 5, 5);
+    expect(taught).toEqual([
+      [0, 499, true],
+      [500, 999, false],
+      [0, 499, true],
+      [500, 999, false],
+      [1000, 1199, false],
+    ]);
+  });
+
+  it('doesn’t count a part it couldn’t teach as taught, and shows nothing', async () => {
+    let fail = true;
+    const { taught, masked, b } = recording({
+      teachMessages: async (_d, p, fresh) => {
+        taught.push([p.messages[0]!.index, p.messages.at(-1)!.index, fresh]);
+        if (fail && p.messages[0]!.index === 500)
+          throw new ReadError('Couldn’t check this stream for secrets.');
+      },
+    });
+    const r = new Reader(b);
+    await expect(r.messages('w', 5, 5)).rejects.toThrow(/Couldn’t check this stream/);
+    expect(masked).toEqual([]);
+    fail = false;
+    taught.length = 0;
+    await r.messages('w', 5, 5);
+    // What was taught before the failure is kept; the part that failed is taught again.
+    expect(taught[0]).toEqual([500, 999, false]);
+    expect(masked).toEqual([[6, 10, false]]);
+  });
+
+  it('counts a teaching job as done only when the worker checked it and still knew the stream', () => {
+    expect(() => checkTaught({ failed: 'boom' })).toThrow(ReadError);
+    expect(() => checkTaught({ failed: 'boom' })).toThrow(
+      'Couldn’t check this stream for secrets. Try again.',
+    );
+    expect(() => checkTaught({ messages: [], lost: true } as never)).toThrow(StreamLost);
+    expect(() => checkTaught({ items: [], lost: true } as never)).toThrow(StreamLost);
+    expect(() => checkTaught({ messages: [] } as never)).not.toThrow();
+    expect(() => checkTaught({ items: [], lost: false } as never)).not.toThrow();
+  });
+
+  it('shows nothing of a stream cleared while it was read', async () => {
+    let cleared = false;
+    const { taught, masked, b } = recording({
+      // The page is read; then the connection's messages are gone.
+      wsPage: (id, after, limit) => {
+        const out = cleared ? { messages: [], dropped: 0, total: 0 } : page(id, after, limit);
+        cleared = true;
+        return out;
+      },
+    });
+    const r = new Reader(b);
+    await expect(r.messages('w', -1, 5)).rejects.toThrow('That stream changed while it was read. Try again.');
+    expect(taught).toEqual([]);
+    expect(masked).toEqual([]);
+    // Partway taught when it's cleared: the same.
+    cleared = false;
+    let chunks = 0;
+    const partway = recording({
+      wsPage: (id, after, limit) =>
+        chunks++ >= 2 ? { messages: [], dropped: 0, total: 0 } : page(id, after, limit),
+    });
+    const r2 = new Reader(partway.b);
+    await expect(r2.messages('w', -1, 5)).rejects.toThrow(/changed while it was read/);
+    expect(partway.taught).toEqual([[0, 499, true]]);
+    expect(partway.masked).toEqual([]);
+    // What it was taught is forgotten: a stream there again is taught from the start.
+    chunks = -100;
+    partway.taught.length = 0;
+    await r2.messages('w', -1, 5);
+    expect(partway.taught[0]).toEqual([0, 499, true]);
+  });
+
+  it('reads one stream one read at a time, and a failed read doesn’t hold up the next', async () => {
+    const { taught, masked, b } = recording();
+    const r = new Reader(b);
+    await Promise.all([r.messages('w', -1, 5), r.messages('w', 199, 5), r.messages('w', 600, 5)]);
+    // Taught once, from the start, not three times over each other.
+    expect(taught).toEqual([
+      [0, 499, true],
+      [500, 999, false],
+      [1000, 1199, false],
+    ]);
+    expect(masked).toHaveLength(3);
+    let fail = true;
+    const failing = recording({
       maskMessages: async (_d, p) => {
-        taught.push(p.messages.length);
+        if (fail) {
+          fail = false;
+          throw new Error('broken');
+        }
         return p;
       },
     });
-    await new Reader(b).messages('w', -1, 5);
-    expect(taught).toEqual([5]);
+    const f = new Reader(failing.b);
+    const [one, two] = await Promise.allSettled([f.messages('w', -1, 5), f.messages('w', 5, 5)]);
+    expect(one.status).toBe('rejected');
+    expect(two.status).toBe('fulfilled');
   });
 
   it('refuses what isn’t a WebSocket or an event stream', async () => {
@@ -409,66 +579,78 @@ describe('event streams read from partway', () => {
       receiving: false,
     });
   const stream = [summary('s', { contentType: 'text/event-stream' })];
-
-  it('teaches every earlier item first, in pages, from the start; then only what’s new', async () => {
+  const recording = (more: Partial<ReaderBackend> = {}) => {
     const taught: Array<[number, number, boolean]> = [];
-    let generation = 1;
+    const masked: Array<[number, number, boolean]> = [];
     const b = backend(stream, {
       sseRead: read(),
-      maskEvents: async (_d, view, fresh) => {
+      teachEvents: async (_d, view, fresh) => {
         taught.push([view.items[0]!.index, view.items.at(-1)!.index, fresh]);
+      },
+      maskEvents: async (_d, view, fresh) => {
+        if (view.items.length > 0) masked.push([view.items[0]!.index, view.items.at(-1)!.index, fresh]);
         return view;
       },
-      generation: () => generation,
+      ...more,
     });
+    return { taught, masked, b };
+  };
+
+  it('teaches every kept item first, in pages, from the start; then only what’s new', async () => {
+    let generation = 1;
+    const { taught, masked, b } = recording({ generation: () => generation });
     const r = new Reader(b);
     const out = await r.events('s', 1_100);
     expect(out.items[0]).toMatchObject({ index: 1_101, data: 'd1101' });
     expect(taught).toEqual([
       [1, 500, true],
       [501, 1000, false],
-      [1001, 1100, false],
-      [1101, 1200, false],
+      [1001, 1200, false],
     ]);
-    // Already shown up to 1,200: nothing taught again.
+    expect(masked).toEqual([[1101, 1200, false]]);
+    // Already taught to the end: nothing taught again, whichever part is read.
     taught.length = 0;
     await r.events('s', 1_150);
-    expect(taught).toEqual([[1151, 1200, false]]);
+    await r.events('s', 0);
+    expect(taught).toEqual([]);
     // The worker restarted: taught again from the start.
-    taught.length = 0;
     generation = 2;
     await r.events('s', 1_150);
     expect(taught[0]).toEqual([1, 500, true]);
-    expect(taught.at(-1)).toEqual([1151, 1200, false]);
+    expect(taught.at(-1)).toEqual([1001, 1200, false]);
   });
 
-  it('from the start, teaches nothing extra', async () => {
-    const taught: boolean[] = [];
-    const b = backend(stream, {
-      sseRead: read(),
-      maskEvents: async (_d, view, fresh) => {
-        taught.push(fresh);
-        return view;
-      },
-    });
+  it('from the start, teaches every kept item, then shows them, never as a fresh stream', async () => {
+    const { taught, masked, b } = recording();
     await new Reader(b).events('s', 0);
-    expect(taught).toEqual([true]);
+    expect(taught[0]).toEqual([1, 500, true]);
+    expect(taught.at(-1)).toEqual([1001, 1200, false]);
+    expect(masked).toEqual([[1, 1200, false]]);
   });
 
-  it('stops teaching a stream whose body was replaced, and never teaches the new one’s items', async () => {
-    const taught: number[] = [];
+  it('shows nothing of a stream whose body was replaced while it was read, and never teaches the new one’s items', async () => {
     let reads = 0;
-    const b = backend(stream, {
+    const { taught, masked, b } = recording({
       // The first read is the old body; every later one a new body.
       sseRead: async (id, after) => read(reads++ === 0 ? 1 : 2)(id, after),
-      maskEvents: async (_d, view) => {
-        taught.push(view.items.length);
-        return view;
-      },
     });
-    await new Reader(b).events('s', 600);
-    // Only the page itself: the replaced stream taught nothing.
-    expect(taught).toEqual([N - 600]);
+    const r = new Reader(b);
+    await expect(r.events('s', 600)).rejects.toThrow('That stream changed while it was read. Try again.');
+    expect(taught).toEqual([]);
+    expect(masked).toEqual([]);
+    // Read again: the new body, taught whole.
+    await r.events('s', 600);
+    expect(taught[0]).toEqual([1, 500, true]);
+    expect(masked).toEqual([[601, 1200, false]]);
+  });
+
+  it('reads one stream one read at a time', async () => {
+    const { taught, masked, b } = recording();
+    const r = new Reader(b);
+    await Promise.all([r.events('s', 0), r.events('s', 1_100), r.events('s', 600)]);
+    // Taught once, not three times over each other.
+    expect(taught.filter(([, , fresh]) => fresh)).toHaveLength(1);
+    expect(masked).toHaveLength(3);
   });
 
   it('says so when the stream can’t be read', async () => {
@@ -546,9 +728,8 @@ describe('what the reader keeps', () => {
       ids.map((id) => summary(id, { websocket: true, messageCount: N })),
       {
         wsPage: page,
-        maskMessages: async (d, p, isFresh) => {
+        teachMessages: async (d, _p, isFresh) => {
           if (isFresh) fresh.push(d.summary.id);
-          return p;
         },
       },
     );

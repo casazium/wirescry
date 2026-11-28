@@ -12,11 +12,17 @@ import { collectHeaders, collectUrl, redactHarEntry, type EntryMeta } from './ha
 type Json = Record<string, unknown>;
 
 /** What's asked of the worker. */
-export type RedactJob = { op: 'collect'; parts: Json[] } | { op: 'redact'; entry: Json; meta: EntryMeta };
+export type RedactJob =
+  /** URLs and headers to learn; then values an earlier worker learned, and whether it was full. */
+  | { op: 'collect'; parts: Json[]; values?: string[]; full?: boolean }
+  /** An entry redacted only to learn what its bodies name; answers with the values added. */
+  | { op: 'learn'; entry: Json; meta: EntryMeta }
+  | { op: 'redact'; entry: Json; meta: EntryMeta; giveBack?: boolean };
 export type RedactRequest = RedactJob & { id: number };
 
 export type RedactResponse =
   | { id: number; ok: true; collected: true }
+  | { id: number; ok: true; learned: string[]; full: boolean }
   | {
       id: number;
       ok: true;
@@ -53,12 +59,24 @@ function handle(message: RedactRequest): RedactResponse {
         }
       }
     }
+    for (const value of message.values ?? []) known.add(value);
+    if (message.full) known.markFull();
     return { id: message.id, ok: true, collected: true };
+  }
+  if (message.op === 'learn') {
+    const before = known.size;
+    try {
+      redactHarEntry(message.entry, message.meta, known);
+    } catch (error) {
+      // Its URL or headers couldn't be redacted: the entry is dropped when written.
+      return { id: message.id, ok: true, dropped: true, error: (error as Error).message };
+    }
+    return { id: message.id, ok: true, learned: known.list(before, Infinity), full: known.full };
   }
   const started = performance.now();
   let redacted;
   try {
-    redacted = redactHarEntry(message.entry, message.meta, known);
+    redacted = redactHarEntry(message.entry, message.meta, known, message.giveBack ?? true);
   } catch (error) {
     return { id: message.id, ok: true, dropped: true, error: (error as Error).message };
   }

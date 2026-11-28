@@ -16,7 +16,7 @@ import { compileQuery, MAX_QUERY_LENGTH, tokenize } from '../../shared/query';
 import { visible } from '../../shared/visible';
 import { isEventStream, type SseItem } from '../../shared/sse';
 import type { MaskField } from '../mask-body';
-import type { FieldsAnswer } from '../masker';
+import type { EventsAnswer, FieldsAnswer, MessagesAnswer } from '../masker';
 import { collectResult, ResultError } from './plugin-result';
 
 type Json = Record<string, unknown>;
@@ -36,9 +36,16 @@ export interface ReaderBackend {
   wsPage(id: string, after: number, limit: number): WebSocketMessages;
   /** A page masked as an agent's job, with the agent's stream key. */
   maskMessages(detail: ExchangeDetail, page: WebSocketMessages, fresh: boolean): Promise<WebSocketMessages>;
+  /**
+   * Teaches the agent's stream key what these messages name, showing nothing. Throws StreamLost if
+   * the worker no longer knows the stream (unless `fresh`), and ReadError if it couldn't check them.
+   */
+  teachMessages(detail: ExchangeDetail, page: WebSocketMessages, fresh: boolean): Promise<void>;
   /** An event stream's kept items after `after`, as getSseEvents reads them. */
   sseRead(id: string, after: number): Promise<SseEventsView | null>;
   maskEvents(detail: ExchangeDetail, view: SseEventsView, fresh: boolean): Promise<SseEventsView>;
+  /** As teachMessages, for an event stream's items. */
+  teachEvents(detail: ExchangeDetail, view: SseEventsView, fresh: boolean): Promise<void>;
   /** Changes when the mask worker restarts, losing what streams had learned. */
   generation(): number;
 }
@@ -53,14 +60,46 @@ export class StreamLost extends Error {
   }
 }
 
+/**
+ * What an agent's teaching job did, checked: a stream the worker lost is StreamLost (the reader
+ * teaches it again from the start), and one it couldn't check is an error, never counted as taught.
+ */
+export function checkTaught(answer: MessagesAnswer | EventsAnswer): void {
+  if ('failed' in answer) throw new ReadError('Couldn’t check this stream for secrets. Try again.');
+  if (answer.lost) throw new StreamLost();
+}
+
 /** A field term compared with = or != whose value has a wildcard. */
 const WILDCARD_TERM = /^[a-z]+!?=.*[*?]/i;
+
+/** A stream that changed while it was read, so what was read can't be checked against all of it. */
+const CHANGED = 'That stream changed while it was read. Try again.';
 
 export const MAX_LIST = 200;
 export const MAX_CHARS = 100_000;
 export const MAX_MESSAGES = 200;
 /** Messages or items taught at once when catching a stream up. */
 const TEACH_PAGE = 500;
+/** And at most about this many bytes of them, so one job never holds the worker long. */
+const TEACH_BYTES = 4 * 1024 * 1024;
+
+/** About how many bytes an event stream's item is, to teach a few megabytes at a time. */
+function itemBytes(item: SseItem): number {
+  if (item.kind === 'event') return item.data.length + item.type.length + (item.id?.length ?? 0);
+  return item.kind === 'comment' ? item.text.length : 8;
+}
+
+/** The first of `list` up to TEACH_BYTES (by `bytes`), always at least one. */
+function upToBytes<T>(list: T[], bytes: (item: T) => number): T[] {
+  let total = 0;
+  let n = 0;
+  while (n < list.length) {
+    total += bytes(list[n]!);
+    if (n > 0 && total > TEACH_BYTES) break;
+    n += 1;
+  }
+  return list.slice(0, n);
+}
 
 /** An exchange as an agent sees it. Only these fields, each masked where it can hold a secret. */
 export interface AgentSummary {
@@ -248,6 +287,8 @@ export const FULL_NOTE = 'Some values seen earlier may not be hidden: Wirescry�
 export class Reader {
   /** For each agent stream key, the last index taught and the worker generation it was taught in. */
   private readonly taught = new Map<string, { index: number; generation: number }>();
+  /** For each stream being read, when the reads of it so far are done. */
+  private readonly reading = new Map<string, Promise<void>>();
   /** Masked bodies, so paging through one masks it once. */
   private readonly bodies = new Map<string, Promise<MaskedBodyText>>();
 
@@ -443,25 +484,33 @@ export class Reader {
 
   /** WebSocket messages after `after`, masked, text only. */
   async messages(id: string, after: number, limit: number): Promise<AgentMessages> {
-    const detail = this.exchange(id);
-    if (!detail.summary.websocket) throw new ReadError('That exchange isn’t a WebSocket.');
+    if (!this.exchange(id).summary.websocket) throw new ReadError('That exchange isn’t a WebSocket.');
     const n = Math.max(1, Math.min(MAX_MESSAGES, Math.floor(limit)));
     const from = Math.max(-1, Math.floor(after));
     const key = `ws:${id}`;
-    const page = this.backend.wsPage(id, from, n);
-    const shown = await this.afresh(key, async () => {
-      await this.catchUp(key, from, async (taughtTo, fresh) => {
-        const chunk = this.backend.wsPage(id, taughtTo, TEACH_PAGE);
-        const upTo = chunk.messages.filter((m) => m.index <= from);
-        if (upTo.length === 0) return undefined;
-        await this.backend.maskMessages(detail, { ...chunk, messages: upTo }, fresh);
-        return upTo.at(-1)!.index;
+    const { page, shown } = await this.oneAtATime(key, async () => {
+      // As it is now, after any read before it: its headers can have changed meanwhile.
+      const detail = this.exchange(id);
+      const page = this.backend.wsPage(id, from, n);
+      const shown = await this.afresh(key, async () => {
+        // Every kept message first, the page's and those after it too: a value any of them names is
+        // hidden in all of them, whichever is read first.
+        const reached = await this.catchUp(key, page.total - 1, async (taughtTo, fresh) => {
+          const chunk = this.backend.wsPage(id, taughtTo, TEACH_PAGE);
+          const some = upToBytes(chunk.messages, (m) => (m.base64.length * 3) / 4);
+          if (some.length === 0) return undefined;
+          await this.backend.teachMessages(detail, { ...chunk, messages: some }, fresh);
+          return some.at(-1)!.index;
+        });
+        // Messages are let go only from the front: short of the end, the stream was cleared meanwhile.
+        if (page.messages.length > 0 && reached < page.total - 1) {
+          this.taught.delete(key);
+          throw new ReadError(CHANGED);
+        }
+        // Never fresh: the worker must know the whole stream already, or it's lost, and taught again.
+        return this.backend.maskMessages(detail, page, false);
       });
-      const generation = this.backend.generation();
-      const masked = await this.backend.maskMessages(detail, page, from < 0 && !this.taught.has(key));
-      const last = page.messages.at(-1)?.index;
-      if (last !== undefined) this.remember(key, { index: last, generation });
-      return masked;
+      return { page, shown };
     });
     return {
       total: page.total,
@@ -489,27 +538,34 @@ export class Reader {
 
   /** An event stream's kept items after `after`, masked. */
   async events(id: string, after: number): Promise<AgentEvents> {
-    const detail = this.exchange(id);
-    if (!isEventStream(detail.summary.contentType))
+    if (!isEventStream(this.exchange(id).summary.contentType))
       throw new ReadError('That exchange isn’t an event stream.');
     const from = Math.max(0, Math.floor(after));
-    const first = await this.backend.sseRead(id, from);
-    if (!first) throw new ReadError('That event stream can’t be read.');
-    const key = `sse:${id}:${first.serial}`;
-    const shown = await this.afresh(key, async () => {
-      await this.catchUp(key, from, async (taughtTo, fresh) => {
-        const kept = await this.backend.sseRead(id, Math.max(0, taughtTo));
-        if (!kept || kept.serial !== first.serial) return undefined;
-        const upTo = kept.items.filter((item) => item.index <= from).slice(0, TEACH_PAGE);
-        if (upTo.length === 0) return undefined;
-        await this.backend.maskEvents(detail, { ...kept, items: upTo }, fresh);
-        return upTo.at(-1)!.index;
+    const shown = await this.oneAtATime(`sse:${id}`, async () => {
+      // As it is now, after any read before it.
+      const detail = this.exchange(id);
+      const first = await this.backend.sseRead(id, from);
+      if (!first) throw new ReadError('That event stream can’t be read.');
+      const key = `sse:${id}:${first.serial}`;
+      return this.afresh(key, async () => {
+        // Every kept item first, the page's too (as for WebSocket messages).
+        const last = first.items.at(-1)?.index;
+        const reached = await this.catchUp(key, last ?? from, async (taughtTo, fresh) => {
+          const kept = await this.backend.sseRead(id, Math.max(0, taughtTo));
+          if (!kept || kept.serial !== first.serial) return undefined;
+          const some = upToBytes(kept.items.slice(0, TEACH_PAGE), itemBytes);
+          if (some.length === 0) return undefined;
+          await this.backend.teachEvents(detail, { ...kept, items: some }, fresh);
+          return some.at(-1)!.index;
+        });
+        // Short of the page's end: the body was replaced (or cleared) meanwhile.
+        if (last !== undefined && reached < last) {
+          this.taught.delete(key);
+          throw new ReadError(CHANGED);
+        }
+        // Never fresh: the worker must know the whole stream already, or it's lost, and taught again.
+        return this.backend.maskEvents(detail, first, false);
       });
-      const generation = this.backend.generation();
-      const masked = await this.backend.maskEvents(detail, first, from === 0 && !this.taught.has(key));
-      const last = first.items.at(-1)?.index;
-      if (last !== undefined) this.remember(key, { index: last, generation });
-      return masked;
     });
     return {
       total: shown.total,
@@ -524,16 +580,16 @@ export class Reader {
   }
 
   /**
-   * Teaches a stream everything before `upTo` the agent hasn't been shown, a page at a time, so a
-   * value found in its first message is hidden in its thousandth: from the start again if the
-   * worker restarted since.
+   * Teaches a stream everything up to `upTo` it hasn't been taught, a page at a time, so a value
+   * found in its last message is hidden in its first: from the start again if the worker restarted
+   * since. Returns how far it's taught: short of `upTo` only if the stream changed meanwhile.
    */
   private async catchUp(
     key: string,
     upTo: number,
     teach: (from: number, fresh: boolean) => Promise<number | undefined>,
-  ): Promise<void> {
-    if (upTo < 0) return;
+  ): Promise<number> {
+    if (upTo < 0) return upTo;
     let state = this.taught.get(key);
     if (state && state.generation !== this.backend.generation()) state = undefined;
     let at = state?.index ?? -1;
@@ -544,6 +600,26 @@ export class Reader {
       if (last === undefined || last <= at) break;
       at = last;
       this.remember(key, { index: at, generation });
+    }
+    return at;
+  }
+
+  /**
+   * Runs `read` after any read of the same stream still running: two at once could each find the
+   * other's half-taught stream and take it for taught.
+   */
+  private async oneAtATime<T>(key: string, read: () => Promise<T>): Promise<T> {
+    const before = this.reading.get(key) ?? Promise.resolve();
+    const run = before.then(read, read);
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.reading.set(key, settled);
+    try {
+      return await run;
+    } finally {
+      if (this.reading.get(key) === settled) this.reading.delete(key);
     }
   }
 

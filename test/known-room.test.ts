@@ -662,6 +662,8 @@ describe('the MCP tools say when the list was full', () => {
         }) as never,
       sseRead: async () => ({ serial: 1, total: 1, receiving: false, items: [] }) as never,
       maskEvents: async (_d, view) => ({ ...view, ...(full ? { full: true } : {}) }) as never,
+      teachMessages: async () => undefined,
+      teachEvents: async () => undefined,
       generation: () => 1,
     };
     return new Reader(backend);

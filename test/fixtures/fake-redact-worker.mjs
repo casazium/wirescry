@@ -10,13 +10,26 @@ if (logFile) appendFileSync(logFile, 'started\n');
 const workerNumber = logFile ? readFileSync(logFile, 'utf8').split('\n').filter(Boolean).length : 1;
 let collected = 0;
 let redacted = 0;
+/** Values and full a new worker was told learning found (collect's `values` and `full`). */
+let toldValues = 0;
+let toldFull = false;
 
 parentPort.on('message', (message) => {
   const reply = (body) => parentPort.postMessage({ id: message.id, ...body });
   if (message.op === 'collect') {
     if (message.parts.some((part) => part.fail)) return reply({ ok: false, error: 'collect failed' });
     collected += message.parts.length;
+    toldValues += (message.values ?? []).length;
+    toldFull ||= message.full === true;
     return reply({ ok: true, collected: true });
+  }
+  if (message.op === 'learn') {
+    const mode = message.entry.mode;
+    if (mode === 'crash') process.exit(3);
+    if (mode === 'fail') return reply({ ok: false, error: 'it failed' });
+    if (mode === 'dropped') return reply({ ok: true, dropped: true, error: 'bad headers' });
+    if (mode === 'out-of-turn') return reply({ ok: true, collected: true });
+    return reply({ ok: true, learned: message.entry.learned ?? [], full: message.entry.full === true });
   }
   redacted += 1;
   const mode = message.entry.mode;
@@ -28,9 +41,14 @@ parentPort.on('message', (message) => {
   if (mode === 'too-large') return reply({ ok: true, tooLarge: true });
   if (mode === 'dropped') return reply({ ok: true, dropped: true, error: 'bad headers' });
   if (mode === 'out-of-turn') return reply({ ok: true, collected: true });
+  if (mode === 'learned-out-of-turn') return reply({ ok: true, learned: [], full: false });
   reply({
     ok: true,
-    text: JSON.stringify({ collected, redacted }),
+    text: JSON.stringify({
+      collected,
+      redacted,
+      ...(toldValues || toldFull ? { toldValues, toldFull } : {}),
+    }),
     values: 1,
     notScanned: 0,
     leftOut: 0,

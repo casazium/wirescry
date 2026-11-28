@@ -434,6 +434,8 @@ describe('every exit of the server, with a stand-in reader', () => {
     maskMessages: async (_d, page) => page,
     sseRead: async () => null,
     maskEvents: async (_d, view) => view,
+    teachMessages: async () => undefined,
+    teachEvents: async () => undefined,
     generation: () => 1,
   };
 

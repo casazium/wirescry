@@ -54,7 +54,7 @@ import {
 import { applySpans, redactHeaders } from '../shared/redact';
 import { assembleEvents, assembleMessages } from './mask-streams';
 import { MAX_ACTIVITY, MCP_PATH, McpHttpServer } from './mcp/http';
-import { Reader, StreamLost } from './mcp/reader';
+import { checkTaught, Reader, StreamLost } from './mcp/reader';
 import { APP_TOOL_NAMES } from './mcp/tools';
 import type { SseItem } from '../shared/sse';
 
@@ -980,6 +980,42 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     };
   };
 
+  /** A page of WebSocket messages for the mask worker, as the window's job or an agent's. */
+  const messagesJob = (
+    exchange: ExchangeDetail,
+    messages: WebSocketMessages['messages'],
+    fromStart: boolean,
+    agent: boolean,
+  ): Promise<MessagesAnswer> => {
+    const id = exchange.summary.id;
+    const prefix = agent ? AGENT_GROUP : '';
+    return masker.maskMessages(`${prefix}${id}`, {
+      own: maskPart(exchange),
+      stream: { key: `${prefix}ws:${id}`, fresh: fromStart },
+      messages: messages.map((m) => {
+        const bytes = Buffer.from(m.base64, 'base64');
+        return { bytes, binary: m.isBinary, cut: bytes.length < m.size };
+      }),
+    });
+  };
+
+  /** An event stream's items for the mask worker, as the window's job or an agent's. */
+  const eventsJob = (
+    exchange: ExchangeDetail,
+    view: SseEventsView,
+    items: SseItem[],
+    fromStart: boolean,
+    agent: boolean,
+  ): Promise<EventsAnswer> => {
+    const id = exchange.summary.id;
+    const prefix = agent ? AGENT_GROUP : '';
+    return masker.maskEvents(`${prefix}${id}`, {
+      own: maskPart(exchange),
+      stream: { key: `${prefix}sse:${id}:${view.serial}`, fresh: fromStart },
+      items,
+    });
+  };
+
   /**
    * A page of WebSocket messages as the window shows them while Hide Secrets is on. Fails closed.
    * If the worker lost what the stream's earlier pages taught (it restarted), they're taught again.
@@ -992,16 +1028,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   ): Promise<WebSocketMessages> => {
     if (page.messages.length === 0) return page;
     const id = exchange.summary.id;
-    const prefix = agent ? AGENT_GROUP : '';
     const run = (messages: WebSocketMessages['messages'], fromStart: boolean) =>
-      masker.maskMessages(`${prefix}${id}`, {
-        own: maskPart(exchange),
-        stream: { key: `${prefix}ws:${id}`, fresh: fromStart },
-        messages: messages.map((m) => {
-          const bytes = Buffer.from(m.base64, 'base64');
-          return { bytes, binary: m.isBinary, cut: bytes.length < m.size };
-        }),
-      });
+      messagesJob(exchange, messages, fromStart, agent);
     let answer: MessagesAnswer | undefined;
     try {
       answer = await run(page.messages, fresh);
@@ -1032,13 +1060,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   ): Promise<SseEventsView> => {
     if (view.items.length === 0) return assembleEvents(view, undefined, sweepText);
     const id = exchange.summary.id;
-    const prefix = agent ? AGENT_GROUP : '';
-    const run = (items: SseItem[], fromStart: boolean) =>
-      masker.maskEvents(`${prefix}${id}`, {
-        own: maskPart(exchange),
-        stream: { key: `${prefix}sse:${id}:${view.serial}`, fresh: fromStart },
-        items,
-      });
+    const run = (items: SseItem[], fromStart: boolean) => eventsJob(exchange, view, items, fromStart, agent);
     let answer: EventsAnswer | undefined;
     try {
       answer = await run(view.items, fresh);
@@ -1075,8 +1097,14 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     },
     wsPage: (id, after, limit) => websockets.get(id, after, limit),
     maskMessages: (exchange, page, fresh) => maskedMessages(exchange, page, fresh, true),
+    teachMessages: async (exchange, page, fresh) => {
+      if (page.messages.length > 0) checkTaught(await messagesJob(exchange, page.messages, fresh, true));
+    },
     sseRead: (id, after) => sse.read(id, after),
     maskEvents: (exchange, view, fresh) => maskedEvents(exchange, view, fresh, true),
+    teachEvents: async (exchange, view, fresh) => {
+      if (view.items.length > 0) checkTaught(await eventsJob(exchange, view, view.items, fresh, true));
+    },
     generation: () => masker.generation,
   });
   const mcpActivity: McpActivity[] = [];
@@ -1162,6 +1190,20 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
     );
   };
 
+  /** What an export's learning pass saw of an exchange, so writing it uses the same. */
+  interface Seen {
+    /** Bodies it had none of (none yet, still arriving, or unreadable): written without them. */
+    left: { request: boolean; response: boolean };
+    /** Its notes on them. */
+    notes: string[];
+    /** The last WebSocket message it saw; later ones aren't written. */
+    lastMessage: number;
+    /** The ladder's step it learned at, where writing starts. */
+    step: number;
+    /** Why it took a step, for the note. */
+    why: string;
+  }
+
   /** Exports running, stopped by `stop()`, which waits for them to finish. */
   const exportsRunning = new Set<AbortController>();
   const exportsFinishing = new Set<Promise<void>>();
@@ -1229,43 +1271,110 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           ),
         );
       }
+      /** A redacted entry's next try: without the response body (step 1), then without both (2). */
+      const LAST_STEP = 2;
+      const attempt = (item: HarExportItem, step: number, why: string): HarExportItem =>
+        step === 0
+          ? item
+          : step === 1
+            ? {
+                ...item,
+                responseBody: null,
+                notes: [...(item.notes ?? []), `The response body ${why}, so it was left out.`],
+              }
+            : {
+                ...item,
+                requestBody: null,
+                responseBody: null,
+                notes: [...(item.notes ?? []), `The bodies ${why}, so they were left out.`],
+              };
+      /** A try's `why`, worded for one body (step 1) or both. */
+      const wordedFor = (step: number, why: string): string =>
+        step === 1 ? why : why.replace(/^was/, 'were');
+      const newMeta = (): HarEntryMeta => ({
+        cut: { request: false, response: false },
+        base64Frames: [],
+        cutFrames: [],
+      });
+      /**
+       * An exchange as an export item. Given what learning saw of it, the same: a body it left out
+       * stays out, with its note, and WebSocket messages stop at the last it saw, so nothing is
+       * written that didn't teach first.
+       */
+      const itemOf = async (exchange: ExchangeDetail, seen?: Seen): Promise<HarExportItem> => {
+        const id = exchange.summary.id;
+        const notes = seen ? [...seen.notes] : [];
+        const requestBody = seen?.left.request ? null : await harBody(exchange, 'request', notes);
+        const responseBody = seen?.left.response ? null : await harBody(exchange, 'response', notes);
+        let messages = exchange.summary.websocket
+          ? websockets.get(id, -1, Number.MAX_SAFE_INTEGER)
+          : undefined;
+        if (messages && seen) {
+          messages = { ...messages, messages: messages.messages.filter((m) => m.index <= seen.lastMessage) };
+        }
+        return { detail: exchange, requestBody, responseBody, messages, notes };
+      };
+      /**
+       * Teaches the export what an exchange's bodies and messages name, before any entry is written:
+       * with fewer bodies if it must, as writing would. Where it got to is where writing starts, so a
+       * body that couldn't teach is left out, never written unchecked.
+       */
+      const learnAhead = async (exchange: ExchangeDetail): Promise<Seen> => {
+        const item = await itemOf(exchange);
+        const seen: Seen = {
+          left: { request: item.requestBody === null, response: item.responseBody === null },
+          notes: item.notes ?? [],
+          lastMessage: item.messages?.messages.at(-1)?.index ?? -1,
+          step: 0,
+          why: 'was too large to write',
+        };
+        if (!item.requestBody && !item.responseBody && !item.messages?.messages.length) return seen;
+        for (let step = 0; step <= LAST_STEP; step++) {
+          checkStopped();
+          seen.step = step;
+          const meta = newMeta();
+          let entry: Record<string, unknown>;
+          try {
+            entry = harEntry(attempt(item, step, wordedFor(step, seen.why)), meta);
+          } catch (error) {
+            if (!(error instanceof RangeError)) throw error;
+            seen.why = 'was too large to write';
+            continue;
+          }
+          try {
+            const learned = await redactor!.learn(entry, meta);
+            if ('full' in learned) redaction.full ||= learned.full;
+            return seen;
+          } catch {
+            // Stopped meanwhile: the next check (this loop's, or the caller's) ends the export.
+            seen.why = "couldn't be redacted";
+          }
+        }
+        // Not even without bodies: writing tries again, and fails the export if it still can't.
+        return seen;
+      };
+      const seen = new Map<string, Seen>();
+      if (redactor) {
+        for (const exchange of exchanges) {
+          checkStopped();
+          seen.set(exchange.summary.id, await learnAhead(exchange));
+        }
+      }
       await write(head);
       for (const exchange of exchanges) {
         checkStopped();
-        const id = exchange.summary.id;
-        const notes: string[] = [];
-        const item = {
-          detail: exchange,
-          requestBody: await harBody(exchange, 'request', notes),
-          responseBody: await harBody(exchange, 'response', notes),
-          messages: exchange.summary.websocket ? websockets.get(id, -1, Number.MAX_SAFE_INTEGER) : undefined,
-          notes,
-        };
+        const ahead = seen.get(exchange.summary.id);
+        const item = await itemOf(exchange, ahead);
         // Two very large bodies can make an entry longer than a string can be: then leave out
         // the response body, and if need be the request body too. Redacting does the same
         // when an entry can't be redacted.
-        const attempt = (step: number, why: string): HarExportItem =>
-          step === 0
-            ? item
-            : step === 1
-              ? {
-                  ...item,
-                  responseBody: null,
-                  notes: [...notes, `The response body ${why}, so it was left out.`],
-                }
-              : {
-                  ...item,
-                  requestBody: null,
-                  responseBody: null,
-                  notes: [...notes, `The bodies ${why}, so they were left out.`],
-                };
         let text: string | undefined;
-        let why = 'was too large to write';
-        const last = 2;
+        let why = ahead?.why ?? 'was too large to write';
+        const last = LAST_STEP;
         // The worker gets one more try at an entry without bodies before the export fails.
         let lastRetried = false;
-        for (let step = 0; step <= last; step++) {
-          const tried = attempt(step, step === 1 ? why : why.replace(/^was/, 'were'));
+        for (let step = ahead?.step ?? 0; step <= last; step++) {
+          const tried = attempt(item, step, wordedFor(step, why));
           if (!redactor) {
             try {
               text = JSON.stringify(harEntry(tried));
@@ -1276,11 +1385,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
             }
           }
           checkStopped();
-          const meta: HarEntryMeta = {
-            cut: { request: false, response: false },
-            base64Frames: [],
-            cutFrames: [],
-          };
+          const meta = newMeta();
           let entry: Record<string, unknown>;
           try {
             entry = harEntry(tried, meta);
@@ -1291,7 +1396,8 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
           }
           let outcome: RedactOutcome;
           try {
-            outcome = await redactor.redact(entry, meta);
+            // Every entry was learned first: nothing more to give later ones.
+            outcome = await redactor.redact(entry, meta, undefined, false);
           } catch (error) {
             checkStopped();
             // Even without its bodies, the worker can't redact it: something is wrong with

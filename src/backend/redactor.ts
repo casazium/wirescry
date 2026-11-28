@@ -45,6 +45,8 @@ const TEACH_TIME_LIMIT_MS = 60_000;
 
 export type Redacted = Extract<RedactResponse, { text: string }>;
 export type RedactOutcome = Redacted | { tooLarge: true } | { dropped: true };
+/** What learning an entry found: whether the export's values are full (dropped: nothing learned). */
+export type LearnOutcome = { full: boolean } | { dropped: true };
 
 /** Why a worker stopped: crashed, failed, out of time, or closed. */
 class WorkerGone extends Error {}
@@ -64,6 +66,10 @@ export class HarRedactor {
   private closed = false;
   /** What the export has collected so far, taught to every new worker before it redacts. */
   private readonly collected: Json[] = [];
+  /** Values entries' bodies taught (learn), taught to every new worker after `collected`. */
+  private readonly learned: string[] = [];
+  /** Whether learning turned a value away: a new worker is told, so the export still says so. */
+  private learnedFull = false;
 
   constructor(private readonly file = workerFile()) {}
 
@@ -85,18 +91,46 @@ export class HarRedactor {
   }
 
   /**
-   * An entry redacted, or that it's too large to write, or that it must be left out. Throws if the
-   * worker fails, crashes or runs out of time; the next call has a new worker, taught what the old
-   * one knew. The caller tries again with less (see exportHar).
+   * Teaches the export what an entry's bodies and messages name, by redacting it and keeping only
+   * what it learned, so every entry can be redacted knowing them. Throws as `redact` does; what
+   * was learned before is kept, and taught to the next worker.
    */
-  async redact(entry: Json, meta: EntryMeta, timeLimitMs = entryTimeLimitMs(entry)): Promise<RedactOutcome> {
+  async learn(entry: Json, meta: EntryMeta, timeLimitMs = entryTimeLimitMs(entry)): Promise<LearnOutcome> {
     const worker = await this.ready();
-    const response = await this.send(worker, { op: 'redact', entry, meta }, timeLimitMs);
+    const response = await this.send(worker, { op: 'learn', entry, meta }, timeLimitMs);
     if (!response.ok) {
       this.stop(new WorkerGone(response.error));
       throw new WorkerGone(response.error);
     }
-    if ('collected' in response) {
+    if ('dropped' in response) return { dropped: true };
+    if (!('learned' in response)) {
+      this.stop(new WorkerGone('the worker answered out of turn'));
+      throw new WorkerGone('the worker answered out of turn');
+    }
+    this.learned.push(...response.learned);
+    this.learnedFull ||= response.full;
+    return { full: response.full };
+  }
+
+  /**
+   * An entry redacted, or that it's too large to write, or that it must be left out. Throws if the
+   * worker fails, crashes or runs out of time; the next call has a new worker, taught what the old
+   * one knew. The caller tries again with less (see exportHar). `giveBack`: whether what its bodies
+   * teach is kept for later entries (not needed once every entry was learned first).
+   */
+  async redact(
+    entry: Json,
+    meta: EntryMeta,
+    timeLimitMs = entryTimeLimitMs(entry),
+    giveBack = true,
+  ): Promise<RedactOutcome> {
+    const worker = await this.ready();
+    const response = await this.send(worker, { op: 'redact', entry, meta, giveBack }, timeLimitMs);
+    if (!response.ok) {
+      this.stop(new WorkerGone(response.error));
+      throw new WorkerGone(response.error);
+    }
+    if ('collected' in response || 'learned' in response) {
       this.stop(new WorkerGone('the worker answered out of turn'));
       throw new WorkerGone('the worker answered out of turn');
     }
@@ -117,7 +151,9 @@ export class HarRedactor {
     if (this.worker && this.taught) return this.taught;
     const worker = this.start();
     const taught = (async () => {
-      if (this.collected.length > 0) await this.teach(worker, this.collected);
+      if (this.collected.length > 0 || this.learned.length > 0 || this.learnedFull) {
+        await this.teach(worker, this.collected, { values: this.learned, full: this.learnedFull });
+      }
       return worker;
     })();
     this.taught = taught;
@@ -128,8 +164,16 @@ export class HarRedactor {
     return taught;
   }
 
-  private async teach(worker: Worker, parts: Json[]): Promise<void> {
-    const response = await this.send(worker, { op: 'collect', parts }, TEACH_TIME_LIMIT_MS);
+  private async teach(
+    worker: Worker,
+    parts: Json[],
+    learned: { values: string[]; full: boolean } = { values: [], full: false },
+  ): Promise<void> {
+    const response = await this.send(
+      worker,
+      { op: 'collect', parts, values: learned.values, full: learned.full },
+      TEACH_TIME_LIMIT_MS,
+    );
     if (!response.ok) {
       this.stop(new WorkerGone(response.error));
       throw new WorkerGone(response.error);

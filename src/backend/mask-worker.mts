@@ -94,7 +94,8 @@ const MAX_STREAMS = 20;
  * A stream's known values: its exchange's and the session's, and what its pages taught. Never
  * forgotten while the worker runs (learning again from the start changes nothing); `lost` when a
  * page from partway through finds nothing learned (the worker restarted, or too many streams
- * since), so the caller can teach it the earlier pages.
+ * since), so the caller can teach it the earlier pages. A lost stream isn't kept: what that one
+ * page teaches isn't the stream's, so it stays lost until it's taught from the start.
  */
 function streamKnown(stream: Stream, own: Json): { known: KnownValues; lost: boolean } {
   let entry = streams.get(stream.key);
@@ -109,8 +110,10 @@ function streamKnown(stream: Stream, own: Json): { known: KnownValues; lost: boo
   } catch {
     // Nothing learned from them.
   }
-  streams.set(stream.key, entry);
-  if (streams.size > MAX_STREAMS) streams.delete(streams.keys().next().value!);
+  if (!lost) {
+    streams.set(stream.key, entry);
+    if (streams.size > MAX_STREAMS) streams.delete(streams.keys().next().value!);
+  }
   return { known: entry.known, lost };
 }
 
