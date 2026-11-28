@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { knownPart } from '../src/backend/har-redact';
 import { entryTimeLimitMs, HarRedactor } from '../src/backend/redactor';
 
@@ -73,12 +73,12 @@ describe('HarRedactor learning entries first', () => {
     request: { url: 'https://example.com/b', headers: [] },
     response: { content: { mimeType: 'text/plain', text: `note ${SECRET}` } },
   };
-  /** An entry big enough that a 1 ms limit stops the worker. */
+  /** An entry big enough that a 1 ms limit stops the worker, small enough to be quick to build. */
   const big = {
     request: {
       url: 'https://example.com/big',
       headers: [],
-      postData: { mimeType: 'text/plain', text: 'word '.repeat(2_000_000) },
+      postData: { mimeType: 'text/plain', text: 'word '.repeat(100_000) },
     },
     response: {},
   };
@@ -216,7 +216,8 @@ describe('HarRedactor when the worker misbehaves', () => {
     const redactor = make(FAKE);
     const waiting = redactor.redact({ mode: 'hang' }, META, 60_000);
     const failed = expect(waiting).rejects.toThrow('redaction was stopped');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    // Closed once the worker has started (it logs as it starts), however slow the machine.
+    await vi.waitFor(async () => expect(await started()).toBe(1), { timeout: 10_000 });
     await redactor.close();
     await failed;
     await expect(redactor.redact({ mode: 'ok' }, META)).rejects.toThrow('redaction was stopped');
