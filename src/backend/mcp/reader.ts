@@ -676,7 +676,8 @@ function numbersOf(timing: object): Record<string, number> {
 function asSummary(raw: ExchangeSummary, shown: AgentSummary): ExchangeSummary {
   return {
     id: raw.id,
-    method: raw.method,
+    // As shown: a method can hold a known value, and search mustn't confirm one.
+    method: shown.method,
     protocol: raw.protocol,
     httpVersion: raw.httpVersion,
     host: shown.host,

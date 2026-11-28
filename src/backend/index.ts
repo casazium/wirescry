@@ -103,6 +103,8 @@ parentPort.on('message', async ({ data }: { data: MainToBackendMessage }) => {
   mark('start requested');
   try {
     backend = await startBackend({
+      // The MCP token, for the app's log scrubber (in the main process).
+      onSecret: (secret) => post({ type: 'log-secret', secret }),
       dataDir: data.dataDir,
       token: data.token,
       allowedOrigins: data.allowedOrigins,

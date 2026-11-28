@@ -33,6 +33,19 @@ describe('FileLogger', () => {
     expect(text).not.toContain('secret-value');
   });
 
+  it('keeps one copy of a secret added again, as each restart of the backend does', async () => {
+    const logger = new FileLogger(dir);
+    for (let i = 0; i < 5; i++) logger.addSecret('again-secret-value');
+    logger.addSecret('other-secret-value');
+    expect((logger as unknown as { secrets: string[] }).secrets).toEqual([
+      'again-secret-value',
+      'other-secret-value',
+    ]);
+    logger.write('main', 'info', 'again-secret-value other-secret-value');
+    logger.close();
+    expect(await readFile(logger.file, 'utf8')).toContain('[redacted] [redacted]');
+  });
+
   it('starts a new file past the size limit, keeping one old file', async () => {
     const logger = new FileLogger(dir, { maxBytes: 200 });
     for (let round = 0; round < 3; round++) {

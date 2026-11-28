@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { isMcpToken } from '../shared/mcp-token';
 
 export interface Settings {
   /** Fixed proxy port. Unset means pick a free one automatically. */
@@ -33,11 +34,6 @@ export interface McpSettings {
 
 /** The MCP server's port unless the user picks another. */
 export const DEFAULT_MCP_PORT = 45450;
-
-/** A token as Wirescry makes them: 43 base64url characters. */
-export function isMcpToken(token: unknown): token is string {
-  return typeof token === 'string' && /^[A-Za-z0-9_-]{43}$/.test(token);
-}
 
 function mcpOf(raw: unknown): McpSettings | undefined {
   if (typeof raw !== 'object' || raw === null) return undefined;

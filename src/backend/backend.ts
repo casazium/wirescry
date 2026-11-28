@@ -177,6 +177,11 @@ export interface BackendOptions {
   knownIdleMs?: number;
   /** How long a plugin's MCP tool may take; for tests. */
   pluginToolTimeoutMs?: number;
+  /**
+   * Told each secret Wirescry's own log must never show: the MCP server's token, when it's loaded
+   * and each time it's made anew. The app passes it to its log's scrubber.
+   */
+  onSecret?: (secret: string) => void;
   /** Encrypts plugins' secure stores; leave out where the OS has no keychain to use. */
   encryptor?: Encryptor;
   /** This Wirescry's version and build date, for plugins. Defaults suit tests. */
@@ -278,6 +283,15 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   let ca: CertificateAuthority = await loadOrCreateCA(dataDir);
   step('certificate');
   let settings: Settings = await loadSettings(dataDir);
+  /** The last secret passed to onSecret, so each is passed once. */
+  let toldSecret: string | undefined;
+  const tellMcpToken = (): void => {
+    const token = settings.mcp?.token;
+    if (!token || token === toldSecret) return;
+    toldSecret = token;
+    options.onSecret?.(token);
+  };
+  tellMcpToken();
   const firefoxProfile = path.join(dataDir, FIREFOX_PROFILE_DIR);
   const bodies = await HybridBodyStore.open(path.join(dataDir, 'bodies'), {
     memoryLimit: options.bodyMemoryLimit,
@@ -1095,6 +1109,7 @@ export async function startBackend(options: BackendOptions): Promise<RunningBack
   /** Starts or stops the listener to match the settings. Never throws: a problem is reported. */
   const applyMcp = async (): Promise<void> => {
     mcpProblem = undefined;
+    tellMcpToken();
     const mcp = settings.mcp;
     if (!mcp?.enabled) {
       await mcpServer.stop();
